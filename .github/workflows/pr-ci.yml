@@ -22,6 +22,11 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install libpcap headers (Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpcap-dev
+
       - name: Run unit tests
         shell: bash
         run: bash scripts/ci/test.sh
@@ -50,6 +55,12 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+
+      - name: Install libpcap headers (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpcap-dev
 
       - name: Build omnitalk (Linux/macOS)
         if: runner.os != 'Windows'
