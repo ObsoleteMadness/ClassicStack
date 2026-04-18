@@ -1,0 +1,3 @@
+Welcome to OmniTalk.
+
+This volume is configured to be read/write. 
