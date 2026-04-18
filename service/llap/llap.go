@@ -157,7 +157,7 @@ func (s *Service) TransmitUnicast(p *localtalk.Port, network uint16, node uint8,
 		netlog.Warn("[LLAP] %s failed to build unicast frame to node %d: %v", p.ShortString(), node, err)
 		return
 	}
-	if !p.SupportsRTSCTS() {
+	if !p.SupportsRTSCTS() || p.RTSCTSManagedByTransport() {
 		if err := s.runDatagramTransmit(st, frame); err != nil {
 			netlog.Warn("[LLAP] %s unicast transmit failed to node %d: %v", p.ShortString(), node, err)
 		}
@@ -293,6 +293,10 @@ func (s *Service) handleCTS(st *portState, frame localtalk.LLAPFrame) {
 func (s *Service) runDirectedTransmit(st *portState, frame localtalk.LLAPFrame) error {
 	localBackoff := s.beginTransmit(st)
 	defer s.finishTransmit(st)
+	ctsTimeout := st.port.CTSResponseTimeout()
+	if ctsTimeout <= 0 {
+		ctsTimeout = approxIFG
+	}
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		deferred := s.waitForIdle(st, localBackoff)
 		if deferred {
@@ -318,7 +322,7 @@ func (s *Service) runDirectedTransmit(st *portState, frame localtalk.LLAPFrame) 
 			}
 			netlog.Debug("[LLAP] %s transmit success dst=%d attempt=%d local-backoff=%d", st.port.ShortString(), frame.DestinationNode, attempt, localBackoff)
 			return nil
-		case <-time.After(approxIFG):
+		case <-time.After(ctsTimeout):
 			st.mu.Lock()
 			st.collisionHistory |= 1
 			collisionHistory := st.collisionHistory
@@ -327,7 +331,7 @@ func (s *Service) runDirectedTransmit(st *portState, frame localtalk.LLAPFrame) 
 			st.mu.Unlock()
 			oldBackoff := localBackoff
 			localBackoff = minInt(maxInt(localBackoff*2, 2), 16)
-			netlog.Debug("[LLAP] %s CTS timeout retry=%d dst=%d local-backoff=%d->%d collision-history=%08b", st.port.ShortString(), attempt, frame.DestinationNode, oldBackoff, localBackoff, collisionHistory)
+			netlog.Debug("[LLAP] %s CTS timeout retry=%d dst=%d wait=%s local-backoff=%d->%d collision-history=%08b", st.port.ShortString(), attempt, frame.DestinationNode, ctsTimeout, oldBackoff, localBackoff, collisionHistory)
 		}
 	}
 	netlog.Warn("[LLAP] %s transmit failed after %d retries dst=%d", st.port.ShortString(), maxRetries, frame.DestinationNode)

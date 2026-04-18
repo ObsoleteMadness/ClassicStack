@@ -32,6 +32,9 @@ type Port struct {
 	seedZoneName    []byte
 	respondToEnq    bool
 	supportsRTSCTS  bool
+	rtsctsManaged   bool
+	onNodeIDChange  func(node uint8)
+	ctsTimeout      time.Duration
 	desiredNode     uint8
 	verifyChecksums bool
 	calcChecksums   bool
@@ -54,6 +57,7 @@ func New(seedNetwork uint16, seedZoneName []byte, respondToEnq bool, desiredNode
 		seedNetwork:     seedNetwork,
 		seedZoneName:    seedZoneName,
 		respondToEnq:    respondToEnq,
+		ctsTimeout:      2 * time.Millisecond,
 		desiredNode:     desiredNode,
 		verifyChecksums: true,
 		calcChecksums:   true,
@@ -76,10 +80,23 @@ func New(seedNetwork uint16, seedZoneName []byte, respondToEnq bool, desiredNode
 func (p *Port) ConfigureSendFrame(f func(frame []byte) error) { p.sendFrameFunc = f }
 func (p *Port) ShortString() string                           { return "LocalTalk" }
 func (p *Port) SetLLAPLinkManager(m LinkManager)              { p.linkManager = m }
+func (p *Port) SetNodeIDChangeHook(hook func(node uint8))     { p.onNodeIDChange = hook }
+
+func (p *Port) SetCTSResponseTimeout(timeout time.Duration) {
+	p.mu.Lock()
+	p.ctsTimeout = timeout
+	p.mu.Unlock()
+}
 
 func (p *Port) SetSupportsRTSCTS(enabled bool) {
 	p.mu.Lock()
 	p.supportsRTSCTS = enabled
+	p.mu.Unlock()
+}
+
+func (p *Port) SetRTSCTSManagedByTransport(enabled bool) {
+	p.mu.Lock()
+	p.rtsctsManaged = enabled
 	p.mu.Unlock()
 }
 
@@ -144,13 +161,21 @@ func (p *Port) ClaimedNode() uint8 {
 func (p *Port) ClaimNode(node uint8) {
 	p.mu.Lock()
 	p.node = node
+	hook := p.onNodeIDChange
 	p.mu.Unlock()
+	if hook != nil {
+		hook(node)
+	}
 }
 
 func (p *Port) ClearClaimedNode() {
 	p.mu.Lock()
 	p.node = 0
+	hook := p.onNodeIDChange
 	p.mu.Unlock()
+	if hook != nil {
+		hook(0)
+	}
 }
 
 func (p *Port) RerollDesiredNode() uint8 {
@@ -170,6 +195,18 @@ func (p *Port) SupportsRTSCTS() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.supportsRTSCTS
+}
+
+func (p *Port) RTSCTSManagedByTransport() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.rtsctsManaged
+}
+
+func (p *Port) CTSResponseTimeout() time.Duration {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.ctsTimeout
 }
 
 // rerollDesiredNode picks a new desired node address from the fallback list.
