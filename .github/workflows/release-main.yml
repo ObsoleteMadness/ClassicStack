@@ -1,0 +1,145 @@
+name: Release On Main
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    name: Compute Release Metadata
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      release_name: ${{ steps.meta.outputs.release_name }}
+      build_version: ${{ steps.meta.outputs.build_version }}
+      build_date: ${{ steps.meta.outputs.build_date }}
+      commit_sha: ${{ steps.meta.outputs.commit_sha }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      major: ${{ steps.meta.outputs.major }}
+      minor: ${{ steps.meta.outputs.minor }}
+      patch: ${{ steps.meta.outputs.patch }}
+      build: ${{ steps.meta.outputs.build }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine release metadata
+        id: meta
+        shell: bash
+        run: |
+          while IFS= read -r line; do
+            echo "$line" >> "$GITHUB_OUTPUT"
+          done < <(bash scripts/ci/compute-release-metadata.sh)
+
+  build:
+    name: Build And Package (${{ matrix.os }})
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: omnitalk-linux
+            archive_name: omnitalk-${{ needs.version.outputs.release_tag }}-linux-amd64.tar.gz
+            build_script: bash scripts/ci/build.sh
+            package_script: bash scripts/ci/package-release.sh
+            target_os: linux
+            output: out/omnitalk
+          - os: macos-latest
+            artifact_name: omnitalk-macos
+            archive_name: omnitalk-${{ needs.version.outputs.release_tag }}-macos-amd64.zip
+            build_script: bash scripts/ci/build.sh
+            package_script: bash scripts/ci/package-release.sh
+            target_os: macos
+            output: out/omnitalk
+          - os: windows-latest
+            artifact_name: omnitalk-windows
+            archive_name: omnitalk-${{ needs.version.outputs.release_tag }}-windows-amd64.zip
+            build_script: ./scripts/ci/build.ps1
+            package_script: ./scripts/ci/package-release.ps1
+            target_os: windows
+            output: out/omnitalk.exe
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build binary (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          BUILD_VERSION: ${{ needs.version.outputs.build_version }}
+          BUILD_COMMIT: ${{ needs.version.outputs.commit_sha }}
+          BUILD_DATE: ${{ needs.version.outputs.build_date }}
+          OUTPUT: ${{ matrix.output }}
+        run: ${{ matrix.build_script }}
+
+      - name: Build binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          BUILD_VERSION: ${{ needs.version.outputs.build_version }}
+          BUILD_COMMIT: ${{ needs.version.outputs.commit_sha }}
+          BUILD_DATE: ${{ needs.version.outputs.build_date }}
+          OUTPUT: ${{ matrix.output }}
+        run: ${{ matrix.build_script }}
+
+      - name: Package release (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          TARGET_OS: ${{ matrix.target_os }}
+          RELEASE_TAG: ${{ needs.version.outputs.release_tag }}
+          BUILD_VERSION: ${{ needs.version.outputs.build_version }}
+        run: ${{ matrix.package_script }}
+
+      - name: Package release (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TARGET_OS: ${{ matrix.target_os }}
+          RELEASE_TAG: ${{ needs.version.outputs.release_tag }}
+          BUILD_VERSION: ${{ needs.version.outputs.build_version }}
+        run: ${{ matrix.package_script }}
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.archive_name }}
+
+  release:
+    name: Publish GitHub Release
+    needs:
+      - version
+      - build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.release_tag }}
+          name: ${{ needs.version.outputs.release_name }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ needs.version.outputs.prerelease }}
+          generate_release_notes: true
+          files: |
+            release-artifacts/**/*.zip
+            release-artifacts/**/*.tar.gz

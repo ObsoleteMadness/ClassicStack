@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -32,6 +33,7 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
 	configPath := flag.String("config", "", "Path to INI config file (cannot be combined with other flags)")
+	showVersion := flag.Bool("version", false, "Print OmniTalk version information and exit")
 
 	logLevel := flag.String("log-level", "info", "Minimum log level: debug, info, warn")
 	logTraffic := flag.Bool("log-traffic", false, "Log network traffic at debug level (requires -log-level debug)")
@@ -87,9 +89,17 @@ func main() {
 
 	flag.Parse()
 
+	if *showVersion {
+		fmt.Printf("omnitalk %s\n", BuildVersion)
+		fmt.Printf("commit: %s\n", BuildCommit)
+		fmt.Printf("built: %s\n", BuildDate)
+		fmt.Printf("go: %s\n", runtime.Version())
+		return
+	}
+
 	nonConfigFlags := 0
 	flag.Visit(func(f *flag.Flag) {
-		if f.Name != "config" {
+		if f.Name != "config" && f.Name != "version" {
 			nonConfigFlags++
 		}
 	})

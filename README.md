@@ -68,11 +68,49 @@ Build with explicit binary name:
 go build -o omnitalk ./cmd/omnitalk
 ~~~
 
+Build with explicit semantic version metadata:
+
+~~~bash
+go build -trimpath \
+	-ldflags "-X main.BuildVersion=1.2.3 -X main.BuildCommit=$(git rev-parse --short HEAD) -X main.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+	-o omnitalk ./cmd/omnitalk
+~~~
+
+Build using the shared local/CI scripts:
+
+~~~bash
+bash scripts/ci/build.sh
+bash scripts/ci/test.sh
+~~~
+
+~~~powershell
+./scripts/ci/build.ps1
+./scripts/ci/test.ps1
+~~~
+
+Print runtime/build version info:
+
+~~~bash
+./omnitalk -version
+~~~
+
 Run tests:
 
 ~~~bash
 go test ./...
 ~~~
+
+## CI and releases
+
+- Pull requests to `main`/`master` run GitHub Actions CI for tests and cross-platform builds.
+- Pushes (including merges) to `main` publish a `dev-*` prerelease.
+- Pushing a SemVer tag like `v1.2.3` publishes a stable release for that tag.
+- GitHub Actions calls the same scripts under `scripts/ci/` that you can run locally.
+- Release assets are produced for Linux, macOS, and Windows.
+- Release packages include the repository `dist/` content.
+- Windows release binaries include icon and file version metadata from `icons/omnitalk.ico`.
+- macOS release bundles include app icon metadata from `icons/omnitalk.icns`.
+- Go build/test already ignores non-Go folders; additionally `scripts/ci/test.sh` and `scripts/ci/test.ps1` explicitly exclude `dist`, `icon`, and `icons` from the package list.
 
 ## Status and provenance
 > **Warning:** large parts of this codebase were developed in a "vibe coded" style. It appears to work in real use, but treat behavior as pragmatic rather than formally verified.

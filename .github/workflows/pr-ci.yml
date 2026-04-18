@@ -1,0 +1,70 @@
+name: PR CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run unit tests
+        shell: bash
+        run: bash scripts/ci/test.sh
+
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            script: bash scripts/ci/build.sh
+            output: out/omnitalk
+          - os: macos-latest
+            script: bash scripts/ci/build.sh
+            output: out/omnitalk
+          - os: windows-latest
+            script: ./scripts/ci/build.ps1
+            output: out/omnitalk.exe
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build omnitalk (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          BUILD_VERSION: 0.0.0-pr.${{ github.run_number }}
+          BUILD_COMMIT: ${{ github.sha }}
+          OUTPUT: ${{ matrix.output }}
+        run: ${{ matrix.script }}
+
+      - name: Build omnitalk (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          BUILD_VERSION: 0.0.0-pr.${{ github.run_number }}
+          BUILD_COMMIT: ${{ github.sha }}
+          OUTPUT: ${{ matrix.output }}
+        run: ${{ matrix.script }}
