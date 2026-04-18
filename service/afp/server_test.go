@@ -457,8 +457,8 @@ func TestAFP_GetVolParms_ModDateBytesFreeWireLayout(t *testing.T) {
 	}
 
 	gotBytesFree := binary.BigEndian.Uint32(wire[6:10])
-	if gotBytesFree != math.MaxUint32 {
-		t.Fatalf("BytesFree mismatch: got 0x%08x want 0x%08x", gotBytesFree, uint32(math.MaxUint32))
+	if gotBytesFree != math.MaxInt32 {
+		t.Fatalf("BytesFree mismatch: got 0x%08x want 0x%08x", gotBytesFree, uint32(math.MaxInt32))
 	}
 }
 

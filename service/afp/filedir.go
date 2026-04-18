@@ -8,6 +8,16 @@ import (
 )
 
 func (s *AFPService) handleGetFileDirParms(req *FPGetFileDirParmsReq) (*FPGetFileDirParmsRes, int32) {
+	if req.FileBitmap == 0 && req.DirBitmap == 0 {
+		return &FPGetFileDirParmsRes{}, ErrBitmapErr
+	}
+	if req.FileBitmap&^enumerateFileBitmapMask != 0 || req.DirBitmap&^enumerateDirBitmapMask != 0 {
+		return &FPGetFileDirParmsRes{}, ErrBitmapErr
+	}
+	if req.Path != "" && req.PathType != PathTypeShortNames && req.PathType != PathTypeLongNames {
+		return &FPGetFileDirParmsRes{}, ErrParamErr
+	}
+
 	parentPath, ok := s.resolveDIDPath(req.VolumeID, req.DirID)
 	if !ok && req.DirID != 0 {
 		return emptyGetFileDirParmsRes(req), ErrObjectNotFound

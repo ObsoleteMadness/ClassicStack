@@ -126,6 +126,13 @@ const (
 		DirBitmapModDate | DirBitmapDirID | DirBitmapLongName
 )
 
+// AFP volume signature values (Table 75).
+const (
+	AFPVolumeTypeFlat          uint16 = 1 // Flat (no directories)
+	AFPVolumeTypeFixedDirID    uint16 = 2 // Fixed Directory ID
+	AFPVolumeTypeVariableDirID uint16 = 3 // Variable Directory ID
+)
+
 // Volume attribute flags returned in the Attributes field when
 // VolBitmapAttributes is requested. Bits are measured in a 16-bit
 // attributes word; only the ReadOnly flag (bit 0) is defined here.
@@ -163,6 +170,7 @@ const (
 const (
 	PathTypeShortNames uint8 = 1 // Short names (8.3 or less)
 	PathTypeLongNames  uint8 = 2 // Long names (up to 31 bytes)
+	PathTypeUTF8       uint8 = 3 // UTF-8 encoded names (up to 255 bytes)
 )
 
 const (

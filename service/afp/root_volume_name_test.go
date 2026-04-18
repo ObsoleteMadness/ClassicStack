@@ -82,8 +82,8 @@ func TestHandleGetDirParms_ReadOnlyVolumeAccessRights(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode dir access rights: %v", err)
 	}
-	if rights != 0x87050505 {
-		t.Fatalf("dir access rights = %#08x, want %#08x", rights, uint32(0x87050505))
+	if rights != 0x87030303 {
+		t.Fatalf("dir access rights = %#08x, want %#08x", rights, uint32(0x87030303))
 	}
 }
 

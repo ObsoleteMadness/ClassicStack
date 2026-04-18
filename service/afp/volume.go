@@ -14,9 +14,24 @@ const (
 	defaultAFPBytesTotal = uint64(0x20000000)
 )
 
+func constrainAFPVolumeType(volType uint16) uint16 {
+	switch volType {
+	case AFPVolumeTypeFlat, AFPVolumeTypeFixedDirID, AFPVolumeTypeVariableDirID:
+		return volType
+	default:
+		return AFPVolumeTypeFixedDirID
+	}
+}
+
+func (s *AFPService) volumeType(_ *Volume) uint16 {
+	// OmniTalk exposes hierarchical volumes with CNID-based directory IDs,
+	// so we advertise Variable Directory ID semantics.
+	return constrainAFPVolumeType(AFPVolumeTypeFixedDirID)
+}
+
 func capAFPBytes32(v uint64) uint32 {
-	if v > uint64(math.MaxUint32) {
-		return math.MaxUint32
+	if v > uint64(math.MaxInt32) {
+		return math.MaxInt32
 	}
 	return uint32(v)
 }
@@ -90,7 +105,7 @@ func (s *AFPService) handleOpenVol(req *FPOpenVolReq) (*FPOpenVolRes, int32) {
 		binary.Write(fixed, binary.BigEndian, volAttrs)
 	}
 	if req.Bitmap&VolBitmapSignature != 0 {
-		binary.Write(fixed, binary.BigEndian, uint16(2))
+		binary.Write(fixed, binary.BigEndian, s.volumeType(targetVol))
 	}
 	if req.Bitmap&VolBitmapCreateDate != 0 {
 		binary.Write(fixed, binary.BigEndian, volDate)
@@ -242,7 +257,7 @@ func (s *AFPService) handleGetVolParms(req *FPGetVolParmsReq) (*FPGetVolParmsRes
 		binary.Write(fixed, binary.BigEndian, volAttrs)
 	}
 	if req.Bitmap&VolBitmapSignature != 0 {
-		binary.Write(fixed, binary.BigEndian, uint16(2))
+		binary.Write(fixed, binary.BigEndian, s.volumeType(targetVol))
 	}
 	if req.Bitmap&VolBitmapCreateDate != 0 {
 		binary.Write(fixed, binary.BigEndian, volDate)

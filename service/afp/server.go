@@ -1202,7 +1202,8 @@ func (s *AFPService) packFileInfo(buf *bytes.Buffer, volumeID uint16, bitmap uin
 		if bitmap&DirBitmapAccessRights != 0 {
 			rights := uint32(0x87070707)
 			if s.volumeIsReadOnly(volumeID) {
-				rights = 0x87050505
+				// Read-only volumes should advertise read+search rights, not write.
+				rights = 0x87030303
 			}
 			binary.Write(buf, binary.BigEndian, rights)
 		}
