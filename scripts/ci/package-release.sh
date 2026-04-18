@@ -17,7 +17,7 @@ if [[ "$target_os" == "linux" ]]; then
   mkdir -p "$stage"
   cp out/omnitalk "$stage/"
   cp README.md server.ini.example extmap.conf "$stage/"
-  cp -r dist "$stage/dist"
+  cp -a dist/. "$stage/"
   tar -C release -czf "$archive_name" "$(basename "$stage")"
   echo "$archive_name"
   exit 0
@@ -52,7 +52,7 @@ if [[ "$target_os" == "macos" ]]; then
 EOF
 
   cp README.md server.ini.example extmap.conf "$stage/"
-  cp -r dist "$stage/dist"
+  cp -a dist/. "$stage/"
   (cd release && zip -r "../$archive_name" "$(basename "$stage")")
   echo "$archive_name"
   exit 0
