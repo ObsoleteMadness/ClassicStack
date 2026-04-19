@@ -47,17 +47,17 @@ const (
 // ---------------------------------------------------------------------------
 
 const (
-	aspNoErr          = 0     // $00   — no error (both ends)
-	aspBadVersNum     = -1066 // $FBD6 — workstation end only
-	aspBufTooSmall    = -1067 // $FBD5 — workstation end only
-	aspNoMoreSess     = -1068 // $FBD4 — both ends
-	aspNoServers      = -1069 // $FBD3 — workstation end only
-	aspParamErr       = -1070 // $FBD2 — both ends
-	aspServerBusy     = -1071 // $FBD1 — workstation end only
-	aspSessClosed     = -1072 // $FBD0 — both ends
-	aspSizeErr        = -1073 // $FBCF — both ends
-	aspTooManyClients = -1074 // $FBCE — server end only
-	aspNoAck          = -1075 // $FBCD — server end only
+	SPErrorNoError        = 0     // $00   — no error (both ends)
+	SPErrorBadVersNum     = -1066 // $FBD6 — workstation end only
+	SPErrorBufTooSmall    = -1067 // $FBD5 — workstation end only
+	SPErrorNoMoreSessions = -1068 // $FBD4 — both ends
+	SPErrorNoServers      = -1069 // $FBD3 — workstation end only
+	SPErrorParamErr       = -1070 // $FBD2 — both ends
+	SPErrorServerBusy     = -1071 // $FBD1 — workstation end only
+	SPErrorSessClosed     = -1072 // $FBD0 — both ends
+	SPErrorSizeErr        = -1073 // $FBCF — both ends
+	SPErrorTooManyClients = -1074 // $FBCE — server end only
+	SPErrorNoAck          = -1075 // $FBCD — server end only
 )
 
 // AFP attention codes sent via SPFuncAttention.
@@ -147,7 +147,7 @@ func ParseOpenSessPacket(userData uint32) OpenSessPacket {
 type OpenSessReplyPacket struct {
 	SSSSocket uint8 // server session socket
 	SessionID uint8
-	ErrorCode int16 // 0 = success; aspBadVersNum, aspServerBusy, aspTooManyClients
+	ErrorCode int16 // 0 = success; SPErrorBadVersNum, SPErrorServerBusy, SPErrorTooManyClients
 }
 
 // MarshalUserData encodes the reply into the 4-byte ATP UserData field.

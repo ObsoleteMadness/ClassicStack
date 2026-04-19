@@ -141,6 +141,17 @@ func (m *SessionManager) Get(id uint8) *Session {
 	return m.sessions[id]
 }
 
+// SessionIDs returns a snapshot of currently active session IDs.
+func (m *SessionManager) SessionIDs() []uint8 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ids := make([]uint8, 0, len(m.sessions))
+	for id := range m.sessions {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 // Close terminates a session.
 func (m *SessionManager) Close(id uint8) {
 	m.mu.Lock()
