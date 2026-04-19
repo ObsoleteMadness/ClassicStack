@@ -52,6 +52,14 @@ type Service struct {
 	onSessionActivity func(*Session)
 }
 
+// Spec-to-implementation mapping notes:
+//   - No separate SPGetSession method: session acceptance is handled inside
+//     handleOpenSession.
+//   - No separate SPGetRequest/SPCmdReply/SPWrtReply/SPWrtContinue methods:
+//     these are represented by handleCommand/handleASPWrite/completeWrite.
+//   - No separate SPNewStatus method: status is sourced from
+//     commandHandler.GetStatus() when servicing SPGetStatus.
+
 // requestContext is what the host service threads through atp.HandleInbound
 // so the Sender bridge can use router.Reply on the way out.
 type requestContext struct {
@@ -91,7 +99,13 @@ func (s *Service) SetCommandHandler(handler afp.CommandHandler) {
 // Socket returns the socket number this service listens on.
 func (s *Service) Socket() uint8 { return ServerSocket }
 
-// Start performs SPGetParms/SPInit, registers NBP, and stands up the engine.
+// Start performs server-side initialization corresponding to:
+//   - SPGetParms (server end; server ASP client -> ASP)
+//   - SPInit (server end; server ASP client -> ASP)
+//
+// In this implementation, SPInit is represented by wiring the SLS endpoint and
+// validating ServiceStatusBlock size against QuantumSize before accepting
+// traffic.
 func (s *Service) Start(router service.Router) error {
 	s.router = router
 
@@ -140,7 +154,14 @@ func (s *Service) registerInZone(zone []byte) {
 }
 
 // Stop unregisters NBP and shuts everything down.
+// Before teardown, it sends a best-effort SPAttention(ServerGoingDown) to
+// active sessions so workstation clients can terminate cleanly.
 func (s *Service) Stop() error {
+	for _, sessID := range s.sm.SessionIDs() {
+		if err := s.SendAttention(sessID, AspAttnServerGoingDown); err != nil {
+			netlog.Debug("[ASP] Stop: SendAttention failed for sess=%d: %v", sessID, err)
+		}
+	}
 	for _, z := range s.registeredZones {
 		s.nbp.UnregisterName([]byte(s.serverName), []byte(nbpType), z)
 	}
@@ -188,7 +209,11 @@ func (s *Service) sendBridge(src, dst atp.Address, payload []byte, hint any) err
 	return s.router.Route(dg, true)
 }
 
-// handleATPRequest is the atp.RequestHandler dispatched for every TReq.
+// handleATPRequest is the server-side dispatcher for ASP network requests.
+// Direction by SPFunction per spec:
+//   - workstation -> server: OpenSess, GetStatus, Command, Write, CloseSess
+//   - both directions: Tickle
+//
 // It demultiplexes on the ASP function code in the user-data MSB.
 func (s *Service) handleATPRequest(in atp.IncomingRequest, reply atp.Replier) {
 	aspCmd := uint8((in.UserBytes >> 24) & 0xFF)
@@ -258,20 +283,43 @@ func (s *Service) chunkResponse(data []byte, bitmap uint8) [][]byte {
 	return bufs
 }
 
+// handleGetStatus implements SPGetStatus servicing on the server side
+// (workstation ASP client -> server SLS).
+//
+// Related server-end calls from the spec:
+//   - SPInit provides initial ServiceStatusBlock.
+//   - SPNewStatus updates status for later SPGetStatus calls.
+//
+// In this code, status comes from commandHandler.GetStatus() at request time.
 func (s *Service) handleGetStatus(in atp.IncomingRequest, reply atp.Replier) {
 	var status []byte
 	if s.commandHandler != nil {
 		status = s.commandHandler.GetStatus()
 	}
+	if len(status) > s.effectiveQuantumSize() {
+		netlog.Info("[ASP] GetStatus: ServiceStatusBlockSize=%d exceeds QuantumSize=%d (SPErrorSizeErr)",
+			len(status), s.effectiveQuantumSize())
+		reply(atp.ResponseMessage{
+			Buffers:   [][]byte{nil},
+			UserBytes: []uint32{errToUserBytes(SPErrorSizeErr)},
+		})
+		return
+	}
 	reply(atp.ResponseMessage{Buffers: s.chunkResponse(status, in.Bitmap)})
 }
 
+// handleOpenSession implements SPOpenSession handling at the server side
+// (workstation ASP client -> server SLS).
+//
+// Spec note: classic ASP may gate acceptance on pending SPGetSession calls.
+// This implementation models SPGetSession implicitly by accepting while session
+// capacity is available.
 func (s *Service) handleOpenSession(in atp.IncomingRequest, reply atp.Replier) {
 	pkt := ParseOpenSessPacket(in.UserBytes)
 
 	if pkt.VersionNum != ASPVersion {
 		netlog.Info("[ASP] OpenSess: bad version 0x%04X from %s", pkt.VersionNum, in.Src)
-		r := OpenSessReplyPacket{SSSSocket: ServerSocket, ErrorCode: aspBadVersNum}
+		r := OpenSessReplyPacket{SSSSocket: ServerSocket, ErrorCode: SPErrorBadVersNum}
 		reply(atp.ResponseMessage{
 			Buffers:   [][]byte{nil},
 			UserBytes: []uint32{r.MarshalUserData()},
@@ -281,7 +329,7 @@ func (s *Service) handleOpenSession(in atp.IncomingRequest, reply atp.Replier) {
 
 	sess := s.sm.Open(in.Src.Net, in.Src.Node, pkt.WSSSocket, in.Local.Net, in.Local.Node)
 	if sess == nil {
-		r := OpenSessReplyPacket{SSSSocket: ServerSocket, ErrorCode: aspTooManyClients}
+		r := OpenSessReplyPacket{SSSSocket: ServerSocket, ErrorCode: SPErrorTooManyClients}
 		reply(atp.ResponseMessage{
 			Buffers:   [][]byte{nil},
 			UserBytes: []uint32{r.MarshalUserData()},
@@ -292,15 +340,25 @@ func (s *Service) handleOpenSession(in atp.IncomingRequest, reply atp.Replier) {
 	if s.onSessionOpen != nil {
 		s.onSessionOpen(sess)
 	}
-	r := OpenSessReplyPacket{SSSSocket: ServerSocket, SessionID: sess.ID, ErrorCode: aspNoErr}
+	r := OpenSessReplyPacket{SSSSocket: ServerSocket, SessionID: sess.ID, ErrorCode: SPErrorNoError}
 	reply(atp.ResponseMessage{
 		Buffers:   [][]byte{nil},
 		UserBytes: []uint32{r.MarshalUserData()},
 	})
 }
 
+// handleCloseSession handles CloseSess packets from workstation -> server and
+// maps them to server-side SPCloseSession semantics.
 func (s *Service) handleCloseSession(in atp.IncomingRequest, reply atp.Replier) {
 	pkt := ParseCloseSessPacket(in.UserBytes)
+	if s.sm.Get(pkt.SessionID) == nil {
+		netlog.Debug("[ASP] CloseSess: unknown SessRefNum=%d", pkt.SessionID)
+		reply(atp.ResponseMessage{
+			Buffers:   [][]byte{nil},
+			UserBytes: []uint32{errToUserBytes(SPErrorParamErr)},
+		})
+		return
+	}
 	s.sm.Close(pkt.SessionID)
 	reply(atp.ResponseMessage{
 		Buffers:   [][]byte{nil},
@@ -308,13 +366,31 @@ func (s *Service) handleCloseSession(in atp.IncomingRequest, reply atp.Replier) 
 	})
 }
 
+// handleCommand implements the SPCommand/SPCmdReply transaction path:
+//  1. workstation -> server Command request
+//  2. server -> workstation CmdReply result
+//
+// In classic server-end API terms, this combines SPGetRequest (Command type)
+// and SPCmdReply.
 func (s *Service) handleCommand(in atp.IncomingRequest, reply atp.Replier) {
 	receivedAt := time.Now()
 	pkt := ParseCommandPacket(in.UserBytes, in.Data)
+	if len(pkt.CmdBlock) > s.effectiveMaxCmdSize() {
+		netlog.Debug("[ASP] Command: CmdBlockSize=%d exceeds MaxCmdSize=%d (SPErrorSizeErr)",
+			len(pkt.CmdBlock), s.effectiveMaxCmdSize())
+		reply(atp.ResponseMessage{
+			Buffers:   [][]byte{nil},
+			UserBytes: []uint32{errToUserBytes(SPErrorSizeErr)},
+		})
+		return
+	}
 	sess := s.sm.Get(pkt.SessionID)
 	if sess == nil {
-		netlog.Debug("[ASP] Command: unknown session %d", pkt.SessionID)
-		reply(atp.ResponseMessage{Buffers: [][]byte{nil}})
+		netlog.Debug("[ASP] Command: unknown SessRefNum=%d", pkt.SessionID)
+		reply(atp.ResponseMessage{
+			Buffers:   [][]byte{nil},
+			UserBytes: []uint32{errToUserBytes(SPErrorParamErr)},
+		})
 		return
 	}
 	sess.touchActivity()
@@ -336,10 +412,29 @@ func (s *Service) handleCommand(in atp.IncomingRequest, reply atp.Replier) {
 	if s.commandHandler != nil {
 		replyData, errCode = s.commandHandler.HandleCommand(pkt.CmdBlock)
 	}
+	if len(replyData) > s.effectiveQuantumSize() {
+		netlog.Debug("[ASP] Command: SessRefNum=%d CmdReplyDataSize=%d exceeds QuantumSize=%d (SPErrorSizeErr)",
+			pkt.SessionID, len(replyData), s.effectiveQuantumSize())
+		reply(atp.ResponseMessage{
+			Buffers:   [][]byte{nil},
+			UserBytes: []uint32{errToUserBytes(SPErrorSizeErr)},
+		})
+		return
+	}
+	if wsCap := bitmapMaxBytes(in.Bitmap); wsCap > 0 && len(replyData) > wsCap {
+		netlog.Debug("[ASP] Command: reply %d exceeds workstation capacity %d (SPErrorBufTooSmall)",
+			len(replyData), wsCap)
+		bufs := s.chunkResponse(replyData, in.Bitmap)
+		reply(atp.ResponseMessage{
+			Buffers:   bufs,
+			UserBytes: []uint32{errToUserBytes(SPErrorBufTooSmall)},
+		})
+		return
+	}
 	bufs := s.chunkResponse(replyData, in.Bitmap)
 	reply(atp.ResponseMessage{
 		Buffers:   bufs,
-		UserBytes: []uint32{uint32(errCode)},
+		UserBytes: []uint32{errToUserBytes(errCode)},
 	})
 	elapsed := time.Since(receivedAt)
 	replyBytes := 0
@@ -353,24 +448,36 @@ func (s *Service) handleCommand(in atp.IncomingRequest, reply atp.Replier) {
 	}
 }
 
-// handleASPWrite implements phase 1 of the two-phase ASP write protocol:
+// handleASPWrite implements SPWrite handling (phase 1 of 2) on the server side:
 //
-//  1. Workstation → server: Write TReq with the AFP command block.
-//  2. Server → workstation WSS: WriteContinue TReq carrying the buffer size.
-//  3. Workstation → server (TResp to WriteContinue): the actual write data.
-//  4. Server → workstation: TResp to the original Write TReq with the AFP result.
+//  1. workstation -> server: Write TReq with command block
+//  2. server -> workstation: SPWrtContinue (WriteContinue TReq)
+//  3. workstation -> server: WriteContinue TResp with write data
+//  4. server -> workstation: SPWrtReply for the original Write TReq
 //
 // We capture `reply` from step 1 and invoke it in step 4 once the
 // WriteContinue Pending resolves with the data.
+//
+// In classic server-end API terms, this combines SPGetRequest (Write type)
+// with SPWrtContinue and SPWrtReply.
 func (s *Service) handleASPWrite(in atp.IncomingRequest, reply atp.Replier) {
 	receivedAt := time.Now()
 	pkt := ParseWritePacket(in.UserBytes, in.Data)
-	sess := s.sm.Get(pkt.SessionID)
-	if sess == nil {
-		netlog.Debug("[ASP] Write: unknown session %d", pkt.SessionID)
+	if len(pkt.CmdBlock) > s.effectiveMaxCmdSize() {
+		netlog.Debug("[ASP] Write: CmdBlockSize=%d exceeds MaxCmdSize=%d (SPErrorSizeErr)",
+			len(pkt.CmdBlock), s.effectiveMaxCmdSize())
 		reply(atp.ResponseMessage{
 			Buffers:   [][]byte{nil},
-			UserBytes: []uint32{errToUserBytes(aspParamErr)},
+			UserBytes: []uint32{errToUserBytes(SPErrorSizeErr)},
+		})
+		return
+	}
+	sess := s.sm.Get(pkt.SessionID)
+	if sess == nil {
+		netlog.Debug("[ASP] Write: unknown SessRefNum=%d", pkt.SessionID)
+		reply(atp.ResponseMessage{
+			Buffers:   [][]byte{nil},
+			UserBytes: []uint32{errToUserBytes(SPErrorParamErr)},
 		})
 		return
 	}
@@ -387,7 +494,17 @@ func (s *Service) handleASPWrite(in atp.IncomingRequest, reply atp.Replier) {
 
 	var wantBytes uint32
 	if len(pkt.CmdBlock) >= 12 {
-		wantBytes = binary.BigEndian.Uint32(pkt.CmdBlock[8:12])
+		rawWantBytes := int32(binary.BigEndian.Uint32(pkt.CmdBlock[8:12]))
+		if rawWantBytes < 0 {
+			netlog.Debug("[ASP] Write: negative BufferSize=%d in SPWrtContinue request metadata (SPErrorParamErr)",
+				rawWantBytes)
+			reply(atp.ResponseMessage{
+				Buffers:   [][]byte{nil},
+				UserBytes: []uint32{errToUserBytes(SPErrorParamErr)},
+			})
+			return
+		}
+		wantBytes = uint32(rawWantBytes)
 	}
 	if max := uint32(s.quantumSize); wantBytes > max {
 		netlog.Info("[ASP] Write sess=%d: clamping wantBytes %d→%d",
@@ -431,7 +548,7 @@ func (s *Service) handleASPWrite(in atp.IncomingRequest, reply atp.Replier) {
 		netlog.Debug("[ASP] Write sess=%d: WriteContinue SendRequest failed: %v", pkt.SessionID, err)
 		reply(atp.ResponseMessage{
 			Buffers:   [][]byte{nil},
-			UserBytes: []uint32{errToUserBytes(aspParamErr)},
+			UserBytes: []uint32{errToUserBytes(SPErrorParamErr)},
 		})
 		return
 	}
@@ -455,6 +572,8 @@ func (s *Service) handleASPWrite(in atp.IncomingRequest, reply atp.Replier) {
 	go s.completeWrite(sess, pkt.CmdBlock, wantBytes, pending, reply, in.Bitmap, receivedAt, wcSentAt)
 }
 
+// completeWrite finalizes the server-side SPWrite flow after SPWrtContinue has
+// returned write data, then sends the SPWrtReply-equivalent result.
 func (s *Service) completeWrite(sess *Session, cmdBlock []byte, wantBytes uint32,
 	pending *atp.Pending, reply atp.Replier, bitmap uint8, receivedAt, wcSentAt time.Time) {
 	resp, err := pending.Wait(context.Background())
@@ -468,7 +587,7 @@ func (s *Service) completeWrite(sess *Session, cmdBlock []byte, wantBytes uint32
 		netlog.Debug("[ASP] Write sess=%d: WriteContinue failed after %v: %v", sess.ID, wcRTT.Round(time.Millisecond), err)
 		reply(atp.ResponseMessage{
 			Buffers:   [][]byte{nil},
-			UserBytes: []uint32{errToUserBytes(aspParamErr)},
+			UserBytes: []uint32{errToUserBytes(SPErrorParamErr)},
 		})
 		return
 	}
@@ -493,10 +612,29 @@ func (s *Service) completeWrite(sess *Session, cmdBlock []byte, wantBytes uint32
 	if s.commandHandler != nil {
 		replyData, errCode = s.commandHandler.HandleCommand(full)
 	}
+	if len(replyData) > s.effectiveQuantumSize() {
+		netlog.Debug("[ASP] Write: SessRefNum=%d WrtReplyDataSize=%d exceeds QuantumSize=%d (SPErrorSizeErr)",
+			sess.ID, len(replyData), s.effectiveQuantumSize())
+		reply(atp.ResponseMessage{
+			Buffers:   [][]byte{nil},
+			UserBytes: []uint32{errToUserBytes(SPErrorSizeErr)},
+		})
+		return
+	}
+	if wsCap := bitmapMaxBytes(bitmap); wsCap > 0 && len(replyData) > wsCap {
+		netlog.Debug("[ASP] Write: reply %d exceeds workstation capacity %d (SPErrorBufTooSmall)",
+			len(replyData), wsCap)
+		bufs := s.chunkResponse(replyData, bitmap)
+		reply(atp.ResponseMessage{
+			Buffers:   bufs,
+			UserBytes: []uint32{errToUserBytes(SPErrorBufTooSmall)},
+		})
+		return
+	}
 	bufs := s.chunkResponse(replyData, bitmap)
 	reply(atp.ResponseMessage{
 		Buffers:   bufs,
-		UserBytes: []uint32{uint32(errCode)},
+		UserBytes: []uint32{errToUserBytes(errCode)},
 	})
 	totalElapsed := time.Since(receivedAt)
 	replyBytes := 0
@@ -536,19 +674,36 @@ func (s *Service) sendTickle(sess *Session) {
 // uint32 wire encoding without tripping Go's constant-overflow check.
 func errToUserBytes(code int32) uint32 { return uint32(code) }
 
-// SPGetParms returns the maximum command block size and quantum size.
+func (s *Service) effectiveQuantumSize() int {
+	if s.quantumSize > 0 {
+		return s.quantumSize
+	}
+	return QuantumSize
+}
+
+func (s *Service) effectiveMaxCmdSize() int {
+	if s.maxCmdSize > 0 {
+		return s.maxCmdSize
+	}
+	return ATPMaxData
+}
+
+// SPGetParms implements SPGetParms (both ends): ASP client -> ASP local query
+// for MaxCmdSize and QuantumSize.
 func (s *Service) SPGetParms() GetParmsResult {
 	return GetParmsResult{MaxCmdSize: ATPMaxData, QuantumSize: QuantumSize}
 }
 
-// SendAttention sends an ASP Attention to the workstation end of a session.
+// SendAttention implements server-side SPAttention
+// (server ASP client -> workstation end of an open session).
 func (s *Service) SendAttention(sessID uint8, code uint16) error {
 	if code == 0 {
 		return fmt.Errorf("ASP: attention code must be non-zero")
 	}
 	sess := s.sm.Get(sessID)
 	if sess == nil {
-		return fmt.Errorf("ASP: unknown session %d", sessID)
+		netlog.Debug("[ASP] Attention: unknown SessRefNum=%d", sessID)
+		return fmt.Errorf("ASP SPAttention: unknown SessRefNum=%d (SPErrorParamErr=%d)", sessID, SPErrorParamErr)
 	}
 	if s.endpoint == nil {
 		return fmt.Errorf("ASP: not started")
