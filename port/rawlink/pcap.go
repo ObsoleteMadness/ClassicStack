@@ -18,26 +18,26 @@ type PcapConfig struct {
 }
 
 // DefaultEtherTalkConfig returns a PcapConfig suitable for EtherTalk:
-// promiscuous, immediate mode, 250ms read timeout.
+// promiscuous, immediate mode, 1ms read timeout.
 func DefaultEtherTalkConfig(iface string) PcapConfig {
 	return PcapConfig{
 		Interface:     iface,
 		SnapLen:       65535,
 		Promiscuous:   true,
-		ReadTimeout:   250 * time.Millisecond,
+		ReadTimeout:   1 * time.Millisecond,
 		ImmediateMode: true,
 	}
 }
 
 // DefaultMacIPConfig returns a PcapConfig suitable for MacIP:
-// promiscuous, 100ms read timeout, no immediate mode required.
+// promiscuous, 1ms read timeout, immediate mode enabled.
 func DefaultMacIPConfig(iface string) PcapConfig {
 	return PcapConfig{
 		Interface:     iface,
 		SnapLen:       65535,
 		Promiscuous:   true,
-		ReadTimeout:   100 * time.Millisecond,
-		ImmediateMode: false,
+		ReadTimeout:   1 * time.Millisecond,
+		ImmediateMode: true,
 	}
 }
 
@@ -141,7 +141,7 @@ func OpenPcapSimple(iface string, snapLen int, promisc bool, timeout time.Durati
 // ReadFrame reads the next raw packet from the pcap handle.
 // It returns ErrTimeout when the underlying libpcap read times out.
 func (l *pcapLink) ReadFrame() ([]byte, error) {
-	data, _, err := l.handle.ReadPacketData()
+	data, _, err := l.handle.ZeroCopyReadPacketData()
 	if err != nil {
 		if err == pcap.NextErrorTimeoutExpired {
 			return nil, ErrTimeout
