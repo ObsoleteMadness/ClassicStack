@@ -15,7 +15,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/pgodw/omnitalk/go/appletalk"
+	"github.com/pgodw/omnitalk/appletalk"
 )
 
 // ATP Control bit masks.

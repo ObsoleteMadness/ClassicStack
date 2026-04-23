@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/pgodw/omnitalk/go/service/afp"
+	"github.com/pgodw/omnitalk/service/afp"
 	"gopkg.in/ini.v1"
 )
 

@@ -4,8 +4,8 @@ import (
 	"log"
 	"net"
 
-	"github.com/pgodw/omnitalk/go/port"
-	"github.com/pgodw/omnitalk/go/port/rawlink"
+	"github.com/pgodw/omnitalk/port"
+	"github.com/pgodw/omnitalk/port/rawlink"
 )
 
 // etherTalkBPFFilter selects EtherTalk Phase 2 frames carried as

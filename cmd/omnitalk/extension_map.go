@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/pgodw/omnitalk/go/service/afp"
+	"github.com/pgodw/omnitalk/service/afp"
 )
 
 var extMapLinePattern = regexp.MustCompile(`^(\S+)\s+"([^"]*)"\s+"([^"]*)"`)

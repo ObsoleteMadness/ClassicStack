@@ -14,8 +14,8 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/pgodw/omnitalk/go/netlog"
-	garden "github.com/pgodw/omnitalk/go/service/macgarden"
+	"github.com/pgodw/omnitalk/netlog"
+	garden "github.com/pgodw/omnitalk/service/macgarden"
 )
 
 const macGardenEnumerateWindow = 10

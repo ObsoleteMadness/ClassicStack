@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/pgodw/omnitalk/go/service"
+	"github.com/pgodw/omnitalk/service"
 )
 
 // PacketDumper is a generic sink used by services to emit parsed packet logs.

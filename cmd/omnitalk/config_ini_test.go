@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pgodw/omnitalk/go/service/afp"
+	"github.com/pgodw/omnitalk/service/afp"
 )
 
 func TestLoadConfigFromINI_ParsesSections(t *testing.T) {

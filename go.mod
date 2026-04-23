@@ -1,4 +1,4 @@
-module github.com/pgodw/omnitalk/go
+module github.com/pgodw/omnitalk
 
 go 1.23.0
 

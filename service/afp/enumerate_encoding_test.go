@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pgodw/omnitalk/go/appletalk"
+	"github.com/pgodw/omnitalk/appletalk"
 )
 
 type childCountSpyFS struct {

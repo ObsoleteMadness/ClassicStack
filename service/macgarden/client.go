@@ -22,7 +22,7 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
-	"github.com/pgodw/omnitalk/go/netlog"
+	"github.com/pgodw/omnitalk/netlog"
 )
 
 const (

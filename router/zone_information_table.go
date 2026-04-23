@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/pgodw/omnitalk/go/appletalk"
+	"github.com/pgodw/omnitalk/appletalk"
 )
 
 func UCase(input []byte) []byte {

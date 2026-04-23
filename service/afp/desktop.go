@@ -6,7 +6,7 @@ import (
 	"io/fs"
 	"path/filepath"
 
-	"github.com/pgodw/omnitalk/go/netlog"
+	"github.com/pgodw/omnitalk/netlog"
 )
 
 // getDesktopDB looks up the DesktopDB associated with a DTRefNum.

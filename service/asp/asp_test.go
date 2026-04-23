@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/pgodw/omnitalk/go/service/atp"
+	"github.com/pgodw/omnitalk/service/atp"
 )
 
 type stubCommandHandler struct {

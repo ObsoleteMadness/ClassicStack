@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 OmniTalk is a Go-based AppleTalk Phase 2 router and AFP file server. It bridges legacy Apple networking protocols to modern environments, supporting EtherTalk (raw Ethernet), LToUDP (multicast UDP), TashTalk (serial), and virtual LocalTalk transports.
 
-**Module:** `github.com/pgodw/omnitalk/go`  
+**Module:** `github.com/pgodw/omnitalk`  
 **Go version:** 1.23.0
 
 ## Commands

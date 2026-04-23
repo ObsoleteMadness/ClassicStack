@@ -7,7 +7,7 @@ import (
 	"log"
 	"sync"
 
-	"github.com/pgodw/omnitalk/go/appletalk"
+	"github.com/pgodw/omnitalk/appletalk"
 )
 
 // Level controls the minimum severity of messages that are emitted.

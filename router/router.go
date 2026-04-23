@@ -3,15 +3,15 @@ package router
 import (
 	"errors"
 
-	"github.com/pgodw/omnitalk/go/appletalk"
-	"github.com/pgodw/omnitalk/go/netlog"
-	"github.com/pgodw/omnitalk/go/port"
-	"github.com/pgodw/omnitalk/go/port/localtalk"
-	"github.com/pgodw/omnitalk/go/service"
-	"github.com/pgodw/omnitalk/go/service/aep"
-	"github.com/pgodw/omnitalk/go/service/llap"
-	"github.com/pgodw/omnitalk/go/service/rtmp"
-	"github.com/pgodw/omnitalk/go/service/zip"
+	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/port"
+	"github.com/pgodw/omnitalk/port/localtalk"
+	"github.com/pgodw/omnitalk/service"
+	"github.com/pgodw/omnitalk/service/aep"
+	"github.com/pgodw/omnitalk/service/llap"
+	"github.com/pgodw/omnitalk/service/rtmp"
+	"github.com/pgodw/omnitalk/service/zip"
 )
 
 type Router struct {

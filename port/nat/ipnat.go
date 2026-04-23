@@ -13,9 +13,9 @@ import (
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 
-	"github.com/pgodw/omnitalk/go/appletalk"
-	"github.com/pgodw/omnitalk/go/netlog"
-	"github.com/pgodw/omnitalk/go/service"
+	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/service"
 )
 
 const (

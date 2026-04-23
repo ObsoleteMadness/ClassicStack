@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgodw/omnitalk/go/appletalk"
-	"github.com/pgodw/omnitalk/go/service"
+	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/service"
 )
 
 func newMockPort(network uint16, node uint8, shortString string, isExtended bool) *mockPort {

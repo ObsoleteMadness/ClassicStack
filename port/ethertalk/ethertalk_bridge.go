@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pgodw/omnitalk/go/port/rawlink"
+	"github.com/pgodw/omnitalk/port/rawlink"
 )
 
 type bridgeMode uint8

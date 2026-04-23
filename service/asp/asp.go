@@ -15,13 +15,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/pgodw/omnitalk/go/appletalk"
-	"github.com/pgodw/omnitalk/go/netlog"
-	"github.com/pgodw/omnitalk/go/port"
-	"github.com/pgodw/omnitalk/go/service"
-	"github.com/pgodw/omnitalk/go/service/afp"
-	"github.com/pgodw/omnitalk/go/service/atp"
-	"github.com/pgodw/omnitalk/go/service/zip"
+	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/port"
+	"github.com/pgodw/omnitalk/service"
+	"github.com/pgodw/omnitalk/service/afp"
+	"github.com/pgodw/omnitalk/service/atp"
+	"github.com/pgodw/omnitalk/service/zip"
 )
 
 // ServerSocket is the well-known AppleTalk socket for the AFP/ASP server.

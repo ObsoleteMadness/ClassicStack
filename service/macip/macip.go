@@ -14,13 +14,13 @@ import (
 	"net"
 	"time"
 
-	"github.com/pgodw/omnitalk/go/appletalk"
-	"github.com/pgodw/omnitalk/go/netlog"
-	"github.com/pgodw/omnitalk/go/port"
-	"github.com/pgodw/omnitalk/go/port/nat"
-	"github.com/pgodw/omnitalk/go/port/rawlink"
-	"github.com/pgodw/omnitalk/go/service"
-	"github.com/pgodw/omnitalk/go/service/zip"
+	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/port"
+	"github.com/pgodw/omnitalk/port/nat"
+	"github.com/pgodw/omnitalk/port/rawlink"
+	"github.com/pgodw/omnitalk/service"
+	"github.com/pgodw/omnitalk/service/zip"
 )
 
 const (

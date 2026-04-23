@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/pgodw/omnitalk/go/appletalk"
+	"github.com/pgodw/omnitalk/appletalk"
 )
 
 // AFPOptions controls AFP filename/path translation behavior.

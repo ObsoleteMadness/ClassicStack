@@ -1,6 +1,6 @@
 package appletalk
 
-import "github.com/pgodw/omnitalk/go/encoding"
+import "github.com/pgodw/omnitalk/encoding"
 
 func MacRomanToUpper(b []byte) []byte { return encoding.MacRomanToUpper(b) }
 

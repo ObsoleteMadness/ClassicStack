@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/pgodw/omnitalk/go/netlog"
+	"github.com/pgodw/omnitalk/netlog"
 )
 
 const (

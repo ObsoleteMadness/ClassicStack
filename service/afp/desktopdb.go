@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/pgodw/omnitalk/go/netlog"
+	"github.com/pgodw/omnitalk/netlog"
 )
 
 const desktopDBFilename = ".desktop.db"

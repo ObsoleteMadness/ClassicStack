@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pgodw/omnitalk/go/netlog"
-	"github.com/pgodw/omnitalk/go/port/nat"
+	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/port/nat"
 )
 
 const (

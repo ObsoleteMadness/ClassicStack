@@ -1,6 +1,6 @@
 package port
 
-import "github.com/pgodw/omnitalk/go/appletalk"
+import "github.com/pgodw/omnitalk/appletalk"
 
 type RouterHooks interface {
 	Inbound(datagram appletalk.Datagram, rx Port)

@@ -1,8 +1,8 @@
 package service
 
 import (
-	"github.com/pgodw/omnitalk/go/appletalk"
-	"github.com/pgodw/omnitalk/go/port"
+	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/port"
 )
 
 type Service interface {

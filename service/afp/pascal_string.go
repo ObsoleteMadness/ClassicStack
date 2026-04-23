@@ -1,6 +1,6 @@
 package afp
 
-import "github.com/pgodw/omnitalk/go/appletalk"
+import "github.com/pgodw/omnitalk/appletalk"
 
 // ReadPascalString reads a length-prefixed MacRoman string at idx and returns UTF-8 text plus bytes consumed.
 func ReadPascalString(data []byte, idx int) (string, int) {

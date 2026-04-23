@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/pgodw/omnitalk/go/netlog"
-	"github.com/pgodw/omnitalk/go/service/atp"
+	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/service/atp"
 )
 
 // Session is the per-session state owned by SessionManager.

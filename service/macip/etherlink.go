@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pgodw/omnitalk/go/netlog"
-	"github.com/pgodw/omnitalk/go/port/rawlink"
+	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/port/rawlink"
 )
 
 const (

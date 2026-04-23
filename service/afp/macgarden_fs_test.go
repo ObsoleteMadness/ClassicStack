@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	garden "github.com/pgodw/omnitalk/go/service/macgarden"
+	garden "github.com/pgodw/omnitalk/service/macgarden"
 )
 
 func TestMacGardenChildCount_CategoryIsLazyUntilCached(t *testing.T) {

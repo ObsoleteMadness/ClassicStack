@@ -1,9 +1,9 @@
 package afp
 
 import (
-	"github.com/pgodw/omnitalk/go/appletalk"
-	"github.com/pgodw/omnitalk/go/port"
-	"github.com/pgodw/omnitalk/go/service"
+	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/port"
+	"github.com/pgodw/omnitalk/service"
 )
 
 // CommandHandler handles decoded AFP commands from transport protocols.

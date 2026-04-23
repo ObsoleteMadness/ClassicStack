@@ -1,6 +1,6 @@
 package appletalk
 
-import "github.com/pgodw/omnitalk/go/protocol/ddp"
+import "github.com/pgodw/omnitalk/protocol/ddp"
 
 const MaxDataLength = ddp.MaxDataLength
 
