@@ -1,9 +1,9 @@
 package ethertalk
 
 import (
-	"log"
 	"net"
 
+	"github.com/pgodw/omnitalk/netlog"
 	"github.com/pgodw/omnitalk/port"
 	"github.com/pgodw/omnitalk/port/rawlink"
 )
@@ -121,15 +121,15 @@ func (p *PcapPort) Start(r port.RouterHooks) error {
 	}
 	p.setResolvedBridgeMode(mode)
 	if p.bridgeMode == bridgeModeWiFi && !bridgeModeRequiresWiFiEncapsulation(p.medium) {
-		log.Printf("pcap wifi bridge on %s using Ethernet TX framing (medium: ethernet)", p.interfaceName)
+		netlog.Info("pcap wifi bridge on %s using Ethernet TX framing (medium: ethernet)", p.interfaceName)
 	}
-	log.Printf("%s bridge mode on %s: %s (medium: %v)", p.backendLabel, p.interfaceName, p.bridgeMode.String(), p.medium)
+	netlog.Info("%s bridge mode on %s: %s (medium: %v)", p.backendLabel, p.interfaceName, p.bridgeMode.String(), p.medium)
 
 	// Apply BPF filter when the backend supports it.
 	if p.applyBPFFilter {
 		if fl, ok := link.(rawlink.FilterableLink); ok {
 			if err := fl.SetFilter(etherTalkBPFFilter); err != nil {
-				log.Printf("warning: could not set BPF filter on %s: %v", p.interfaceName, err)
+				netlog.Warn("could not set BPF filter on %s: %v", p.interfaceName, err)
 			}
 		}
 	}
@@ -163,13 +163,13 @@ func (p *PcapPort) readRun() {
 			data, err := p.link.ReadFrame()
 			if err != nil {
 				if err != rawlink.ErrTimeout {
-					log.Printf("pcap read error on %s: %v", p.interfaceName, err)
+					netlog.Warn("pcap read error on %s: %v", p.interfaceName, err)
 				}
 				continue
 			}
 			normalized, err := p.adapter.inboundFrame(data)
 			if err != nil {
-				log.Printf("warning: failed to normalize inbound frame on %s: %v", p.interfaceName, err)
+				netlog.Warn("failed to normalize inbound frame on %s: %v", p.interfaceName, err)
 				continue
 			}
 			p.InboundFrame(normalized)
@@ -181,7 +181,7 @@ func (p *PcapPort) sendFrame(frameData []byte) {
 	select {
 	case p.writerQueue <- frameData:
 	default:
-		log.Printf("warning: pcap writer queue full, dropping outbound packet")
+		netlog.Warn("pcap writer queue full, dropping outbound packet")
 	}
 }
 
@@ -194,11 +194,11 @@ func (p *PcapPort) writeRun() {
 		case frameData := <-p.writerQueue:
 			prepared, err := p.adapter.outboundFrame(frameData)
 			if err != nil {
-				log.Printf("warning: failed to prepare outbound frame on %s: %v", p.interfaceName, err)
+				netlog.Warn("failed to prepare outbound frame on %s: %v", p.interfaceName, err)
 				continue
 			}
 			if err := p.link.WriteFrame(prepared); err != nil {
-				log.Printf("warning: couldn't send packet: %v", err)
+				netlog.Warn("couldn't send packet: %v", err)
 			}
 		}
 	}
