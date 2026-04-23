@@ -1,6 +1,7 @@
 package afp
 
 import (
+	"errors"
 	"io"
 	"log"
 	"os"
@@ -30,14 +31,18 @@ func (s *AFPService) handleCreateFile(req *FPCreateFileReq) (*FPCreateFileRes, i
 	if errCode != NoErr {
 		return &FPCreateFileRes{}, errCode
 	}
+	backend := s.fsForPath(targetPath)
+	if backend == nil {
+		return &FPCreateFileRes{}, ErrAccessDenied
+	}
 	if req.HasFlag(FPCreateFileFlagHardCreate) {
-		f, err := s.fs.CreateFile(targetPath)
+		f, err := backend.CreateFile(targetPath)
 		if err != nil {
 			return &FPCreateFileRes{}, ErrAccessDenied
 		}
 		f.Close()
 	} else {
-		f, err := s.fs.OpenFile(targetPath, os.O_CREATE|os.O_EXCL)
+		f, err := backend.OpenFile(targetPath, os.O_CREATE|os.O_EXCL)
 		if err != nil {
 			if os.IsExist(err) {
 				return &FPCreateFileRes{}, ErrObjectExists
@@ -91,18 +96,23 @@ func (s *AFPService) handleCopyFile(req *FPCopyFileReq) (*FPCopyFileRes, int32) 
 		copyName = filepath.Base(srcPath)
 	}
 	dstPath := s.canonicalizePath(filepath.Join(dstParent, copyName))
+	srcBackend := s.fsForPath(srcPath)
+	dstBackend := s.fsForPath(dstPath)
+	if srcBackend == nil || dstBackend == nil {
+		return &FPCopyFileRes{}, ErrAccessDenied
+	}
 
-	if _, err := s.fs.Stat(dstPath); err == nil {
+	if _, err := dstBackend.Stat(dstPath); err == nil {
 		return &FPCopyFileRes{}, ErrObjectExists
 	}
 
-	srcFile, err := s.fs.OpenFile(srcPath, os.O_RDONLY)
+	srcFile, err := srcBackend.OpenFile(srcPath, os.O_RDONLY)
 	if err != nil {
 		return &FPCopyFileRes{}, ErrObjectNotFound
 	}
 	defer srcFile.Close()
 
-	dstFile, err := s.fs.CreateFile(dstPath)
+	dstFile, err := dstBackend.CreateFile(dstPath)
 	if err != nil {
 		return &FPCopyFileRes{}, ErrAccessDenied
 	}
@@ -122,6 +132,9 @@ func (s *AFPService) handleCopyFile(req *FPCopyFileReq) (*FPCopyFileRes, int32) 
 			break
 		}
 		if readErr != nil {
+			if errors.Is(readErr, ErrCopySourceReadEOF) {
+				return &FPCopyFileRes{}, ErrEOFErr
+			}
 			return &FPCopyFileRes{}, ErrMiscErr
 		}
 	}

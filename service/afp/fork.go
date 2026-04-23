@@ -64,9 +64,13 @@ func (s *AFPService) handleOpenFork(req *FPOpenForkReq) (*FPOpenForkRes, int32) 
 		}
 	} else {
 		// Data fork
-		f, err := s.fs.OpenFile(targetPath, os.O_RDWR)
+		backend := s.fsForPath(targetPath)
+		if backend == nil {
+			return &FPOpenForkRes{}, ErrObjectNotFound
+		}
+		f, err := backend.OpenFile(targetPath, os.O_RDWR)
 		if err != nil && req.AccessMode&0x02 == 0 {
-			f, err = s.fs.OpenFile(targetPath, os.O_RDONLY)
+			f, err = backend.OpenFile(targetPath, os.O_RDONLY)
 		}
 		if err != nil {
 			return &FPOpenForkRes{}, ErrObjectNotFound
@@ -284,16 +288,8 @@ func (s *AFPService) handleRead(req *FPReadReq) (*FPReadRes, int32) {
 	if req.ReqCount == 0 {
 		return &FPReadRes{Data: nil}, NoErr
 	}
-
-	// Per AFP-over-ASP spec: a single FPRead response cannot exceed the ASP
-	// QuantumSize (atpMaxData x 8 = 4624 bytes) because ATP only has a 3-bit
-	// sequence number. Clients issue additional FPRead calls at successive
-	// offsets to read more. Clamp here so we never hand more bytes to the
-	// transport than it can actually deliver - otherwise fragments past seq 7
-	// get silently dropped and the client stalls waiting for an ATP retransmit.
-	const aspQuantumSize = 4624
-	if req.ReqCount > aspQuantumSize {
-		req.ReqCount = aspQuantumSize
+	if s.maxReadSize > 0 && req.ReqCount > s.maxReadSize {
+		req.ReqCount = s.maxReadSize
 	}
 
 	if handle.isRsrc {
@@ -452,7 +448,11 @@ func (s *AFPService) handleGetForkParms(req *FPGetForkParmsReq) (*FPGetForkParms
 	// and mis-parse the response (observed: Finder "error type 10" crash).
 	resData := new(bytes.Buffer)
 	if handle.filePath != "" {
-		info, err := s.fs.Stat(handle.filePath)
+		backend := s.fsForPath(handle.filePath)
+		if backend == nil {
+			return &FPGetForkParmsRes{}, ErrObjectNotFound
+		}
+		info, err := backend.Stat(handle.filePath)
 		if err != nil {
 			return &FPGetForkParmsRes{}, ErrObjectNotFound
 		}

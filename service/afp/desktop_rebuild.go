@@ -180,10 +180,13 @@ func (s *AFPService) RebuildDesktopDBFromVolume(volID uint16) (filesScanned, ico
 			}
 			// Probe for an Icon\r file inside this directory.
 			iconPath := filepath.Join(path, iconName)
-			if _, iconErr := s.fs.Stat(iconPath); iconErr == nil {
-				netlog.Debug("[AFP][Desktop] rebuild scanning icon file=%q", iconPath)
-				filesScanned++
-				iconsAdded += s.IngestAppleDoubleIcons(volID, iconPath)
+			backend := s.fsForPath(iconPath)
+			if backend != nil {
+				if _, iconErr := backend.Stat(iconPath); iconErr == nil {
+					netlog.Debug("[AFP][Desktop] rebuild scanning icon file=%q", iconPath)
+					filesScanned++
+					iconsAdded += s.IngestAppleDoubleIcons(volID, iconPath)
+				}
 			}
 			return nil
 		}

@@ -45,6 +45,10 @@ func (s *AFPService) handleEnumerate(req *FPEnumerateReq) (*FPEnumerateRes, int3
 	if _, ok := s.volumeRootByID(req.VolumeID); !ok {
 		return &FPEnumerateRes{}, ErrParamErr
 	}
+	volFS := s.fsForVolume(req.VolumeID)
+	if volFS == nil {
+		return &FPEnumerateRes{}, ErrParamErr
+	}
 	if req.Path != "" && req.PathType != 1 && req.PathType != 2 {
 		return &FPEnumerateRes{}, ErrParamErr
 	}
@@ -62,15 +66,12 @@ func (s *AFPService) handleEnumerate(req *FPEnumerateReq) (*FPEnumerateRes, int3
 	if req.Path != "" {
 		resolved, errCode := s.resolvePath(parentPath, req.Path, req.PathType)
 		if errCode != NoErr {
-			if errCode == ErrAccessDenied {
-				return &FPEnumerateRes{}, ErrAccessDenied
-			}
 			return &FPEnumerateRes{}, ErrParamErr
 		}
 		targetPath = resolved
 	}
 
-	info, err := s.fs.Stat(targetPath)
+	info, err := volFS.Stat(targetPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrPermission) {
 			return &FPEnumerateRes{}, ErrAccessDenied
@@ -81,18 +82,34 @@ func (s *AFPService) handleEnumerate(req *FPEnumerateReq) (*FPEnumerateRes, int3
 		return &FPEnumerateRes{}, ErrObjectTypeErr
 	}
 
-	entries, err := s.fs.ReadDir(targetPath)
-	if err != nil {
-		if errors.Is(err, fs.ErrPermission) {
-			return &FPEnumerateRes{}, ErrAccessDenied
+	var (
+		entries      []fs.DirEntry
+		visibleCount int
+		usedRangeFS  bool
+	)
+	if volFS.Capabilities().ReadDirRange {
+		var reqVisibleCount uint16
+		entries, reqVisibleCount, err = volFS.ReadDirRange(targetPath, req.StartIndex, req.ReqCount)
+		if err == nil {
+			visibleCount = int(reqVisibleCount)
+			usedRangeFS = true
+		} else if !isNotSupported(err) {
+			return &FPEnumerateRes{}, ErrDirNotFound
 		}
-		return &FPEnumerateRes{}, ErrDirNotFound
+	}
+	if !usedRangeFS {
+		entries, err = volFS.ReadDir(targetPath)
+		if err != nil {
+			if errors.Is(err, fs.ErrPermission) {
+				return &FPEnumerateRes{}, ErrAccessDenied
+			}
+			return &FPEnumerateRes{}, ErrDirNotFound
+		}
 	}
 
 	resData := new(bytes.Buffer)
 	actCount := uint16(0)
 	idx := uint16(1)
-	visibleCount := 0
 
 	for _, entry := range entries {
 		if s.isMetadataArtifact(entry.Name(), entry.IsDir(), req.VolumeID) {
@@ -105,9 +122,11 @@ func (s *AFPService) handleEnumerate(req *FPEnumerateReq) (*FPEnumerateRes, int3
 		if !entry.IsDir() && req.FileBitmap == 0 {
 			continue
 		}
-		visibleCount++
+		if !usedRangeFS {
+			visibleCount++
+		}
 
-		if idx < req.StartIndex {
+		if !usedRangeFS && idx < req.StartIndex {
 			idx++
 			continue
 		}
@@ -116,15 +135,19 @@ func (s *AFPService) handleEnumerate(req *FPEnumerateReq) (*FPEnumerateRes, int3
 		}
 
 		fullPath := filepath.Join(targetPath, entry.Name())
-		info, err := s.fs.Stat(fullPath)
+		info, err := volFS.Stat(fullPath)
 		if err != nil {
 			continue
+		}
+
+		isDir := entry.IsDir()
+		if EnableAppleDoubleIconFallback && !isDir {
+			s.IngestAppleDoubleIcons(req.VolumeID, fullPath)
 		}
 
 		entryBuf := new(bytes.Buffer)
 		entryBuf.WriteByte(0)
 
-		isDir := entry.IsDir()
 		if isDir {
 			entryBuf.WriteByte(0x80)
 		} else {
@@ -166,6 +189,11 @@ func (s *AFPService) handleEnumerate(req *FPEnumerateReq) (*FPEnumerateRes, int3
 	}
 
 	errCode := NoErr
+	if actCount == 0 && usedRangeFS && len(entries) == 0 {
+		// Range-capable backends signal end-of-directory by returning an empty
+		// page for the requested start index.
+		errCode = ErrObjectNotFound
+	}
 	if actCount == 0 && req.StartIndex > uint16(visibleCount) {
 		errCode = ErrObjectNotFound
 	}
@@ -261,7 +289,11 @@ func (s *AFPService) handleCreateDir(req *FPCreateDirReq) (*FPCreateDirRes, int3
 	if errCode != NoErr {
 		return &FPCreateDirRes{}, errCode
 	}
-	if err := s.fs.CreateDir(targetPath); err != nil {
+	backend := s.fsForPath(targetPath)
+	if backend == nil {
+		return &FPCreateDirRes{}, ErrAccessDenied
+	}
+	if err := backend.CreateDir(targetPath); err != nil {
 		if os.IsExist(err) {
 			return &FPCreateDirRes{}, ErrObjectExists
 		}

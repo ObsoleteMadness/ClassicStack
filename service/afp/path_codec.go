@@ -28,6 +28,8 @@ type AFPOptions struct {
 	ExtensionMap *ExtensionMap
 	// ForkMetadataBackend overrides AppleDoubleMode with a concrete backend.
 	ForkMetadataBackend ForkMetadataBackend
+	// PersistentVolumeIDs assigns stable volume IDs derived from volume names.
+	PersistentVolumeIDs bool
 }
 
 func DefaultAFPOptions() AFPOptions {

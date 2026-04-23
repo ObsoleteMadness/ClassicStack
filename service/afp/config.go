@@ -5,10 +5,29 @@ import (
 	"strings"
 )
 
+const (
+	FSTypeLocalFS   = "local_fs"
+	FSTypeMacGarden = "macgarden"
+)
+
+func NormalizeFSType(s string) (string, error) {
+	v := strings.ToLower(strings.TrimSpace(s))
+	if v == "" {
+		return FSTypeLocalFS, nil
+	}
+	switch v {
+	case FSTypeLocalFS, FSTypeMacGarden:
+		return v, nil
+	default:
+		return "", fmt.Errorf("invalid fs_type %q: want %q or %q", s, FSTypeLocalFS, FSTypeMacGarden)
+	}
+}
+
 // VolumeConfig holds the configuration for a single AFP-shared volume.
 type VolumeConfig struct {
 	Name             string
 	Path             string
+	FSType           string
 	Password         string
 	ReadOnly         bool
 	RebuildDesktopDB bool
@@ -28,5 +47,5 @@ func ParseVolumeFlag(s string) (VolumeConfig, error) {
 	if path == "" {
 		return VolumeConfig{}, fmt.Errorf("invalid -afp-volume %q: path is empty", s)
 	}
-	return VolumeConfig{Name: name, Path: path}, nil
+	return VolumeConfig{Name: name, Path: path, FSType: FSTypeLocalFS}, nil
 }

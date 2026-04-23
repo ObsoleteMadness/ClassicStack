@@ -233,3 +233,99 @@ appledouble_mode = legacy
 		t.Fatalf("Legacy volume AppleDoubleMode = %q, want %q", legacyVol.AppleDoubleMode, afp.AppleDoubleModeLegacy)
 	}
 }
+
+func TestLoadConfigFromINI_PerVolumeFSType(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "server.ini")
+	content := `[Volumes.Local]
+name = "Local"
+path = "C:\\Mac\\Local"
+fs_type = local_fs
+
+[Volumes.Garden]
+name = "Garden"
+path = "C:\\Mac\\Garden"
+fs_type = macgarden
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := loadConfigFromINI(cfgPath)
+	if err != nil {
+		t.Fatalf("loadConfigFromINI error: %v", err)
+	}
+	if len(cfg.AFPVolumes) != 2 {
+		t.Fatalf("expected 2 volumes, got %d", len(cfg.AFPVolumes))
+	}
+	vols := map[string]afp.VolumeConfig{}
+	for _, v := range cfg.AFPVolumes {
+		vols[v.Name] = v
+	}
+	if vols["Local"].FSType != afp.FSTypeLocalFS {
+		t.Fatalf("Local fs_type = %q, want %q", vols["Local"].FSType, afp.FSTypeLocalFS)
+	}
+	if vols["Garden"].FSType != afp.FSTypeMacGarden {
+		t.Fatalf("Garden fs_type = %q, want %q", vols["Garden"].FSType, afp.FSTypeMacGarden)
+	}
+}
+
+func TestLoadConfigFromINI_InvalidFSType(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "server.ini")
+	content := `[Volumes.Bad]
+name = "Bad"
+path = "C:\\Mac\\Bad"
+fs_type = bananas
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if _, err := loadConfigFromINI(cfgPath); err == nil {
+		t.Fatal("expected invalid fs_type error")
+	}
+}
+
+func TestLoadConfigFromINI_MacGardenWithoutPath(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "server.ini")
+	content := `[Volumes.MacGarden]
+name = "Mac Garden"
+fs_type = macgarden
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := loadConfigFromINI(cfgPath)
+	if err != nil {
+		t.Fatalf("loadConfigFromINI error: %v", err)
+	}
+	if len(cfg.AFPVolumes) != 1 {
+		t.Fatalf("expected 1 volume, got %d", len(cfg.AFPVolumes))
+	}
+	if cfg.AFPVolumes[0].FSType != afp.FSTypeMacGarden {
+		t.Fatalf("fs_type = %q, want %q", cfg.AFPVolumes[0].FSType, afp.FSTypeMacGarden)
+	}
+	if cfg.AFPVolumes[0].Path == "" {
+		t.Fatal("expected generated path for macgarden volume")
+	}
+	if got, want := filepath.ToSlash(cfg.AFPVolumes[0].Path), ".macgarden/Mac_Garden"; got != want {
+		t.Fatalf("generated path = %q, want %q", got, want)
+	}
+}
+
+func TestLoadConfigFromINI_LocalFSWithoutPathStillFails(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "server.ini")
+	content := `[Volumes.Local]
+name = "Local"
+fs_type = local_fs
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if _, err := loadConfigFromINI(cfgPath); err == nil {
+		t.Fatal("expected path required error for local_fs")
+	}
+}

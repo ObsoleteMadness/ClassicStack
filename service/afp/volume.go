@@ -36,6 +36,26 @@ func capAFPBytes32(v uint64) uint32 {
 	return uint32(v)
 }
 
+func (s *AFPService) volumeAttributes(vol *Volume) uint16 {
+	if vol == nil {
+		return 0
+	}
+	attrs := uint16(0)
+	if s.volumeIsReadOnly(vol.ID) {
+		attrs |= VolAttrReadOnly
+	}
+	volFS := s.fsForVolume(vol.ID)
+	if volFS != nil {
+		volumeRoot := filepath.Clean(vol.Config.Path)
+		if volFS.Capabilities().CatSearch {
+			if supported, err := volFS.SupportsCatSearch(volumeRoot); err == nil && supported {
+				attrs |= VolAttrSupportsCatSearch
+			}
+		}
+	}
+	return attrs
+}
+
 func (s *AFPService) handleCloseVol(req *FPCloseVolReq) (*FPCloseVolRes, int32) {
 	log.Printf("[AFP] FPCloseVol for Volume ID %d", req.VolumeID)
 	return &FPCloseVolRes{}, NoErr
@@ -98,11 +118,7 @@ func (s *AFPService) handleOpenVol(req *FPOpenVolReq) (*FPOpenVolRes, int32) {
 	s.mu.RUnlock()
 
 	if req.Bitmap&VolBitmapAttributes != 0 {
-		volAttrs := uint16(0)
-		if targetVol.Config.ReadOnly {
-			volAttrs |= VolAttrReadOnly
-		}
-		binary.Write(fixed, binary.BigEndian, volAttrs)
+		binary.Write(fixed, binary.BigEndian, s.volumeAttributes(targetVol))
 	}
 	if req.Bitmap&VolBitmapSignature != 0 {
 		binary.Write(fixed, binary.BigEndian, s.volumeType(targetVol))
@@ -168,7 +184,18 @@ func (s *AFPService) volumeByID(volumeID uint16) (Volume, bool) {
 func (s *AFPService) volumeIsReadOnly(volumeID uint16) bool {
 	for i := range s.Volumes {
 		if s.Volumes[i].ID == volumeID {
-			return s.Volumes[i].Config.ReadOnly
+			if s.Volumes[i].Config.ReadOnly {
+				return true
+			}
+			volFS := s.fsForVolume(volumeID)
+			if volFS != nil {
+				if volFS.Capabilities().ReadOnlyState {
+					if readonly, err := volFS.IsReadOnly(filepath.Clean(s.Volumes[i].Config.Path)); err == nil {
+						return readonly
+					}
+				}
+			}
+			return false
 		}
 	}
 	return false
@@ -178,8 +205,8 @@ func (s *AFPService) volumeDate(vol *Volume) uint32 {
 	if vol == nil {
 		return toAFPTime(time.Now())
 	}
-	if s.fs != nil {
-		if info, err := s.fs.Stat(filepath.Clean(vol.Config.Path)); err == nil && info != nil {
+	if volFS := s.fsForVolume(vol.ID); volFS != nil {
+		if info, err := volFS.Stat(filepath.Clean(vol.Config.Path)); err == nil && info != nil {
 			return toAFPTime(info.ModTime())
 		}
 	}
@@ -250,11 +277,7 @@ func (s *AFPService) handleGetVolParms(req *FPGetVolParmsReq) (*FPGetVolParmsRes
 	s.mu.RUnlock()
 
 	if req.Bitmap&VolBitmapAttributes != 0 {
-		volAttrs := uint16(0)
-		if targetVol.Config.ReadOnly {
-			volAttrs |= VolAttrReadOnly
-		}
-		binary.Write(fixed, binary.BigEndian, volAttrs)
+		binary.Write(fixed, binary.BigEndian, s.volumeAttributes(targetVol))
 	}
 	if req.Bitmap&VolBitmapSignature != 0 {
 		binary.Write(fixed, binary.BigEndian, s.volumeType(targetVol))
@@ -327,11 +350,15 @@ func (s *AFPService) handleSetVolParms(req *FPSetVolParmsReq) (*FPSetVolParmsRes
 func (s *AFPService) volumeCapacity(vol *Volume) (bytesFree uint64, bytesTotal uint64) {
 	bytesFree = defaultAFPBytesFree
 	bytesTotal = defaultAFPBytesTotal
-	if vol == nil || s.fs == nil {
+	if vol == nil {
+		return bytesFree, bytesTotal
+	}
+	volFS := s.fsForVolume(vol.ID)
+	if volFS == nil {
 		return bytesFree, bytesTotal
 	}
 
-	total, free, err := s.fs.DiskUsage(filepath.Clean(vol.Config.Path))
+	total, free, err := volFS.DiskUsage(filepath.Clean(vol.Config.Path))
 	if err != nil {
 		return bytesFree, bytesTotal
 	}

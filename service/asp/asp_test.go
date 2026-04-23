@@ -54,7 +54,10 @@ func TestHandleCloseSessionUnknownSessionReturnsParamErr(t *testing.T) {
 	}
 }
 
-func TestHandleCommandReplyOverQuantumReturnsSizeErr(t *testing.T) {
+func TestHandleCommandReplyOverQuantumGetsTruncated(t *testing.T) {
+	// Per AFP spec: FPRead, FPWrite, FPEnumerate can return partially.
+	// When reply exceeds QuantumSize, ASP should truncate and preserve the
+	// original AFP error code, allowing workstation to make additional requests.
 	h := stubCommandHandler{reply: make([]byte, 12), err: SPErrorNoError}
 	s := New("test", h, nil, nil)
 	s.quantumSize = 8
@@ -70,8 +73,17 @@ func TestHandleCommandReplyOverQuantumReturnsSizeErr(t *testing.T) {
 	var got atp.ResponseMessage
 	s.handleCommand(in, func(m atp.ResponseMessage) { got = m })
 
-	if len(got.UserBytes) != 1 || got.UserBytes[0] != errToUserBytes(SPErrorSizeErr) {
-		t.Fatalf("expected SizeErr user bytes, got %#v", got.UserBytes)
+	// Should preserve the NoError code and truncate to quantum size
+	if len(got.UserBytes) != 1 || got.UserBytes[0] != errToUserBytes(SPErrorNoError) {
+		t.Fatalf("expected NoError user bytes, got %#v", got.UserBytes)
+	}
+	// Check that data was truncated to quantum size
+	totalReplyLen := 0
+	for _, buf := range got.Buffers {
+		totalReplyLen += len(buf)
+	}
+	if totalReplyLen > 8 {
+		t.Fatalf("reply %d bytes exceeds quantum size 8", totalReplyLen)
 	}
 }
 
@@ -109,7 +121,7 @@ func TestHandleCommandCmdBlockOverMaxReturnsSizeErr(t *testing.T) {
 	}
 }
 
-func TestHandleCommandReplyOverWorkstationCapacityReturnsBufTooSmall(t *testing.T) {
+func TestHandleCommandReplyOverWorkstationCapacityGetsTruncated(t *testing.T) {
 	h := stubCommandHandler{reply: make([]byte, ATPMaxData+10), err: SPErrorNoError}
 	s := New("test", h, nil, nil)
 	s.maxCmdSize = ATPMaxData
@@ -126,8 +138,15 @@ func TestHandleCommandReplyOverWorkstationCapacityReturnsBufTooSmall(t *testing.
 	var got atp.ResponseMessage
 	s.handleCommand(in, func(m atp.ResponseMessage) { got = m })
 
-	if len(got.UserBytes) != 1 || got.UserBytes[0] != errToUserBytes(SPErrorBufTooSmall) {
-		t.Fatalf("expected BufTooSmall user bytes, got %#v", got.UserBytes)
+	if len(got.UserBytes) != 1 || got.UserBytes[0] != errToUserBytes(SPErrorNoError) {
+		t.Fatalf("expected NoError user bytes, got %#v", got.UserBytes)
+	}
+	totalReplyLen := 0
+	for _, buf := range got.Buffers {
+		totalReplyLen += len(buf)
+	}
+	if totalReplyLen > ATPMaxData {
+		t.Fatalf("reply %d bytes exceeds bitmap capacity %d", totalReplyLen, ATPMaxData)
 	}
 }
 

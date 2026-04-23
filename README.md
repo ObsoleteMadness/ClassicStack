@@ -405,6 +405,7 @@ Each volume is configured as a separate `[Volumes.<section-name>]` section.
 |---|---|---|---|
 | name | string | section suffix | Display name for the AFP volume (max 31 chars recommended). |
 | path | string | none (required) | Host filesystem path to export. |
+| fs_type | string | local_fs | Filesystem backend for the volume: local_fs (host disk) or macgarden (read-only virtual Macintosh Garden view). |
 | read_only | bool | false | Exports the volume as read-only at AFP protocol level. |
 | cnid_backend | string | sqlite | CNID backend; currently sqlite or memory depending on build/runtime support. Must not conflict across volumes. |
 | use_decomposed_names | bool | true | Encodes host-reserved filename characters as 0xNN tokens in AFP mapping. Must not conflict across volumes. |
@@ -451,7 +452,7 @@ Volume naming:
 - Compatible formats: Netatalk-style extension map syntax and AppleDouble modern/legacy sidecar layouts.
 - Known differences: CNID database implementation is OmniTalk-specific (sqlite or memory), not a drop-in Netatalk CNID store.
 - OmniTalk does not currently provide a Netatalk-style extended-attribute metadata backend.
-- AFP feature coverage is practical but incomplete (for example catalog search is unsupported).
+- AFP feature coverage is practical but incomplete (for example catalog search is currently implemented as name-based search and backend-dependent).
 
 ### [Logging]
 

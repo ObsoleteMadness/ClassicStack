@@ -449,9 +449,9 @@ func main() {
 		afpSvc := afp.NewAFPService(
 			*afpServerName,
 			[]afp.VolumeConfig(afpVolumes),
-			&afp.LocalFileSystem{},
+			nil,
 			transports,
-			afp.AFPOptions{DecomposedFilenames: *afpDecomposedFilenames, CNIDBackend: *afpCNIDBackend, AppleDoubleMode: parseAppleDoubleMode(*afpAppleDoubleMode), ExtensionMap: extMap},
+			afp.AFPOptions{DecomposedFilenames: *afpDecomposedFilenames, CNIDBackend: *afpCNIDBackend, AppleDoubleMode: parseAppleDoubleMode(*afpAppleDoubleMode), ExtensionMap: extMap, PersistentVolumeIDs: true},
 		)
 
 		// Wire up the circular dependencies for handlers

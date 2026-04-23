@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"hash/crc32"
 	"io/fs"
 	"log"
 	"os"
@@ -115,6 +116,7 @@ type AFPService struct {
 	ServerName string
 	Volumes    []Volume
 	fs         FileSystem
+	volumeFS   map[uint16]FileSystem
 	meta       ForkMetadataBackend            // global override when ForkMetadataBackend is injected via options
 	metas      map[uint16]ForkMetadataBackend // per-volume backends (keyed by Volume.ID)
 	mu         sync.RWMutex
@@ -124,6 +126,7 @@ type AFPService struct {
 	forks      map[uint16]*forkHandle
 	nextFork   uint16
 	byteLocks  []byteRangeLock
+	maxReadSize int // transport quantum limit; 0 = unlimited
 	maxLocks   int
 
 	users       map[string]string // map[username]password
@@ -146,6 +149,23 @@ func (s *AFPService) SetPacketDumper(dumper service.PacketDumper) {
 	s.dumper = dumper
 }
 
+// SetMaxReadSize caps FPRead ReqCount to n bytes and propagates the same limit
+// to any filesystem that supports range limiting (e.g. MacGardenFileSystem).
+// ASP calls this with its quantum size so HTTP range requests from virtual
+// filesystems never exceed what one ASP reply can carry. DSI leaves it at 0.
+func (s *AFPService) SetMaxReadSize(n int) {
+	s.maxReadSize = n
+	type rangeLimiter interface{ SetMaxRangeSize(int) }
+	if rl, ok := s.fs.(rangeLimiter); ok {
+		rl.SetMaxRangeSize(n)
+	}
+	for _, vfs := range s.volumeFS {
+		if rl, ok := vfs.(rangeLimiter); ok {
+			rl.SetMaxRangeSize(n)
+		}
+	}
+}
+
 func (s *AFPService) logPacket(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if s.dumper != nil {
@@ -162,6 +182,7 @@ func NewAFPService(serverName string, configs []VolumeConfig, fs FileSystem, tra
 	s := &AFPService{
 		ServerName:  serverName,
 		fs:          fs,
+		volumeFS:    make(map[uint16]FileSystem),
 		options:     options,
 		cnidStores:  make(map[uint16]CNIDStore),
 		desktopDB:   resolveDesktopDBBackend(options),
@@ -191,26 +212,83 @@ func NewAFPService(serverName string, configs []VolumeConfig, fs FileSystem, tra
 	}
 
 	cnidBackend := resolveCNIDBackend(options)
+	usedVolumeIDs := make(map[uint16]struct{}, len(configs))
 	for i, cfg := range configs {
+		volumeID := uint16(i + 1)
+		if options.PersistentVolumeIDs {
+			volumeID = persistentVolumeIDForConfig(cfg, usedVolumeIDs)
+		} else {
+			usedVolumeIDs[volumeID] = struct{}{}
+		}
 		volume := Volume{
 			Config: cfg,
-			ID:     uint16(i + 1),
+			ID:     volumeID,
 		}
 		s.Volumes = append(s.Volumes, volume)
 		store := cnidBackend.Open(volume)
 		store.EnsureReserved(filepath.Clean(cfg.Path), CNIDRoot)
 		s.cnidStores[volume.ID] = store
 
-		if s.metas != nil && fs != nil {
-			mode := cfg.AppleDoubleMode
-			if mode == "" {
-				mode = options.AppleDoubleMode
+		if fs != nil {
+			s.volumeFS[volume.ID] = fs
+		}
+		if s.volumeFS[volume.ID] == nil {
+			if backend, err := newBackendForVolumeConfig(cfg); err == nil {
+				s.volumeFS[volume.ID] = backend
 			}
-			s.metas[volume.ID] = NewAppleDoubleBackend(fs, mode, options.DecomposedFilenames)
+		}
+
+		if s.metas != nil {
+			metaFS := s.volumeFS[volume.ID]
+			if metaFS == nil {
+				metaFS = fs
+			}
+			if metaFS != nil {
+				mode := cfg.AppleDoubleMode
+				if mode == "" {
+					mode = options.AppleDoubleMode
+				}
+				s.metas[volume.ID] = NewAppleDoubleBackend(metaFS, mode, options.DecomposedFilenames)
+			}
 		}
 	}
 	go s.rebuildDesktopDBsIfConfigured()
 	return s
+}
+
+func persistentVolumeIDForConfig(cfg VolumeConfig, used map[uint16]struct{}) uint16 {
+	nameKey := strings.ToLower(strings.TrimSpace(cfg.Name))
+	pathKey := filepath.Clean(strings.TrimSpace(cfg.Path))
+
+	candidates := []string{
+		nameKey,
+		nameKey + "|" + pathKey,
+	}
+	for _, key := range candidates {
+		id := crcVolumeID(key)
+		if _, exists := used[id]; exists {
+			continue
+		}
+		used[id] = struct{}{}
+		return id
+	}
+
+	for salt := 1; ; salt++ {
+		id := crcVolumeID(fmt.Sprintf("%s|%s|%d", nameKey, pathKey, salt))
+		if _, exists := used[id]; exists {
+			continue
+		}
+		used[id] = struct{}{}
+		return id
+	}
+}
+
+func crcVolumeID(key string) uint16 {
+	id := uint16(crc32.ChecksumIEEE([]byte(key)) & 0xffff)
+	if id == 0 {
+		return 1
+	}
+	return id
 }
 
 // metaFor returns the ForkMetadataBackend for the given volume ID.
@@ -237,6 +315,42 @@ func (s *AFPService) metaForPath(path string) ForkMetadataBackend {
 		}
 	}
 	return s.meta
+}
+
+func (s *AFPService) fsForVolume(volID uint16) FileSystem {
+	if fs, ok := s.volumeFS[volID]; ok && fs != nil {
+		return fs
+	}
+	return s.fs
+}
+
+func (s *AFPService) fsForPath(path string) FileSystem {
+	clean := filepath.Clean(path)
+	for _, vol := range s.Volumes {
+		rel, err := filepath.Rel(filepath.Clean(vol.Config.Path), clean)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			if fs := s.fsForVolume(vol.ID); fs != nil {
+				return fs
+			}
+		}
+	}
+	return s.fs
+}
+
+func newBackendForVolumeConfig(cfg VolumeConfig) (FileSystem, error) {
+	fsType, err := NormalizeFSType(cfg.FSType)
+	if err != nil {
+		return nil, err
+	}
+	root := filepath.Clean(cfg.Path)
+	switch fsType {
+	case FSTypeLocalFS:
+		return &LocalFileSystem{}, nil
+	case FSTypeMacGarden:
+		return NewMacGardenFileSystem(root), nil
+	default:
+		return nil, fmt.Errorf("unsupported fs_type %q", fsType)
+	}
 }
 
 // Start initializes all underlying transports.
@@ -667,8 +781,11 @@ func (s *AFPService) HandleCommand(data []byte) (resBytes []byte, errCode int32)
 	case FPCatSearch: // TODO: Implement catalogued volume search (AFP 2.1)
 		req = &FPCatSearchReq{}
 		handler = func(req Request) (Response, int32) {
-			log.Printf("[AFP] TODO: Implement FPCatSearch called — not implemented")
-			return nil, ErrCallNotSupported
+			res, errCode := s.handleCatSearch(req.(*FPCatSearchReq))
+			if res == nil {
+				return nil, errCode
+			}
+			return res, errCode
 		}
 
 	// --- TODO Desktop Database commands (AFP 2.1+) ---
@@ -865,6 +982,8 @@ func (s *AFPService) logResolvedPaths(req Request) {
 		s.logResolvedPathFromDTRef("FPRemoveComment", r.DTRefNum, r.DirID, r.PathType, r.Path)
 	case *FPGetCommentReq:
 		s.logResolvedPathFromDTRef("FPGetComment", r.DTRefNum, r.DirID, r.PathType, r.Path)
+	case *FPCatSearchReq:
+		s.logResolvedPath("FPCatSearch", r.VolumeID, CNIDRoot, PathTypeLongNames, "")
 	}
 }
 
@@ -1119,6 +1238,7 @@ func (s *AFPService) packFileInfo(buf *bytes.Buffer, volumeID uint16, bitmap uin
 	var varBuf bytes.Buffer
 	fullPath := filepath.Join(parentPath, name)
 	name = s.catalogNameForPath(volumeID, fullPath, name)
+	volFS := s.fsForVolume(volumeID)
 
 	metadata := ForkMetadata{}
 	if m := s.metaFor(volumeID); m != nil {
@@ -1132,18 +1252,17 @@ func (s *AFPService) packFileInfo(buf *bytes.Buffer, volumeID uint16, bitmap uin
 		}
 	}
 
-	// Opportunistically ingest icons from the file's AppleDouble sidecar
-	// while we already have the metadata in hand. This populates the Desktop
-	// database naturally as Finder browses directories.
-	if EnableAppleDoubleIconFallback && !isDir {
-		s.IngestAppleDoubleIcons(volumeID, fullPath)
-	}
-
 	if isDir {
 		fixedSize := calcDirParamsSize(bitmap)
 
 		if bitmap&DirBitmapAttributes != 0 {
-			binary.Write(buf, binary.BigEndian, uint16(0))
+			var dirAttrs uint16
+			if volFS != nil && volFS.Capabilities().DirAttributes {
+				if attrs, err := volFS.DirAttributes(fullPath); err == nil {
+					dirAttrs = attrs
+				}
+			}
+			binary.Write(buf, binary.BigEndian, dirAttrs)
 		}
 		if bitmap&DirBitmapParentDID != 0 {
 			// The root directory (DID=2) has a logical parent DID of 1.
@@ -1184,10 +1303,22 @@ func (s *AFPService) packFileInfo(buf *bytes.Buffer, volumeID uint16, bitmap uin
 		}
 		if bitmap&DirBitmapOffspringCount != 0 {
 			count := uint16(0)
-			if entries, err := s.fs.ReadDir(fullPath); err == nil {
-				for _, e := range entries {
-					if !s.isMetadataArtifact(e.Name(), e.IsDir(), volumeID) {
-						count++
+			if volFS != nil && volFS.Capabilities().ChildCount {
+				if cachedCount, err := volFS.ChildCount(fullPath); err == nil {
+					count = cachedCount
+				} else if entries, dirErr := volFS.ReadDir(fullPath); dirErr == nil {
+					for _, e := range entries {
+						if !s.isMetadataArtifact(e.Name(), e.IsDir(), volumeID) {
+							count++
+						}
+					}
+				}
+			} else if volFS != nil {
+				if entries, err := volFS.ReadDir(fullPath); err == nil {
+					for _, e := range entries {
+						if !s.isMetadataArtifact(e.Name(), e.IsDir(), volumeID) {
+							count++
+						}
 					}
 				}
 			}

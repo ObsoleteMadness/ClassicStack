@@ -204,12 +204,25 @@ func loadConfigFromINI(path string) (iniConfig, error) {
 			defaultVolumeName = strings.TrimPrefix(sectionName, "volumes.")
 		}
 		name := parseStringKey(sec, "name", defaultVolumeName)
-		pathVal := parseStringKey(sec, "path", "")
-		if strings.TrimSpace(pathVal) == "" {
-			return cfg, fmt.Errorf("[%s] path is required", sectionName)
+
+		vol := afp.VolumeConfig{Name: name, FSType: afp.FSTypeLocalFS}
+		if sec.HasKey("fs_type") {
+			fsType, parseErr := afp.NormalizeFSType(parseStringKey(sec, "fs_type", afp.FSTypeLocalFS))
+			if parseErr != nil {
+				return cfg, fmt.Errorf("[%s] %w", sectionName, parseErr)
+			}
+			vol.FSType = fsType
 		}
 
-		vol := afp.VolumeConfig{Name: name, Path: pathVal}
+		pathVal := parseStringKey(sec, "path", "")
+		if strings.TrimSpace(pathVal) == "" {
+			if vol.FSType == afp.FSTypeMacGarden {
+				pathVal = defaultMacGardenVolumePath(name)
+			} else {
+				return cfg, fmt.Errorf("[%s] path is required", sectionName)
+			}
+		}
+		vol.Path = pathVal
 		if sec.HasKey("rebuild_desktop_db") {
 			v, parseErr := parseBoolKey(sec, "rebuild_desktop_db", false)
 			if parseErr != nil {
@@ -295,6 +308,29 @@ func parseStringKey(sec *ini.Section, key, defaultVal string) string {
 		return defaultVal
 	}
 	return v
+}
+
+func defaultMacGardenVolumePath(name string) string {
+	safe := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r
+		case r >= '0' && r <= '9':
+			return r
+		case r == '-' || r == '_':
+			return r
+		case r == ' ':
+			return '_'
+		default:
+			return -1
+		}
+	}, strings.TrimSpace(name))
+	if safe == "" {
+		safe = "MacGarden"
+	}
+	return filepath.Join(".macgarden", safe)
 }
 
 func parseBoolKey(sec *ini.Section, key string, defaultVal bool) (bool, error) {

@@ -49,6 +49,7 @@ extension_map = "extmap.conf"    ; Netatalk compatible extension mapping file
 ; AFP Volume Configuration. Each volume must have a section for this.
 name = "Test Volume"             ; Volume Name. Max Length of 31 characters. 
 path = "C:\Mac\Test"             ; Host path for the volume. Eg "/media/Mac", "C:\Foo"
+fs_type = local_fs                ; Filesystem backend: local_fs (default) or macgarden (read-only virtual Macintosh Garden)
 cnid_backend =                   ; leave blank for default. Default is "memory" and is currently the only mode supported
 use_decomposed_names = true      ; Encode host-reserved filename characters using 0xNN tokens when mapping AFP paths. Default is true.
 fork_backend = AppleDouble       ; Fork backend to use. Currently only "AppleDouble" is implemented.
@@ -61,6 +62,7 @@ rebuild_desktop_db = false       ; When true, rebuilds the desktop database from
 ; AFP Volume Configuration. Each volume must have a section for this.
 name = "Volume 68K"              ; Volume Name. Max Length of 31 characters. 
 path = "C:\Mac\Volume68K"        ; Host path for the volume. Eg "/media/Mac", "C:\Foo"
+fs_type = local_fs                ; Filesystem backend: local_fs (default) or macgarden
 cnid_backend =                   ; leave blank for default. Default is "memory" and is currently the only mode supported
 use_decomposed_names = true      ; Encode host-reserved filename characters using 0xNN tokens when mapping AFP paths. Default is true.
 fork_backend = AppleDouble       ; Fork backend to use. Currently only "AppleDouble" is implemented.

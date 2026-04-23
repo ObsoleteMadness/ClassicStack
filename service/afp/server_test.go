@@ -118,6 +118,101 @@ func TestAFP_FPGetSrvrParms_NoPerEntryPadding(t *testing.T) {
 	}
 }
 
+func TestAFP_PersistentVolumeIDs_AreDeterministicByName(t *testing.T) {
+	configs := []VolumeConfig{
+		{Name: "Archive", Path: t.TempDir()},
+		{Name: "Games", Path: t.TempDir()},
+	}
+	opts := DefaultAFPOptions()
+	opts.PersistentVolumeIDs = true
+
+	s1 := NewAFPService("TestServer", configs, nil, nil, opts)
+	s2 := NewAFPService("TestServer", configs, nil, nil, opts)
+
+	if len(s1.Volumes) != len(s2.Volumes) {
+		t.Fatalf("volume count mismatch: %d vs %d", len(s1.Volumes), len(s2.Volumes))
+	}
+	for i := range s1.Volumes {
+		if s1.Volumes[i].ID == 0 {
+			t.Fatalf("volume %q has zero ID", s1.Volumes[i].Config.Name)
+		}
+		if s1.Volumes[i].ID != s2.Volumes[i].ID {
+			t.Fatalf("volume %q ID mismatch across instances: %d vs %d", s1.Volumes[i].Config.Name, s1.Volumes[i].ID, s2.Volumes[i].ID)
+		}
+	}
+}
+
+func TestAFP_PersistentVolumeIDs_ResolveNameCollisions(t *testing.T) {
+	configs := []VolumeConfig{
+		{Name: "Shared", Path: filepath.Join(t.TempDir(), "a")},
+		{Name: "Shared", Path: filepath.Join(t.TempDir(), "b")},
+	}
+	opts := DefaultAFPOptions()
+	opts.PersistentVolumeIDs = true
+
+	s := NewAFPService("TestServer", configs, nil, nil, opts)
+	if len(s.Volumes) != 2 {
+		t.Fatalf("expected 2 volumes, got %d", len(s.Volumes))
+	}
+	if s.Volumes[0].ID == s.Volumes[1].ID {
+		t.Fatalf("expected unique IDs for colliding names, got %d", s.Volumes[0].ID)
+	}
+}
+
+func TestAFP_PersistentVolumeIDs_AreReturnedByOpenVol(t *testing.T) {
+	root := t.TempDir()
+	opts := DefaultAFPOptions()
+	opts.PersistentVolumeIDs = true
+
+	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Archive", Path: root}}, &LocalFileSystem{}, nil, opts)
+	if len(s.Volumes) != 1 {
+		t.Fatalf("expected 1 volume, got %d", len(s.Volumes))
+	}
+	wantID := s.Volumes[0].ID
+
+	res, errCode := s.handleOpenVol(&FPOpenVolReq{Bitmap: VolBitmapVolID, VolName: "Archive"})
+	if errCode != NoErr {
+		t.Fatalf("handleOpenVol errCode=%d, want %d", errCode, NoErr)
+	}
+	if res.Bitmap&VolBitmapVolID == 0 {
+		t.Fatalf("response bitmap missing VolID bit: %#04x", res.Bitmap)
+	}
+	if len(res.Data) < 2 {
+		t.Fatalf("response data too short: %d", len(res.Data))
+	}
+	gotID := binary.BigEndian.Uint16(res.Data[:2])
+	if gotID != wantID {
+		t.Fatalf("openvol returned VolumeID=%d, want %d", gotID, wantID)
+	}
+}
+
+func TestAFP_PersistentVolumeIDs_AreReturnedByGetVolParms(t *testing.T) {
+	root := t.TempDir()
+	opts := DefaultAFPOptions()
+	opts.PersistentVolumeIDs = true
+
+	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Archive", Path: root}}, &LocalFileSystem{}, nil, opts)
+	if len(s.Volumes) != 1 {
+		t.Fatalf("expected 1 volume, got %d", len(s.Volumes))
+	}
+	wantID := s.Volumes[0].ID
+
+	res, errCode := s.handleGetVolParms(&FPGetVolParmsReq{VolumeID: wantID, Bitmap: VolBitmapVolID})
+	if errCode != NoErr {
+		t.Fatalf("handleGetVolParms errCode=%d, want %d", errCode, NoErr)
+	}
+	if res.Bitmap&VolBitmapVolID == 0 {
+		t.Fatalf("response bitmap missing VolID bit: %#04x", res.Bitmap)
+	}
+	if len(res.Data) < 2 {
+		t.Fatalf("response data too short: %d", len(res.Data))
+	}
+	gotID := binary.BigEndian.Uint16(res.Data[:2])
+	if gotID != wantID {
+		t.Fatalf("getvolparms returned VolumeID=%d, want %d", gotID, wantID)
+	}
+}
+
 func TestAFP_FPGetSrvrParms_VolumeFlags(t *testing.T) {
 	s := NewAFPService("TestServer", []VolumeConfig{
 		{Name: "ReadOnly", Path: "/tmp/ro", ReadOnly: true},
@@ -327,6 +422,32 @@ func (m *mockFS) OpenFile(name string, flag int) (File, error) {
 }
 func (m *mockFS) Rename(oldpath, newpath string) error {
 	return nil
+}
+func (m *mockFS) Capabilities() FileSystemCapabilities {
+	return FileSystemCapabilities{
+		ReadDirRange:  true,
+		ChildCount:    true,
+		DirAttributes: true,
+		ReadOnlyState: true,
+	}
+}
+func (m *mockFS) CatSearch(volumeRoot string, query string, reqMatches int32, cursor [16]byte) ([]string, [16]byte, int32) {
+	return nil, cursor, ErrCallNotSupported
+}
+func (m *mockFS) ChildCount(path string) (uint16, error) {
+	return 0, newNotSupported("ChildCount")
+}
+func (m *mockFS) ReadDirRange(path string, startIndex uint16, reqCount uint16) ([]fs.DirEntry, uint16, error) {
+	return nil, 0, newNotSupported("ReadDirRange")
+}
+func (m *mockFS) DirAttributes(path string) (uint16, error) {
+	return 0, nil
+}
+func (m *mockFS) IsReadOnly(path string) (bool, error) {
+	return false, nil
+}
+func (m *mockFS) SupportsCatSearch(path string) (bool, error) {
+	return false, nil
 }
 
 func TestAFP_FSDependentMethods(t *testing.T) {

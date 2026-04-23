@@ -2,6 +2,8 @@ package afp
 
 import (
 	"bytes"
+	"errors"
+	"io/fs"
 	"path/filepath"
 
 	"github.com/pgodw/omnitalk/go/netlog"
@@ -39,10 +41,18 @@ func (s *AFPService) handleOpenDT(req *FPOpenDTReq) (*FPOpenDTRes, int32) {
 	// Keep .AppleDesktop directory for SMB client compatibility — macOS writes
 	// its own Desktop DB / Desktop DF files into this directory.
 	dtDir := filepath.Join(root, ".AppleDesktop")
-	if _, err := s.fs.Stat(dtDir); err != nil {
-		if err2 := s.fs.CreateDir(dtDir); err2 != nil {
-			if _, err3 := s.fs.Stat(dtDir); err3 != nil {
-				return &FPOpenDTRes{}, ErrMiscErr
+	backend := s.fsForVolume(req.VolID)
+	if backend == nil {
+		return &FPOpenDTRes{}, ErrParamErr
+	}
+	if _, err := backend.Stat(dtDir); err != nil {
+		if err2 := backend.CreateDir(dtDir); err2 != nil {
+			if errors.Is(err2, fs.ErrPermission) || isNotSupported(err2) || s.volumeIsReadOnly(req.VolID) {
+				netlog.Debug("[AFP][Desktop] skipping .AppleDesktop creation for volume=%d dir=%q: %v", req.VolID, dtDir, err2)
+			} else {
+				if _, err3 := backend.Stat(dtDir); err3 != nil {
+					return &FPOpenDTRes{}, ErrMiscErr
+				}
 			}
 		}
 	}

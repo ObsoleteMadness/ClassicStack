@@ -138,7 +138,20 @@ const (
 // attributes word; only the ReadOnly flag (bit 0) is defined here.
 const (
 	// VolAttrReadOnly indicates the volume is read-only (bit 0).
-	VolAttrReadOnly uint16 = 1 << 0
+	VolAttrReadOnly                 uint16 = 1 << 0
+	VolAttrVolumePassword           uint16 = 0x02
+	VolAttrSupportsFileIDs          uint16 = 0x04
+	VolAttrSupportsCatSearch        uint16 = 0x08
+	VolAttrSupportsBlankAccessPrivs uint16 = 0x10
+	VolAttrSupportsUnixPrivs        uint16 = 0x20
+	VolAttrSupportsUTF8Names        uint16 = 0x40
+	VolAttrNoNetworkUserIDs         uint16 = 0x80
+	VolAttrDefaultPrivsFromParent   uint16 = 0x100
+	VolAttrNoExchangeFiles          uint16 = 0x200
+	VolAttrSupportsExtAttrs         uint16 = 0x400
+	VolAttrSupportsACLs             uint16 = 0x800
+	VolAttrCaseSensitive            uint16 = 0x1000
+	VolAttrSupportsTMLockSteal      uint16 = 0x2000
 )
 
 // File and directory attribute flags returned in the Attributes field

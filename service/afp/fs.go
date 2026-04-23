@@ -1,6 +1,8 @@
 package afp
 
 import (
+	"errors"
+	"fmt"
 	"io/fs"
 )
 
@@ -34,6 +36,49 @@ type FileSystem interface {
 	OpenFile(path string, flag int) (File, error)
 	Remove(path string) error
 	Rename(oldpath, newpath string) error
+	Capabilities() FileSystemCapabilities
+	CatSearch(volumeRoot string, query string, reqMatches int32, cursor [16]byte) ([]string, [16]byte, int32)
+	ChildCount(path string) (uint16, error)
+	ReadDirRange(path string, startIndex uint16, reqCount uint16) ([]fs.DirEntry, uint16, error)
+	DirAttributes(path string) (uint16, error)
+	IsReadOnly(path string) (bool, error)
+	SupportsCatSearch(path string) (bool, error)
+}
+
+// FileSystemCapabilities describes optional AFP behaviors a FileSystem
+// implementation supports.
+type FileSystemCapabilities struct {
+	CatSearch     bool
+	ChildCount    bool
+	ReadDirRange  bool
+	DirAttributes bool
+	ReadOnlyState bool
+}
+
+// ErrCopySourceReadEOF indicates a source read failure during copy that should
+// map to AFP ErrEOFErr.
+var ErrCopySourceReadEOF = errors.New("copy source read eof")
+
+// NotSupportedError indicates a filesystem operation exists but is not
+// supported by a specific backend.
+type NotSupportedError struct {
+	Operation string
+}
+
+func (e *NotSupportedError) Error() string {
+	if e == nil || e.Operation == "" {
+		return "not supported"
+	}
+	return fmt.Sprintf("not supported: %s", e.Operation)
+}
+
+func newNotSupported(op string) error {
+	return &NotSupportedError{Operation: op}
+}
+
+func isNotSupported(err error) bool {
+	var ns *NotSupportedError
+	return errors.As(err, &ns)
 }
 
 // ForkMetadataBackend abstracts where AFP metadata and resource forks are stored.

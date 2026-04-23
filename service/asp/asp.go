@@ -121,6 +121,13 @@ func (s *Service) Start(router service.Router) error {
 				len(status), s.quantumSize)
 		}
 		netlog.Info("[ASP] SPInit: SLS socket=%d status=%d bytes", ServerSocket, len(status))
+		// Inform the AFP handler of our quantum so it can cap per-read allocations
+		// (e.g. HTTP range requests for virtual filesystems). DSI leaves this unset.
+		type readLimiter interface{ SetMaxReadSize(int) }
+		if rl, ok := s.commandHandler.(readLimiter); ok {
+			rl.SetMaxReadSize(s.quantumSize)
+			netlog.Debug("[ASP] SetMaxReadSize=%d on command handler", s.quantumSize)
+		}
 	}
 
 	// The Endpoint's "local" address has its socket field set; the network
@@ -412,24 +419,15 @@ func (s *Service) handleCommand(in atp.IncomingRequest, reply atp.Replier) {
 	if s.commandHandler != nil {
 		replyData, errCode = s.commandHandler.HandleCommand(pkt.CmdBlock)
 	}
+
+	// Per AFP-over-ASP spec: FPRead, FPWrite, FPEnumerate can succeed partially.
+	// If the reply exceeds QuantumSize, truncate it here but preserve the original
+	// AFP error code (e.g., ErrEOFErr or NoErr). The workstation will make
+	// additional requests at adjusted offsets to retrieve the rest.
 	if len(replyData) > s.effectiveQuantumSize() {
-		netlog.Debug("[ASP] Command: SessRefNum=%d CmdReplyDataSize=%d exceeds QuantumSize=%d (SPErrorSizeErr)",
-			pkt.SessionID, len(replyData), s.effectiveQuantumSize())
-		reply(atp.ResponseMessage{
-			Buffers:   [][]byte{nil},
-			UserBytes: []uint32{errToUserBytes(SPErrorSizeErr)},
-		})
-		return
-	}
-	if wsCap := bitmapMaxBytes(in.Bitmap); wsCap > 0 && len(replyData) > wsCap {
-		netlog.Debug("[ASP] Command: reply %d exceeds workstation capacity %d (SPErrorBufTooSmall)",
-			len(replyData), wsCap)
-		bufs := s.chunkResponse(replyData, in.Bitmap)
-		reply(atp.ResponseMessage{
-			Buffers:   bufs,
-			UserBytes: []uint32{errToUserBytes(SPErrorBufTooSmall)},
-		})
-		return
+		netlog.Debug("[ASP] Command: SessRefNum=%d CmdReplyDataSize=%d exceeds QuantumSize=%d (truncating, preserving errCode=%d)",
+			pkt.SessionID, len(replyData), s.effectiveQuantumSize(), errCode)
+		replyData = replyData[:s.effectiveQuantumSize()]
 	}
 	bufs := s.chunkResponse(replyData, in.Bitmap)
 	reply(atp.ResponseMessage{
@@ -612,24 +610,15 @@ func (s *Service) completeWrite(sess *Session, cmdBlock []byte, wantBytes uint32
 	if s.commandHandler != nil {
 		replyData, errCode = s.commandHandler.HandleCommand(full)
 	}
+
+	// Per AFP-over-ASP spec: FPRead, FPWrite, FPEnumerate can succeed partially.
+	// If the reply exceeds QuantumSize, truncate it here but preserve the original
+	// AFP error code. The workstation will make additional requests at adjusted
+	// offsets to retrieve the rest.
 	if len(replyData) > s.effectiveQuantumSize() {
-		netlog.Debug("[ASP] Write: SessRefNum=%d WrtReplyDataSize=%d exceeds QuantumSize=%d (SPErrorSizeErr)",
-			sess.ID, len(replyData), s.effectiveQuantumSize())
-		reply(atp.ResponseMessage{
-			Buffers:   [][]byte{nil},
-			UserBytes: []uint32{errToUserBytes(SPErrorSizeErr)},
-		})
-		return
-	}
-	if wsCap := bitmapMaxBytes(bitmap); wsCap > 0 && len(replyData) > wsCap {
-		netlog.Debug("[ASP] Write: reply %d exceeds workstation capacity %d (SPErrorBufTooSmall)",
-			len(replyData), wsCap)
-		bufs := s.chunkResponse(replyData, bitmap)
-		reply(atp.ResponseMessage{
-			Buffers:   bufs,
-			UserBytes: []uint32{errToUserBytes(SPErrorBufTooSmall)},
-		})
-		return
+		netlog.Debug("[ASP] Write: SessRefNum=%d WrtReplyDataSize=%d exceeds QuantumSize=%d (truncating, preserving errCode=%d)",
+			sess.ID, len(replyData), s.effectiveQuantumSize(), errCode)
+		replyData = replyData[:s.effectiveQuantumSize()]
 	}
 	bufs := s.chunkResponse(replyData, bitmap)
 	reply(atp.ResponseMessage{

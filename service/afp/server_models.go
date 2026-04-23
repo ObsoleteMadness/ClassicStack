@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"strings"
 )
 
 // FPGetSrvrInfoReq - request to obtain a block of descriptive information
@@ -426,16 +427,102 @@ type FPUnsupportedReq struct{}
 func (req *FPUnsupportedReq) Unmarshal(data []byte) error { return nil }
 func (req *FPUnsupportedReq) String() string              { return "FPUnsupportedReq{}" }
 
-// FPCatSearch - not supported; server returns ErrCallNotSupported.
-type FPCatSearchReq struct{}
+// FPCatSearch request (AFP 2.1).
+type FPCatSearchReq struct {
+	VolumeID            uint16
+	ReqMatches          int32
+	Reserved            uint32
+	CatalogPosition     [16]byte
+	FileRsltBitmap      uint16
+	DirectoryRsltBitmap uint16
+	ReqBitmap           uint32
+	Parameters          []byte
+}
 
-func (req *FPCatSearchReq) Unmarshal(data []byte) error { return nil }
-func (req *FPCatSearchReq) String() string              { return "FPCatSearchReq{}" }
+func (req *FPCatSearchReq) Unmarshal(data []byte) error {
+	if len(data) < 36 {
+		return fmt.Errorf("ErrParamErr")
+	}
+	req.VolumeID = binary.BigEndian.Uint16(data[2:4])
+	req.ReqMatches = int32(binary.BigEndian.Uint32(data[4:8]))
+	req.Reserved = binary.BigEndian.Uint32(data[8:12])
+	copy(req.CatalogPosition[:], data[12:28])
+	req.FileRsltBitmap = binary.BigEndian.Uint16(data[28:30])
+	req.DirectoryRsltBitmap = binary.BigEndian.Uint16(data[30:32])
+	req.ReqBitmap = binary.BigEndian.Uint32(data[32:36])
+	if len(data) > 36 {
+		req.Parameters = append([]byte(nil), data[36:]...)
+	} else {
+		req.Parameters = nil
+	}
+	return nil
+}
 
-type FPCatSearchRes struct{}
+func (req *FPCatSearchReq) String() string {
+	query := req.SearchQuery()
+	printable := req.searchPrintableParameters()
+	if len(printable) > 80 {
+		printable = printable[:80] + "..."
+	}
+	return fmt.Sprintf("FPCatSearchReq{VolumeID:%d ReqMatches:%d FileRsltBitmap:%s DirectoryRsltBitmap:%s ReqBitmap:0x%08x ParamsLen:%d Query:%q Params:%q}",
+		req.VolumeID,
+		req.ReqMatches,
+		formatFileBitmap(req.FileRsltBitmap),
+		formatDirBitmap(req.DirectoryRsltBitmap),
+		req.ReqBitmap,
+		len(req.Parameters),
+		query,
+		printable,
+	)
+}
 
-func (res *FPCatSearchRes) Marshal() []byte { return nil }
-func (res *FPCatSearchRes) String() string  { return "FPCatSearchRes{}" }
+func (req *FPCatSearchReq) SearchQuery() string {
+	if len(req.Parameters) == 0 {
+		return ""
+	}
+	return req.searchPrintableParameters()
+}
+
+func (req *FPCatSearchReq) searchPrintableParameters() string {
+	b := make([]byte, 0, len(req.Parameters))
+	for _, c := range req.Parameters {
+		if c >= 32 && c <= 126 {
+			b = append(b, c)
+			continue
+		}
+		if len(b) > 0 && b[len(b)-1] != ' ' {
+			b = append(b, ' ')
+		}
+	}
+	return strings.Join(strings.Fields(string(b)), " ")
+}
+
+type FPCatSearchRes struct {
+	CatalogPosition     [16]byte
+	FileRsltBitmap      uint16
+	DirectoryRsltBitmap uint16
+	ActualCount         int32
+	Data                []byte
+}
+
+func (res *FPCatSearchRes) Marshal() []byte {
+	b := new(bytes.Buffer)
+	b.Write(res.CatalogPosition[:])
+	binary.Write(b, binary.BigEndian, res.FileRsltBitmap)
+	binary.Write(b, binary.BigEndian, res.DirectoryRsltBitmap)
+	binary.Write(b, binary.BigEndian, res.ActualCount)
+	b.Write(res.Data)
+	return b.Bytes()
+}
+
+func (res *FPCatSearchRes) String() string {
+	return fmt.Sprintf("FPCatSearchRes{FileRsltBitmap:%s DirectoryRsltBitmap:%s ActualCount:%d DataLen:%d}",
+		formatFileBitmap(res.FileRsltBitmap),
+		formatDirBitmap(res.DirectoryRsltBitmap),
+		res.ActualCount,
+		len(res.Data),
+	)
+}
 
 var (
 	_ RequestModel = (*FPGetSrvrInfoReq)(nil)
