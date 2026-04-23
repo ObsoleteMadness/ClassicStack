@@ -3,7 +3,8 @@ package rtmp
 import (
 	"time"
 
-	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
 	"github.com/pgodw/omnitalk/port"
 	"github.com/pgodw/omnitalk/service"
 )
@@ -33,5 +34,5 @@ func (s *RoutingTableAgingService) Start(router service.Router) error {
 	return nil
 }
 
-func (s *RoutingTableAgingService) Stop() error                               { close(s.stop); return nil }
-func (s *RoutingTableAgingService) Inbound(_ appletalk.Datagram, _ port.Port) {}
+func (s *RoutingTableAgingService) Stop() error                         { close(s.stop); return nil }
+func (s *RoutingTableAgingService) Inbound(_ ddp.Datagram, _ port.Port) {}

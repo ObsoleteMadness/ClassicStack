@@ -1,4 +1,4 @@
-package appletalk
+package encoding
 
 import (
 	"bytes"
@@ -23,8 +23,7 @@ func TestMacRomanToUpper(t *testing.T) {
 		return out
 	}
 
-	// Test all 256 bytes
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		input := []byte{byte(i)}
 		expected := oldUCase(input)
 		actual := MacRomanToUpper(input)
@@ -33,7 +32,6 @@ func TestMacRomanToUpper(t *testing.T) {
 		}
 	}
 
-	// Test a string
 	input := []byte("Hello, AppleTalk Zone\x88\x8A!")
 	expected := oldUCase(input)
 	actual := MacRomanToUpper(input)
@@ -59,7 +57,6 @@ func TestUTF8ToMacRoman(t *testing.T) {
 		t.Errorf("UTF8ToMacRoman failed: expected %x, got %x", expected, actual)
 	}
 
-	// Test fallback for unmappable
 	input2 := "Mac 🤔"
 	expected2 := []byte{'M', 'a', 'c', ' ', '?'}
 	actual2 := UTF8ToMacRoman(input2)

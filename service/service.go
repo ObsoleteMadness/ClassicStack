@@ -1,14 +1,15 @@
 package service
 
 import (
-	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
 	"github.com/pgodw/omnitalk/port"
 )
 
 type Service interface {
 	Start(router Router) error
 	Stop() error
-	Inbound(datagram appletalk.Datagram, rxPort port.Port)
+	Inbound(datagram ddp.Datagram, rxPort port.Port)
 }
 
 // PacketDumper is a sink for service-level packet logging.
@@ -22,8 +23,8 @@ type PacketDumpAware interface {
 }
 
 type Router interface {
-	Route(datagram appletalk.Datagram, originating bool) error
-	Reply(datagram appletalk.Datagram, rxPort port.Port, ddpType uint8, data []byte)
+	Route(datagram ddp.Datagram, originating bool) error
+	Reply(datagram ddp.Datagram, rxPort port.Port, ddpType uint8, data []byte)
 	PortsList() []port.Port
 	RoutingGetByNetwork(network uint16) (*RouteEntry, *bool)
 	RoutingEntries() []struct {

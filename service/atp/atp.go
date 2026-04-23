@@ -15,7 +15,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/protocol"
 )
 
 // ATP Control bit masks.
@@ -150,4 +150,4 @@ func (h *ATPHeader) String() string {
 	return fmt.Sprintf("ATPHeader{Control:0x%02x Bitmap:0x%02x TransID:%d UserData:0x%08x}", h.Control, h.Bitmap, h.TransID, h.UserData)
 }
 
-var _ appletalk.Packet = (*ATPHeader)(nil)
+var _ protocol.Packet = (*ATPHeader)(nil)

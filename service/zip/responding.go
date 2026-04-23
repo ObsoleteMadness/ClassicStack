@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/binary"
 
-	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/encoding"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
 	"github.com/pgodw/omnitalk/netlog"
 	"github.com/pgodw/omnitalk/port"
 	"github.com/pgodw/omnitalk/service"
@@ -12,7 +14,7 @@ import (
 
 type RespondingService struct {
 	ch chan struct {
-		d appletalk.Datagram
+		d ddp.Datagram
 		p port.Port
 	}
 	stop            chan struct{}
@@ -22,7 +24,7 @@ type RespondingService struct {
 func NewRespondingService() *RespondingService {
 	return &RespondingService{
 		ch: make(chan struct {
-			d appletalk.Datagram
+			d ddp.Datagram
 			p port.Port
 		}, 256),
 		stop:            make(chan struct{}),
@@ -86,10 +88,10 @@ func (s *RespondingService) Start(r service.Router) error {
 }
 
 func (s *RespondingService) Stop() error { close(s.stop); return nil }
-func (s *RespondingService) Inbound(d appletalk.Datagram, p port.Port) {
+func (s *RespondingService) Inbound(d ddp.Datagram, p port.Port) {
 	select {
 	case s.ch <- struct {
-		d appletalk.Datagram
+		d ddp.Datagram
 		p port.Port
 	}{d: d, p: p}:
 	default:
@@ -97,7 +99,7 @@ func (s *RespondingService) Inbound(d appletalk.Datagram, p port.Port) {
 }
 
 // handleReply processes ZIP_FUNC_REPLY: immediately commit each (network, zone) tuple.
-func (s *RespondingService) handleReply(r service.Router, d appletalk.Datagram, _ bool) {
+func (s *RespondingService) handleReply(r service.Router, d ddp.Datagram, _ bool) {
 	data := d.Data[2:]
 	for len(data) >= 3 {
 		nmin := binary.BigEndian.Uint16(data[0:2])
@@ -124,7 +126,7 @@ func (s *RespondingService) handleReply(r service.Router, d appletalk.Datagram, 
 
 // handleExtReply processes ZIP_FUNC_EXT_REPLY: accumulate tuples until we have the
 // expected count before committing.
-func (s *RespondingService) handleExtReply(r service.Router, d appletalk.Datagram) {
+func (s *RespondingService) handleExtReply(r service.Router, d ddp.Datagram) {
 	if len(d.Data) < 2 {
 		return
 	}
@@ -167,7 +169,7 @@ func (s *RespondingService) handleExtReply(r service.Router, d appletalk.Datagra
 }
 
 // handleQuery responds to ZIP_FUNC_QUERY.
-func handleQuery(r service.Router, d appletalk.Datagram, rx port.Port) {
+func handleQuery(r service.Router, d ddp.Datagram, rx port.Port) {
 	if len(d.Data) < 2 {
 		return
 	}
@@ -192,7 +194,7 @@ func handleQuery(r service.Router, d appletalk.Datagram, rx port.Port) {
 			binary.BigEndian.PutUint16(item[0:2], entry.NetworkMin)
 			item[2] = byte(len(z))
 			copy(item[3:], z)
-			if len(buf)+len(item) > appletalk.MaxDataLength {
+			if len(buf)+len(item) > ddp.MaxDataLength {
 				r.Reply(d, rx, DDPType, buf)
 				buf = []byte{FuncExtReply, byte(len(zones))}
 			}
@@ -205,7 +207,7 @@ func handleQuery(r service.Router, d appletalk.Datagram, rx port.Port) {
 }
 
 // handleGetNetInfo responds to ZIP_FUNC_GETNETINFO_REQUEST.
-func handleGetNetInfo(r service.Router, d appletalk.Datagram, rx port.Port) {
+func handleGetNetInfo(r service.Router, d ddp.Datagram, rx port.Port) {
 	if rx.Network() == 0 || rx.NetworkMin() == 0 || rx.NetworkMax() == 0 {
 		return
 	}
@@ -274,7 +276,7 @@ func handleGetNetInfo(r service.Router, d appletalk.Datagram, rx port.Port) {
 }
 
 // handleGetMyZone responds to ATP GetMyZone.
-func handleGetMyZone(r service.Router, d appletalk.Datagram, rx port.Port) {
+func handleGetMyZone(r service.Router, d ddp.Datagram, rx port.Port) {
 	tid := binary.BigEndian.Uint16(d.Data[2:4])
 	entry, _ := r.RoutingGetByNetwork(d.SourceNetwork)
 	if entry == nil {
@@ -295,7 +297,7 @@ func handleGetMyZone(r service.Router, d appletalk.Datagram, rx port.Port) {
 }
 
 // handleGetZoneList responds to ATP GetZoneList / GetLocalZones.
-func handleGetZoneList(r service.Router, d appletalk.Datagram, rx port.Port, local bool) {
+func handleGetZoneList(r service.Router, d ddp.Datagram, rx port.Port, local bool) {
 	tid := binary.BigEndian.Uint16(d.Data[2:4])
 	startIndex := int(binary.BigEndian.Uint16(d.Data[6:8])) // 1-relative
 
@@ -327,7 +329,7 @@ func handleGetZoneList(r service.Router, d appletalk.Datagram, rx port.Port, loc
 	numZones := 0
 	const atpHdrLen = 8
 	for i, zone := range zones {
-		if atpHdrLen+len(zoneList)+1+len(zone) > appletalk.MaxDataLength {
+		if atpHdrLen+len(zoneList)+1+len(zone) > ddp.MaxDataLength {
 			break
 		}
 		zoneList = append(zoneList, byte(len(zone)))
@@ -348,5 +350,5 @@ func handleGetZoneList(r service.Router, d appletalk.Datagram, rx port.Port, loc
 
 // toUCase uses the centralized MacRoman case-fold from the appletalk package.
 func toUCase(input []byte) []byte {
-	return appletalk.MacRomanToUpper(input)
+	return encoding.MacRomanToUpper(input)
 }

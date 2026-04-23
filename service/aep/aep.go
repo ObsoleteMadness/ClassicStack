@@ -9,7 +9,8 @@ Inside Macintosh: Networking, Chapter 3.
 package aep
 
 import (
-	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
 	"github.com/pgodw/omnitalk/port"
 	"github.com/pgodw/omnitalk/service"
 )
@@ -29,7 +30,7 @@ type Service struct {
 }
 
 type item struct {
-	d appletalk.Datagram
+	d ddp.Datagram
 	p port.Port
 }
 
@@ -71,7 +72,7 @@ func (s *Service) Stop() error {
 }
 
 // Inbound queues an incoming datagram for processing.
-func (s *Service) Inbound(d appletalk.Datagram, p port.Port) {
+func (s *Service) Inbound(d ddp.Datagram, p port.Port) {
 	select {
 	case s.ch <- item{d, p}:
 	default:

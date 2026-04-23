@@ -15,7 +15,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
 	"github.com/pgodw/omnitalk/netlog"
 	"github.com/pgodw/omnitalk/port"
 	"github.com/pgodw/omnitalk/service"
@@ -63,7 +64,7 @@ type Service struct {
 // requestContext is what the host service threads through atp.HandleInbound
 // so the Sender bridge can use router.Reply on the way out.
 type requestContext struct {
-	d appletalk.Datagram
+	d ddp.Datagram
 	p port.Port
 }
 
@@ -177,7 +178,7 @@ func (s *Service) Stop() error {
 }
 
 // Inbound accepts an incoming DDP datagram. ATP type only.
-func (s *Service) Inbound(d appletalk.Datagram, p port.Port) {
+func (s *Service) Inbound(d ddp.Datagram, p port.Port) {
 	if d.DDPType != atp.DDPTypeATP {
 		return
 	}
@@ -202,7 +203,7 @@ func (s *Service) sendBridge(src, dst atp.Address, payload []byte, hint any) err
 		s.router.Reply(rc.d, rc.p, atp.DDPTypeATP, payload)
 		return nil
 	}
-	dg := appletalk.Datagram{
+	dg := ddp.Datagram{
 		HopCount:           0,
 		DestinationNetwork: dst.Net,
 		DestinationNode:    dst.Node,

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/encoding"
 )
 
 // AFPOptions controls AFP filename/path translation behavior.
@@ -37,7 +37,7 @@ func DefaultAFPOptions() AFPOptions {
 }
 
 func (s *AFPService) afpPathElementToHost(raw string) string {
-	decoded := appletalk.MacRomanToUTF8([]byte(raw))
+	decoded := encoding.MacRomanToUTF8([]byte(raw))
 	if !s.options.DecomposedFilenames {
 		return decoded
 	}
@@ -54,7 +54,7 @@ func (s *AFPService) hostNameToAFPBytes(hostName string, volID uint16) []byte {
 	if s.options.DecomposedFilenames {
 		name = decodeHostReservedTokens(name)
 	}
-	return appletalk.UTF8ToMacRoman(name)
+	return encoding.UTF8ToMacRoman(name)
 }
 
 func (s *AFPService) writeAFPName(buf *bytes.Buffer, hostName string, volID uint16) {

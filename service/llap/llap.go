@@ -7,7 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
 	"github.com/pgodw/omnitalk/netlog"
 	"github.com/pgodw/omnitalk/port"
 	"github.com/pgodw/omnitalk/port/localtalk"
@@ -26,7 +27,7 @@ const (
 
 type ddpInboundRouter interface {
 	service.Router
-	Inbound(datagram appletalk.Datagram, rxPort port.Port)
+	Inbound(datagram ddp.Datagram, rxPort port.Port)
 }
 
 type Service struct {
@@ -87,7 +88,7 @@ func (s *Service) Stop() error {
 	return nil
 }
 
-func (s *Service) Inbound(_ appletalk.Datagram, _ port.Port) {}
+func (s *Service) Inbound(_ ddp.Datagram, _ port.Port) {}
 
 func (s *Service) RegisterPort(p *localtalk.Port) {
 	s.mu.Lock()
@@ -139,7 +140,7 @@ func (s *Service) InboundFrame(p *localtalk.Port, frame localtalk.LLAPFrame) {
 	}
 }
 
-func (s *Service) TransmitUnicast(p *localtalk.Port, network uint16, node uint8, d appletalk.Datagram) {
+func (s *Service) TransmitUnicast(p *localtalk.Port, network uint16, node uint8, d ddp.Datagram) {
 	if network != 0 && network != p.Network() {
 		netlog.Debug("[LLAP] %s dropping unicast to network=%d local-network=%d", p.ShortString(), network, p.Network())
 		return
@@ -168,7 +169,7 @@ func (s *Service) TransmitUnicast(p *localtalk.Port, network uint16, node uint8,
 	}
 }
 
-func (s *Service) TransmitBroadcast(p *localtalk.Port, d appletalk.Datagram) {
+func (s *Service) TransmitBroadcast(p *localtalk.Port, d ddp.Datagram) {
 	st := s.stateFor(p)
 	if !st.isClaimed() {
 		netlog.Debug("[LLAP] %s dropping broadcast while node is unclaimed", p.ShortString())

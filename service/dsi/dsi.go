@@ -13,7 +13,8 @@ import (
 	"io"
 	"net"
 
-	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
 	"github.com/pgodw/omnitalk/netlog"
 	"github.com/pgodw/omnitalk/port"
 	"github.com/pgodw/omnitalk/service"
@@ -150,7 +151,7 @@ func (s *Server) Stop() error {
 }
 
 // Inbound implements afp.Transport.
-func (s *Server) Inbound(d appletalk.Datagram, p port.Port) {
+func (s *Server) Inbound(d ddp.Datagram, p port.Port) {
 	// DSI over TCP does not process DDP packets
 }
 

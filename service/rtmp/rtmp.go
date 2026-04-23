@@ -3,7 +3,8 @@ package rtmp
 import (
 	"encoding/binary"
 
-	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
 	"github.com/pgodw/omnitalk/service"
 )
 
@@ -62,7 +63,7 @@ func makeRoutingTableDatagramData(r service.Router, p interface {
 	var out [][]byte
 	curr := append([]byte(nil), header...)
 	for _, t := range tuples {
-		if len(curr)+len(t) > appletalk.MaxDataLength {
+		if len(curr)+len(t) > ddp.MaxDataLength {
 			out = append(out, curr)
 			curr = append(append([]byte(nil), header...), t...)
 		} else {

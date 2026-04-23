@@ -3,7 +3,8 @@ package rtmp
 import (
 	"time"
 
-	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
 	"github.com/pgodw/omnitalk/port"
 	"github.com/pgodw/omnitalk/service"
 )
@@ -31,7 +32,7 @@ func (s *SendingService) Start(r service.Router) error {
 						continue
 					}
 					for _, data := range makeRoutingTableDatagramData(r, p, true) {
-						p.Broadcast(appletalk.Datagram{
+						p.Broadcast(ddp.Datagram{
 							DestinationNetwork: 0, SourceNetwork: p.Network(), DestinationNode: 0xFF, SourceNode: p.Node(),
 							DestinationSocket: SAS, SourceSocket: SAS, DDPType: DDPTypeData, Data: data,
 						})
@@ -43,5 +44,5 @@ func (s *SendingService) Start(r service.Router) error {
 	return nil
 }
 
-func (s *SendingService) Stop() error                               { close(s.stop); return nil }
-func (s *SendingService) Inbound(_ appletalk.Datagram, _ port.Port) {}
+func (s *SendingService) Stop() error                         { close(s.stop); return nil }
+func (s *SendingService) Inbound(_ ddp.Datagram, _ port.Port) {}

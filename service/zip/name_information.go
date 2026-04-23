@@ -4,7 +4,8 @@ import (
 	"bytes"
 	"sync"
 
-	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
 	"github.com/pgodw/omnitalk/netlog"
 	"github.com/pgodw/omnitalk/port"
 	"github.com/pgodw/omnitalk/service"
@@ -28,7 +29,7 @@ type NBPRegisteredName struct {
 
 type NameInformationService struct {
 	ch chan struct {
-		d appletalk.Datagram
+		d ddp.Datagram
 		p port.Port
 	}
 	stop   chan struct{}
@@ -105,7 +106,7 @@ func buildLkUpRply(nbpID byte, network uint16, node, socket uint8, obj, typ, zon
 func NewNameInformationService() *NameInformationService {
 	return &NameInformationService{
 		ch: make(chan struct {
-			d appletalk.Datagram
+			d ddp.Datagram
 			p port.Port
 		}, 256),
 		stop: make(chan struct{}),
@@ -114,10 +115,10 @@ func NewNameInformationService() *NameInformationService {
 
 func (s *NameInformationService) Socket() uint8 { return NBPSASSocket }
 func (s *NameInformationService) Stop() error   { close(s.stop); return nil }
-func (s *NameInformationService) Inbound(d appletalk.Datagram, p port.Port) {
+func (s *NameInformationService) Inbound(d ddp.Datagram, p port.Port) {
 	select {
 	case s.ch <- struct {
-		d appletalk.Datagram
+		d ddp.Datagram
 		p port.Port
 	}{d: d, p: p}:
 	default:
@@ -138,7 +139,7 @@ func (s *NameInformationService) Start(r service.Router) error {
 	return nil
 }
 
-func (s *NameInformationService) handlePacket(d appletalk.Datagram, p port.Port, r service.Router) {
+func (s *NameInformationService) handlePacket(d ddp.Datagram, p port.Port, r service.Router) {
 	if d.DDPType != NBPDDPType || len(d.Data) < 12 {
 		return
 	}
@@ -183,7 +184,7 @@ func (s *NameInformationService) handlePacket(d appletalk.Datagram, p port.Port,
 	}
 }
 
-func (s *NameInformationService) buildCommonPayload(d appletalk.Datagram, zone []byte, replyNet uint16) ([]byte, []byte) {
+func (s *NameInformationService) buildCommonPayload(d ddp.Datagram, zone []byte, replyNet uint16) ([]byte, []byte) {
 	objLen := int(d.Data[7])
 	typLen := int(d.Data[8+objLen])
 
@@ -202,7 +203,7 @@ func (s *NameInformationService) buildCommonPayload(d appletalk.Datagram, zone [
 	return lkup, fwd
 }
 
-func (s *NameInformationService) handleBrRq(d appletalk.Datagram, p port.Port, r service.Router, obj, typ, zone []byte, replyNet uint16) {
+func (s *NameInformationService) handleBrRq(d ddp.Datagram, p port.Port, r service.Router, obj, typ, zone []byte, replyNet uint16) {
 	netlog.Debug("NBP BrRq on %s: obj=%q type=%q zone=%q reply=%d.%d.%d",
 		p.ShortString(), obj, typ, zone, replyNet, d.Data[4], d.Data[5])
 
@@ -215,7 +216,7 @@ func (s *NameInformationService) handleBrRq(d appletalk.Datagram, p port.Port, r
 		if nbpMatch(obj, n.Object) && nbpMatch(typ, n.Type) && nbpZoneMatch(zone, n.Zone) {
 			rply := buildLkUpRply(nbpID, p.Network(), p.Node(), n.Socket, n.Object, n.Type, n.Zone)
 			netlog.Debug("NBP BrRq: replying for registered name %q:%q@%q socket=%d", n.Object, n.Type, n.Zone, n.Socket)
-			_ = r.Route(appletalk.Datagram{
+			_ = r.Route(ddp.Datagram{
 				DestinationNetwork: replyNet,
 				DestinationNode:    replyNode,
 				DestinationSocket:  replySock,
@@ -249,7 +250,7 @@ func (s *NameInformationService) handleBrRq(d appletalk.Datagram, p port.Port, r
 
 	if string(routeZone) == "*" {
 		netlog.Debug("NBP BrRq: zone=* unresolved — broadcasting on %s", p.ShortString())
-		p.Broadcast(appletalk.Datagram{
+		p.Broadcast(ddp.Datagram{
 			DestinationNetwork: 0, SourceNetwork: p.Network(), DestinationNode: 0xFF, SourceNode: p.Node(),
 			DestinationSocket: NBPSASSocket, SourceSocket: NBPSASSocket, DDPType: NBPDDPType, Data: lkup,
 		})
@@ -269,13 +270,13 @@ func (s *NameInformationService) handleBrRq(d appletalk.Datagram, p port.Port, r
 			seen[entry.Port] = struct{}{}
 			if entry.Distance == 0 {
 				netlog.Debug("NBP BrRq: sending LkUp to %s (network %d)", entry.Port.ShortString(), n)
-				entry.Port.Multicast(zone, appletalk.Datagram{
+				entry.Port.Multicast(zone, ddp.Datagram{
 					DestinationNetwork: 0, SourceNetwork: entry.Port.Network(), DestinationNode: 0xFF, SourceNode: entry.Port.Node(),
 					DestinationSocket: NBPSASSocket, SourceSocket: NBPSASSocket, DDPType: NBPDDPType, Data: lkup,
 				})
 			} else {
 				netlog.Debug("NBP BrRq: routing Fwd to network %d (distance %d)", entry.NetworkMin, entry.Distance)
-				_ = r.Route(appletalk.Datagram{
+				_ = r.Route(ddp.Datagram{
 					DestinationNetwork: entry.NetworkMin, DestinationNode: 0x00, DestinationSocket: NBPSASSocket,
 					SourceSocket: NBPSASSocket, DDPType: NBPDDPType, Data: fwd,
 				}, true)
@@ -284,7 +285,7 @@ func (s *NameInformationService) handleBrRq(d appletalk.Datagram, p port.Port, r
 	}
 }
 
-func (s *NameInformationService) handleFwd(d appletalk.Datagram, p port.Port, r service.Router, obj, typ, zone []byte, replyNet uint16) {
+func (s *NameInformationService) handleFwd(d ddp.Datagram, p port.Port, r service.Router, obj, typ, zone []byte, replyNet uint16) {
 	entry, _ := r.RoutingGetByNetwork(d.DestinationNetwork)
 	if entry == nil || entry.Distance != 0 {
 		return
@@ -292,13 +293,13 @@ func (s *NameInformationService) handleFwd(d appletalk.Datagram, p port.Port, r 
 
 	lkup, _ := s.buildCommonPayload(d, zone, replyNet)
 
-	entry.Port.Multicast(zone, appletalk.Datagram{
+	entry.Port.Multicast(zone, ddp.Datagram{
 		DestinationNetwork: 0, SourceNetwork: entry.Port.Network(), DestinationNode: 0xFF, SourceNode: entry.Port.Node(),
 		DestinationSocket: NBPSASSocket, SourceSocket: NBPSASSocket, DDPType: NBPDDPType, Data: lkup,
 	})
 }
 
-func (s *NameInformationService) handleLkUp(d appletalk.Datagram, p port.Port, r service.Router, obj, typ, zone []byte, replyNet uint16) {
+func (s *NameInformationService) handleLkUp(d ddp.Datagram, p port.Port, r service.Router, obj, typ, zone []byte, replyNet uint16) {
 	replyNode := d.Data[4]
 	replySock := d.Data[5]
 	nbpID := d.Data[1]
@@ -318,7 +319,7 @@ func (s *NameInformationService) handleLkUp(d appletalk.Datagram, p port.Port, r
 	for _, m := range matches {
 		rply := buildLkUpRply(nbpID, p.Network(), p.Node(), m.Socket, m.Object, m.Type, m.Zone)
 		netlog.Debug("NBP LkUp: replying with %q:%q@%q socket=%d", m.Object, m.Type, m.Zone, m.Socket)
-		_ = r.Route(appletalk.Datagram{
+		_ = r.Route(ddp.Datagram{
 			DestinationNetwork: replyNet,
 			DestinationNode:    replyNode,
 			DestinationSocket:  replySock,

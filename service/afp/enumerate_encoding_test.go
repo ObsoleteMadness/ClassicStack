@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/encoding"
 )
 
 type childCountSpyFS struct {
@@ -234,7 +234,7 @@ func TestHandleEnumerate_LongNameEncodedAsMacRoman(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse enumerate long name: %v", err)
 	}
-	wantName := appletalk.UTF8ToMacRoman(hostName)
+	wantName := encoding.UTF8ToMacRoman(hostName)
 	if !bytes.Equal(gotName, wantName) {
 		t.Fatalf("enumerate name bytes = %x, want %x", gotName, wantName)
 	}
@@ -281,7 +281,7 @@ func TestHandleEnumerate_PathDecodesMacRoman(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse enumerate long name: %v", err)
 	}
-	wantName := appletalk.UTF8ToMacRoman(fileName)
+	wantName := encoding.UTF8ToMacRoman(fileName)
 	if !bytes.Equal(gotName, wantName) {
 		t.Fatalf("enumerate name bytes = %x, want %x", gotName, wantName)
 	}

@@ -3,7 +3,8 @@ package zip
 import (
 	"time"
 
-	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
 	"github.com/pgodw/omnitalk/port"
 	"github.com/pgodw/omnitalk/service"
 )
@@ -37,12 +38,12 @@ func (s *SendingService) Start(r service.Router) error {
 					}
 					data := []byte{FuncQuery, 1, byte(e.NetworkMin >> 8), byte(e.NetworkMin)}
 					if e.Distance == 0 {
-						e.Port.Broadcast(appletalk.Datagram{
+						e.Port.Broadcast(ddp.Datagram{
 							DestinationNetwork: 0, SourceNetwork: e.Port.Network(), DestinationNode: 0xFF, SourceNode: e.Port.Node(),
 							DestinationSocket: SAS, SourceSocket: SAS, DDPType: DDPType, Data: data,
 						})
 					} else {
-						e.Port.Unicast(e.NextNetwork, e.NextNode, appletalk.Datagram{
+						e.Port.Unicast(e.NextNetwork, e.NextNode, ddp.Datagram{
 							DestinationNetwork: e.NextNetwork, SourceNetwork: e.Port.Network(), DestinationNode: e.NextNode, SourceNode: e.Port.Node(),
 							DestinationSocket: SAS, SourceSocket: SAS, DDPType: DDPType, Data: data,
 						})
@@ -54,5 +55,5 @@ func (s *SendingService) Start(r service.Router) error {
 	return nil
 }
 
-func (s *SendingService) Stop() error                               { close(s.stop); return nil }
-func (s *SendingService) Inbound(_ appletalk.Datagram, _ port.Port) {}
+func (s *SendingService) Stop() error                         { close(s.stop); return nil }
+func (s *SendingService) Inbound(_ ddp.Datagram, _ port.Port) {}

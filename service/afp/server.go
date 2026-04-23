@@ -23,7 +23,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
 	"github.com/pgodw/omnitalk/port"
 	"github.com/pgodw/omnitalk/service"
 )
@@ -113,21 +114,21 @@ const defaultMaxByteRangeLocks = 4096
 
 // AFPService implements AppleTalk Filing Protocol.
 type AFPService struct {
-	ServerName string
-	Volumes    []Volume
-	fs         FileSystem
-	volumeFS   map[uint16]FileSystem
-	meta       ForkMetadataBackend            // global override when ForkMetadataBackend is injected via options
-	metas      map[uint16]ForkMetadataBackend // per-volume backends (keyed by Volume.ID)
-	mu         sync.RWMutex
-	options    AFPOptions
-	cnidStores map[uint16]CNIDStore
-	desktopDB  DesktopDBBackend
-	forks      map[uint16]*forkHandle
-	nextFork   uint16
-	byteLocks  []byteRangeLock
+	ServerName  string
+	Volumes     []Volume
+	fs          FileSystem
+	volumeFS    map[uint16]FileSystem
+	meta        ForkMetadataBackend            // global override when ForkMetadataBackend is injected via options
+	metas       map[uint16]ForkMetadataBackend // per-volume backends (keyed by Volume.ID)
+	mu          sync.RWMutex
+	options     AFPOptions
+	cnidStores  map[uint16]CNIDStore
+	desktopDB   DesktopDBBackend
+	forks       map[uint16]*forkHandle
+	nextFork    uint16
+	byteLocks   []byteRangeLock
 	maxReadSize int // transport quantum limit; 0 = unlimited
-	maxLocks   int
+	maxLocks    int
 
 	users       map[string]string // map[username]password
 	nextSRefNum uint16
@@ -387,7 +388,7 @@ func (s *AFPService) Socket() uint8 {
 }
 
 // Inbound delegates inbound DDP packets to the underlying transports.
-func (s *AFPService) Inbound(d appletalk.Datagram, p port.Port) {
+func (s *AFPService) Inbound(d ddp.Datagram, p port.Port) {
 	for _, t := range s.transports {
 		t.Inbound(d, p)
 	}

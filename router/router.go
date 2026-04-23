@@ -3,7 +3,8 @@ package router
 import (
 	"errors"
 
-	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
 	"github.com/pgodw/omnitalk/netlog"
 	"github.com/pgodw/omnitalk/port"
 	"github.com/pgodw/omnitalk/port/localtalk"
@@ -21,12 +22,12 @@ type Router struct {
 	servicesBySAS        map[uint8]service.Service
 	RoutingTable         *RoutingTable
 	ZoneInformationTable *ZoneInformationTable
-	observer             func(appletalk.Datagram, port.Port)
+	observer             func(ddp.Datagram, port.Port)
 }
 
 // SetObserver installs a callback that is invoked for every datagram delivered
 // locally (after DDP decoding, before service dispatch). Pass nil to remove.
-func (r *Router) SetObserver(fn func(appletalk.Datagram, port.Port)) {
+func (r *Router) SetObserver(fn func(ddp.Datagram, port.Port)) {
 	r.observer = fn
 }
 
@@ -95,7 +96,7 @@ func (r *Router) bindLLAPManager() {
 	}
 }
 
-func (r *Router) deliver(datagram appletalk.Datagram, rxPort port.Port) {
+func (r *Router) deliver(datagram ddp.Datagram, rxPort port.Port) {
 	if svc, ok := r.servicesBySAS[datagram.DestinationSocket]; ok {
 		svc.Inbound(datagram, rxPort)
 	}
@@ -153,7 +154,7 @@ func (r *Router) Stop() error {
 	return nil
 }
 
-func (r *Router) Inbound(datagram appletalk.Datagram, rxPort port.Port) {
+func (r *Router) Inbound(datagram ddp.Datagram, rxPort port.Port) {
 	if rxPort.Network() != 0 {
 		if datagram.DestinationNetwork == 0 && datagram.SourceNetwork == 0 {
 			datagram.DestinationNetwork = rxPort.Network()
@@ -188,7 +189,7 @@ func (r *Router) Inbound(datagram appletalk.Datagram, rxPort port.Port) {
 	_ = r.Route(datagram, false)
 }
 
-func (r *Router) Route(datagram appletalk.Datagram, originating bool) error {
+func (r *Router) Route(datagram ddp.Datagram, originating bool) error {
 	if originating {
 		if datagram.HopCount != 0 {
 			return errors.New("originated datagrams must have hop count of 0")
@@ -239,13 +240,13 @@ func (r *Router) Route(datagram appletalk.Datagram, originating bool) error {
 	return nil
 }
 
-func (r *Router) Reply(datagram appletalk.Datagram, rxPort port.Port, ddpType uint8, data []byte) {
+func (r *Router) Reply(datagram ddp.Datagram, rxPort port.Port, ddpType uint8, data []byte) {
 	if datagram.SourceNode == 0 || datagram.SourceNode == 0xFF {
 		return
 	}
 	if rxPort.Node() != 0 && (datagram.SourceNetwork == 0 || (datagram.SourceNetwork >= 0xFF00 && datagram.SourceNetwork <= 0xFFFE) ||
 		datagram.SourceNetwork < rxPort.NetworkMin() || datagram.SourceNetwork > rxPort.NetworkMax()) {
-		rxPort.Broadcast(appletalk.Datagram{
+		rxPort.Broadcast(ddp.Datagram{
 			HopCount:           0,
 			DestinationNetwork: 0,
 			SourceNetwork:      rxPort.Network(),
@@ -258,7 +259,7 @@ func (r *Router) Reply(datagram appletalk.Datagram, rxPort port.Port, ddpType ui
 		})
 		return
 	}
-	_ = r.Route(appletalk.Datagram{
+	_ = r.Route(ddp.Datagram{
 		HopCount:           0,
 		DestinationNetwork: datagram.SourceNetwork,
 		SourceNetwork:      datagram.DestinationNetwork, // reply FROM the address the client sent TO

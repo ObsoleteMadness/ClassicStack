@@ -1,18 +1,18 @@
 package port
 
-import "github.com/pgodw/omnitalk/appletalk"
+import "github.com/pgodw/omnitalk/protocol/ddp"
 
 type RouterHooks interface {
-	Inbound(datagram appletalk.Datagram, rx Port)
+	Inbound(datagram ddp.Datagram, rx Port)
 }
 
 type Port interface {
 	ShortString() string
 	Start(router RouterHooks) error
 	Stop() error
-	Unicast(network uint16, node uint8, datagram appletalk.Datagram)
-	Broadcast(datagram appletalk.Datagram)
-	Multicast(zoneName []byte, datagram appletalk.Datagram)
+	Unicast(network uint16, node uint8, datagram ddp.Datagram)
+	Broadcast(datagram ddp.Datagram)
+	Multicast(zoneName []byte, datagram ddp.Datagram)
 	SetNetworkRange(networkMin, networkMax uint16) error
 
 	Network() uint16

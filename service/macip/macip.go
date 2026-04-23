@@ -14,7 +14,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
 	"github.com/pgodw/omnitalk/netlog"
 	"github.com/pgodw/omnitalk/port"
 	"github.com/pgodw/omnitalk/port/nat"
@@ -84,7 +85,7 @@ type Service struct {
 }
 
 type inboundPkt struct {
-	d appletalk.Datagram
+	d ddp.Datagram
 	p port.Port
 }
 
@@ -217,7 +218,7 @@ func (s *Service) MarkSessionActivity(sessionID uint8) {
 }
 
 // Inbound is called by the router for every DDP datagram addressed to socket 72.
-func (s *Service) Inbound(d appletalk.Datagram, p port.Port) {
+func (s *Service) Inbound(d ddp.Datagram, p port.Port) {
 	select {
 	case s.ch <- inboundPkt{d: d, p: p}:
 	default:
@@ -242,7 +243,7 @@ func (s *Service) inboundLoop() {
 }
 
 // handleATPConfig processes an ATP TReq on socket 72: an IP address request.
-func (s *Service) handleATPConfig(d appletalk.Datagram, rx port.Port) {
+func (s *Service) handleATPConfig(d ddp.Datagram, rx port.Port) {
 	atNet, atNode := normalizeATSource(d, rx)
 	if !validATEndpoint(atNet, atNode) {
 		netlog.Warn("macip: dropping ATP config request with invalid source AT %d.%d", d.SourceNetwork, d.SourceNode)
@@ -311,7 +312,7 @@ func (s *Service) handleATPConfig(d appletalk.Datagram, rx port.Port) {
 }
 
 // sendATPConfigResp builds and sends an ATP TResp with the given IP configuration.
-func (s *Service) sendATPConfigResp(d appletalk.Datagram, rx port.Port, tid uint16, assignedIP, nameserver, broadcast net.IP, mask net.IPMask) {
+func (s *Service) sendATPConfigResp(d ddp.Datagram, rx port.Port, tid uint16, assignedIP, nameserver, broadcast net.IP, mask net.IPMask) {
 	resp := make([]byte, 4+configDataLen)
 	resp[0] = atpFuncTResp | atpEOM
 	resp[1] = 0 // seq 0
@@ -335,7 +336,7 @@ func (s *Service) sendATPConfigResp(d appletalk.Datagram, rx port.Port, tid uint
 
 // handleATPConfigDHCP runs in its own goroutine: performs a full DHCP exchange
 // and sends the ATP TResp once an address is assigned.
-func (s *Service) handleATPConfigDHCP(d appletalk.Datagram, rx port.Port, tid uint16, requestedIP net.IP, atNet uint16, atNode uint8) {
+func (s *Service) handleATPConfigDHCP(d ddp.Datagram, rx port.Port, tid uint16, requestedIP net.IP, atNet uint16, atNode uint8) {
 	res := s.dhcp.RequestIP(atNet, atNode, requestedIP)
 	if res == nil {
 		netlog.Warn("macip-dhcp: no DHCP response for AT %d.%d — not replying to ATP", atNet, atNode)
@@ -367,7 +368,7 @@ func (s *Service) handleATPConfigDHCP(d appletalk.Datagram, rx port.Port, tid ui
 }
 
 // handleMacIPData processes a DDP type 22 packet: a raw IP packet from a Mac.
-func (s *Service) handleMacIPData(d appletalk.Datagram) {
+func (s *Service) handleMacIPData(d ddp.Datagram) {
 	if len(d.Data) < 20 {
 		netlog.Debug("macip: dropping short MacIP data from AT %d.%d (len=%d)",
 			d.SourceNetwork, d.SourceNode, len(d.Data))
@@ -416,7 +417,7 @@ func (s *Service) routeIPToMac(atNet uint16, atNode uint8, pkt []byte) {
 		return
 	}
 	for _, frag := range frags {
-		if err := s.router.Route(appletalk.Datagram{
+		if err := s.router.Route(ddp.Datagram{
 			DestinationNetwork: atNet,
 			DestinationNode:    atNode,
 			DestinationSocket:  Socket,
@@ -429,7 +430,7 @@ func (s *Service) routeIPToMac(atNet uint16, atNode uint8, pkt []byte) {
 	}
 }
 
-func normalizeATSource(d appletalk.Datagram, rx port.Port) (uint16, uint8) {
+func normalizeATSource(d ddp.Datagram, rx port.Port) (uint16, uint8) {
 	atNet := d.SourceNetwork
 	if atNet == 0 && rx != nil && rx.Network() != 0 {
 		atNet = rx.Network()
@@ -495,7 +496,7 @@ func (s *Service) handleGatewayICMP(srcNet uint16, srcNode uint8, pkt []byte) {
 	binary.BigEndian.PutUint16(reply[ihl+2:ihl+4], nat.RawChecksum(reply[ihl:]))
 
 	netlog.Debug("macip: ICMP echo reply %s→%s via AT %d.%d", s.gwIP, clientIP, atNet, atNode)
-	_ = s.router.Route(appletalk.Datagram{
+	_ = s.router.Route(ddp.Datagram{
 		DestinationNetwork: atNet,
 		DestinationNode:    atNode,
 		DestinationSocket:  Socket,

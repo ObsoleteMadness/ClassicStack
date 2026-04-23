@@ -7,7 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
 	"github.com/pgodw/omnitalk/netlog"
 	"github.com/pgodw/omnitalk/port"
 )
@@ -46,7 +47,7 @@ type amtEntry struct {
 }
 
 type heldDatagram struct {
-	d    appletalk.Datagram
+	d    ddp.Datagram
 	when time.Time
 }
 
@@ -380,7 +381,7 @@ func (p *Port) sendFrame(dst, payload []byte) {
 	_ = p.tx(f)
 }
 
-func (p *Port) sendDatagram(dst []byte, d appletalk.Datagram) {
+func (p *Port) sendDatagram(dst []byte, d ddp.Datagram) {
 	b, err := d.AsLongHeaderBytes(true)
 	if err != nil {
 		return
@@ -482,7 +483,7 @@ func (p *Port) InboundFrame(frame []byte) {
 
 	if bytes.Equal(frame[17:22], snapAppleTalk) {
 		netlog.LogEthernetFrameInbound(frame, p)
-		d, err := appletalk.DatagramFromLongHeaderBytes(frame[22:14+length], false)
+		d, err := ddp.DatagramFromLongHeaderBytes(frame[22:14+length], false)
 		if err != nil {
 			netlog.Debug("%s failed to parse AppleTalk datagram from EtherTalk frame: %v", p.ShortString(), err)
 			return
@@ -502,7 +503,7 @@ func (p *Port) InboundFrame(frame []byte) {
 	}
 }
 
-func (p *Port) Unicast(network uint16, node uint8, d appletalk.Datagram) {
+func (p *Port) Unicast(network uint16, node uint8, d ddp.Datagram) {
 	netlog.LogDatagramUnicast(network, node, d, p)
 	key := [2]uint16{network, uint16(node)}
 	p.tableMu.Lock()
@@ -523,7 +524,7 @@ func (p *Port) Unicast(network uint16, node uint8, d appletalk.Datagram) {
 	}
 }
 
-func (p *Port) Broadcast(d appletalk.Datagram) {
+func (p *Port) Broadcast(d ddp.Datagram) {
 	if d.DestinationNetwork != 0 || d.DestinationNode != 0xFF {
 		d.DestinationNetwork = 0
 		d.DestinationNode = 0xFF
@@ -532,7 +533,7 @@ func (p *Port) Broadcast(d appletalk.Datagram) {
 	p.sendDatagram(elapBroadcast, d)
 }
 
-func (p *Port) Multicast(zoneName []byte, d appletalk.Datagram) {
+func (p *Port) Multicast(zoneName []byte, d ddp.Datagram) {
 	netlog.LogDatagramMulticast(zoneName, d, p)
 	// Use the EtherTalk-wide broadcast (09:00:07:FF:FF:FF) rather than the
 	// zone-specific multicast.  All Phase 2 nodes must accept this address, whereas
@@ -542,7 +543,7 @@ func (p *Port) Multicast(zoneName []byte, d appletalk.Datagram) {
 }
 
 func (p *Port) MulticastAddress(zoneName []byte) []byte {
-	sum := appletalk.DDPChecksum(ucase(zoneName))
+	sum := ddp.Checksum(ucase(zoneName))
 	return []byte{elapMCprefix[0], elapMCprefix[1], elapMCprefix[2], elapMCprefix[3], elapMCprefix[4], byte(sum % 0xFD)}
 }
 

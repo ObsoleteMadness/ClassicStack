@@ -6,7 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
 	"github.com/pgodw/omnitalk/service"
 )
 
@@ -16,15 +17,15 @@ func newMockPort(network uint16, node uint8, shortString string, isExtended bool
 		nodeFunc:            func() uint8 { return node },
 		shortStringFunc:     func() string { return shortString },
 		extendedNetworkFunc: func() bool { return isExtended },
-		broadcastFunc:       func(datagram appletalk.Datagram) {},
-		multicastFunc:       func(zoneName []byte, datagram appletalk.Datagram) {},
-		unicastFunc:         func(network uint16, node uint8, datagram appletalk.Datagram) {},
+		broadcastFunc:       func(datagram ddp.Datagram) {},
+		multicastFunc:       func(zoneName []byte, datagram ddp.Datagram) {},
+		unicastFunc:         func(network uint16, node uint8, datagram ddp.Datagram) {},
 	}
 }
 
 func newMockRouter() *mockRouter {
 	return &mockRouter{
-		routeFunc:               func(datagram appletalk.Datagram, originating bool) error { return nil },
+		routeFunc:               func(datagram ddp.Datagram, originating bool) error { return nil },
 		routingGetByNetworkFunc: func(network uint16) (*service.RouteEntry, *bool) { return nil, nil },
 		zonesInNetworkRangeFunc: func(networkMin uint16, networkMax *uint16) ([][]byte, error) { return nil, nil },
 		networksInZoneFunc:      func(zoneName []byte) []uint16 { return nil },
@@ -36,9 +37,9 @@ func TestNameInformationService_BrRq(t *testing.T) {
 	r := newMockRouter()
 
 	// Track routed packets
-	var routedPackets []appletalk.Datagram
+	var routedPackets []ddp.Datagram
 	var mu sync.Mutex
-	r.routeFunc = func(datagram appletalk.Datagram, originating bool) error {
+	r.routeFunc = func(datagram ddp.Datagram, originating bool) error {
 		mu.Lock()
 		routedPackets = append(routedPackets, datagram)
 		mu.Unlock()
@@ -65,7 +66,7 @@ func TestNameInformationService_BrRq(t *testing.T) {
 		8, 'T', 'e', 's', 't', 'Z', 'o', 'n', 'e',
 	}
 
-	d := appletalk.Datagram{
+	d := ddp.Datagram{
 		DDPType: NBPDDPType,
 		Data:    data,
 	}
@@ -91,9 +92,9 @@ func TestNameInformationService_LkUp(t *testing.T) {
 	r := newMockRouter()
 
 	// Track routed packets
-	var routedPackets []appletalk.Datagram
+	var routedPackets []ddp.Datagram
 	var mu sync.Mutex
-	r.routeFunc = func(datagram appletalk.Datagram, originating bool) error {
+	r.routeFunc = func(datagram ddp.Datagram, originating bool) error {
 		mu.Lock()
 		routedPackets = append(routedPackets, datagram)
 		mu.Unlock()
@@ -118,7 +119,7 @@ func TestNameInformationService_LkUp(t *testing.T) {
 		5, 'Z', 'o', 'n', 'e', '2',
 	}
 
-	d := appletalk.Datagram{
+	d := ddp.Datagram{
 		DDPType: NBPDDPType,
 		Data:    data,
 	}
@@ -143,9 +144,9 @@ func TestNameInformationService_LkUpZoneWildcard(t *testing.T) {
 	svc := NewNameInformationService()
 	r := newMockRouter()
 
-	var routedPackets []appletalk.Datagram
+	var routedPackets []ddp.Datagram
 	var mu sync.Mutex
-	r.routeFunc = func(datagram appletalk.Datagram, originating bool) error {
+	r.routeFunc = func(datagram ddp.Datagram, originating bool) error {
 		mu.Lock()
 		routedPackets = append(routedPackets, datagram)
 		mu.Unlock()
@@ -170,7 +171,7 @@ func TestNameInformationService_LkUpZoneWildcard(t *testing.T) {
 		1, '*',
 	}
 
-	d := appletalk.Datagram{DDPType: NBPDDPType, Data: data}
+	d := ddp.Datagram{DDPType: NBPDDPType, Data: data}
 	svc.Inbound(d, p)
 
 	time.Sleep(50 * time.Millisecond)
@@ -194,7 +195,7 @@ func TestNameInformationService_Fwd(t *testing.T) {
 
 	var multicastCalled bool
 	var mu sync.Mutex
-	p.multicastFunc = func(zoneName []byte, datagram appletalk.Datagram) {
+	p.multicastFunc = func(zoneName []byte, datagram ddp.Datagram) {
 		mu.Lock()
 		multicastCalled = true
 		mu.Unlock()
@@ -217,7 +218,7 @@ func TestNameInformationService_Fwd(t *testing.T) {
 		5, 'Z', 'o', 'n', 'e', '3',
 	}
 
-	d := appletalk.Datagram{
+	d := ddp.Datagram{
 		DDPType:            NBPDDPType,
 		DestinationNetwork: 30, // Route matching
 		Data:               data,
@@ -244,7 +245,7 @@ func TestNameInformationService_buildCommonPayload(t *testing.T) {
 		5, 'T', 'y', 'p', 'e', '1',
 		5, 'Z', 'o', 'n', 'e', '1',
 	}
-	d := appletalk.Datagram{Data: data}
+	d := ddp.Datagram{Data: data}
 	zone := []byte("Zone1")
 	replyNet := uint16(10)
 
@@ -279,7 +280,7 @@ func TestNameInformationService_handlePacket_invalidDDP(t *testing.T) {
 	p := newMockPort(10, 15, "mock", false)
 
 	// test invalid DDPType
-	d := appletalk.Datagram{
+	d := ddp.Datagram{
 		DDPType: 99,
 		Data:    []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
 	}
@@ -287,7 +288,7 @@ func TestNameInformationService_handlePacket_invalidDDP(t *testing.T) {
 	svc.handlePacket(d, p, r)
 
 	// test length too short
-	d = appletalk.Datagram{
+	d = ddp.Datagram{
 		DDPType: NBPDDPType,
 		Data:    []byte{0, 0, 0},
 	}

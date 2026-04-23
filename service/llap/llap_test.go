@@ -7,7 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
 	"github.com/pgodw/omnitalk/netlog"
 	"github.com/pgodw/omnitalk/port/localtalk"
 )
@@ -37,7 +38,7 @@ func TestDirectedTransmitLogsRetryAndBackoff(t *testing.T) {
 	defer log.SetOutput(oldWriter)
 	netlog.SetLevel(netlog.LevelDebug)
 
-	d, err := p.BuildDataFrame(0x22, appletalk.Datagram{
+	d, err := p.BuildDataFrame(0x22, ddp.Datagram{
 		DestinationNetwork: 1,
 		SourceNetwork:      1,
 		DestinationNode:    0x22,
@@ -89,7 +90,7 @@ func TestDatagramTransmitSkipsRTSCTSForSharedMedium(t *testing.T) {
 		lastActivity: time.Now().Add(-time.Second),
 	}
 
-	d, err := p.BuildDataFrame(0x22, appletalk.Datagram{
+	d, err := p.BuildDataFrame(0x22, ddp.Datagram{
 		DestinationNetwork: 1,
 		SourceNetwork:      1,
 		DestinationNode:    0x22,

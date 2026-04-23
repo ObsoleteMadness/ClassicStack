@@ -3,14 +3,15 @@ package rtmp
 import (
 	"encoding/binary"
 
-	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
 	"github.com/pgodw/omnitalk/port"
 	"github.com/pgodw/omnitalk/service"
 )
 
 type RespondingService struct {
 	ch chan struct {
-		d appletalk.Datagram
+		d ddp.Datagram
 		p port.Port
 	}
 	stop chan struct{}
@@ -19,7 +20,7 @@ type RespondingService struct {
 func NewRespondingService() *RespondingService {
 	return &RespondingService{
 		ch: make(chan struct {
-			d appletalk.Datagram
+			d ddp.Datagram
 			p port.Port
 		}, 256),
 		stop: make(chan struct{}),
@@ -129,10 +130,10 @@ func (s *RespondingService) Start(r service.Router) error {
 }
 
 func (s *RespondingService) Stop() error { close(s.stop); return nil }
-func (s *RespondingService) Inbound(d appletalk.Datagram, p port.Port) {
+func (s *RespondingService) Inbound(d ddp.Datagram, p port.Port) {
 	select {
 	case s.ch <- struct {
-		d appletalk.Datagram
+		d ddp.Datagram
 		p port.Port
 	}{d: d, p: p}:
 	default:

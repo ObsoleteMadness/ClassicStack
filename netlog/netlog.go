@@ -7,7 +7,7 @@ import (
 	"log"
 	"sync"
 
-	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/protocol/ddp"
 )
 
 // Level controls the minimum severity of messages that are emitted.
@@ -131,7 +131,7 @@ func portName(p ShortStringer) string {
 	return p.ShortString()
 }
 
-func datagramHeader(d appletalk.Datagram) string {
+func datagramHeader(d ddp.Datagram) string {
 	return fmt.Sprintf("%2d %d.%-3d %d.%-3d %3d %3d %d",
 		d.HopCount,
 		d.DestinationNetwork, d.DestinationNode,
@@ -157,22 +157,22 @@ func localtalkFrameHeader(frame []byte) string {
 }
 
 // LogDatagramInbound logs an inbound DDP datagram.
-func (n *NetLogger) LogDatagramInbound(network uint16, node uint8, d appletalk.Datagram, p ShortStringer) {
+func (n *NetLogger) LogDatagramInbound(network uint16, node uint8, d ddp.Datagram, p ShortStringer) {
 	n.emit(fmt.Sprintf("in to %d.%d", network, node), portName(p), datagramHeader(d), d.Data)
 }
 
 // LogDatagramUnicast logs an outbound unicast DDP datagram.
-func (n *NetLogger) LogDatagramUnicast(network uint16, node uint8, d appletalk.Datagram, p ShortStringer) {
+func (n *NetLogger) LogDatagramUnicast(network uint16, node uint8, d ddp.Datagram, p ShortStringer) {
 	n.emit(fmt.Sprintf("out to %d.%d", network, node), portName(p), datagramHeader(d), d.Data)
 }
 
 // LogDatagramBroadcast logs an outbound broadcast DDP datagram.
-func (n *NetLogger) LogDatagramBroadcast(d appletalk.Datagram, p ShortStringer) {
+func (n *NetLogger) LogDatagramBroadcast(d ddp.Datagram, p ShortStringer) {
 	n.emit("out broadcast", portName(p), datagramHeader(d), d.Data)
 }
 
 // LogDatagramMulticast logs an outbound multicast DDP datagram.
-func (n *NetLogger) LogDatagramMulticast(zoneName []byte, d appletalk.Datagram, p ShortStringer) {
+func (n *NetLogger) LogDatagramMulticast(zoneName []byte, d ddp.Datagram, p ShortStringer) {
 	n.emit(fmt.Sprintf("out to %s", string(zoneName)), portName(p), datagramHeader(d), d.Data)
 }
 
@@ -229,16 +229,16 @@ func SetLogFunc(fn LogFunc) { Default.SetLogFunc(fn) }
 
 // Package-level convenience wrappers around Default.
 
-func LogDatagramInbound(network uint16, node uint8, d appletalk.Datagram, p ShortStringer) {
+func LogDatagramInbound(network uint16, node uint8, d ddp.Datagram, p ShortStringer) {
 	Default.LogDatagramInbound(network, node, d, p)
 }
-func LogDatagramUnicast(network uint16, node uint8, d appletalk.Datagram, p ShortStringer) {
+func LogDatagramUnicast(network uint16, node uint8, d ddp.Datagram, p ShortStringer) {
 	Default.LogDatagramUnicast(network, node, d, p)
 }
-func LogDatagramBroadcast(d appletalk.Datagram, p ShortStringer) {
+func LogDatagramBroadcast(d ddp.Datagram, p ShortStringer) {
 	Default.LogDatagramBroadcast(d, p)
 }
-func LogDatagramMulticast(zoneName []byte, d appletalk.Datagram, p ShortStringer) {
+func LogDatagramMulticast(zoneName []byte, d ddp.Datagram, p ShortStringer) {
 	Default.LogDatagramMulticast(zoneName, d, p)
 }
 func LogEthernetFrameInbound(frame []byte, p ShortStringer) {

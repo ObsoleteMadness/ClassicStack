@@ -1,7 +1,8 @@
 package service
 
 import (
-	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
 	"github.com/pgodw/omnitalk/port"
 )
 
@@ -9,9 +10,9 @@ type mockPort struct {
 	shortStringFunc     func() string
 	startFunc           func(router port.RouterHooks) error
 	stopFunc            func() error
-	unicastFunc         func(network uint16, node uint8, datagram appletalk.Datagram)
-	broadcastFunc       func(datagram appletalk.Datagram)
-	multicastFunc       func(zoneName []byte, datagram appletalk.Datagram)
+	unicastFunc         func(network uint16, node uint8, datagram ddp.Datagram)
+	broadcastFunc       func(datagram ddp.Datagram)
+	multicastFunc       func(zoneName []byte, datagram ddp.Datagram)
 	setNetworkRangeFunc func(networkMin, networkMax uint16) error
 	networkFunc         func() uint16
 	nodeFunc            func() uint8
@@ -23,11 +24,11 @@ type mockPort struct {
 func (m *mockPort) ShortString() string                 { return m.shortStringFunc() }
 func (m *mockPort) Start(router port.RouterHooks) error { return m.startFunc(router) }
 func (m *mockPort) Stop() error                         { return m.stopFunc() }
-func (m *mockPort) Unicast(network uint16, node uint8, datagram appletalk.Datagram) {
+func (m *mockPort) Unicast(network uint16, node uint8, datagram ddp.Datagram) {
 	m.unicastFunc(network, node, datagram)
 }
-func (m *mockPort) Broadcast(datagram appletalk.Datagram) { m.broadcastFunc(datagram) }
-func (m *mockPort) Multicast(zoneName []byte, datagram appletalk.Datagram) {
+func (m *mockPort) Broadcast(datagram ddp.Datagram) { m.broadcastFunc(datagram) }
+func (m *mockPort) Multicast(zoneName []byte, datagram ddp.Datagram) {
 	m.multicastFunc(zoneName, datagram)
 }
 func (m *mockPort) SetNetworkRange(networkMin, networkMax uint16) error {
@@ -40,8 +41,8 @@ func (m *mockPort) NetworkMax() uint16    { return m.networkMaxFunc() }
 func (m *mockPort) ExtendedNetwork() bool { return m.extendedNetworkFunc() }
 
 type mockRouter struct {
-	routeFunc               func(datagram appletalk.Datagram, originating bool) error
-	replyFunc               func(datagram appletalk.Datagram, rxPort port.Port, ddpType uint8, data []byte)
+	routeFunc               func(datagram ddp.Datagram, originating bool) error
+	replyFunc               func(datagram ddp.Datagram, rxPort port.Port, ddpType uint8, data []byte)
 	portsListFunc           func() []port.Port
 	routingGetByNetworkFunc func(network uint16) (*RouteEntry, *bool)
 	routingEntriesFunc      func() []struct {
@@ -57,10 +58,10 @@ type mockRouter struct {
 	routingTableAgeFunc     func()
 }
 
-func (m *mockRouter) Route(datagram appletalk.Datagram, originating bool) error {
+func (m *mockRouter) Route(datagram ddp.Datagram, originating bool) error {
 	return m.routeFunc(datagram, originating)
 }
-func (m *mockRouter) Reply(datagram appletalk.Datagram, rxPort port.Port, ddpType uint8, data []byte) {
+func (m *mockRouter) Reply(datagram ddp.Datagram, rxPort port.Port, ddpType uint8, data []byte) {
 	m.replyFunc(datagram, rxPort, ddpType, data)
 }
 func (m *mockRouter) PortsList() []port.Port { return m.portsListFunc() }

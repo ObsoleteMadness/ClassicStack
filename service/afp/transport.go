@@ -1,7 +1,8 @@
 package afp
 
 import (
-	"github.com/pgodw/omnitalk/appletalk"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
 	"github.com/pgodw/omnitalk/port"
 	"github.com/pgodw/omnitalk/service"
 )
@@ -22,5 +23,5 @@ type Transport interface {
 
 	// Inbound processes an incoming AppleTalk datagram, if the transport uses DDP.
 	// For IP-only transports, this can be a no-op.
-	Inbound(d appletalk.Datagram, p port.Port)
+	Inbound(d ddp.Datagram, p port.Port)
 }
