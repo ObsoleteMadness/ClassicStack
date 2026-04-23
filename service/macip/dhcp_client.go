@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/pkg/hwaddr"
 	"github.com/pgodw/omnitalk/port/nat"
 )
 
@@ -120,8 +121,8 @@ func (c *dhcpClient) run(stop <-chan struct{}) {
 // fabricateMACForAT builds a locally administered Ethernet MAC from an
 // AppleTalk address, giving each Mac a stable identity for the DHCP server.
 func fabricateMACForAT(atNet uint16, atNode uint8) net.HardwareAddr {
-	// 0x02 = locally administered, unicast; last two bytes = "MI" (MacIP).
-	return net.HardwareAddr{0x02, byte(atNet >> 8), byte(atNet), atNode, 0x4D, 0x49}
+	e := hwaddr.MacIPEthernetFromAppleTalk(hwaddr.AppleTalk{Network: atNet, Node: atNode})
+	return e.HardwareAddr()
 }
 
 // RequestIP performs the full DHCP Discover→Offer→Request→Ack handshake for

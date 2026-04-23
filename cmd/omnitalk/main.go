@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
@@ -13,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/pkg/hwaddr"
 	"github.com/pgodw/omnitalk/port"
 	"github.com/pgodw/omnitalk/port/ethertalk"
 	"github.com/pgodw/omnitalk/port/localtalk"
@@ -234,16 +234,16 @@ func main() {
 		ports = append(ports, localtalk.NewTashTalkPort(*tashtalkSerial, uint16(*ttNet), []byte(*ttZone)))
 	}
 	if *pcapDev != "" {
-		hwAddr, err := parseMAC(*pcapHWAddr)
+		hwAddr, err := hwaddr.ParseEthernet(*pcapHWAddr)
 		if err != nil {
 			log.Fatalf("invalid -ethertalk-hw-address: %v", err)
 		}
 		var ep *ethertalk.PcapPort
 		switch *etBackend {
 		case "", "pcap":
-			ep, err = ethertalk.NewPcapPort(*pcapDev, hwAddr, uint16(*etNetMin), uint16(*etNetMax), uint16(*etDesiredNet), uint8(*etDesiredNode), [][]byte{[]byte(*etZone)})
+			ep, err = ethertalk.NewPcapPort(*pcapDev, hwAddr.Bytes(), uint16(*etNetMin), uint16(*etNetMax), uint16(*etDesiredNet), uint8(*etDesiredNode), [][]byte{[]byte(*etZone)})
 		case "tap", "tun":
-			ep, err = ethertalk.NewTapPort(*pcapDev, hwAddr, uint16(*etNetMin), uint16(*etNetMax), uint16(*etDesiredNet), uint8(*etDesiredNode), [][]byte{[]byte(*etZone)})
+			ep, err = ethertalk.NewTapPort(*pcapDev, hwAddr.Bytes(), uint16(*etNetMin), uint16(*etNetMax), uint16(*etDesiredNet), uint8(*etDesiredNode), [][]byte{[]byte(*etZone)})
 		default:
 			log.Fatalf("unsupported EtherTalk backend: %q", *etBackend)
 		}
@@ -254,11 +254,11 @@ func main() {
 			log.Fatalf("invalid -ethertalk-bridge-mode: %v", err)
 		}
 		if *etBridgeHostMAC != "" {
-			hostMAC, err := parseMAC(*etBridgeHostMAC)
+			hostMAC, err := hwaddr.ParseEthernet(*etBridgeHostMAC)
 			if err != nil {
 				log.Fatalf("invalid -ethertalk-bridge-host-mac: %v", err)
 			}
-			if err := ep.SetBridgeHostMAC(hostMAC); err != nil {
+			if err := ep.SetBridgeHostMAC(hostMAC.Bytes()); err != nil {
 				log.Fatalf("invalid -ethertalk-bridge-host-mac: %v", err)
 			}
 		}
@@ -330,10 +330,11 @@ func main() {
 		if err != nil {
 			log.Fatalf("invalid -macip-nat-subnet: %v", err)
 		}
-		ipMAC, err := parseMAC(ipMACStr)
+		ipMACAddr, err := hwaddr.ParseEthernet(ipMACStr)
 		if err != nil {
 			log.Fatalf("invalid IP-side MAC: %v", err)
 		}
+		ipMAC := ipMACAddr.HardwareAddr()
 		ipGW := net.ParseIP(*macipIPGW).To4()
 		if ipGW == nil {
 			log.Fatalf("invalid -macip-ip-gateway: %q", *macipIPGW)
@@ -520,18 +521,6 @@ func (v *volumeFlags) Set(s string) error {
 	}
 	*v = append(*v, cfg)
 	return nil
-}
-
-func parseMAC(s string) ([]byte, error) {
-	normalized := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(s), ":", ""), "-", "")
-	if len(normalized) != 12 {
-		return nil, fmt.Errorf("want 12 hex digits, got %d", len(normalized))
-	}
-	b, err := hex.DecodeString(normalized)
-	if err != nil {
-		return nil, err
-	}
-	return b, nil
 }
 
 func parseAppleDoubleMode(mode string) afp.AppleDoubleMode {
