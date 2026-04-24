@@ -10,11 +10,11 @@ https://dev.os9.ca/techpubs/mac/Networking/Networking-143.html#HEADING143-0
 package atp
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"time"
 
+	"github.com/pgodw/omnitalk/pkg/binutil"
 	"github.com/pgodw/omnitalk/protocol"
 )
 
@@ -124,26 +124,48 @@ type ATPHeader struct {
 // ATPHeaderSize is the size of an ATP header in bytes.
 const ATPHeaderSize = 8
 
-// Marshal binary-encodes the ATP header.
-func (h *ATPHeader) Marshal() []byte {
-	b := make([]byte, ATPHeaderSize)
+// WireSize returns the fixed 8-byte ATP header size.
+func (h *ATPHeader) WireSize() int { return ATPHeaderSize }
+
+// MarshalWire encodes the header into b. Returns ErrShortBuffer if
+// len(b) < ATPHeaderSize.
+func (h *ATPHeader) MarshalWire(b []byte) (int, error) {
+	if len(b) < ATPHeaderSize {
+		return 0, binutil.ErrShortBuffer
+	}
 	b[0] = h.Control
 	b[1] = h.Bitmap
-	binary.BigEndian.PutUint16(b[2:4], h.TransID)
-	binary.BigEndian.PutUint32(b[4:8], h.UserData)
+	_, _ = binutil.PutU16(b[2:], h.TransID)
+	_, _ = binutil.PutU32(b[4:], h.UserData)
+	return ATPHeaderSize, nil
+}
+
+// UnmarshalWire decodes the header from b.
+func (h *ATPHeader) UnmarshalWire(b []byte) (int, error) {
+	if len(b) < ATPHeaderSize {
+		return 0, binutil.ErrShortBuffer
+	}
+	h.Control = b[0]
+	h.Bitmap = b[1]
+	h.TransID, _, _ = binutil.GetU16(b[2:])
+	h.UserData, _, _ = binutil.GetU32(b[4:])
+	return ATPHeaderSize, nil
+}
+
+// Marshal binary-encodes the ATP header. Allocates; prefer MarshalWire.
+func (h *ATPHeader) Marshal() []byte {
+	b := make([]byte, ATPHeaderSize)
+	_, _ = h.MarshalWire(b)
 	return b
 }
 
 // Unmarshal binary-decodes the ATP header.
 func (h *ATPHeader) Unmarshal(b []byte) error {
-	if len(b) < ATPHeaderSize {
+	_, err := h.UnmarshalWire(b)
+	if err == binutil.ErrShortBuffer {
 		return errors.New("packet too short for ATP header")
 	}
-	h.Control = b[0]
-	h.Bitmap = b[1]
-	h.TransID = binary.BigEndian.Uint16(b[2:4])
-	h.UserData = binary.BigEndian.Uint32(b[4:8])
-	return nil
+	return err
 }
 
 func (h *ATPHeader) String() string {
