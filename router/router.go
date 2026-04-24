@@ -6,6 +6,7 @@ import (
 	"github.com/pgodw/omnitalk/protocol/ddp"
 
 	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/pkg/telemetry"
 	"github.com/pgodw/omnitalk/port"
 	"github.com/pgodw/omnitalk/port/localtalk"
 	"github.com/pgodw/omnitalk/service"
@@ -14,6 +15,8 @@ import (
 	"github.com/pgodw/omnitalk/service/rtmp"
 	"github.com/pgodw/omnitalk/service/zip"
 )
+
+var framesInTotal = telemetry.NewCounter("omnitalk_router_frames_in_total")
 
 type Router struct {
 	shortStr             string
@@ -155,6 +158,7 @@ func (r *Router) Stop() error {
 }
 
 func (r *Router) Inbound(datagram ddp.Datagram, rxPort port.Port) {
+	framesInTotal.Inc()
 	if rxPort.Network() != 0 {
 		if datagram.DestinationNetwork == 0 && datagram.SourceNetwork == 0 {
 			datagram.DestinationNetwork = rxPort.Network()

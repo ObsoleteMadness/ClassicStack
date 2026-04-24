@@ -251,6 +251,7 @@ func (p *Port) acquireAddressRun() {
 			probeNd := p.probeNode
 			p.probeAttempts++
 			p.probeMu.Unlock()
+			aarpProbeRetriesTotal.Inc()
 			p.sendAARPProbe(probeNet, probeNd)
 		}
 	}

@@ -423,6 +423,7 @@ func (s *AFPService) HandleCommand(data []byte) (resBytes []byte, errCode int32)
 	}
 
 	cmd := data[0]
+	afpCommandsTotal.Inc()
 
 	var req Request
 	var handler func(Request) (Response, int32)
