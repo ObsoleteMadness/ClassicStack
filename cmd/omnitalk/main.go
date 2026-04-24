@@ -13,6 +13,7 @@ import (
 
 	"github.com/pgodw/omnitalk/netlog"
 	"github.com/pgodw/omnitalk/pkg/hwaddr"
+	"github.com/pgodw/omnitalk/pkg/logging"
 	"github.com/pgodw/omnitalk/port"
 	"github.com/pgodw/omnitalk/port/ethertalk"
 	"github.com/pgodw/omnitalk/port/localtalk"
@@ -175,6 +176,17 @@ func main() {
 	} else {
 		log.Fatalf("unknown -log-level %q (want debug, info, or warn)", *logLevel)
 	}
+
+	// Install a pkg/logging root logger as the netlog shim's target so
+	// output flows through slog with source tagging and structured
+	// attributes. Each service will eventually take a *slog.Logger
+	// directly; until then, netlog.* calls forward here.
+	slogLevel, _ := logging.ParseLevel(*logLevel)
+	rootLogger := logging.New("OmniTalk", logging.Options{
+		Sinks: []logging.Sink{{Writer: os.Stderr, Format: logging.FormatConsole, Level: slogLevel}},
+	})
+	logging.SetDefault(rootLogger)
+	netlog.SetLogger(rootLogger)
 
 	if *logTraffic {
 		netlog.SetLogFunc(func(s string) { netlog.Debug("%s", s) })

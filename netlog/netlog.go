@@ -5,9 +5,11 @@
 package netlog
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"log"
+	"log/slog"
 	"strings"
 	"sync"
 
@@ -27,6 +29,36 @@ var (
 	levelMu  sync.RWMutex
 	minLevel = LevelInfo
 )
+
+// logger is the slog instance the shim forwards through. It is
+// deliberately separate from slog.Default(): netlog.SetLevel needs to
+// gate Debug traffic without disturbing whatever handler the application
+// has installed as the process-wide default. Callers that want
+// structured output install a pkg/logging-built logger here via
+// SetLogger; the zero value routes through slog.Default() with our own
+// level gate out front.
+var (
+	loggerMu sync.RWMutex
+	logger   *slog.Logger
+)
+
+// SetLogger installs the logger that Debug/Info/Warn forward to. Passing
+// nil reverts to slog.Default().
+func SetLogger(l *slog.Logger) {
+	loggerMu.Lock()
+	logger = l
+	loggerMu.Unlock()
+}
+
+func activeLogger() *slog.Logger {
+	loggerMu.RLock()
+	l := logger
+	loggerMu.RUnlock()
+	if l != nil {
+		return l
+	}
+	return slog.Default()
+}
 
 // SetLevel sets the minimum level. Kept for call-site compatibility; new
 // code should configure pkg/logging sinks directly.
@@ -56,26 +88,58 @@ func enabled(l Level) bool {
 	return ok
 }
 
-// Debug / Info / Warn write through stdlib log so existing call sites keep
-// their current behaviour during the migration. Step 7 will move each
-// caller onto pkg/logging directly and this package will be deleted.
-func Debug(format string, args ...any) {
-	if enabled(LevelDebug) {
-		log.Printf("DEBUG "+format, args...)
+func slogLevel(l Level) slog.Level {
+	switch l {
+	case LevelDebug:
+		return slog.LevelDebug
+	case LevelWarn:
+		return slog.LevelWarn
+	default:
+		return slog.LevelInfo
 	}
 }
 
-func Info(format string, args ...any) {
-	if enabled(LevelInfo) {
-		log.Printf("INFO  "+format, args...)
+// emit forwards to slog.Default(). Callers construct the root logger via
+// pkg/logging and install it with logging.SetDefault; this shim simply
+// adapts the legacy printf-style API onto slog. The netlog level gate
+// remains so callers that call SetLevel(LevelDebug) still see debug lines
+// even when slog.Default's handler is at Info — the shim uses
+// slog.Log(level), which slog honours regardless of the handler's level
+// as long as the handler is enabled at that level.
+func emit(l Level, format string, args ...any) {
+	if !enabled(l) {
+		return
 	}
+	lg := activeLogger()
+	// When no custom logger is installed the shim falls back to stdlib
+	// log so the historical format (captured by tests via log.SetOutput)
+	// stays intact. As soon as main installs a pkg/logging logger via
+	// SetLogger, output shifts to the structured pipeline.
+	loggerMu.RLock()
+	custom := logger != nil
+	loggerMu.RUnlock()
+	if !custom {
+		var tag string
+		switch l {
+		case LevelDebug:
+			tag = "DEBUG "
+		case LevelWarn:
+			tag = "WARN  "
+		default:
+			tag = "INFO  "
+		}
+		log.Printf(tag+format, args...)
+		return
+	}
+	lg.Log(context.Background(), slogLevel(l), fmt.Sprintf(format, args...))
 }
 
-func Warn(format string, args ...any) {
-	if enabled(LevelWarn) {
-		log.Printf("WARN  "+format, args...)
-	}
-}
+// Debug / Info / Warn are the legacy entry points. They now route through
+// slog.Default(); install a pkg/logging-constructed logger as default in
+// main and you get structured output with source tags for free.
+func Debug(format string, args ...any) { emit(LevelDebug, format, args...) }
+func Info(format string, args ...any)  { emit(LevelInfo, format, args...) }
+func Warn(format string, args ...any)  { emit(LevelWarn, format, args...) }
 
 // ShortStringer is implemented by ports that provide a short description.
 type ShortStringer interface {
