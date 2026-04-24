@@ -250,7 +250,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("invalid -ethertalk-hw-address: %v", err)
 		}
-		var ep *ethertalk.PcapPort
+		var ep port.Port
 		switch *etBackend {
 		case "", "pcap":
 			ep, err = ethertalk.NewPcapPort(*pcapDev, hwAddr.Bytes(), uint16(*etNetMin), uint16(*etNetMax), uint16(*etDesiredNet), uint8(*etDesiredNode), [][]byte{[]byte(*etZone)})
@@ -262,7 +262,11 @@ func main() {
 		if err != nil {
 			log.Fatalf("failed creating EtherTalk port (%s): %v", *etBackend, err)
 		}
-		if err := ep.SetBridgeModeString(*etBridgeMode); err != nil {
+		bc, ok := ep.(port.BridgeConfigurable)
+		if !ok {
+			log.Fatalf("EtherTalk backend %q does not support bridge configuration", *etBackend)
+		}
+		if err := bc.SetBridgeModeString(*etBridgeMode); err != nil {
 			log.Fatalf("invalid -ethertalk-bridge-mode: %v", err)
 		}
 		if *etBridgeHostMAC != "" {
@@ -270,7 +274,7 @@ func main() {
 			if err != nil {
 				log.Fatalf("invalid -ethertalk-bridge-host-mac: %v", err)
 			}
-			if err := ep.SetBridgeHostMAC(hostMAC.Bytes()); err != nil {
+			if err := bc.SetBridgeHostMAC(hostMAC.Bytes()); err != nil {
 				log.Fatalf("invalid -ethertalk-bridge-host-mac: %v", err)
 			}
 		}
