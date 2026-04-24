@@ -25,6 +25,7 @@ import (
 
 	"github.com/pgodw/omnitalk/protocol/ddp"
 
+	"github.com/pgodw/omnitalk/pkg/cnid"
 	"github.com/pgodw/omnitalk/port"
 	"github.com/pgodw/omnitalk/service"
 )
@@ -1056,7 +1057,7 @@ var alwaysHiddenNames = []string{
 }
 
 func (s *AFPService) isMetadataArtifact(name string, isDir bool, volID uint16) bool {
-	if !isDir && strings.EqualFold(name, afpSQLiteFilename) {
+	if !isDir && strings.EqualFold(name, cnid.SQLiteFilename) {
 		return true
 	}
 	for _, hidden := range alwaysHiddenNames {

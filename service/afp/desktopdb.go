@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/pkg/cnid"
 )
 
 const desktopDBFilename = ".desktop.db"
@@ -79,7 +80,7 @@ type sqliteDesktopDB struct {
 
 // NewSQLiteDesktopDB opens (or creates) the Desktop database for a volume root.
 func NewSQLiteDesktopDB(volumeRootPath string) (DesktopDB, error) {
-	db, err := openSQLiteDB(volumeRootPath)
+	db, err := cnid.OpenSQLiteDB(volumeRootPath)
 	if err != nil {
 		return nil, err
 	}
