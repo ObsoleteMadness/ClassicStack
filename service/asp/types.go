@@ -1,8 +1,9 @@
 package asp
 
 import (
-	"encoding/binary"
 	"time"
+
+	"github.com/pgodw/omnitalk/pkg/binutil"
 )
 
 // ---------------------------------------------------------------------------
@@ -255,9 +256,27 @@ func (p WriteContinuePacket) MarshalUserData() uint32 {
 
 // MarshalData returns the 2-byte ATP data payload (buffer size, big-endian).
 func (p WriteContinuePacket) MarshalData() []byte {
-	b := make([]byte, 2)
-	binary.BigEndian.PutUint16(b, p.BufferSize)
+	b := make([]byte, p.WireSize())
+	_, _ = p.MarshalWire(b)
 	return b
+}
+
+// WireSize returns the fixed 2-byte size of the ATP data payload.
+func (p WriteContinuePacket) WireSize() int { return 2 }
+
+// MarshalWire encodes BufferSize big-endian into b[0:2].
+func (p WriteContinuePacket) MarshalWire(b []byte) (int, error) {
+	return binutil.PutU16(b, p.BufferSize)
+}
+
+// UnmarshalWire decodes BufferSize from b[0:2].
+func (p *WriteContinuePacket) UnmarshalWire(b []byte) (int, error) {
+	v, n, err := binutil.GetU16(b)
+	if err != nil {
+		return 0, err
+	}
+	p.BufferSize = v
+	return n, nil
 }
 
 // ---------------------------------------------------------------------------
