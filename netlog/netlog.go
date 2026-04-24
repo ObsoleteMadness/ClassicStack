@@ -1,22 +1,26 @@
-// Package netlog provides leveled logging and optional network traffic logging,
+// Package netlog is a compatibility shim over log/slog via pkg/logging.
+// New code should construct a *slog.Logger through pkg/logging and pass
+// it explicitly; this package exists only until the migration (plan Step
+// 7) retires every caller. Do not grow the surface here.
 package netlog
 
 import (
 	"encoding/binary"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 
 	"github.com/pgodw/omnitalk/protocol/ddp"
 )
 
-// Level controls the minimum severity of messages that are emitted.
+// Level mirrors the legacy three-value enum but maps onto slog.Level.
 type Level int
 
 const (
-	LevelDebug Level = iota // log debug, info, and warn
-	LevelInfo               // log info and warn (default)
-	LevelWarn               // log warn only
+	LevelDebug Level = iota
+	LevelInfo
+	LevelWarn
 )
 
 var (
@@ -24,18 +28,17 @@ var (
 	minLevel = LevelInfo
 )
 
-// SetLevel sets the minimum log level. Messages below this level are suppressed.
-// Default is LevelInfo.
+// SetLevel sets the minimum level. Kept for call-site compatibility; new
+// code should configure pkg/logging sinks directly.
 func SetLevel(l Level) {
 	levelMu.Lock()
 	minLevel = l
 	levelMu.Unlock()
 }
 
-// ParseLevel converts a string ("debug", "info", "warn"/"warning") to a Level.
-// Returns (level, true) on success or (LevelInfo, false) if unrecognised.
+// ParseLevel accepts "debug" / "info" / "warn" / "warning".
 func ParseLevel(s string) (Level, bool) {
-	switch s {
+	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "debug":
 		return LevelDebug, true
 	case "info":
@@ -53,39 +56,38 @@ func enabled(l Level) bool {
 	return ok
 }
 
-// Debug logs a debug-level message (suppressed unless level is LevelDebug).
+// Debug / Info / Warn write through stdlib log so existing call sites keep
+// their current behaviour during the migration. Step 7 will move each
+// caller onto pkg/logging directly and this package will be deleted.
 func Debug(format string, args ...any) {
 	if enabled(LevelDebug) {
 		log.Printf("DEBUG "+format, args...)
 	}
 }
 
-// Info logs an info-level message.
 func Info(format string, args ...any) {
 	if enabled(LevelInfo) {
 		log.Printf("INFO  "+format, args...)
 	}
 }
 
-// Warn logs a warning-level message.
 func Warn(format string, args ...any) {
 	if enabled(LevelWarn) {
 		log.Printf("WARN  "+format, args...)
 	}
 }
 
-// ShortStringer is implemented by ports that can provide a short description string.
+// ShortStringer is implemented by ports that provide a short description.
 type ShortStringer interface {
 	ShortString() string
 }
 
-// LogFunc is a function that receives a single formatted network traffic log line.
-// Pass a function such as func(s string) { Debug("%s", s) } to channel traffic
-// output through the leveled logger.
+// LogFunc receives a single formatted network traffic log line. Kept for
+// the existing SetLogFunc wiring; protocol logging in pkg/logging/protolog
+// is the modern replacement.
 type LogFunc func(string)
 
-// NetLogger logs DDP datagrams and Ethernet/LocalTalk frames for debug purposes.
-// Logging is disabled (no-op) until SetLogFunc is called with a non-nil function.
+// NetLogger logs DDP datagrams and link-layer frames for debug purposes.
 type NetLogger struct {
 	mu    sync.Mutex
 	fn    LogFunc
@@ -95,9 +97,6 @@ type NetLogger struct {
 }
 
 // SetLogFunc enables network traffic logging and sets the output function.
-// Pass nil to disable. To enable, pass e.g.:
-//
-//	netlog.SetLogFunc(func(s string) { netlog.Debug("%s", s) })
 func (n *NetLogger) SetLogFunc(fn LogFunc) {
 	n.mu.Lock()
 	n.fn = fn
@@ -156,27 +155,18 @@ func localtalkFrameHeader(frame []byte) string {
 	return fmt.Sprintf("%3d %3d  type %02X", frame[0], frame[1], frame[2])
 }
 
-// LogDatagramInbound logs an inbound DDP datagram.
 func (n *NetLogger) LogDatagramInbound(network uint16, node uint8, d ddp.Datagram, p ShortStringer) {
 	n.emit(fmt.Sprintf("in to %d.%d", network, node), portName(p), datagramHeader(d), d.Data)
 }
-
-// LogDatagramUnicast logs an outbound unicast DDP datagram.
 func (n *NetLogger) LogDatagramUnicast(network uint16, node uint8, d ddp.Datagram, p ShortStringer) {
 	n.emit(fmt.Sprintf("out to %d.%d", network, node), portName(p), datagramHeader(d), d.Data)
 }
-
-// LogDatagramBroadcast logs an outbound broadcast DDP datagram.
 func (n *NetLogger) LogDatagramBroadcast(d ddp.Datagram, p ShortStringer) {
 	n.emit("out broadcast", portName(p), datagramHeader(d), d.Data)
 }
-
-// LogDatagramMulticast logs an outbound multicast DDP datagram.
 func (n *NetLogger) LogDatagramMulticast(zoneName []byte, d ddp.Datagram, p ShortStringer) {
 	n.emit(fmt.Sprintf("out to %s", string(zoneName)), portName(p), datagramHeader(d), d.Data)
 }
-
-// LogEthernetFrameInbound logs an inbound Ethernet frame (payload only).
 func (n *NetLogger) LogEthernetFrameInbound(frame []byte, p ShortStringer) {
 	if len(frame) < 14 {
 		return
@@ -188,8 +178,6 @@ func (n *NetLogger) LogEthernetFrameInbound(frame []byte, p ShortStringer) {
 	}
 	n.emit("frame in", portName(p), ethernetFrameHeader(frame), frame[14:end])
 }
-
-// LogEthernetFrameOutbound logs an outbound Ethernet frame (payload only).
 func (n *NetLogger) LogEthernetFrameOutbound(frame []byte, p ShortStringer) {
 	if len(frame) < 14 {
 		return
@@ -201,16 +189,12 @@ func (n *NetLogger) LogEthernetFrameOutbound(frame []byte, p ShortStringer) {
 	}
 	n.emit("frame out", portName(p), ethernetFrameHeader(frame), frame[14:end])
 }
-
-// LogLocaltalkFrameInbound logs an inbound LocalTalk frame (payload only).
 func (n *NetLogger) LogLocaltalkFrameInbound(frame []byte, p ShortStringer) {
 	if len(frame) < 3 {
 		return
 	}
 	n.emit("frame in", portName(p), localtalkFrameHeader(frame), frame[3:])
 }
-
-// LogLocaltalkFrameOutbound logs an outbound LocalTalk frame (payload only).
 func (n *NetLogger) LogLocaltalkFrameOutbound(frame []byte, p ShortStringer) {
 	if len(frame) < 3 {
 		return
@@ -222,12 +206,7 @@ func (n *NetLogger) LogLocaltalkFrameOutbound(frame []byte, p ShortStringer) {
 var Default = &NetLogger{}
 
 // SetLogFunc configures the Default NetLogger's output function.
-// Pass nil to disable. Example to enable at debug level:
-//
-//	netlog.SetLogFunc(func(s string) { netlog.Debug("%s", s) })
 func SetLogFunc(fn LogFunc) { Default.SetLogFunc(fn) }
-
-// Package-level convenience wrappers around Default.
 
 func LogDatagramInbound(network uint16, node uint8, d ddp.Datagram, p ShortStringer) {
 	Default.LogDatagramInbound(network, node, d, p)
