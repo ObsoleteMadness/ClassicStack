@@ -1,3 +1,5 @@
+//go:build macgarden
+
 package afp
 
 import (

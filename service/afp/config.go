@@ -15,12 +15,13 @@ func NormalizeFSType(s string) (string, error) {
 	if v == "" {
 		return FSTypeLocalFS, nil
 	}
-	switch v {
-	case FSTypeLocalFS, FSTypeMacGarden:
-		return v, nil
-	default:
-		return "", fmt.Errorf("invalid fs_type %q: want %q or %q", s, FSTypeLocalFS, FSTypeMacGarden)
+	fsRegistryMu.RLock()
+	_, ok := fsRegistry[v]
+	fsRegistryMu.RUnlock()
+	if !ok {
+		return "", fmt.Errorf("invalid fs_type %q (registered: %v)", s, registeredFSNames())
 	}
+	return v, nil
 }
 
 // VolumeConfig holds the configuration for a single AFP-shared volume.
