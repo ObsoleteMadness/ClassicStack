@@ -79,6 +79,13 @@ func New(seedNetwork uint16, seedZoneName []byte, respondToEnq bool, desiredNode
 }
 
 func (p *Port) ConfigureSendFrame(f func(frame []byte) error) { p.sendFrameFunc = f }
+
+// SetFrameSender wires the LocalTalk Port to a FrameSender backend. It
+// is the interface-shaped counterpart to ConfigureSendFrame and the
+// preferred way to attach new backends; ConfigureSendFrame remains for
+// callers that already pass closures.
+func (p *Port) SetFrameSender(fs FrameSender) { p.sendFrameFunc = fs.SendFrame }
+
 func (p *Port) ShortString() string                           { return "LocalTalk" }
 func (p *Port) SetLLAPLinkManager(m LinkManager)              { p.linkManager = m }
 func (p *Port) SetNodeIDChangeHook(hook func(node uint8))     { p.onNodeIDChange = hook }
