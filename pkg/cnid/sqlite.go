@@ -1,3 +1,5 @@
+//go:build sqlite_cnid
+
 package cnid
 
 import (
