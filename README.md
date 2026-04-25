@@ -8,6 +8,12 @@
 
 </div>
 
+## Architecture
+
+For a guided tour of the codebase — package layout, layering rules,
+core interfaces, logging/telemetry, and the AFP design — see
+[ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Features
 
 - Cross Platform Support: runs on Windows, MacOS and Linux.
