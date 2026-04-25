@@ -145,6 +145,9 @@ type AFPService struct {
 
 	transports []Transport
 	dumper     service.PacketDumper
+
+	stop chan struct{}
+	wg   sync.WaitGroup
 }
 
 func (s *AFPService) SetPacketDumper(dumper service.PacketDumper) {
@@ -184,6 +187,7 @@ func NewAFPService(serverName string, configs []VolumeConfig, fs FileSystem, tra
 	s := &AFPService{
 		ServerName:  serverName,
 		fs:          fs,
+		stop:        make(chan struct{}),
 		volumeFS:    make(map[uint16]FileSystem),
 		options:     options,
 		cnidStores:  make(map[uint16]CNIDStore),
@@ -254,7 +258,11 @@ func NewAFPService(serverName string, configs []VolumeConfig, fs FileSystem, tra
 			}
 		}
 	}
-	go s.rebuildDesktopDBsIfConfigured()
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.rebuildDesktopDBsIfConfigured()
+	}()
 	return s
 }
 
@@ -362,9 +370,25 @@ func (s *AFPService) Start(router service.Router) error {
 // Stop shuts down all underlying transports.
 func (s *AFPService) Stop() error {
 	var errs []error
+	if s.stop != nil {
+		select {
+		case <-s.stop:
+		default:
+			close(s.stop)
+		}
+	}
 	for _, t := range s.transports {
 		if err := t.Stop(); err != nil {
 			errs = append(errs, err)
+		}
+	}
+	s.wg.Wait()
+	type closer interface{ Close() error }
+	for _, fsys := range s.volumeFS {
+		if c, ok := fsys.(closer); ok {
+			if err := c.Close(); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	}
 	if len(errs) > 0 {

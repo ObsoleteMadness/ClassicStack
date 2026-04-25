@@ -183,6 +183,10 @@ type MacGardenFileSystem struct {
 
 	screenshotMu    sync.RWMutex
 	screenshotCache map[string][]byte // URL -> full image bytes
+
+	stop     chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
 }
 
 func init() {
@@ -207,6 +211,7 @@ func NewMacGardenFileSystem(root string) *MacGardenFileSystem {
 		descriptionByPath: make(map[string]macGardenAsset),
 		catSearchCache:    make(map[string]*macGardenSearchCache),
 		screenshotCache:   make(map[string][]byte),
+		stop:              make(chan struct{}),
 	}
 	fsys.loadCategories()
 	return fsys
@@ -961,6 +966,12 @@ func (m *MacGardenFileSystem) Capabilities() FileSystemCapabilities {
 	}
 }
 
+func (m *MacGardenFileSystem) Close() error {
+	m.stopOnce.Do(func() { close(m.stop) })
+	m.wg.Wait()
+	return nil
+}
+
 func (m *MacGardenFileSystem) CreateDir(_ string) error          { return fs.ErrPermission }
 func (m *MacGardenFileSystem) CreateFile(_ string) (File, error) { return nil, fs.ErrPermission }
 func (m *MacGardenFileSystem) Remove(_ string) error             { return fs.ErrPermission }
@@ -1464,8 +1475,15 @@ func (m *MacGardenFileSystem) itemAssetsByDir(dirName string) ([]macGardenAsset,
 	if len(needsProbe) > 0 && m.client.FetchHead() {
 		netlog.Info("[AFP][MacGarden] probing %d uncached asset size(s) for %q in background", len(needsProbe), dirName)
 		urls := needsProbe
+		m.wg.Add(1)
 		go func() {
+			defer m.wg.Done()
 			for _, u := range urls {
+				select {
+				case <-m.stop:
+					return
+				default:
+				}
 				if _, err := m.client.HeadContentLength(u); err != nil {
 					netlog.Warn("[AFP][MacGarden] background probe failed for %q: %v", u, err)
 				}
