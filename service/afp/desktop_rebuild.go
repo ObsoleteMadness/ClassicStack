@@ -86,23 +86,23 @@ func (s *AFPService) IngestAppleDoubleIcons(volID uint16, filePath string) int {
 		return 0
 	}
 
-	isAPPL := ad.hasFinder && ad.finderInfo[0] == 'A' && ad.finderInfo[1] == 'P' && ad.finderInfo[2] == 'P' && ad.finderInfo[3] == 'L'
+	isAPPL := ad.HasFinder && ad.FinderInfo[0] == 'A' && ad.FinderInfo[1] == 'P' && ad.FinderInfo[2] == 'P' && ad.FinderInfo[3] == 'L'
 	isIconFile := isIconFile(filepath.Base(filePath))
 
 	var icons []extractedIcon
 	// For APPL files, the AppleDouble embedded icon entry is ignored — the
 	// authoritative app icon lives in the resource fork's ID-128 icon family.
-	if !isAPPL && !isIconFile && ad.hasIconBW && len(ad.iconBW) > 0 && ad.hasFinder {
-		if icon, ok := iconFromAppleDoubleEntry(ad.finderInfo, ad.iconBW); ok {
+	if !isAPPL && !isIconFile && ad.HasIconBW && len(ad.IconBW) > 0 && ad.HasFinder {
+		if icon, ok := iconFromAppleDoubleEntry(ad.FinderInfo, ad.IconBW); ok {
 			icons = append(icons, icon)
 		}
 	}
-	if ad.hasRsrc && len(ad.rsrc) > 0 {
-		icons = append(icons, extractIconsFromResourceFork(ad.rsrc)...)
+	if ad.HasResource && len(ad.Resource) > 0 {
+		icons = append(icons, extractIconsFromResourceFork(ad.Resource)...)
 		if isAPPL {
 			var creator [4]byte
-			copy(creator[:], ad.finderInfo[4:8])
-			icons = append(icons, extractAppIconFromResourceFork(ad.rsrc, creator)...)
+			copy(creator[:], ad.FinderInfo[4:8])
+			icons = append(icons, extractAppIconFromResourceFork(ad.Resource, creator)...)
 		}
 		if isIconFile {
 			// Icon\r files store custom folder icons at resource ID -16455.
@@ -111,7 +111,7 @@ func (s *AFPService) IngestAppleDoubleIcons(volID uint16, filePath string) int {
 			var creator, fileType [4]byte
 			copy(creator[:], "MACS")
 			copy(fileType[:], "fldr")
-			icons = append(icons, extractCustomIconFromResourceFork(ad.rsrc, creator, fileType)...)
+			icons = append(icons, extractCustomIconFromResourceFork(ad.Resource, creator, fileType)...)
 		}
 	}
 	if len(icons) == 0 {

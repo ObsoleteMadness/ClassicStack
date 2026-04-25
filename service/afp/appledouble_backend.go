@@ -575,13 +575,13 @@ func (b *AppleDoubleBackend) readAppleDoubleDataPath(adPath string) appleDoubleD
 		return result
 	}
 
-	if parsed.hasFinder {
-		result.finderInfo = parsed.finderInfo
+	if parsed.HasFinder {
+		result.finderInfo = parsed.FinderInfo
 	}
-	if parsed.hasRsrc {
-		result.rsrcOffset = parsed.rsrcOffset
-		result.rsrcLength = int64(len(parsed.rsrc))
-		result.rsrcLenFieldAt = parsed.rsrcLenAt
+	if parsed.HasResource {
+		result.rsrcOffset = parsed.ResourceOffset
+		result.rsrcLength = int64(len(parsed.Resource))
+		result.rsrcLenFieldAt = parsed.ResourceLenAt
 		result.hasRsrc = true
 	}
 	return result
@@ -603,10 +603,10 @@ func (b *AppleDoubleBackend) writeFinderInfoPath(adPath string, fi [32]byte) err
 	}
 
 	parsed, _ := parseAppleDoubleBytes(bts)
-	parsed.finderInfo = fi
-	parsed.hasFinder = true
+	parsed.FinderInfo = fi
+	parsed.HasFinder = true
 
-	out := buildAppleDoubleBytes(parsed, parsed.hasComment, uint32(len(parsed.comment)))
+	out := buildAppleDoubleBytes(parsed, parsed.HasComment, uint32(len(parsed.Comment)))
 	return b.writeFile(adPath, out)
 }
 
@@ -626,8 +626,8 @@ func (b *AppleDoubleBackend) writeAppleDoubleCommentPath(adPath string, comment 
 	if len(comment) > 199 {
 		comment = comment[:199]
 	}
-	parsed.comment = append([]byte(nil), comment...)
-	parsed.hasComment = len(comment) > 0
+	parsed.Comment = append([]byte(nil), comment...)
+	parsed.HasComment = len(comment) > 0
 
 	out := buildAppleDoubleBytes(parsed, true, uint32(len(comment)))
 	return b.writeFile(adPath, out)
@@ -643,8 +643,8 @@ func (b *AppleDoubleBackend) removeAppleDoubleCommentPath(adPath string) error {
 	}
 
 	parsed, _ := parseAppleDoubleBytes(bts)
-	parsed.comment = nil
-	parsed.hasComment = false
+	parsed.Comment = nil
+	parsed.HasComment = false
 
 	out := buildAppleDoubleBytes(parsed, true, 0)
 	return b.writeFile(adPath, out)
@@ -659,11 +659,11 @@ func (b *AppleDoubleBackend) readAppleDoubleCommentPath(adPath string) ([]byte, 
 	if err != nil {
 		return nil, false
 	}
-	if !parsed.hasComment || len(parsed.comment) == 0 {
+	if !parsed.HasComment || len(parsed.Comment) == 0 {
 		return nil, false
 	}
-	if len(parsed.comment) > 128 {
-		return parsed.comment[:128], true
+	if len(parsed.Comment) > 128 {
+		return parsed.Comment[:128], true
 	}
-	return parsed.comment, true
+	return parsed.Comment, true
 }
