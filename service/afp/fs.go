@@ -4,7 +4,56 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"sort"
+	"sync"
 )
+
+// FileSystemFactory constructs a FileSystem from a normalized
+// VolumeConfig. Backends register themselves with RegisterFS during
+// package init().
+type FileSystemFactory func(VolumeConfig) (FileSystem, error)
+
+var (
+	fsRegistryMu sync.RWMutex
+	fsRegistry   = map[string]FileSystemFactory{}
+)
+
+// RegisterFS associates an FSType name with its factory. It is safe to
+// call from package init() blocks; a duplicate name panics so missing
+// build tags surface immediately rather than silently overriding the
+// default backend.
+func RegisterFS(name string, f FileSystemFactory) {
+	fsRegistryMu.Lock()
+	defer fsRegistryMu.Unlock()
+	if _, exists := fsRegistry[name]; exists {
+		panic(fmt.Sprintf("afp: FileSystem %q already registered", name))
+	}
+	fsRegistry[name] = f
+}
+
+// NewFS dispatches to the factory registered for cfg.FSType. The
+// returned error includes the list of registered names when no
+// factory matches.
+func NewFS(cfg VolumeConfig) (FileSystem, error) {
+	fsRegistryMu.RLock()
+	f, ok := fsRegistry[cfg.FSType]
+	fsRegistryMu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("afp: no FileSystem registered for fs_type %q (registered: %v)", cfg.FSType, registeredFSNames())
+	}
+	return f(cfg)
+}
+
+func registeredFSNames() []string {
+	fsRegistryMu.RLock()
+	defer fsRegistryMu.RUnlock()
+	out := make([]string, 0, len(fsRegistry))
+	for k := range fsRegistry {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
 
 // ForkMetadata contains AFP metadata that may be stored outside the data fork.
 type ForkMetadata struct {

@@ -183,6 +183,12 @@ type MacGardenFileSystem struct {
 	screenshotCache map[string][]byte // URL -> full image bytes
 }
 
+func init() {
+	RegisterFS(FSTypeMacGarden, func(cfg VolumeConfig) (FileSystem, error) {
+		return NewMacGardenFileSystem(filepath.Clean(cfg.Path)), nil
+	})
+}
+
 func NewMacGardenFileSystem(root string) *MacGardenFileSystem {
 	fsys := &MacGardenFileSystem{
 		root:              filepath.Clean(root),

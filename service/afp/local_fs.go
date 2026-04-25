@@ -7,6 +7,12 @@ import (
 
 type LocalFileSystem struct{}
 
+func init() {
+	RegisterFS(FSTypeLocalFS, func(cfg VolumeConfig) (FileSystem, error) {
+		return &LocalFileSystem{}, nil
+	})
+}
+
 // LocalFileSystem expects already-converted UTF-8 host paths from AFP service logic.
 
 func (l *LocalFileSystem) ReadDir(path string) ([]fs.DirEntry, error) {

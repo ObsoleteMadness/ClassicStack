@@ -344,15 +344,9 @@ func newBackendForVolumeConfig(cfg VolumeConfig) (FileSystem, error) {
 	if err != nil {
 		return nil, err
 	}
-	root := filepath.Clean(cfg.Path)
-	switch fsType {
-	case FSTypeLocalFS:
-		return &LocalFileSystem{}, nil
-	case FSTypeMacGarden:
-		return NewMacGardenFileSystem(root), nil
-	default:
-		return nil, fmt.Errorf("unsupported fs_type %q", fsType)
-	}
+	cfg.FSType = fsType
+	cfg.Path = filepath.Clean(cfg.Path)
+	return NewFS(cfg)
 }
 
 // Start initializes all underlying transports.
