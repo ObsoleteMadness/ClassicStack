@@ -16,6 +16,7 @@ import (
 	"github.com/pgodw/omnitalk/protocol/ddp"
 
 	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/pkg/binutil"
 	"github.com/pgodw/omnitalk/port"
 	"github.com/pgodw/omnitalk/service"
 	"github.com/pgodw/omnitalk/service/afp"
@@ -63,27 +64,47 @@ type Header struct {
 
 const HeaderSize = 16
 
-func (h *Header) Marshal() []byte {
-	b := make([]byte, HeaderSize)
+// WireSize returns the fixed 16-byte DSI header size.
+func (h *Header) WireSize() int { return HeaderSize }
+
+// MarshalWire encodes the header into b.
+func (h *Header) MarshalWire(b []byte) (int, error) {
+	if len(b) < HeaderSize {
+		return 0, binutil.ErrShortBuffer
+	}
 	b[0] = h.Flags
 	b[1] = h.Command
-	binary.BigEndian.PutUint16(b[2:4], h.RequestID)
-	binary.BigEndian.PutUint32(b[4:8], h.ErrorOffset)
-	binary.BigEndian.PutUint32(b[8:12], h.DataLen)
-	binary.BigEndian.PutUint32(b[12:16], h.Reserved)
+	_, _ = binutil.PutU16(b[2:], h.RequestID)
+	_, _ = binutil.PutU32(b[4:], h.ErrorOffset)
+	_, _ = binutil.PutU32(b[8:], h.DataLen)
+	_, _ = binutil.PutU32(b[12:], h.Reserved)
+	return HeaderSize, nil
+}
+
+// UnmarshalWire decodes the header from b.
+func (h *Header) UnmarshalWire(b []byte) (int, error) {
+	if len(b) < HeaderSize {
+		return 0, binutil.ErrShortBuffer
+	}
+	h.Flags = b[0]
+	h.Command = b[1]
+	h.RequestID, _, _ = binutil.GetU16(b[2:])
+	h.ErrorOffset, _, _ = binutil.GetU32(b[4:])
+	h.DataLen, _, _ = binutil.GetU32(b[8:])
+	h.Reserved, _, _ = binutil.GetU32(b[12:])
+	return HeaderSize, nil
+}
+
+func (h *Header) Marshal() []byte {
+	b := make([]byte, HeaderSize)
+	_, _ = h.MarshalWire(b)
 	return b
 }
 
 func (h *Header) Unmarshal(b []byte) error {
-	if len(b) < HeaderSize {
+	if _, err := h.UnmarshalWire(b); err != nil {
 		return io.ErrUnexpectedEOF
 	}
-	h.Flags = b[0]
-	h.Command = b[1]
-	h.RequestID = binary.BigEndian.Uint16(b[2:4])
-	h.ErrorOffset = binary.BigEndian.Uint32(b[4:8])
-	h.DataLen = binary.BigEndian.Uint32(b[8:12])
-	h.Reserved = binary.BigEndian.Uint32(b[12:16])
 	return nil
 }
 
