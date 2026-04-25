@@ -160,7 +160,7 @@ func (s *Service) Start(r service.Router) error {
 	s.link.start()
 
 	if s.dhcpMode {
-		s.dhcp = newDHCPClient(s.link)
+		s.dhcp = newDHCPClient(s.link, s.stop)
 		go s.dhcp.run(s.stop)
 		netlog.Info("macip: DHCP relay enabled — relaying DHCP and converting responses to MacIP configuration for clients")
 	}

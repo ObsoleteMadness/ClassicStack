@@ -397,21 +397,33 @@ func (l *etherIPLink) resolveMAC(ip net.IP) (net.HardwareAddr, error) {
 
 	l.sendARPRequest(ip4)
 
+	timer := time.NewTimer(arpLookupTimeout)
+	defer timer.Stop()
 	select {
 	case mac := <-ch:
 		return mac, nil
-	case <-time.After(arpLookupTimeout):
-		l.arpMu.Lock()
-		waiters := l.arpWait[key]
-		for i, c := range waiters {
-			if c == ch {
-				l.arpWait[key] = append(waiters[:i], waiters[i+1:]...)
-				break
-			}
-		}
-		l.arpMu.Unlock()
+	case <-l.stop:
+		l.dropARPWaiter(key, ch)
+		return nil, fmt.Errorf("ARP lookup aborted for %s: link closing", ip4)
+	case <-timer.C:
+		l.dropARPWaiter(key, ch)
 		return nil, fmt.Errorf("ARP timeout for %s", ip4)
 	}
+}
+
+// dropARPWaiter removes ch from the waiter list for key. Called when an
+// ARP request gives up (timeout or shutdown) so the next reply that
+// arrives doesn't get delivered to a goroutine that has already moved on.
+func (l *etherIPLink) dropARPWaiter(key [4]byte, ch chan net.HardwareAddr) {
+	l.arpMu.Lock()
+	waiters := l.arpWait[key]
+	for i, c := range waiters {
+		if c == ch {
+			l.arpWait[key] = append(waiters[:i], waiters[i+1:]...)
+			break
+		}
+	}
+	l.arpMu.Unlock()
 }
 
 // sendIPPacket injects a raw IPv4 packet onto the IP-side Ethernet network.

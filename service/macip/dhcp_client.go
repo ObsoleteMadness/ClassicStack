@@ -90,6 +90,10 @@ type dhcpClient struct {
 	// link is the IPv4 link used to transmit/receive packets.
 	link *etherIPLink
 
+	// stop signals service shutdown; in-flight RequestIP calls abort
+	// instead of blocking on dhcpTimeout.
+	stop <-chan struct{}
+
 	// mu protects the pending map.
 	mu sync.Mutex
 	// pending maps DHCP transaction ids to active pendingDHCP entries.
@@ -97,10 +101,12 @@ type dhcpClient struct {
 }
 
 // newDHCPClient constructs a dhcpClient that will use the provided
-// IP link to perform DHCP transactions.
-func newDHCPClient(link *etherIPLink) *dhcpClient {
+// IP link to perform DHCP transactions. stop is the service's lifecycle
+// channel; once closed, in-flight DHCP transactions return early.
+func newDHCPClient(link *etherIPLink, stop <-chan struct{}) *dhcpClient {
 	return &dhcpClient{
 		link:    link,
+		stop:    stop,
 		pending: make(map[uint32]*pendingDHCP),
 	}
 }
@@ -149,10 +155,15 @@ func (c *dhcpClient) RequestIP(atNet uint16, atNode uint8, preferredIP net.IP) *
 
 	c.sendDiscover(p, preferredIP)
 
+	timer := time.NewTimer(dhcpTimeout)
+	defer timer.Stop()
 	select {
 	case res := <-p.ch:
 		return res // nil on NAK
-	case <-time.After(dhcpTimeout):
+	case <-c.stop:
+		netlog.Debug("[macip-dhcp] aborting DHCP wait for AT %d.%d xid=0x%08x: service stopping", atNet, atNode, xid)
+		return nil
+	case <-timer.C:
 		netlog.Debug("[macip-dhcp] timeout waiting for Ack AT %d.%d xid=0x%08x", atNet, atNode, xid)
 		return nil
 	}

@@ -51,6 +51,12 @@ type Service struct {
 	onSessionOpen     func(*Session)
 	onSessionClose    func(*Session)
 	onSessionActivity func(*Session)
+
+	// lifeCtx is cancelled in Stop so background drain goroutines spawned
+	// for tickles, attentions, and write completions exit promptly instead
+	// of holding onto the ATP pending transaction past shutdown.
+	lifeCtx    context.Context
+	lifeCancel context.CancelFunc
 }
 
 // Spec-to-implementation mapping notes:
@@ -109,6 +115,7 @@ func (s *Service) Socket() uint8 { return ServerSocket }
 // traffic.
 func (s *Service) Start(router service.Router) error {
 	s.router = router
+	s.lifeCtx, s.lifeCancel = context.WithCancel(context.Background())
 
 	parms := s.SPGetParms()
 	s.maxCmdSize = int(parms.MaxCmdSize)
@@ -173,8 +180,21 @@ func (s *Service) Stop() error {
 	for _, z := range s.registeredZones {
 		s.nbp.UnregisterName([]byte(s.serverName), []byte(nbpType), z)
 	}
+	if s.lifeCancel != nil {
+		s.lifeCancel()
+	}
 	s.sm.Stop()
 	return nil
+}
+
+// drainCtx returns the lifecycle context for background drain goroutines.
+// Falls back to context.Background() if Start has not been called yet
+// (only happens in tests that exercise individual handlers in isolation).
+func (s *Service) drainCtx() context.Context {
+	if s.lifeCtx != nil {
+		return s.lifeCtx
+	}
+	return context.Background()
 }
 
 // Inbound accepts an incoming DDP datagram. ATP type only.
@@ -575,7 +595,7 @@ func (s *Service) handleASPWrite(in atp.IncomingRequest, reply atp.Replier) {
 // returned write data, then sends the SPWrtReply-equivalent result.
 func (s *Service) completeWrite(sess *Session, cmdBlock []byte, wantBytes uint32,
 	pending *atp.Pending, reply atp.Replier, bitmap uint8, receivedAt, wcSentAt time.Time) {
-	resp, err := pending.Wait(context.Background())
+	resp, err := pending.Wait(s.drainCtx())
 	wcRTT := time.Since(wcSentAt)
 	// Clear the pending state regardless of outcome.
 	sess.writeMu.Lock()
@@ -657,7 +677,7 @@ func (s *Service) sendTickle(sess *Session) {
 	}
 	// Drain in the background — we don't actually need the response, but
 	// we must release the TCB.
-	go func() { _, _ = pending.Wait(context.Background()) }()
+	go func() { _, _ = pending.Wait(s.drainCtx()) }()
 }
 
 // errToUserBytes converts a (possibly negative) ASP error constant into the
@@ -711,7 +731,7 @@ func (s *Service) SendAttention(sessID uint8, code uint16) error {
 	if err != nil {
 		return err
 	}
-	go func() { _, _ = pending.Wait(context.Background()) }()
+	go func() { _, _ = pending.Wait(s.drainCtx()) }()
 	netlog.Debug("[ASP] SendAttention: sess=%d code=0x%04X", sessID, code)
 	return nil
 }

@@ -316,14 +316,30 @@ func (s *Service) runDirectedTransmit(st *portState, frame localtalk.LLAPFrame) 
 		st.ctsCh = make(chan struct{}, 1)
 		ctsCh := st.ctsCh
 		st.mu.Unlock()
+		ctsTimer := time.NewTimer(ctsTimeout)
 		select {
 		case <-ctsCh:
+			ctsTimer.Stop()
 			if err := s.sendFrame(st, frame); err != nil {
 				return err
 			}
 			netlog.Debug("[LLAP] %s transmit success dst=%d attempt=%d local-backoff=%d", st.port.ShortString(), frame.DestinationNode, attempt, localBackoff)
 			return nil
-		case <-time.After(ctsTimeout):
+		case <-st.stop:
+			ctsTimer.Stop()
+			st.mu.Lock()
+			st.expectCTSFrom = 0
+			st.ctsCh = nil
+			st.mu.Unlock()
+			return fmt.Errorf("llap: port stopped during CTS wait")
+		case <-s.stop:
+			ctsTimer.Stop()
+			st.mu.Lock()
+			st.expectCTSFrom = 0
+			st.ctsCh = nil
+			st.mu.Unlock()
+			return fmt.Errorf("llap: service stopped during CTS wait")
+		case <-ctsTimer.C:
 			st.mu.Lock()
 			st.collisionHistory |= 1
 			collisionHistory := st.collisionHistory
