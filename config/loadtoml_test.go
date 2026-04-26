@@ -13,7 +13,7 @@ func TestLoad_ExampleFile(t *testing.T) {
 	if got := src.K.String("AFP.name"); got != "OmniTalk" {
 		t.Fatalf("AFP.name = %q, want %q", got, "OmniTalk")
 	}
-	if vols := src.K.MapKeys("Volumes"); len(vols) != 2 {
-		t.Fatalf("Volumes = %d, want 2", len(vols))
+	if vols := src.K.MapKeys("AFP.Volumes"); len(vols) != 2 {
+		t.Fatalf("AFP.Volumes = %d, want 2", len(vols))
 	}
 }

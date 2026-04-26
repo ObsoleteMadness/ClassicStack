@@ -50,13 +50,12 @@ zone = "EtherTalk Network"
 protocols = "ddp,tcp"
 binding = ":548"
 extension_map = "extmap.conf"
-
-[Volumes.Main]
-name = "Main"
-path = 'C:\Mac'
 cnid_backend = "memory"
 use_decomposed_names = true
-fork_backend = "AppleDouble"
+
+[AFP.Volumes.Main]
+name = "Main"
+path = 'C:\Mac'
 appledouble_mode = "legacy"
 
 [Logging]
@@ -91,36 +90,24 @@ log_traffic = true
 	if !cfg.MacIPEnabled || !cfg.MacIPNAT || cfg.MacIPGWIP != "10.1.0.1" || cfg.MacIPGatewayIP != "192.168.0.1" || cfg.MacIPNameserver != "1.1.1.1" {
 		t.Fatalf("unexpected MacIP config: %#v", cfg)
 	}
-	if cfg.AFPExtensionMapPath != filepath.Join(dir, "extmap.conf") {
-		t.Fatalf("AFPExtensionMapPath = %q, want %q", cfg.AFPExtensionMapPath, filepath.Join(dir, "extmap.conf"))
+	if cfg.AFP.ExtensionMap != filepath.Join(dir, "extmap.conf") {
+		t.Fatalf("AFP.ExtensionMap = %q, want %q", cfg.AFP.ExtensionMap, filepath.Join(dir, "extmap.conf"))
 	}
-	if len(cfg.AFPVolumes) != 1 || cfg.AFPVolumes[0].Path != `C:\Mac` {
-		t.Fatalf("unexpected AFP volumes: %#v", cfg.AFPVolumes)
+	if cfg.AFP.CNIDBackend != "memory" {
+		t.Fatalf("AFP.CNIDBackend = %q, want %q", cfg.AFP.CNIDBackend, "memory")
 	}
-	if cfg.AFPVolumes[0].AppleDoubleMode != afp.AppleDoubleModeLegacy {
-		t.Fatalf("expected volume to have legacy AppleDouble mode, got %q", cfg.AFPVolumes[0].AppleDoubleMode)
+	if !cfg.AFP.UseDecomposedNames {
+		t.Fatal("AFP.UseDecomposedNames = false, want true")
 	}
-}
-
-func TestLoadConfig_ConflictingVolumeOptions(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "server.toml")
-	content := `[Volumes.One]
-name = "One"
-path = "/tmp/one"
-use_decomposed_names = true
-
-[Volumes.Two]
-name = "Two"
-path = "/tmp/two"
-use_decomposed_names = false
-`
-	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
+	vols, err := cfg.AFP.ResolvedVolumes()
+	if err != nil {
+		t.Fatalf("ResolvedVolumes: %v", err)
 	}
-
-	if _, err := loadConfigFromFile(cfgPath); err == nil {
-		t.Fatal("expected conflict error, got nil")
+	if len(vols) != 1 || vols[0].Path != `C:\Mac` {
+		t.Fatalf("unexpected AFP volumes: %#v", vols)
+	}
+	if vols[0].AppleDoubleMode != afp.AppleDoubleModeLegacy {
+		t.Fatalf("expected volume to have legacy AppleDouble mode, got %q", vols[0].AppleDoubleMode)
 	}
 }
 
@@ -154,18 +141,15 @@ ip_gateway = "192.168.0.1"
 	}
 }
 
-// TestLoadConfig_PerVolumeAppleDoubleMode verifies that two volumes in the
-// same config file can independently specify different AppleDouble modes, and
-// that each volume carries its own setting rather than a shared global one.
 func TestLoadConfig_PerVolumeAppleDoubleMode(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "server.toml")
-	content := `[Volumes.Modern]
+	content := `[AFP.Volumes.Modern]
 name = "Modern"
 path = "/tmp/modern"
 appledouble_mode = "modern"
 
-[Volumes.Legacy]
+[AFP.Volumes.Legacy]
 name = "Legacy"
 path = "/tmp/legacy"
 appledouble_mode = "legacy"
@@ -179,41 +163,36 @@ appledouble_mode = "legacy"
 		t.Fatalf("loadConfigFromFile error: %v", err)
 	}
 
-	if len(cfg.AFPVolumes) != 2 {
-		t.Fatalf("expected 2 volumes, got %d", len(cfg.AFPVolumes))
+	vols, err := cfg.AFP.ResolvedVolumes()
+	if err != nil {
+		t.Fatalf("ResolvedVolumes: %v", err)
+	}
+	if len(vols) != 2 {
+		t.Fatalf("expected 2 volumes, got %d", len(vols))
 	}
 
 	volsByName := make(map[string]afp.VolumeConfig)
-	for _, v := range cfg.AFPVolumes {
+	for _, v := range vols {
 		volsByName[v.Name] = v
 	}
 
-	modernVol, ok := volsByName["Modern"]
-	if !ok {
-		t.Fatal("volume \"Modern\" not found")
+	if volsByName["Modern"].AppleDoubleMode != afp.AppleDoubleModeModern {
+		t.Fatalf("Modern AppleDoubleMode = %q", volsByName["Modern"].AppleDoubleMode)
 	}
-	if modernVol.AppleDoubleMode != afp.AppleDoubleModeModern {
-		t.Fatalf("Modern volume AppleDoubleMode = %q, want %q", modernVol.AppleDoubleMode, afp.AppleDoubleModeModern)
-	}
-
-	legacyVol, ok := volsByName["Legacy"]
-	if !ok {
-		t.Fatal("volume \"Legacy\" not found")
-	}
-	if legacyVol.AppleDoubleMode != afp.AppleDoubleModeLegacy {
-		t.Fatalf("Legacy volume AppleDoubleMode = %q, want %q", legacyVol.AppleDoubleMode, afp.AppleDoubleModeLegacy)
+	if volsByName["Legacy"].AppleDoubleMode != afp.AppleDoubleModeLegacy {
+		t.Fatalf("Legacy AppleDoubleMode = %q", volsByName["Legacy"].AppleDoubleMode)
 	}
 }
 
 func TestLoadConfig_PerVolumeFSType(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "server.toml")
-	content := `[Volumes.Local]
+	content := `[AFP.Volumes.Local]
 name = "Local"
 path = 'C:\Mac\Local'
 fs_type = "local_fs"
 
-[Volumes.Garden]
+[AFP.Volumes.Garden]
 name = "Garden"
 path = 'C:\Mac\Garden'
 fs_type = "macgarden"
@@ -226,25 +205,29 @@ fs_type = "macgarden"
 	if err != nil {
 		t.Fatalf("loadConfigFromFile error: %v", err)
 	}
-	if len(cfg.AFPVolumes) != 2 {
-		t.Fatalf("expected 2 volumes, got %d", len(cfg.AFPVolumes))
+	vols, err := cfg.AFP.ResolvedVolumes()
+	if err != nil {
+		t.Fatalf("ResolvedVolumes: %v", err)
 	}
-	vols := map[string]afp.VolumeConfig{}
-	for _, v := range cfg.AFPVolumes {
-		vols[v.Name] = v
+	if len(vols) != 2 {
+		t.Fatalf("expected 2 volumes, got %d", len(vols))
 	}
-	if vols["Local"].FSType != afp.FSTypeLocalFS {
-		t.Fatalf("Local fs_type = %q, want %q", vols["Local"].FSType, afp.FSTypeLocalFS)
+	byName := map[string]afp.VolumeConfig{}
+	for _, v := range vols {
+		byName[v.Name] = v
 	}
-	if vols["Garden"].FSType != afp.FSTypeMacGarden {
-		t.Fatalf("Garden fs_type = %q, want %q", vols["Garden"].FSType, afp.FSTypeMacGarden)
+	if byName["Local"].FSType != afp.FSTypeLocalFS {
+		t.Fatalf("Local fs_type = %q", byName["Local"].FSType)
+	}
+	if byName["Garden"].FSType != afp.FSTypeMacGarden {
+		t.Fatalf("Garden fs_type = %q", byName["Garden"].FSType)
 	}
 }
 
 func TestLoadConfig_InvalidFSType(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "server.toml")
-	content := `[Volumes.Bad]
+	content := `[AFP.Volumes.Bad]
 name = "Bad"
 path = 'C:\Mac\Bad'
 fs_type = "bananas"
@@ -260,7 +243,7 @@ fs_type = "bananas"
 func TestLoadConfig_MacGardenWithoutPath(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "server.toml")
-	content := `[Volumes.MacGarden]
+	content := `[AFP.Volumes.MacGarden]
 name = "Mac Garden"
 fs_type = "macgarden"
 `
@@ -272,16 +255,17 @@ fs_type = "macgarden"
 	if err != nil {
 		t.Fatalf("loadConfigFromFile error: %v", err)
 	}
-	if len(cfg.AFPVolumes) != 1 {
-		t.Fatalf("expected 1 volume, got %d", len(cfg.AFPVolumes))
+	vols, err := cfg.AFP.ResolvedVolumes()
+	if err != nil {
+		t.Fatalf("ResolvedVolumes: %v", err)
 	}
-	if cfg.AFPVolumes[0].FSType != afp.FSTypeMacGarden {
-		t.Fatalf("fs_type = %q, want %q", cfg.AFPVolumes[0].FSType, afp.FSTypeMacGarden)
+	if len(vols) != 1 {
+		t.Fatalf("expected 1 volume, got %d", len(vols))
 	}
-	if cfg.AFPVolumes[0].Path == "" {
-		t.Fatal("expected generated path for macgarden volume")
+	if vols[0].FSType != afp.FSTypeMacGarden {
+		t.Fatalf("fs_type = %q", vols[0].FSType)
 	}
-	if got, want := filepath.ToSlash(cfg.AFPVolumes[0].Path), ".macgarden/Mac_Garden"; got != want {
+	if got, want := filepath.ToSlash(vols[0].Path), ".macgarden/Mac_Garden"; got != want {
 		t.Fatalf("generated path = %q, want %q", got, want)
 	}
 }
@@ -289,7 +273,7 @@ fs_type = "macgarden"
 func TestLoadConfig_LocalFSWithoutPathStillFails(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "server.toml")
-	content := `[Volumes.Local]
+	content := `[AFP.Volumes.Local]
 name = "Local"
 fs_type = "local_fs"
 `

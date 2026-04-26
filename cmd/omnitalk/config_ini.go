@@ -11,10 +11,9 @@ import (
 	"github.com/pgodw/omnitalk/service/afp"
 )
 
-// fileConfig is the cmd-local view of the config file. It's populated by
-// reading sections out of a koanf.Koanf instance. The config package
-// itself owns no schema knowledge; each section's keys are resolved here
-// (or, for AFP volumes, in service/afp).
+// fileConfig is the cmd-local view of the config file. AFP owns its own
+// schema (afp.Config); other sections are still flattened here pending
+// the same per-service treatment.
 type fileConfig struct {
 	LogLevel     string
 	LogTraffic   bool
@@ -49,15 +48,7 @@ type fileConfig struct {
 	MacIPLeaseFile  string
 	MacIPZone       string
 
-	AFPEnabled             bool
-	AFPServerName          string
-	AFPZone                string
-	AFPProtocols           string
-	AFPTCPBinding          string
-	AFPExtensionMapPath    string
-	AFPDecomposedFilenames bool
-	AFPCNIDBackend         string
-	AFPVolumes             []afp.VolumeConfig
+	AFP afp.Config
 }
 
 func defaultFileConfig() fileConfig {
@@ -81,20 +72,12 @@ func defaultFileConfig() fileConfig {
 
 		MacIPSubnet: "192.168.100.0/24",
 
-		AFPEnabled:             true,
-		AFPServerName:          "Go File Server",
-		AFPProtocols:           "tcp,ddp",
-		AFPTCPBinding:          ":548",
-		AFPDecomposedFilenames: true,
-		AFPCNIDBackend:         "sqlite",
+		AFP: afp.DefaultConfig(),
 	}
 }
 
 func defaultMacGardenVolumePath(name string) string { return afp.DefaultMacGardenVolumePath(name) }
 
-// loadConfigFromFile parses the file at path as TOML and resolves it
-// into a fileConfig. Section schema lives here; the config package only
-// abstracts the source.
 func loadConfigFromFile(path string) (fileConfig, error) {
 	src, err := config.Load(path)
 	if err != nil {
@@ -156,29 +139,8 @@ func resolveFileConfig(src config.Source) (fileConfig, error) {
 	cfg.MacIPDHCPRelay = boolWithDefault(k, "MacIP.dhcp_relay", cfg.MacIPDHCPRelay)
 	cfg.MacIPZone = stringWithDefault(k, "MacIP.zone", cfg.MacIPZone)
 
-	cfg.AFPEnabled = boolWithDefault(k, "AFP.enabled", cfg.AFPEnabled)
-	cfg.AFPServerName = stringWithDefault(k, "AFP.name", cfg.AFPServerName)
-	cfg.AFPZone = stringWithDefault(k, "AFP.zone", cfg.AFPZone)
-	cfg.AFPProtocols = stringWithDefault(k, "AFP.protocols", cfg.AFPProtocols)
-	cfg.AFPTCPBinding = stringWithDefault(k, "AFP.binding", cfg.AFPTCPBinding)
-	cfg.AFPExtensionMapPath = stringWithDefault(k, "AFP.extension_map", cfg.AFPExtensionMapPath)
-	if cfg.AFPExtensionMapPath != "" && !filepath.IsAbs(cfg.AFPExtensionMapPath) && src.ConfigDir != "" {
-		cfg.AFPExtensionMapPath = filepath.Join(src.ConfigDir, cfg.AFPExtensionMapPath)
-	}
-
-	vols, decomposed, cnidBackend, volErr := afp.LoadVolumes(k, src.ConfigDir)
-	if volErr != nil {
-		return cfg, volErr
-	}
-	cfg.AFPVolumes = vols
-	if decomposed != nil {
-		cfg.AFPDecomposedFilenames = *decomposed
-	}
-	if cnidBackend != "" {
-		cfg.AFPCNIDBackend = cnidBackend
-	}
-	if !cfg.AFPEnabled {
-		cfg.AFPVolumes = nil
+	if err := loadAFP(k, src.ConfigDir, &cfg.AFP); err != nil {
+		return cfg, err
 	}
 
 	cfg.LogLevel = stringWithDefault(k, "Logging.level", cfg.LogLevel)
@@ -187,6 +149,25 @@ func resolveFileConfig(src config.Source) (fileConfig, error) {
 	cfg.ParseOutput = stringWithDefault(k, "Logging.parse_output", cfg.ParseOutput)
 
 	return cfg, nil
+}
+
+// loadAFP unmarshals the [AFP] subtree onto an already-defaulted target,
+// then runs the service's own validation. Defaults are seeded by the
+// caller so unset keys preserve them rather than zeroing.
+func loadAFP(k *koanf.Koanf, configDir string, target *afp.Config) error {
+	if !k.Exists("AFP") {
+		return nil
+	}
+	if err := k.UnmarshalWithConf("AFP", target, koanf.UnmarshalConf{Tag: "koanf"}); err != nil {
+		return fmt.Errorf("[AFP] %w", err)
+	}
+	if target.ExtensionMap != "" && !filepath.IsAbs(target.ExtensionMap) && configDir != "" {
+		target.ExtensionMap = filepath.Join(configDir, target.ExtensionMap)
+	}
+	if !target.Enabled {
+		target.Volumes = nil
+	}
+	return target.Validate()
 }
 
 func stringWithDefault(k *koanf.Koanf, path, def string) string {

@@ -160,14 +160,19 @@ func main() {
 		*parsePackets = cfg.ParsePackets
 		*parseOutput = cfg.ParseOutput
 
-		*afpServerName = cfg.AFPServerName
-		*afpZone = cfg.AFPZone
-		*afpProtocols = cfg.AFPProtocols
-		*afpTCPAddr = cfg.AFPTCPBinding
-		*afpExtensionMap = cfg.AFPExtensionMapPath
-		*afpDecomposedFilenames = cfg.AFPDecomposedFilenames
-		*afpCNIDBackend = cfg.AFPCNIDBackend
-		afpVolumes = volumeFlags(cfg.AFPVolumes)
+		*afpServerName = cfg.AFP.Name
+		*afpZone = cfg.AFP.Zone
+		*afpProtocols = cfg.AFP.Protocols
+		*afpTCPAddr = cfg.AFP.Binding
+		*afpExtensionMap = cfg.AFP.ExtensionMap
+		*afpDecomposedFilenames = cfg.AFP.UseDecomposedNames
+		*afpCNIDBackend = cfg.AFP.CNIDBackend
+		*afpAppleDoubleMode = cfg.AFP.AppleDoubleMode
+		vols, vErr := cfg.AFP.ResolvedVolumes()
+		if vErr != nil {
+			log.Fatalf("AFP volume config: %v", vErr)
+		}
+		afpVolumes = volumeFlags(vols)
 	}
 
 	if level, ok := netlog.ParseLevel(*logLevel); ok {

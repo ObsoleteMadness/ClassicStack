@@ -45,25 +45,22 @@ zone = "EtherTalk Network"     # AppleTalk zone to advertise the server in
 protocols = "ddp,tcp"          # Comma-separated: ddp, tcp, or both
 binding = ":548"               # When TCP is enabled, the bind address
 extension_map = "extmap.conf"  # Netatalk-compatible extension mapping file
+cnid_backend = "sqlite"        # CNID backend: sqlite or memory
+use_decomposed_names = true    # Encode host-reserved filename characters using 0xNN tokens
+appledouble_mode = "modern"    # "modern" (._ sidecars, Netatalk 4.x) or "legacy" (.appledouble folder)
 
-[Volumes.TestVolume]
-# Each AFP volume gets a [Volumes.<key>] section.
+[AFP.Volumes.TestVolume]
+# Each AFP volume gets an [AFP.Volumes.<key>] section.
 name = "Test Volume"           # Volume name. Max 31 characters.
 path = 'C:\Mac\Test'           # Host path. Use literal strings on Windows to skip TOML escapes.
 fs_type = "local_fs"           # Filesystem backend: local_fs (default) or macgarden
-cnid_backend = ""              # Blank for default ("memory")
-use_decomposed_names = true    # Encode host-reserved filename characters using 0xNN tokens. Default true.
-fork_backend = "AppleDouble"   # Currently only "AppleDouble" is implemented
-appledouble_mode = "modern"    # "modern" (._ sidecars, Netatalk 4.x) or "legacy" (.appledouble folder, Netatalk 2.x)
+appledouble_mode = "modern"    # Per-volume override; falls back to AFP.appledouble_mode
 rebuild_desktop_db = false     # Rebuild the desktop DB from resource forks at startup
 
-[Volumes.Volume68k]
+[AFP.Volumes.Volume68k]
 name = "Volume 68K"
 path = 'C:\Mac\Volume68K'
 fs_type = "local_fs"
-cnid_backend = ""
-use_decomposed_names = true
-fork_backend = "AppleDouble"
 appledouble_mode = "legacy"
 rebuild_desktop_db = false
 

@@ -41,14 +41,14 @@ protocols = "ddp,tcp"
 binding = ":548"
 extension_map = "extmap.conf"
 
-# AFP Volume Configuration — each volume gets a [Volumes.<key>] section.
-[Volumes.Default]
+# AFP Volume Configuration — each volume gets an [AFP.Volumes.<key>] section.
+[AFP.Volumes.Default]
 name = "Welcome"
 path = "./Sample Volume"
 read_only = true
 rebuild_desktop_db = true
 
-[Volumes.Shared]
+[AFP.Volumes.Shared]
 name = "Shared"
 path = "./shared"
 rebuild_desktop_db = false

@@ -43,30 +43,24 @@ protocols = "ddp,tcp"         # Comma-separated: ddp, tcp, or both
 binding = ":548"
 extension_map = "extmap.conf" # Netatalk-compatible extension mapping file
 
-[Volumes.Default]
+[AFP.Volumes.Default]
 name = "Welcome"
 path = "./dist/Sample Volume"
 read_only = true
 
-[Volumes.TestVolume]
+[AFP.Volumes.TestVolume]
 name = "Test Volume"          # Volume name. Max 31 characters.
 path = 'C:\Mac\Test'
-cnid_backend = ""             # blank for default ("memory")
-use_decomposed_names = true
-fork_backend = "AppleDouble"
-appledouble_mode = "modern"   # "modern" (._ sidecars) or "legacy" (.appledouble folder)
+appledouble_mode = "modern"   # per-volume override; "modern" (._ sidecars) or "legacy" (.appledouble folder)
 rebuild_desktop_db = false
 
-[Volumes.Volume68k]
+[AFP.Volumes.Volume68k]
 name = "Volume 68K"
 path = 'C:\Mac\Volume68K'
-cnid_backend = ""
-use_decomposed_names = true
-fork_backend = "AppleDouble"
 appledouble_mode = "legacy"
 rebuild_desktop_db = false
 
-[Volumes.MacGarden]
+[AFP.Volumes.MacGarden]
 name = "Mac Garden"
 fs_type = "macgarden"
 
