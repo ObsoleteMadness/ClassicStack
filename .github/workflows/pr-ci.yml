@@ -31,6 +31,66 @@ jobs:
         shell: bash
         run: bash scripts/ci/test.sh
 
+  quality:
+    name: Quality (vet + race + lint + vuln)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install libpcap headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpcap-dev
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Race-enabled tests
+        run: go test -race -count=1 ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  build-tags:
+    name: Build-tag matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        tags:
+          - ""
+          - "macgarden"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install libpcap headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpcap-dev
+
+      - name: Build with tags="${{ matrix.tags }}"
+        run: go build -tags "${{ matrix.tags }}" ./...
+
   build:
     name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

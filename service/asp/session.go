@@ -162,7 +162,6 @@ func (m *SessionManager) Close(id uint8) {
 	}
 	m.mu.Unlock()
 	if ok {
-		snap := *sess
 		close(sess.stop)
 		// Cancel any in-flight WriteContinue.
 		sess.writeMu.Lock()
@@ -172,7 +171,7 @@ func (m *SessionManager) Close(id uint8) {
 		sess.write = nil
 		sess.writeMu.Unlock()
 		if onClose != nil {
-			onClose(&snap)
+			onClose(sess)
 		}
 	}
 }
