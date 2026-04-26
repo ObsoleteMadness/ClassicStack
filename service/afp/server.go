@@ -12,6 +12,7 @@ package afp
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"io/fs"
@@ -392,7 +393,7 @@ func (s *Service) Stop() error {
 		}
 	}
 	if len(errs) > 0 {
-		return fmt.Errorf("AFPService Stop errors: %v", errs)
+		return fmt.Errorf("afp: stop: %w", errors.Join(errs...))
 	}
 	return nil
 }
