@@ -75,16 +75,16 @@ log_traffic = true
 	if cfg.LogLevel != "debug" || !cfg.LogTraffic || !cfg.ParsePackets {
 		t.Fatalf("unexpected logging config: %#v", cfg)
 	}
-	if cfg.LToUDPInterface != "192.168.0.103" || cfg.LToUDPSeedNetwork != 11 || cfg.TashTalkPort != "COM1" {
+	if cfg.LToUDP.Interface != "192.168.0.103" || cfg.LToUDP.SeedNetwork != 11 || cfg.TashTalk.Port != "COM1" {
 		t.Fatalf("unexpected LocalTalk/TashTalk config: %#v", cfg)
 	}
-	if cfg.EtherTalkDevice != "eth0" || cfg.EtherTalkSeedNetworkMax != 9 {
+	if cfg.EtherTalk.Device != "eth0" || cfg.EtherTalk.SeedNetworkMax != 9 {
 		t.Fatalf("unexpected EtherTalk config: %#v", cfg)
 	}
-	if cfg.EtherTalkBackend != "pcap" {
-		t.Fatalf("unexpected EtherTalk backend: %q", cfg.EtherTalkBackend)
+	if cfg.EtherTalk.Backend != "pcap" {
+		t.Fatalf("unexpected EtherTalk backend: %q", cfg.EtherTalk.Backend)
 	}
-	if cfg.EtherTalkBridgeMode != "wifi" || cfg.EtherTalkBridgeHostMAC != "AA:BB:CC:DD:EE:FF" {
+	if cfg.EtherTalk.BridgeMode != "wifi" || cfg.EtherTalk.BridgeHostMAC != "AA:BB:CC:DD:EE:FF" {
 		t.Fatalf("unexpected EtherTalk bridge config: %#v", cfg)
 	}
 	if !cfg.MacIPEnabled || !cfg.MacIPNAT || cfg.MacIPGWIP != "10.1.0.1" || cfg.MacIPGatewayIP != "192.168.0.1" || cfg.MacIPNameserver != "1.1.1.1" {

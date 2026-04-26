@@ -129,23 +129,23 @@ func main() {
 		*logLevel = cfg.LogLevel
 		*logTraffic = cfg.LogTraffic
 
-		*ltoudp = cfg.LToUDPEnabled
-		*ltIface = cfg.LToUDPInterface
-		*ltNet = cfg.LToUDPSeedNetwork
-		*ltZone = cfg.LToUDPSeedZone
+		*ltoudp = cfg.LToUDP.Enabled
+		*ltIface = cfg.LToUDP.Interface
+		*ltNet = cfg.LToUDP.SeedNetwork
+		*ltZone = cfg.LToUDP.SeedZone
 
-		*tashtalkSerial = cfg.TashTalkPort
-		*ttNet = cfg.TashTalkSeedNetwork
-		*ttZone = cfg.TashTalkSeedZone
+		*tashtalkSerial = cfg.TashTalk.Port
+		*ttNet = cfg.TashTalk.SeedNetwork
+		*ttZone = cfg.TashTalk.SeedZone
 
-		*pcapDev = cfg.EtherTalkDevice
-		*etBackend = cfg.EtherTalkBackend
-		*pcapHWAddr = cfg.EtherTalkHWAddr
-		*etBridgeMode = cfg.EtherTalkBridgeMode
-		*etBridgeHostMAC = cfg.EtherTalkBridgeHostMAC
-		*etNetMin = cfg.EtherTalkSeedNetworkMin
-		*etNetMax = cfg.EtherTalkSeedNetworkMax
-		*etZone = cfg.EtherTalkSeedZone
+		*pcapDev = cfg.EtherTalk.Device
+		*etBackend = cfg.EtherTalk.Backend
+		*pcapHWAddr = cfg.EtherTalk.HWAddress
+		*etBridgeMode = cfg.EtherTalk.BridgeMode
+		*etBridgeHostMAC = cfg.EtherTalk.BridgeHostMAC
+		*etNetMin = cfg.EtherTalk.SeedNetworkMin
+		*etNetMax = cfg.EtherTalk.SeedNetworkMax
+		*etZone = cfg.EtherTalk.SeedZone
 
 		*macipEnable = cfg.MacIPEnabled
 		*macipGWIP = cfg.MacIPGWIP
