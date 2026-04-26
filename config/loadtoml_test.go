@@ -3,16 +3,17 @@ package config
 import "testing"
 
 // TestLoad_ExampleFile loads the canonical server.toml.example from the
-// repo root to make sure the schema and the example stay in sync.
+// repo root to make sure the parser still accepts the shipped example.
+// Schema-level checks live with the consumers (e.g. service/afp).
 func TestLoad_ExampleFile(t *testing.T) {
-	cfg, err := Load("../server.toml.example")
+	src, err := Load("../server.toml.example")
 	if err != nil {
 		t.Fatalf("Load(server.toml.example): %v", err)
 	}
-	if cfg.AFPServerName != "OmniTalk" {
-		t.Fatalf("AFPServerName = %q, want %q", cfg.AFPServerName, "OmniTalk")
+	if got := src.K.String("AFP.name"); got != "OmniTalk" {
+		t.Fatalf("AFP.name = %q, want %q", got, "OmniTalk")
 	}
-	if len(cfg.AFPVolumes) != 2 {
-		t.Fatalf("AFPVolumes = %d, want 2", len(cfg.AFPVolumes))
+	if vols := src.K.MapKeys("Volumes"); len(vols) != 2 {
+		t.Fatalf("Volumes = %d, want 2", len(vols))
 	}
 }
