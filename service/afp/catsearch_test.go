@@ -81,7 +81,7 @@ func TestFPCatSearchReq_SearchQuery_ParsesFinderPattern(t *testing.T) {
 func TestHandleCatSearch_UsesParsedQuery(t *testing.T) {
 	root := filepath.Clean(t.TempDir())
 	captureFS := &catSearchCaptureFS{root: root}
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Garden", Path: root}}, captureFS, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Garden", Path: root}}, captureFS, nil)
 
 	req := &FPCatSearchReq{
 		VolumeID:            1,
@@ -120,7 +120,7 @@ func TestHandleCatSearch_RespectsPayloadCap(t *testing.T) {
 		paths = append(paths, filepath.Join(root, name))
 	}
 	captureFS := &catSearchCaptureFS{root: root, paths: paths}
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Garden", Path: root}}, captureFS, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Garden", Path: root}}, captureFS, nil)
 
 	req := &FPCatSearchReq{
 		VolumeID:            1,
@@ -156,7 +156,7 @@ func TestMacGardenCatSearch_PaginationCursor(t *testing.T) {
 		paths = append(paths, filepath.Join(root, name))
 	}
 	captureFS := &catSearchCaptureFS{root: root, paths: paths}
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Garden", Path: root}}, captureFS, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Garden", Path: root}}, captureFS, nil)
 
 	req := &FPCatSearchReq{
 		VolumeID:            1,
@@ -212,7 +212,7 @@ func TestHandleCatSearch_ResultsRecordStructLengthIsSpecCompliant(t *testing.T) 
 		filepath.Join(root, "Spectre 3.0"),
 	}
 	captureFS := &catSearchCaptureFS{root: root, paths: paths}
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Garden", Path: root}}, captureFS, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Garden", Path: root}}, captureFS, nil)
 
 	req := &FPCatSearchReq{
 		VolumeID:            1,

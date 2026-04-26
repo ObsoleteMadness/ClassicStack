@@ -463,12 +463,12 @@ func main() {
 			netlog.Info("[MAIN][AFP] enabled TCP transport on %s", *afpTCPAddr)
 		}
 
-		afpSvc := afp.NewAFPService(
+		afpSvc := afp.NewService(
 			*afpServerName,
 			[]afp.VolumeConfig(afpVolumes),
 			nil,
 			transports,
-			afp.AFPOptions{DecomposedFilenames: *afpDecomposedFilenames, CNIDBackend: *afpCNIDBackend, AppleDoubleMode: parseAppleDoubleMode(*afpAppleDoubleMode), ExtensionMap: extMap, PersistentVolumeIDs: true},
+			afp.Options{DecomposedFilenames: *afpDecomposedFilenames, CNIDBackend: *afpCNIDBackend, AppleDoubleMode: parseAppleDoubleMode(*afpAppleDoubleMode), ExtensionMap: extMap, PersistentVolumeIDs: true},
 		)
 
 		// Wire up the circular dependencies for handlers

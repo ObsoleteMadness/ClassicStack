@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 )
 
-func (s *AFPService) handleOpenDir(req *FPOpenDirReq) (*FPOpenDirRes, int32) {
+func (s *Service) handleOpenDir(req *FPOpenDirReq) (*FPOpenDirRes, int32) {
 	parentPath, ok := s.getDIDPath(req.VolumeID, req.DirID)
 	if !ok && req.DirID != 0 {
 		return &FPOpenDirRes{}, ErrObjectNotFound
@@ -32,7 +32,7 @@ func (s *AFPService) handleOpenDir(req *FPOpenDirReq) (*FPOpenDirRes, int32) {
 	return res, NoErr
 }
 
-func (s *AFPService) handleEnumerate(req *FPEnumerateReq) (*FPEnumerateRes, int32) {
+func (s *Service) handleEnumerate(req *FPEnumerateReq) (*FPEnumerateRes, int32) {
 	log.Printf("[AFP] FPEnumerate: DirID=%d Path=%q StartIndex=%d ReqCount=%d", req.DirID, req.Path, req.StartIndex, req.ReqCount)
 
 	if req.FileBitmap == 0 && req.DirBitmap == 0 {
@@ -261,12 +261,12 @@ const (
 		DirBitmapProDOSInfo
 )
 
-func (s *AFPService) handleCloseDir(req *FPCloseDirReq) (*FPCloseDirRes, int32) {
+func (s *Service) handleCloseDir(req *FPCloseDirReq) (*FPCloseDirRes, int32) {
 	log.Printf("[AFP] FPCloseDir called for DirID %d on Vol %d", req.DirID, req.VolumeID)
 	return &FPCloseDirRes{}, NoErr
 }
 
-func (s *AFPService) handleSetDirParms(req *FPSetDirParmsReq) (*FPSetDirParmsRes, int32) {
+func (s *Service) handleSetDirParms(req *FPSetDirParmsReq) (*FPSetDirParmsRes, int32) {
 	if s.volumeIsReadOnly(req.VolumeID) {
 		return &FPSetDirParmsRes{}, ErrVolLocked
 	}
@@ -278,7 +278,7 @@ func (s *AFPService) handleSetDirParms(req *FPSetDirParmsReq) (*FPSetDirParmsRes
 	return &FPSetDirParmsRes{}, NoErr
 }
 
-func (s *AFPService) handleCreateDir(req *FPCreateDirReq) (*FPCreateDirRes, int32) {
+func (s *Service) handleCreateDir(req *FPCreateDirReq) (*FPCreateDirRes, int32) {
 	if s.fs == nil {
 		return &FPCreateDirRes{}, ErrAccessDenied
 	}

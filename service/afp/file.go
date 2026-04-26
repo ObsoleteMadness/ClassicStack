@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 )
 
-func (s *AFPService) handleSetFileParms(req *FPSetFileParmsReq) (*FPSetFileParmsRes, int32) {
+func (s *Service) handleSetFileParms(req *FPSetFileParmsReq) (*FPSetFileParmsRes, int32) {
 	if s.volumeIsReadOnly(req.VolumeID) {
 		return &FPSetFileParmsRes{}, ErrVolLocked
 	}
@@ -20,7 +20,7 @@ func (s *AFPService) handleSetFileParms(req *FPSetFileParmsReq) (*FPSetFileParms
 	return &FPSetFileParmsRes{}, NoErr
 }
 
-func (s *AFPService) handleCreateFile(req *FPCreateFileReq) (*FPCreateFileRes, int32) {
+func (s *Service) handleCreateFile(req *FPCreateFileReq) (*FPCreateFileRes, int32) {
 	if s.fs == nil {
 		return &FPCreateFileRes{}, ErrAccessDenied
 	}
@@ -54,7 +54,7 @@ func (s *AFPService) handleCreateFile(req *FPCreateFileReq) (*FPCreateFileRes, i
 	return &FPCreateFileRes{}, NoErr
 }
 
-func (s *AFPService) handleCopyFile(req *FPCopyFileReq) (*FPCopyFileRes, int32) {
+func (s *Service) handleCopyFile(req *FPCopyFileReq) (*FPCopyFileRes, int32) {
 	srcParent, ok := s.resolveDIDPath(req.SrcVolumeID, req.SrcDirID)
 	if !ok {
 		return &FPCopyFileRes{}, ErrObjectNotFound

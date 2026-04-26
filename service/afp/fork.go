@@ -13,7 +13,7 @@ import (
 	"syscall"
 )
 
-func (s *AFPService) handleOpenFork(req *FPOpenForkReq) (*FPOpenForkRes, int32) {
+func (s *Service) handleOpenFork(req *FPOpenForkReq) (*FPOpenForkRes, int32) {
 	parentPath, ok := s.getDIDPath(req.VolumeID, req.DirID)
 	if !ok && req.DirID != 0 {
 		return &FPOpenForkRes{}, ErrObjectNotFound
@@ -109,7 +109,7 @@ func (s *AFPService) handleOpenFork(req *FPOpenForkReq) (*FPOpenForkRes, int32) 
 	return res, NoErr
 }
 
-func (s *AFPService) handleCloseFork(req *FPCloseForkReq) (*FPCloseForkRes, int32) {
+func (s *Service) handleCloseFork(req *FPCloseForkReq) (*FPCloseForkRes, int32) {
 	s.mu.Lock()
 	handle, ok := s.forks[req.OForkRefNum]
 	if ok {
@@ -135,7 +135,7 @@ func (s *AFPService) handleCloseFork(req *FPCloseForkReq) (*FPCloseForkRes, int3
 	return &FPCloseForkRes{}, NoErr
 }
 
-func (s *AFPService) handleFlush(req *FPFlushReq) (*FPFlushRes, int32) {
+func (s *Service) handleFlush(req *FPFlushReq) (*FPFlushRes, int32) {
 	s.mu.RLock()
 	var toSync []*forkHandle
 	for _, h := range s.forks {
@@ -150,7 +150,7 @@ func (s *AFPService) handleFlush(req *FPFlushReq) (*FPFlushRes, int32) {
 	return &FPFlushRes{}, NoErr
 }
 
-func (s *AFPService) handleFlushFork(req *FPFlushForkReq) (*FPFlushForkRes, int32) {
+func (s *Service) handleFlushFork(req *FPFlushForkReq) (*FPFlushForkRes, int32) {
 	s.mu.RLock()
 	handle, ok := s.forks[req.OForkRefNum]
 	s.mu.RUnlock()
@@ -163,7 +163,7 @@ func (s *AFPService) handleFlushFork(req *FPFlushForkReq) (*FPFlushForkRes, int3
 	return &FPFlushForkRes{}, NoErr
 }
 
-func (s *AFPService) handleByteRangeLock(req *FPByteRangeLockReq) (*FPByteRangeLockRes, int32) {
+func (s *Service) handleByteRangeLock(req *FPByteRangeLockReq) (*FPByteRangeLockRes, int32) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -274,7 +274,7 @@ func byteRangeEnd(start, length int64) (int64, bool) {
 	return start + length, false
 }
 
-func (s *AFPService) handleRead(req *FPReadReq) (*FPReadRes, int32) {
+func (s *Service) handleRead(req *FPReadReq) (*FPReadRes, int32) {
 	s.mu.RLock()
 	handle, ok := s.forks[req.ForkID]
 	s.mu.RUnlock()
@@ -344,7 +344,7 @@ func (s *AFPService) handleRead(req *FPReadReq) (*FPReadRes, int32) {
 	return &FPReadRes{Data: buf[:n]}, NoErr
 }
 
-func (s *AFPService) handleWrite(req *FPWriteReq) (*FPWriteRes, int32) {
+func (s *Service) handleWrite(req *FPWriteReq) (*FPWriteRes, int32) {
 	s.mu.RLock()
 	handle, ok := s.forks[req.ForkID]
 	s.mu.RUnlock()
@@ -433,7 +433,7 @@ func (s *AFPService) handleWrite(req *FPWriteReq) (*FPWriteRes, int32) {
 	return &FPWriteRes{LastWritten: lastWritten}, NoErr
 }
 
-func (s *AFPService) handleGetForkParms(req *FPGetForkParmsReq) (*FPGetForkParmsRes, int32) {
+func (s *Service) handleGetForkParms(req *FPGetForkParmsReq) (*FPGetForkParmsRes, int32) {
 	s.mu.RLock()
 	handle, ok := s.forks[req.OForkRefNum]
 	s.mu.RUnlock()
@@ -540,7 +540,7 @@ func (s *AFPService) handleGetForkParms(req *FPGetForkParmsReq) (*FPGetForkParms
 	return &FPGetForkParmsRes{Bitmap: req.Bitmap, Data: resData.Bytes()}, NoErr
 }
 
-func (s *AFPService) handleSetForkParms(req *FPSetForkParmsReq) (*FPSetForkParmsRes, int32) {
+func (s *Service) handleSetForkParms(req *FPSetForkParmsReq) (*FPSetForkParmsRes, int32) {
 	s.mu.RLock()
 	handle, ok := s.forks[req.OForkRefNum]
 	s.mu.RUnlock()

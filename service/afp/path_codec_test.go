@@ -6,7 +6,7 @@ import (
 )
 
 func TestWriteAFPName_EncodesToMacRoman(t *testing.T) {
-	s := NewAFPService("TestServer", nil, nil, nil)
+	s := NewService("TestServer", nil, nil, nil)
 
 	var buf bytes.Buffer
 	s.writeAFPName(&buf, "tm™", 0)
@@ -18,7 +18,7 @@ func TestWriteAFPName_EncodesToMacRoman(t *testing.T) {
 }
 
 func TestHostTokenRoundTrip_WhenEnabled(t *testing.T) {
-	s := NewAFPService("TestServer", nil, nil, nil, AFPOptions{DecomposedFilenames: true})
+	s := NewService("TestServer", nil, nil, nil, Options{DecomposedFilenames: true})
 
 	host := s.afpPathElementToHost("Hello/World")
 	if host != "Hello0x2FWorld" {

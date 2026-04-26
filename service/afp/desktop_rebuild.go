@@ -23,7 +23,7 @@ const EnableAppleDoubleIconFallback = true
 
 // volumeRootByIDLocked is the lock-free helper used from ingest paths that
 // already hold s.mu.
-func (s *AFPService) desktopDBForVolumeLocked(volID uint16) DesktopDB {
+func (s *Service) desktopDBForVolumeLocked(volID uint16) DesktopDB {
 	if db, ok := s.desktopDBs[volID]; ok {
 		return db
 	}
@@ -38,7 +38,7 @@ func (s *AFPService) desktopDBForVolumeLocked(volID uint16) DesktopDB {
 
 // appleDoubleOwnerPath normalizes a host file path or AppleDouble sidecar path
 // to the logical host file path the metadata backend expects.
-func (s *AFPService) appleDoubleOwnerPath(filePath string) string {
+func (s *Service) appleDoubleOwnerPath(filePath string) string {
 	m := s.metaForPath(filePath)
 	if backend, ok := m.(*AppleDoubleBackend); ok {
 		return backend.ownerPath(filePath)
@@ -48,7 +48,7 @@ func (s *AFPService) appleDoubleOwnerPath(filePath string) string {
 
 // appleDoubleMetadataPath returns the sidecar path for filePath using the
 // MetadataPath method on the metadata backend. Returns "" if no backend is configured.
-func (s *AFPService) appleDoubleMetadataPath(filePath string) string {
+func (s *Service) appleDoubleMetadataPath(filePath string) string {
 	filePath = s.appleDoubleOwnerPath(filePath)
 	m := s.metaForPath(filePath)
 	if m == nil {
@@ -71,7 +71,7 @@ func (s *AFPService) appleDoubleMetadataPath(filePath string) string {
 //     the well-known resource ID -16455 (kCustomIconResource).
 //
 // Returns the number of icons added.
-func (s *AFPService) IngestAppleDoubleIcons(volID uint16, filePath string) int {
+func (s *Service) IngestAppleDoubleIcons(volID uint16, filePath string) int {
 	filePath = s.appleDoubleOwnerPath(filePath)
 	adPath := s.appleDoubleMetadataPath(filePath)
 	if adPath == "" {
@@ -145,7 +145,7 @@ func (s *AFPService) IngestAppleDoubleIcons(volID uint16, filePath string) int {
 // for creator on volID and feeds each app file through IngestAppleDoubleIcons.
 // This is the per-file fallback used by FPGetIcon on a cache miss — it never
 // walks the volume.
-func (s *AFPService) ingestAppleDoubleIconsForCreator(volID uint16, db DesktopDB, creator [4]byte) {
+func (s *Service) ingestAppleDoubleIconsForCreator(volID uint16, db DesktopDB, creator [4]byte) {
 	entries := db.ListAPPL(creator)
 	for _, e := range entries {
 		path, errCode := s.resolveVolumePath(volID, e.dirID, e.pathname, 2 /* long names */)
@@ -162,7 +162,7 @@ func (s *AFPService) ingestAppleDoubleIconsForCreator(volID uint16, db DesktopDB
 // It also probes each directory for an Icon\r file (using the canonical
 // host name from the metadata backend) and ingests custom folder icons.
 // Returns (filesScanned, iconsAdded).
-func (s *AFPService) RebuildDesktopDBFromVolume(volID uint16) (filesScanned, iconsAdded int) {
+func (s *Service) RebuildDesktopDBFromVolume(volID uint16) (filesScanned, iconsAdded int) {
 	root, ok := s.volumeRootByID(volID)
 	if !ok {
 		return 0, 0
@@ -204,7 +204,7 @@ func (s *AFPService) RebuildDesktopDBFromVolume(volID uint16) (filesScanned, ico
 
 // rebuildDesktopDBsIfConfigured triggers a rebuild for each volume that has
 // RebuildDesktopDB set in its VolumeConfig. Safe to call once at service start.
-func (s *AFPService) rebuildDesktopDBsIfConfigured() {
+func (s *Service) rebuildDesktopDBsIfConfigured() {
 	for i := range s.Volumes {
 		if s.Volumes[i].Config.RebuildDesktopDB {
 			s.RebuildDesktopDBFromVolume(s.Volumes[i].ID)

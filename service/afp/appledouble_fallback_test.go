@@ -8,7 +8,7 @@ import (
 
 func TestStatPathWithAppleDoubleFallback_FindsSidecar(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	baseName := "Netscape Navigator\u2122 2.02"
 	sidecar := filepath.Join(root, "._"+baseName)
@@ -31,7 +31,7 @@ func TestStatPathWithAppleDoubleFallback_FindsSidecar(t *testing.T) {
 
 func TestHandleGetFileDirParms_FallsBackToAppleDoubleName(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	baseName := "Netscape Navigator\u2122 2.02"
 	sidecar := filepath.Join(root, "._"+baseName)
@@ -62,7 +62,7 @@ func TestHandleGetFileDirParms_FallsBackToAppleDoubleName(t *testing.T) {
 
 func TestHandleRemoveComment_FallsBackToAppleDoubleName(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	db := NewDesktopDB(root)
 	s.desktopDBs[1] = db
@@ -96,7 +96,7 @@ func TestHandleRemoveComment_FallsBackToAppleDoubleName(t *testing.T) {
 
 func TestHandleGetComment_FallsBackToUnicodeAppleDoubleName(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 	s.dtRefs[1] = 1
 
 	targetPath := filepath.Join(root, "CD-ROM Toolkit™ Installer")
@@ -126,7 +126,7 @@ func TestHandleGetComment_FallsBackToUnicodeAppleDoubleName(t *testing.T) {
 
 func TestHandleRemoveComment_FallsBackToUnicodeAppleDoubleName(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 	s.dtRefs[1] = 1
 
 	targetPath := filepath.Join(root, "CD-ROM Toolkit™ Installer")
@@ -156,9 +156,9 @@ func TestHandleRemoveComment_FallsBackToUnicodeAppleDoubleName(t *testing.T) {
 
 func TestStatPathWithAppleDoubleFallback_LegacyIconCarriageReturnAlias(t *testing.T) {
 	root := t.TempDir()
-	options := DefaultAFPOptions()
+	options := DefaultOptions()
 	options.AppleDoubleMode = AppleDoubleModeLegacy
-	s := NewAFPService(
+	s := NewService(
 		"TestServer",
 		[]VolumeConfig{{Name: "Vol", Path: root}},
 		&LocalFileSystem{},
@@ -186,9 +186,9 @@ func TestStatPathWithAppleDoubleFallback_LegacyIconCarriageReturnAlias(t *testin
 
 func TestHandleGetComment_LegacyIconCarriageReturnAlias(t *testing.T) {
 	root := t.TempDir()
-	options := DefaultAFPOptions()
+	options := DefaultOptions()
 	options.AppleDoubleMode = AppleDoubleModeLegacy
-	s := NewAFPService(
+	s := NewService(
 		"TestServer",
 		[]VolumeConfig{{Name: "Vol", Path: root}},
 		&LocalFileSystem{},
@@ -228,9 +228,9 @@ func TestHandleGetComment_LegacyIconCarriageReturnAlias(t *testing.T) {
 
 func TestHandleAddAPPL_LegacyIconCarriageReturnAlias(t *testing.T) {
 	root := t.TempDir()
-	options := DefaultAFPOptions()
+	options := DefaultOptions()
 	options.AppleDoubleMode = AppleDoubleModeLegacy
-	s := NewAFPService(
+	s := NewService(
 		"TestServer",
 		[]VolumeConfig{{Name: "Vol", Path: root}},
 		&LocalFileSystem{},
@@ -264,9 +264,9 @@ func TestHandleAddAPPL_LegacyIconCarriageReturnAlias(t *testing.T) {
 
 func TestHandleGetAPPL_LegacyIconCarriageReturnAlias(t *testing.T) {
 	root := t.TempDir()
-	options := DefaultAFPOptions()
+	options := DefaultOptions()
 	options.AppleDoubleMode = AppleDoubleModeLegacy
-	s := NewAFPService(
+	s := NewService(
 		"TestServer",
 		[]VolumeConfig{{Name: "Vol", Path: root}},
 		&LocalFileSystem{},

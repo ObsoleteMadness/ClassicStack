@@ -23,7 +23,7 @@ func constrainAFPVolumeType(volType uint16) uint16 {
 	}
 }
 
-func (s *AFPService) volumeType(_ *Volume) uint16 {
+func (s *Service) volumeType(_ *Volume) uint16 {
 	// OmniTalk exposes hierarchical volumes with CNID-based directory IDs,
 	// so we advertise Variable Directory ID semantics.
 	return constrainAFPVolumeType(AFPVolumeTypeFixedDirID)
@@ -36,7 +36,7 @@ func capAFPBytes32(v uint64) uint32 {
 	return uint32(v)
 }
 
-func (s *AFPService) volumeAttributes(vol *Volume) uint16 {
+func (s *Service) volumeAttributes(vol *Volume) uint16 {
 	if vol == nil {
 		return 0
 	}
@@ -56,12 +56,12 @@ func (s *AFPService) volumeAttributes(vol *Volume) uint16 {
 	return attrs
 }
 
-func (s *AFPService) handleCloseVol(req *FPCloseVolReq) (*FPCloseVolRes, int32) {
+func (s *Service) handleCloseVol(req *FPCloseVolReq) (*FPCloseVolRes, int32) {
 	log.Printf("[AFP] FPCloseVol for Volume ID %d", req.VolumeID)
 	return &FPCloseVolRes{}, NoErr
 }
 
-func (s *AFPService) handleOpenVol(req *FPOpenVolReq) (*FPOpenVolRes, int32) {
+func (s *Service) handleOpenVol(req *FPOpenVolReq) (*FPOpenVolRes, int32) {
 	// handleOpenVol implements the FPOpenVol operation.
 	//
 	// Algorithm (summary): Ensure the requested volume exists and the
@@ -163,7 +163,7 @@ func (s *AFPService) handleOpenVol(req *FPOpenVolReq) (*FPOpenVolRes, int32) {
 	return res, NoErr
 }
 
-func (s *AFPService) volumeRootByID(volumeID uint16) (string, bool) {
+func (s *Service) volumeRootByID(volumeID uint16) (string, bool) {
 	for i := range s.Volumes {
 		if s.Volumes[i].ID == volumeID {
 			return filepath.Clean(s.Volumes[i].Config.Path), true
@@ -172,7 +172,7 @@ func (s *AFPService) volumeRootByID(volumeID uint16) (string, bool) {
 	return "", false
 }
 
-func (s *AFPService) volumeByID(volumeID uint16) (Volume, bool) {
+func (s *Service) volumeByID(volumeID uint16) (Volume, bool) {
 	for i := range s.Volumes {
 		if s.Volumes[i].ID == volumeID {
 			return s.Volumes[i], true
@@ -181,7 +181,7 @@ func (s *AFPService) volumeByID(volumeID uint16) (Volume, bool) {
 	return Volume{}, false
 }
 
-func (s *AFPService) volumeIsReadOnly(volumeID uint16) bool {
+func (s *Service) volumeIsReadOnly(volumeID uint16) bool {
 	for i := range s.Volumes {
 		if s.Volumes[i].ID == volumeID {
 			if s.Volumes[i].Config.ReadOnly {
@@ -201,7 +201,7 @@ func (s *AFPService) volumeIsReadOnly(volumeID uint16) bool {
 	return false
 }
 
-func (s *AFPService) volumeDate(vol *Volume) uint32 {
+func (s *Service) volumeDate(vol *Volume) uint32 {
 	if vol == nil {
 		return toAFPTime(time.Now())
 	}
@@ -213,7 +213,7 @@ func (s *AFPService) volumeDate(vol *Volume) uint32 {
 	return toAFPTime(time.Now())
 }
 
-func (s *AFPService) resolveVolumePath(volumeID uint16, dirID uint32, relPath string, pathType uint8) (string, int32) {
+func (s *Service) resolveVolumePath(volumeID uint16, dirID uint32, relPath string, pathType uint8) (string, int32) {
 	basePath, ok := s.getDIDPath(volumeID, dirID)
 	if !ok {
 		if dirID == 0 {
@@ -239,7 +239,7 @@ func (s *AFPService) resolveVolumePath(volumeID uint16, dirID uint32, relPath st
 	return full, NoErr
 }
 
-func (s *AFPService) handleGetVolParms(req *FPGetVolParmsReq) (*FPGetVolParmsRes, int32) {
+func (s *Service) handleGetVolParms(req *FPGetVolParmsReq) (*FPGetVolParmsRes, int32) {
 	// handleGetVolParms implements the FPGetVolParms operation.
 	//
 	// Algorithm (summary): Verify the volume exists and that the
@@ -321,7 +321,7 @@ func (s *AFPService) handleGetVolParms(req *FPGetVolParmsReq) (*FPGetVolParmsRes
 	return res, NoErr
 }
 
-func (s *AFPService) handleSetVolParms(req *FPSetVolParmsReq) (*FPSetVolParmsRes, int32) {
+func (s *Service) handleSetVolParms(req *FPSetVolParmsReq) (*FPSetVolParmsRes, int32) {
 	if s.volumeIsReadOnly(req.VolumeID) {
 		return &FPSetVolParmsRes{}, ErrVolLocked
 	}
@@ -347,7 +347,7 @@ func (s *AFPService) handleSetVolParms(req *FPSetVolParmsReq) (*FPSetVolParmsRes
 	return &FPSetVolParmsRes{}, NoErr
 }
 
-func (s *AFPService) volumeCapacity(vol *Volume) (bytesFree uint64, bytesTotal uint64) {
+func (s *Service) volumeCapacity(vol *Volume) (bytesFree uint64, bytesTotal uint64) {
 	bytesFree = defaultAFPBytesFree
 	bytesTotal = defaultAFPBytesTotal
 	if vol == nil {

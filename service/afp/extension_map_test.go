@@ -105,9 +105,9 @@ func TestHandleGetFileParms_UsesExtensionMapWithoutPersisting(t *testing.T) {
 				t.Fatalf("NewExtensionMap: %v", err)
 			}
 
-			options := DefaultAFPOptions()
+			options := DefaultOptions()
 			options.ExtensionMap = extMap
-			s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil, options)
+			s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil, options)
 
 			if tc.seedFinderInfo != nil {
 				if err := s.metaFor(1).WriteFinderInfo(filePath, *tc.seedFinderInfo); err != nil {

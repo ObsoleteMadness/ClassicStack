@@ -205,7 +205,7 @@ func firstEnumerateLongName(entryData []byte) ([]byte, error) {
 
 func TestHandleEnumerate_LongNameEncodedAsMacRoman(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	hostName := "Netscape Navigator™ 2.02"
 	if err := os.WriteFile(filepath.Join(root, hostName), []byte("x"), 0644); err != nil {
@@ -247,7 +247,7 @@ func TestHandleEnumerate_LongNameEncodedAsMacRoman(t *testing.T) {
 
 func TestHandleEnumerate_PathDecodesMacRoman(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	dirName := "Folder™"
 	fileName := "Inside™.txt"
@@ -294,7 +294,7 @@ func TestHandleEnumerate_PathDecodesMacRoman(t *testing.T) {
 // enumerable entries.
 func TestHandleEnumerate_SidecarsExcludedFromCount(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	// Create 2 real files and a sidecar for each — 4 filesystem entries total.
 	for _, name := range []string{"Alpha", "Beta"} {
@@ -332,7 +332,7 @@ func TestHandleEnumerate_SidecarsExcludedFromCount(t *testing.T) {
 // entries, not the raw filesystem entry count.
 func TestHandleEnumerate_EndOfDirUsesVisibleCount(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	// 2 real files + 2 sidecars = 4 raw entries, but only 2 visible.
 	for _, name := range []string{"Alpha", "Beta"} {
@@ -376,7 +376,7 @@ func TestHandleEnumerate_EndOfDirUsesVisibleCount(t *testing.T) {
 func TestHandleEnumerate_UsesChildCountWithoutRecursiveReadDir(t *testing.T) {
 	root := t.TempDir()
 	spy := &childCountSpyFS{root: root}
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, spy, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, spy, nil)
 
 	req := &FPEnumerateReq{
 		VolumeID:   1,
@@ -408,7 +408,7 @@ func TestHandleEnumerate_UsesChildCountWithoutRecursiveReadDir(t *testing.T) {
 func TestHandleEnumerate_UsesReadDirRangeWhenAvailable(t *testing.T) {
 	root := t.TempDir()
 	spy := &rangeSpyFS{root: root}
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, spy, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, spy, nil)
 
 	req := &FPEnumerateReq{
 		VolumeID:   1,
@@ -446,7 +446,7 @@ func TestHandleEnumerate_UsesReadDirRangeWhenAvailable(t *testing.T) {
 func TestHandleEnumerate_RangeEmptyPageReturnsObjectNotFound(t *testing.T) {
 	root := t.TempDir()
 	spy := &rangeEmptySpyFS{root: root}
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, spy, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, spy, nil)
 
 	req := &FPEnumerateReq{
 		VolumeID:   1,
@@ -470,9 +470,9 @@ func TestHandleEnumerate_RangeEmptyPageReturnsObjectNotFound(t *testing.T) {
 // metadata directories are never treated as user-visible entries.
 func TestHandleEnumerate_LegacyAppleDoubleDirExcluded(t *testing.T) {
 	root := t.TempDir()
-	options := DefaultAFPOptions()
+	options := DefaultOptions()
 	options.AppleDoubleMode = AppleDoubleModeLegacy
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil, options)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil, options)
 
 	for _, name := range []string{"Alpha", "Beta"} {
 		if err := os.WriteFile(filepath.Join(root, name), []byte("x"), 0644); err != nil {
@@ -520,9 +520,9 @@ func TestHandleEnumerate_LegacyAppleDoubleDirExcluded(t *testing.T) {
 // .AppleDouble metadata directories are hidden regardless of on-disk case.
 func TestHandleEnumerate_LegacyAppleDoubleDirCaseInsensitive(t *testing.T) {
 	root := t.TempDir()
-	options := DefaultAFPOptions()
+	options := DefaultOptions()
 	options.AppleDoubleMode = AppleDoubleModeLegacy
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil, options)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil, options)
 
 	if err := os.WriteFile(filepath.Join(root, "Visible"), []byte("x"), 0644); err != nil {
 		t.Fatalf("seed visible file: %v", err)
@@ -559,7 +559,7 @@ func TestHandleEnumerate_LegacyAppleDoubleDirCaseInsensitive(t *testing.T) {
 
 func TestHandleEnumerate_ErrorsForBitmapAndReplyValidation(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	_, errCode := s.handleEnumerate(&FPEnumerateReq{
 		VolumeID:   999,
@@ -650,7 +650,7 @@ func TestHandleEnumerate_ErrorsForBitmapAndReplyValidation(t *testing.T) {
 
 func TestHandleEnumerate_ErrorsForDirectoryTarget(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	if err := os.WriteFile(filepath.Join(root, "afile"), []byte("x"), 0644); err != nil {
 		t.Fatalf("seed file: %v", err)
@@ -708,7 +708,7 @@ func TestHandleEnumerate_AccessDeniedFromReadDir(t *testing.T) {
 		t.Fatalf("mkdir deny dir: %v", err)
 	}
 
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &denyReadDirFS{LocalFileSystem: &LocalFileSystem{}, denyPath: denyDir}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &denyReadDirFS{LocalFileSystem: &LocalFileSystem{}, denyPath: denyDir}, nil)
 
 	_, errCode := s.handleEnumerate(&FPEnumerateReq{
 		VolumeID:   1,
@@ -728,7 +728,7 @@ func TestHandleEnumerate_AccessDeniedFromReadDir(t *testing.T) {
 
 func TestHandleEnumerate_AcceptsFinderFullBitmaps(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	if err := os.WriteFile(filepath.Join(root, "Alpha"), []byte("x"), 0644); err != nil {
 		t.Fatalf("seed file: %v", err)
@@ -758,7 +758,7 @@ func TestHandleEnumerate_AcceptsFinderFullBitmaps(t *testing.T) {
 
 func TestHandleEnumerate_RespectsMaxReplyIncludingHeader(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	for i := 0; i < 40; i++ {
 		name := fmt.Sprintf("Item-%02d", i)

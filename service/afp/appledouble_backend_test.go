@@ -118,13 +118,13 @@ func TestPerVolumeAppleDoubleMode(t *testing.T) {
 	modernRoot := t.TempDir()
 	legacyRoot := t.TempDir()
 
-	s := NewAFPService("TestServer",
+	s := NewService("TestServer",
 		[]VolumeConfig{
 			{Name: "Modern", Path: modernRoot, AppleDoubleMode: AppleDoubleModeModern},
 			{Name: "Legacy", Path: legacyRoot, AppleDoubleMode: AppleDoubleModeLegacy},
 		},
 		&LocalFileSystem{}, nil,
-		AFPOptions{DecomposedFilenames: true},
+		Options{DecomposedFilenames: true},
 	)
 
 	// Volume 1 == Modern, Volume 2 == Legacy (IDs assigned by NewAFPService).
@@ -224,13 +224,13 @@ func TestHandleCopyFile_ConvertsAppleDoubleModeBetweenVolumes(t *testing.T) {
 			srcRoot := t.TempDir()
 			dstRoot := t.TempDir()
 
-			s := NewAFPService("TestServer",
+			s := NewService("TestServer",
 				[]VolumeConfig{
 					{Name: "Source", Path: srcRoot, AppleDoubleMode: tc.srcMode},
 					{Name: "Target", Path: dstRoot, AppleDoubleMode: tc.dstMode},
 				},
 				&LocalFileSystem{}, nil,
-				AFPOptions{DecomposedFilenames: true},
+				Options{DecomposedFilenames: true},
 			)
 
 			const srcVolID = uint16(1)
@@ -354,13 +354,13 @@ func TestHandleCopyFile_DstPathTypeZeroIgnoresDstDirMarkerPayload(t *testing.T) 
 	srcRoot := t.TempDir()
 	dstRoot := t.TempDir()
 
-	s := NewAFPService("TestServer",
+	s := NewService("TestServer",
 		[]VolumeConfig{
 			{Name: "Source", Path: srcRoot, AppleDoubleMode: AppleDoubleModeModern},
 			{Name: "Target", Path: dstRoot, AppleDoubleMode: AppleDoubleModeLegacy},
 		},
 		&LocalFileSystem{}, nil,
-		AFPOptions{DecomposedFilenames: true},
+		Options{DecomposedFilenames: true},
 	)
 
 	const srcVolID = uint16(1)
@@ -408,7 +408,7 @@ func TestHandleCopyFile_PreservesInfinityWhenNewNameEmpty(t *testing.T) {
 	srcRoot := t.TempDir()
 	dstRoot := t.TempDir()
 
-	s := NewAFPService("TestServer",
+	s := NewService("TestServer",
 		[]VolumeConfig{{Name: "Source", Path: srcRoot}, {Name: "Target", Path: dstRoot}},
 		&LocalFileSystem{}, nil,
 	)
@@ -447,7 +447,7 @@ func TestHandleCopyFile_DecodesMacRomanNewName(t *testing.T) {
 	srcRoot := t.TempDir()
 	dstRoot := t.TempDir()
 
-	s := NewAFPService("TestServer",
+	s := NewService("TestServer",
 		[]VolumeConfig{{Name: "Source", Path: srcRoot}, {Name: "Target", Path: dstRoot}},
 		&LocalFileSystem{}, nil,
 	)

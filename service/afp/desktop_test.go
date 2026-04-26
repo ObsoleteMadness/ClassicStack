@@ -24,7 +24,7 @@ func (f *readOnlyDesktopFSTestDouble) IsReadOnly(_ string) (bool, error) {
 func TestHandleGetIcon_MissingReturnsItemNotFound(t *testing.T) {
 	tmp := t.TempDir()
 	fsys := &LocalFileSystem{}
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol1", Path: tmp}}, fsys, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol1", Path: tmp}}, fsys, nil)
 
 	openRes, errCode := s.handleOpenDT(&FPOpenDTReq{VolID: 1})
 	if errCode != NoErr {
@@ -53,7 +53,7 @@ func TestHandleGetIcon_MissingReturnsItemNotFound(t *testing.T) {
 func TestHandleGetIcon_SizeZeroPresentProbe(t *testing.T) {
 	tmp := t.TempDir()
 	fsys := &LocalFileSystem{}
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol1", Path: tmp}}, fsys, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol1", Path: tmp}}, fsys, nil)
 
 	openRes, errCode := s.handleOpenDT(&FPOpenDTReq{VolID: 1})
 	if errCode != NoErr {
@@ -98,7 +98,7 @@ func TestHandleGetIcon_SizeZeroPresentProbe(t *testing.T) {
 func TestHandleOpenDT_ReadOnlyBackendIgnoresAppleDesktopCreateFailure(t *testing.T) {
 	tmp := t.TempDir()
 	fsys := &readOnlyDesktopFSTestDouble{}
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol1", Path: tmp}}, fsys, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol1", Path: tmp}}, fsys, nil)
 
 	openRes, errCode := s.handleOpenDT(&FPOpenDTReq{VolID: 1})
 	if errCode != NoErr {

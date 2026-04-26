@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 )
 
-func (s *AFPService) handleGetFileDirParms(req *FPGetFileDirParmsReq) (*FPGetFileDirParmsRes, int32) {
+func (s *Service) handleGetFileDirParms(req *FPGetFileDirParmsReq) (*FPGetFileDirParmsRes, int32) {
 	if req.FileBitmap == 0 && req.DirBitmap == 0 {
 		return &FPGetFileDirParmsRes{}, ErrBitmapErr
 	}
@@ -88,7 +88,7 @@ func emptyGetFileDirParmsRes(req *FPGetFileDirParmsReq) *FPGetFileDirParmsRes {
 	}
 }
 
-func (s *AFPService) handleRename(req *FPRenameReq) (*FPRenameRes, int32) {
+func (s *Service) handleRename(req *FPRenameReq) (*FPRenameRes, int32) {
 	if s.volumeIsReadOnly(req.VolumeID) {
 		return &FPRenameRes{}, ErrVolLocked
 	}
@@ -123,7 +123,7 @@ func (s *AFPService) handleRename(req *FPRenameReq) (*FPRenameRes, int32) {
 	return &FPRenameRes{}, NoErr
 }
 
-func (s *AFPService) handleGetDirParms(req *FPGetDirParmsReq) (*FPGetDirParmsRes, int32) {
+func (s *Service) handleGetDirParms(req *FPGetDirParmsReq) (*FPGetDirParmsRes, int32) {
 	parentPath, ok := s.getDIDPath(req.VolumeID, req.DirID)
 	if !ok && req.DirID != 0 {
 		return &FPGetDirParmsRes{}, ErrObjectNotFound
@@ -151,7 +151,7 @@ func (s *AFPService) handleGetDirParms(req *FPGetDirParmsReq) (*FPGetDirParmsRes
 	return &FPGetDirParmsRes{Bitmap: req.Bitmap, Data: resData.Bytes()}, NoErr
 }
 
-func (s *AFPService) handleGetFileParms(req *FPGetFileParmsReq) (*FPGetFileParmsRes, int32) {
+func (s *Service) handleGetFileParms(req *FPGetFileParmsReq) (*FPGetFileParmsRes, int32) {
 	parentPath, ok := s.getDIDPath(req.VolumeID, req.DirID)
 	if !ok && req.DirID != 0 {
 		return &FPGetFileParmsRes{}, ErrObjectNotFound
@@ -179,7 +179,7 @@ func (s *AFPService) handleGetFileParms(req *FPGetFileParmsReq) (*FPGetFileParms
 	return &FPGetFileParmsRes{Bitmap: req.Bitmap, Data: resData.Bytes()}, NoErr
 }
 
-func (s *AFPService) handleSetFileDirParms(req *FPSetFileDirParmsReq) (*FPSetFileDirParmsRes, int32) {
+func (s *Service) handleSetFileDirParms(req *FPSetFileDirParmsReq) (*FPSetFileDirParmsRes, int32) {
 	if s.volumeIsReadOnly(req.VolumeID) {
 		return &FPSetFileDirParmsRes{}, ErrVolLocked
 	}
@@ -191,7 +191,7 @@ func (s *AFPService) handleSetFileDirParms(req *FPSetFileDirParmsReq) (*FPSetFil
 	return &FPSetFileDirParmsRes{}, NoErr
 }
 
-func (s *AFPService) handleDelete(req *FPDeleteReq) (*FPDeleteRes, int32) {
+func (s *Service) handleDelete(req *FPDeleteReq) (*FPDeleteRes, int32) {
 	if s.fs == nil {
 		return &FPDeleteRes{}, ErrAccessDenied
 	}
@@ -218,7 +218,7 @@ func (s *AFPService) handleDelete(req *FPDeleteReq) (*FPDeleteRes, int32) {
 	return &FPDeleteRes{}, NoErr
 }
 
-func (s *AFPService) handleMoveAndRename(req *FPMoveAndRenameReq) (*FPMoveAndRenameRes, int32) {
+func (s *Service) handleMoveAndRename(req *FPMoveAndRenameReq) (*FPMoveAndRenameRes, int32) {
 	if s.volumeIsReadOnly(req.VolumeID) {
 		return &FPMoveAndRenameRes{}, ErrVolLocked
 	}
@@ -277,7 +277,7 @@ func (s *AFPService) handleMoveAndRename(req *FPMoveAndRenameReq) (*FPMoveAndRen
 	return &FPMoveAndRenameRes{}, NoErr
 }
 
-func (s *AFPService) handleExchangeFiles(req *FPExchangeFilesReq) (*FPExchangeFilesRes, int32) {
+func (s *Service) handleExchangeFiles(req *FPExchangeFilesReq) (*FPExchangeFilesRes, int32) {
 	if s.volumeIsReadOnly(req.VolumeID) {
 		return &FPExchangeFilesRes{}, ErrVolLocked
 	}

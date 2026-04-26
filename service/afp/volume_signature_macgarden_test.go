@@ -9,7 +9,7 @@ import (
 
 func TestAFP_MacGardenVolume_AdvertisesReadOnlyAndCatSearch(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Garden", Path: root, FSType: FSTypeMacGarden}}, NewMacGardenFileSystem(root), nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Garden", Path: root, FSType: FSTypeMacGarden}}, NewMacGardenFileSystem(root), nil)
 
 	openRes, errCode := s.handleOpenVol(&FPOpenVolReq{
 		Bitmap:  VolBitmapAttributes | VolBitmapVolID,

@@ -13,7 +13,7 @@ import (
 // Based on one ATP packet: ATPMaxData(578) minus the 21-byte ASP/AFP reply header.
 const catSearchMaxDataLen = 500 //557
 
-func (s *AFPService) handleCatSearch(req *FPCatSearchReq) (*FPCatSearchRes, int32) {
+func (s *Service) handleCatSearch(req *FPCatSearchReq) (*FPCatSearchRes, int32) {
 	if req.ReqMatches <= 0 {
 		return &FPCatSearchRes{}, ErrParamErr
 	}

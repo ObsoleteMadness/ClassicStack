@@ -113,8 +113,8 @@ type byteRangeLock struct {
 
 const defaultMaxByteRangeLocks = 4096
 
-// AFPService implements AppleTalk Filing Protocol.
-type AFPService struct {
+// Service implements AppleTalk Filing Protocol.
+type Service struct {
 	ServerName  string
 	Volumes     []Volume
 	fs          FileSystem
@@ -122,7 +122,7 @@ type AFPService struct {
 	meta        ForkMetadataBackend            // global override when ForkMetadataBackend is injected via options
 	metas       map[uint16]ForkMetadataBackend // per-volume backends (keyed by Volume.ID)
 	mu          sync.RWMutex
-	options     AFPOptions
+	options     Options
 	cnidStores  map[uint16]CNIDStore
 	desktopDB   DesktopDBBackend
 	forks       map[uint16]*forkHandle
@@ -150,7 +150,7 @@ type AFPService struct {
 	wg   sync.WaitGroup
 }
 
-func (s *AFPService) SetPacketDumper(dumper service.PacketDumper) {
+func (s *Service) SetPacketDumper(dumper service.PacketDumper) {
 	s.dumper = dumper
 }
 
@@ -158,7 +158,7 @@ func (s *AFPService) SetPacketDumper(dumper service.PacketDumper) {
 // to any filesystem that supports range limiting (e.g. MacGardenFileSystem).
 // ASP calls this with its quantum size so HTTP range requests from virtual
 // filesystems never exceed what one ASP reply can carry. DSI leaves it at 0.
-func (s *AFPService) SetMaxReadSize(n int) {
+func (s *Service) SetMaxReadSize(n int) {
 	s.maxReadSize = n
 	type rangeLimiter interface{ SetMaxRangeSize(int) }
 	if rl, ok := s.fs.(rangeLimiter); ok {
@@ -171,20 +171,20 @@ func (s *AFPService) SetMaxReadSize(n int) {
 	}
 }
 
-func (s *AFPService) logPacket(format string, args ...any) {
+func (s *Service) logPacket(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if s.dumper != nil {
 		s.dumper.LogPacket(msg)
 	}
 }
 
-func NewAFPService(serverName string, configs []VolumeConfig, fs FileSystem, transports []Transport, opts ...AFPOptions) *AFPService {
-	options := DefaultAFPOptions()
+func NewService(serverName string, configs []VolumeConfig, fs FileSystem, transports []Transport, opts ...Options) *Service {
+	options := DefaultOptions()
 	if len(opts) > 0 {
 		options = opts[0]
 	}
 
-	s := &AFPService{
+	s := &Service{
 		ServerName:  serverName,
 		fs:          fs,
 		stop:        make(chan struct{}),
@@ -304,7 +304,7 @@ func crcVolumeID(key string) uint16 {
 // metaFor returns the ForkMetadataBackend for the given volume ID.
 // If a per-volume backend is registered it is returned; otherwise the global
 // injected backend (s.meta) is used. Returns nil when neither is available.
-func (s *AFPService) metaFor(volID uint16) ForkMetadataBackend {
+func (s *Service) metaFor(volID uint16) ForkMetadataBackend {
 	if s.metas != nil {
 		if m, ok := s.metas[volID]; ok {
 			return m
@@ -316,7 +316,7 @@ func (s *AFPService) metaFor(volID uint16) ForkMetadataBackend {
 // metaForPath returns the ForkMetadataBackend for the volume whose root path
 // is a prefix of path. Falls back to the global injected backend when no
 // matching volume is found.
-func (s *AFPService) metaForPath(path string) ForkMetadataBackend {
+func (s *Service) metaForPath(path string) ForkMetadataBackend {
 	clean := filepath.Clean(path)
 	for _, vol := range s.Volumes {
 		rel, err := filepath.Rel(vol.Config.Path, clean)
@@ -327,14 +327,14 @@ func (s *AFPService) metaForPath(path string) ForkMetadataBackend {
 	return s.meta
 }
 
-func (s *AFPService) fsForVolume(volID uint16) FileSystem {
+func (s *Service) fsForVolume(volID uint16) FileSystem {
 	if fs, ok := s.volumeFS[volID]; ok && fs != nil {
 		return fs
 	}
 	return s.fs
 }
 
-func (s *AFPService) fsForPath(path string) FileSystem {
+func (s *Service) fsForPath(path string) FileSystem {
 	clean := filepath.Clean(path)
 	for _, vol := range s.Volumes {
 		rel, err := filepath.Rel(filepath.Clean(vol.Config.Path), clean)
@@ -358,7 +358,7 @@ func newBackendForVolumeConfig(cfg VolumeConfig) (FileSystem, error) {
 }
 
 // Start initializes all underlying transports.
-func (s *AFPService) Start(router service.Router) error {
+func (s *Service) Start(router service.Router) error {
 	for _, t := range s.transports {
 		if err := t.Start(router); err != nil {
 			return err
@@ -368,7 +368,7 @@ func (s *AFPService) Start(router service.Router) error {
 }
 
 // Stop shuts down all underlying transports.
-func (s *AFPService) Stop() error {
+func (s *Service) Stop() error {
 	var errs []error
 	if s.stop != nil {
 		select {
@@ -399,7 +399,7 @@ func (s *AFPService) Stop() error {
 
 // Socket returns the AppleTalk socket number if any of the transports listen on one.
 // We return asp.ServerSocket (252) if we have a transport that needs it.
-func (s *AFPService) Socket() uint8 {
+func (s *Service) Socket() uint8 {
 	// The router expects services that listen on a specific socket to return it here.
 	// Since AFPService wraps transports, we return the well-known ASP socket (252).
 	// TCP-only instances won't be called for AppleTalk routing anyway if they don't register NBP.
@@ -407,14 +407,14 @@ func (s *AFPService) Socket() uint8 {
 }
 
 // Inbound delegates inbound DDP packets to the underlying transports.
-func (s *AFPService) Inbound(d ddp.Datagram, p port.Port) {
+func (s *Service) Inbound(d ddp.Datagram, p port.Port) {
 	for _, t := range s.transports {
 		t.Inbound(d, p)
 	}
 }
 
 // GetStatus implements the CommandHandler interface
-func (s *AFPService) GetStatus() []byte {
+func (s *Service) GetStatus() []byte {
 	return BuildServerInfo(s.ServerName)
 }
 
@@ -428,7 +428,7 @@ type Response interface {
 	String() string
 }
 
-func (s *AFPService) HandleCommand(data []byte) (resBytes []byte, errCode int32) {
+func (s *Service) HandleCommand(data []byte) (resBytes []byte, errCode int32) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[AFP] PANIC in cmd=%d: %v\n%s", data[0], r, debug.Stack())
@@ -955,7 +955,7 @@ func (s *AFPService) HandleCommand(data []byte) (resBytes []byte, errCode int32)
 	return resBytes, errCode
 }
 
-func (s *AFPService) logResolvedPaths(req Request) {
+func (s *Service) logResolvedPaths(req Request) {
 	switch r := req.(type) {
 	case *FPOpenDirReq:
 		s.logResolvedPath("FPOpenDir", r.VolumeID, r.DirID, r.PathType, r.Path)
@@ -1008,7 +1008,7 @@ func (s *AFPService) logResolvedPaths(req Request) {
 	}
 }
 
-func (s *AFPService) logResolvedPath(op string, volumeID uint16, dirID uint32, pathType uint8, rawPath string) {
+func (s *Service) logResolvedPath(op string, volumeID uint16, dirID uint32, pathType uint8, rawPath string) {
 	resolved, errCode := s.resolveVolumePath(volumeID, dirID, rawPath, pathType)
 	if errCode == NoErr {
 		log.Printf("[AFP][Path] %s vol=%d dirID=%d pathType=%d raw=%q resolved=%q", op, volumeID, dirID, pathType, rawPath, resolved)
@@ -1017,7 +1017,7 @@ func (s *AFPService) logResolvedPath(op string, volumeID uint16, dirID uint32, p
 	log.Printf("[AFP][Path] %s vol=%d dirID=%d pathType=%d raw=%q unresolved err=%d", op, volumeID, dirID, pathType, rawPath, errCode)
 }
 
-func (s *AFPService) logResolvedPathFromDTRef(op string, dtRefNum uint16, dirID uint32, pathType uint8, rawPath string) {
+func (s *Service) logResolvedPathFromDTRef(op string, dtRefNum uint16, dirID uint32, pathType uint8, rawPath string) {
 	s.mu.RLock()
 	volID, ok := s.dtRefs[dtRefNum]
 	s.mu.RUnlock()
@@ -1030,7 +1030,7 @@ func (s *AFPService) logResolvedPathFromDTRef(op string, dtRefNum uint16, dirID 
 
 // statPathWithAppleDoubleFallback stats path and, if missing, retries with a
 // "._" prefixed basename to support orphan AppleDouble files.
-func (s *AFPService) statPathWithAppleDoubleFallback(path string) (string, fs.FileInfo, error) {
+func (s *Service) statPathWithAppleDoubleFallback(path string) (string, fs.FileInfo, error) {
 	m := s.metaForPath(path)
 	if m == nil {
 		return path, nil, os.ErrNotExist
@@ -1040,7 +1040,7 @@ func (s *AFPService) statPathWithAppleDoubleFallback(path string) (string, fs.Fi
 
 // iconFileNameFor returns the host filesystem name for the Mac "Icon\r" file
 // for the given volume, respecting its AppleDouble mode and decomposed filename settings.
-func (s *AFPService) iconFileNameFor(volID uint16) string {
+func (s *Service) iconFileNameFor(volID uint16) string {
 	if m := s.metaFor(volID); m != nil {
 		return m.IconFileName()
 	}
@@ -1054,7 +1054,7 @@ func (s *AFPService) iconFileNameFor(volID uint16) string {
 // name for the configured backend (e.g. Icon0x0D→Icon_ in legacy mode).
 // This is applied during path resolution so both reads and writes use the
 // correct on-disk name without duplicating the alias logic in every handler.
-func (s *AFPService) canonicalizePath(path string) string {
+func (s *Service) canonicalizePath(path string) string {
 	m := s.metaForPath(path)
 	if m == nil {
 		return path
@@ -1075,7 +1075,7 @@ var alwaysHiddenNames = []string{
 	".appledouble",
 }
 
-func (s *AFPService) isMetadataArtifact(name string, isDir bool, volID uint16) bool {
+func (s *Service) isMetadataArtifact(name string, isDir bool, volID uint16) bool {
 	if !isDir && strings.EqualFold(name, cnid.SQLiteFilename) {
 		return true
 	}
@@ -1095,7 +1095,7 @@ func (s *AFPService) isMetadataArtifact(name string, isDir bool, volID uint16) b
 // ignored, and unexpected errors are logged but not returned to the caller so
 // that a sidecar failure never causes the already-completed primary operation
 // to report an error to the client.
-func (s *AFPService) moveAppleDoubleSidecar(oldPath, newPath string) error {
+func (s *Service) moveAppleDoubleSidecar(oldPath, newPath string) error {
 	m := s.metaForPath(oldPath)
 	if m == nil {
 		return nil
@@ -1109,7 +1109,7 @@ func (s *AFPService) moveAppleDoubleSidecar(oldPath, newPath string) error {
 // deleteAppleDoubleSidecar removes a file's AppleDouble sidecar. This is
 // best-effort: missing sidecars are silently ignored, and unexpected errors
 // are logged but not returned to the caller.
-func (s *AFPService) deleteAppleDoubleSidecar(path string) error {
+func (s *Service) deleteAppleDoubleSidecar(path string) error {
 	m := s.metaForPath(path)
 	if m == nil {
 		return nil
@@ -1255,7 +1255,7 @@ func calcFileParamsSize(bitmap uint16) int {
 	return size
 }
 
-func (s *AFPService) packFileInfo(buf *bytes.Buffer, volumeID uint16, bitmap uint16, parentPath, name string, info fs.FileInfo, isDir bool) {
+func (s *Service) packFileInfo(buf *bytes.Buffer, volumeID uint16, bitmap uint16, parentPath, name string, info fs.FileInfo, isDir bool) {
 	var varBuf bytes.Buffer
 	fullPath := filepath.Join(parentPath, name)
 	name = s.catalogNameForPath(volumeID, fullPath, name)
@@ -1416,7 +1416,7 @@ func (s *AFPService) packFileInfo(buf *bytes.Buffer, volumeID uint16, bitmap uin
 	buf.Write(varBuf.Bytes())
 }
 
-func (s *AFPService) catalogNameForPath(volumeID uint16, fullPath, fallbackName string) string {
+func (s *Service) catalogNameForPath(volumeID uint16, fullPath, fallbackName string) string {
 	cleanPath := filepath.Clean(fullPath)
 	for i := range s.Volumes {
 		vol := s.Volumes[i]
@@ -1443,14 +1443,14 @@ func toAFPTime(t time.Time) uint32 {
 	return uint32(secs)
 }
 
-func (s *AFPService) cnidStore(volumeID uint16) (CNIDStore, bool) {
+func (s *Service) cnidStore(volumeID uint16) (CNIDStore, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	store, ok := s.cnidStores[volumeID]
 	return store, ok
 }
 
-func (s *AFPService) getPathDID(volumeID uint16, path string) uint32 {
+func (s *Service) getPathDID(volumeID uint16, path string) uint32 {
 	store, ok := s.cnidStore(volumeID)
 	if !ok {
 		return CNIDInvalid
@@ -1458,7 +1458,7 @@ func (s *AFPService) getPathDID(volumeID uint16, path string) uint32 {
 	return store.Ensure(path)
 }
 
-func (s *AFPService) getDIDPath(volumeID uint16, did uint32) (string, bool) {
+func (s *Service) getDIDPath(volumeID uint16, did uint32) (string, bool) {
 	store, ok := s.cnidStore(volumeID)
 	if !ok {
 		return "", false
@@ -1466,14 +1466,14 @@ func (s *AFPService) getDIDPath(volumeID uint16, did uint32) (string, bool) {
 	return store.Path(did)
 }
 
-func (s *AFPService) resolveDIDPath(volumeID uint16, did uint32) (string, bool) {
+func (s *Service) resolveDIDPath(volumeID uint16, did uint32) (string, bool) {
 	if did == CNIDInvalid {
 		return "", false
 	}
 	return s.getDIDPath(volumeID, did)
 }
 
-func (s *AFPService) rebindDIDSubtree(volumeID uint16, oldPath, newPath string) {
+func (s *Service) rebindDIDSubtree(volumeID uint16, oldPath, newPath string) {
 	store, ok := s.cnidStore(volumeID)
 	if !ok {
 		return
@@ -1481,7 +1481,7 @@ func (s *AFPService) rebindDIDSubtree(volumeID uint16, oldPath, newPath string) 
 	store.Rebind(oldPath, newPath)
 }
 
-func (s *AFPService) removeDIDSubtree(volumeID uint16, path string) {
+func (s *Service) removeDIDSubtree(volumeID uint16, path string) {
 	store, ok := s.cnidStore(volumeID)
 	if !ok {
 		return
@@ -1489,7 +1489,7 @@ func (s *AFPService) removeDIDSubtree(volumeID uint16, path string) {
 	store.Remove(path)
 }
 
-func (s *AFPService) resolvePath(parentPath, name string, pathType uint8) (string, int32) {
+func (s *Service) resolvePath(parentPath, name string, pathType uint8) (string, int32) {
 	if pathType == 1 {
 		// Short names are not supported.
 		return "", ErrObjectNotFound
@@ -1545,7 +1545,7 @@ func (s *AFPService) resolvePath(parentPath, name string, pathType uint8) (strin
 	return "", ErrAccessDenied
 }
 
-func (s *AFPService) resolveSetPath(volumeID uint16, dirID uint32, path string, pathType uint8) (string, int32) {
+func (s *Service) resolveSetPath(volumeID uint16, dirID uint32, path string, pathType uint8) (string, int32) {
 	parentPath, ok := s.resolveDIDPath(volumeID, dirID)
 	if !ok && dirID != 0 {
 		return "", ErrObjectNotFound
@@ -1558,7 +1558,7 @@ func (s *AFPService) resolveSetPath(volumeID uint16, dirID uint32, path string, 
 	return s.resolvePath(parentPath, path, pathType)
 }
 
-func (s *AFPService) applyFinderInfo(bitmap uint16, finderInfo [32]byte, targetPath string, volID uint16) {
+func (s *Service) applyFinderInfo(bitmap uint16, finderInfo [32]byte, targetPath string, volID uint16) {
 	if bitmap&FileBitmapFinderInfo != 0 {
 		m := s.metaFor(volID)
 		if m == nil {
@@ -1570,7 +1570,7 @@ func (s *AFPService) applyFinderInfo(bitmap uint16, finderInfo [32]byte, targetP
 	}
 }
 
-func (s *AFPService) handleGetSrvrMsg(req *FPGetSrvrMsgReq) (*FPGetSrvrMsgRes, int32) {
+func (s *Service) handleGetSrvrMsg(req *FPGetSrvrMsgReq) (*FPGetSrvrMsgRes, int32) {
 	return &FPGetSrvrMsgRes{
 		MessageType: req.MessageType,
 		Bitmap:      0,

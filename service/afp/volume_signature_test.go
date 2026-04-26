@@ -28,7 +28,7 @@ func TestConstrainAFPVolumeType(t *testing.T) {
 
 func TestAFP_OpenVol_UsesFixedDirIDVolumeType(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	res, errCode := s.handleOpenVol(&FPOpenVolReq{
 		Bitmap:  VolBitmapSignature | VolBitmapVolID,
@@ -49,7 +49,7 @@ func TestAFP_OpenVol_UsesFixedDirIDVolumeType(t *testing.T) {
 
 func TestAFP_GetVolParms_UsesFixedDirIDVolumeType(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	res, errCode := s.handleGetVolParms(&FPGetVolParmsReq{
 		VolumeID: 1,
@@ -67,4 +67,3 @@ func TestAFP_GetVolParms_UsesFixedDirIDVolumeType(t *testing.T) {
 		t.Fatalf("signature=%d, want %d (Fixed Directory ID)", sig, AFPVolumeTypeFixedDirID)
 	}
 }
-

@@ -56,7 +56,7 @@ func (SQLiteDesktopDBBackend) Open(volume Volume) DesktopDB {
 	return db
 }
 
-func resolveDesktopDBBackend(options AFPOptions) DesktopDBBackend {
+func resolveDesktopDBBackend(options Options) DesktopDBBackend {
 	if options.DesktopStoreBackend != nil {
 		return options.DesktopStoreBackend
 	}

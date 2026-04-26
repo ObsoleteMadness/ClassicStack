@@ -32,7 +32,7 @@ func NewAppleDoubleBackend(fs FileSystem, mode AppleDoubleMode, decomposedNames 
 	return &AppleDoubleBackend{fs: fs, mode: mode, decomposedNames: decomposedNames}
 }
 
-func resolveForkMetadataBackend(options AFPOptions, fs FileSystem) ForkMetadataBackend {
+func resolveForkMetadataBackend(options Options, fs FileSystem) ForkMetadataBackend {
 	if options.ForkMetadataBackend != nil {
 		return options.ForkMetadataBackend
 	}

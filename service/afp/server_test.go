@@ -13,7 +13,7 @@ import (
 )
 
 func TestAFP_FPGetSrvrParms(t *testing.T) {
-	s := NewAFPService("TestServer", []VolumeConfig{
+	s := NewService("TestServer", []VolumeConfig{
 		{Name: "Vol1", Path: "/tmp/vol1"},
 		{Name: "Vol2", Path: "/tmp/vol2"},
 	}, nil, nil) // no need for real FS for this test
@@ -75,7 +75,7 @@ func TestAFP_FPGetSrvrParms(t *testing.T) {
 }
 
 func TestAFP_FPGetSrvrParms_NoPerEntryPadding(t *testing.T) {
-	s := NewAFPService("TestServer", []VolumeConfig{
+	s := NewService("TestServer", []VolumeConfig{
 		{Name: "Test Volume", Path: "/tmp/test"},
 		{Name: "Volume 68K", Path: "/tmp/68k"},
 	}, nil, nil)
@@ -123,11 +123,11 @@ func TestAFP_PersistentVolumeIDs_AreDeterministicByName(t *testing.T) {
 		{Name: "Archive", Path: t.TempDir()},
 		{Name: "Games", Path: t.TempDir()},
 	}
-	opts := DefaultAFPOptions()
+	opts := DefaultOptions()
 	opts.PersistentVolumeIDs = true
 
-	s1 := NewAFPService("TestServer", configs, nil, nil, opts)
-	s2 := NewAFPService("TestServer", configs, nil, nil, opts)
+	s1 := NewService("TestServer", configs, nil, nil, opts)
+	s2 := NewService("TestServer", configs, nil, nil, opts)
 
 	if len(s1.Volumes) != len(s2.Volumes) {
 		t.Fatalf("volume count mismatch: %d vs %d", len(s1.Volumes), len(s2.Volumes))
@@ -147,10 +147,10 @@ func TestAFP_PersistentVolumeIDs_ResolveNameCollisions(t *testing.T) {
 		{Name: "Shared", Path: filepath.Join(t.TempDir(), "a")},
 		{Name: "Shared", Path: filepath.Join(t.TempDir(), "b")},
 	}
-	opts := DefaultAFPOptions()
+	opts := DefaultOptions()
 	opts.PersistentVolumeIDs = true
 
-	s := NewAFPService("TestServer", configs, nil, nil, opts)
+	s := NewService("TestServer", configs, nil, nil, opts)
 	if len(s.Volumes) != 2 {
 		t.Fatalf("expected 2 volumes, got %d", len(s.Volumes))
 	}
@@ -161,10 +161,10 @@ func TestAFP_PersistentVolumeIDs_ResolveNameCollisions(t *testing.T) {
 
 func TestAFP_PersistentVolumeIDs_AreReturnedByOpenVol(t *testing.T) {
 	root := t.TempDir()
-	opts := DefaultAFPOptions()
+	opts := DefaultOptions()
 	opts.PersistentVolumeIDs = true
 
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Archive", Path: root}}, &LocalFileSystem{}, nil, opts)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Archive", Path: root}}, &LocalFileSystem{}, nil, opts)
 	if len(s.Volumes) != 1 {
 		t.Fatalf("expected 1 volume, got %d", len(s.Volumes))
 	}
@@ -188,10 +188,10 @@ func TestAFP_PersistentVolumeIDs_AreReturnedByOpenVol(t *testing.T) {
 
 func TestAFP_PersistentVolumeIDs_AreReturnedByGetVolParms(t *testing.T) {
 	root := t.TempDir()
-	opts := DefaultAFPOptions()
+	opts := DefaultOptions()
 	opts.PersistentVolumeIDs = true
 
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Archive", Path: root}}, &LocalFileSystem{}, nil, opts)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Archive", Path: root}}, &LocalFileSystem{}, nil, opts)
 	if len(s.Volumes) != 1 {
 		t.Fatalf("expected 1 volume, got %d", len(s.Volumes))
 	}
@@ -214,7 +214,7 @@ func TestAFP_PersistentVolumeIDs_AreReturnedByGetVolParms(t *testing.T) {
 }
 
 func TestAFP_FPGetSrvrParms_VolumeFlags(t *testing.T) {
-	s := NewAFPService("TestServer", []VolumeConfig{
+	s := NewService("TestServer", []VolumeConfig{
 		{Name: "ReadOnly", Path: "/tmp/ro", ReadOnly: true},
 		{Name: "Protected", Path: "/tmp/pw", Password: "secret"},
 		{Name: "Both", Path: "/tmp/both", Password: "secret", ReadOnly: true},
@@ -246,7 +246,7 @@ func TestAFP_FPGetSrvrParms_VolumeFlags(t *testing.T) {
 }
 
 func TestAFP_GetVolParms_AttributesReadOnlyBitOnly(t *testing.T) {
-	s := NewAFPService("TestServer", []VolumeConfig{
+	s := NewService("TestServer", []VolumeConfig{
 		{Name: "RW", Path: "/tmp/rw"},
 		{Name: "RO", Path: "/tmp/ro", ReadOnly: true},
 	}, nil, nil)
@@ -277,7 +277,7 @@ func TestAFP_GetVolParms_AttributesReadOnlyBitOnly(t *testing.T) {
 }
 
 func TestAFP_OtherMethods(t *testing.T) {
-	s := NewAFPService("TestServer", []VolumeConfig{
+	s := NewService("TestServer", []VolumeConfig{
 		{Name: "Vol1", Path: "/tmp/vol1"},
 	}, nil, nil)
 
@@ -451,7 +451,7 @@ func (m *mockFS) SupportsCatSearch(path string) (bool, error) {
 }
 
 func TestAFP_FSDependentMethods(t *testing.T) {
-	s := NewAFPService("TestServer", []VolumeConfig{
+	s := NewService("TestServer", []VolumeConfig{
 		{Name: "Vol1", Path: "/tmp/vol1"},
 	}, &mockFS{t: t}, nil)
 
@@ -551,7 +551,7 @@ func TestAFP_GetVolParms_ModDateBytesFreeWireLayout(t *testing.T) {
 		t.Fatalf("Chtimes(root): %v", err)
 	}
 
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol1", Path: root}}, &mockFS{
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol1", Path: root}}, &mockFS{
 		t:          t,
 		totalBytes: uint64(math.MaxUint32) + 12345,
 		freeBytes:  uint64(math.MaxUint32) + 99,
@@ -584,7 +584,7 @@ func TestAFP_GetVolParms_ModDateBytesFreeWireLayout(t *testing.T) {
 }
 
 func TestAFP_OpenVolPasswordEnforcement(t *testing.T) {
-	s := NewAFPService("TestServer", []VolumeConfig{
+	s := NewService("TestServer", []VolumeConfig{
 		{Name: "Vol1", Path: "/tmp/vol1", Password: "secret"},
 	}, &mockFS{t: t}, nil)
 
@@ -650,7 +650,7 @@ func TestMemoryCNIDStore_ReservedIDs(t *testing.T) {
 }
 
 func TestGetPathDID_RoundTrip(t *testing.T) {
-	s := NewAFPService("TestServer", []VolumeConfig{
+	s := NewService("TestServer", []VolumeConfig{
 		{Name: "Vol1", Path: filepath.Join("/volumes", "share")},
 	}, nil, nil)
 	const volumeID = uint16(1)
@@ -705,7 +705,7 @@ func TestGetPathDID_RoundTrip(t *testing.T) {
 
 func TestGetPathDID_RenamePreservesCNID(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Mac", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Mac", Path: root}}, &LocalFileSystem{}, nil)
 	const volumeID = uint16(1)
 
 	oldPath := filepath.Join(root, "SimpleText")
@@ -739,7 +739,7 @@ func TestAFP_ByteRangeLock_TrashUsageMapInitFlow(t *testing.T) {
 		pathTypeAFP = 2 // long names
 	)
 
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: volName, Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: volName, Path: root}}, &LocalFileSystem{}, nil)
 
 	if _, errCode := s.handleOpenVol(&FPOpenVolReq{Bitmap: VolBitmapVolID, VolName: volName}); errCode != NoErr {
 		t.Fatalf("OpenVol failed: got %d", errCode)
@@ -855,7 +855,7 @@ func TestAFP_ByteRangeLock_TrashUsageMapInitFlow(t *testing.T) {
 
 func TestAFP_ByteRangeLock_ErrorSemantics(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Mac", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Mac", Path: root}}, &LocalFileSystem{}, nil)
 
 	if _, errCode := s.handleOpenVol(&FPOpenVolReq{Bitmap: VolBitmapVolID, VolName: "Mac"}); errCode != NoErr {
 		t.Fatalf("OpenVol failed: got %d", errCode)
@@ -928,7 +928,7 @@ func TestAFP_ByteRangeLock_ErrorSemantics(t *testing.T) {
 
 func TestAFP_ByteRangeLock_NoMoreLocks(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Mac", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Mac", Path: root}}, &LocalFileSystem{}, nil)
 	s.maxLocks = 1
 
 	if _, errCode := s.handleOpenVol(&FPOpenVolReq{Bitmap: VolBitmapVolID, VolName: "Mac"}); errCode != NoErr {

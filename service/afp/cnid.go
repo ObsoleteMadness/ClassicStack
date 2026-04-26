@@ -59,7 +59,7 @@ func (SQLiteCNIDBackend) Open(volume Volume) CNIDStore {
 	return store
 }
 
-func resolveCNIDBackend(options AFPOptions) CNIDBackend {
+func resolveCNIDBackend(options Options) CNIDBackend {
 	if options.CNIDStoreBackend != nil {
 		return options.CNIDStoreBackend
 	}

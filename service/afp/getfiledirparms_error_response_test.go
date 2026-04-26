@@ -7,7 +7,7 @@ import (
 
 func TestHandleGetFileDirParms_ObjectNotFoundReturnsStructuredResponse(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	req := &FPGetFileDirParmsReq{
 		VolumeID:   1,
@@ -43,7 +43,7 @@ func TestHandleGetFileDirParms_ObjectNotFoundReturnsStructuredResponse(t *testin
 
 func TestHandleGetFileDirParms_ObjectNotFoundDirOnlyRequestUsesDirFlag(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	req := &FPGetFileDirParmsReq{
 		VolumeID:   1,
