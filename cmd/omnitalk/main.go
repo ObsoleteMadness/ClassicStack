@@ -32,7 +32,7 @@ import (
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	configPath := flag.String("config", "", "Path to INI config file (cannot be combined with other flags)")
+	configPath := flag.String("config", "", "Path to TOML config file (cannot be combined with other flags)")
 	showVersion := flag.Bool("version", false, "Print OmniTalk version information and exit")
 
 	logLevel := flag.String("log-level", "info", "Minimum log level: debug, info, warn")
@@ -110,18 +110,18 @@ func main() {
 
 	selectedConfig := *configPath
 	if selectedConfig == "" && flag.NFlag() == 0 {
-		if _, err := os.Stat("server.ini"); err == nil {
-			selectedConfig = "server.ini"
+		if _, err := os.Stat("server.toml"); err == nil {
+			selectedConfig = "server.toml"
 		} else if os.IsNotExist(err) {
 			flag.Usage()
 			return
 		} else {
-			log.Fatalf("failed checking default config file server.ini: %v", err)
+			log.Fatalf("failed checking default config file server.toml: %v", err)
 		}
 	}
 
 	if selectedConfig != "" {
-		cfg, err := loadConfigFromINI(selectedConfig)
+		cfg, err := loadConfigFromFile(selectedConfig)
 		if err != nil {
 			log.Fatalf("failed loading config file %q: %v", selectedConfig, err)
 		}

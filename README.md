@@ -29,24 +29,24 @@ core interfaces, logging/telemetry, and the AFP design — see
 
 ## Quick start
 
-- Copy server.ini.example to server.ini and edit values.
-- Run OmniTalk with no flags to auto-load server.ini.
+- Copy server.toml.example to server.toml and edit values.
+- Run OmniTalk with no flags to auto-load server.toml.
 - Or pass a config file explicitly with -config.
 
 Examples:
 
 ~~~bash
-./omnitalk -config server.ini
+./omnitalk -config server.toml
 ~~~
 
 ~~~powershell
-.\omnitalk.exe -config server.ini
+.\omnitalk.exe -config server.toml
 ~~~
 
 Config-loading rule:
 
 - -config cannot be combined with other flags.
-- If no flags are supplied, OmniTalk auto-loads server.ini if present.
+- If no flags are supplied, OmniTalk auto-loads server.toml if present.
 
 ---
 
@@ -153,18 +153,18 @@ Tip: [install Npcap](https://npcap.com/#download) first, otherwise pcap devices 
 
 ### Example interface configs (Linux, macOS, Windows)
 
-These examples show only relevant keys; merge into your full server.ini.
+These examples show only relevant keys; merge into your full server.toml.
 
 Linux example:
 
-~~~ini
+~~~toml
 [LToUdp]
 enabled = true
-interface = 192.168.1.10
+interface = "192.168.1.10"
 
 [EtherTalk]
-backend = pcap
-device = eth0
+backend = "pcap"
+device = "eth0"
 hw_address = "DE:AD:BE:EF:CA:FE"
 seed_network_min = 3
 seed_network_max = 5
@@ -173,14 +173,14 @@ seed_zone = "EtherTalk Network"
 
 macOS example:
 
-~~~ini
+~~~toml
 [LToUdp]
 enabled = true
-interface = 192.168.1.20
+interface = "192.168.1.20"
 
 [EtherTalk]
-backend = pcap
-device = en0
+backend = "pcap"
+device = "en0"
 hw_address = "DE:AD:BE:EF:CA:FE"
 seed_network_min = 3
 seed_network_max = 5
@@ -189,16 +189,18 @@ seed_zone = "EtherTalk Network"
 
 Windows example:
 
-~~~ini
+~~~toml
 [LToUdp]
 enabled = true
-interface = 0.0.0.0
+interface = "0.0.0.0"
 
+# On Windows, use TOML literal strings (single quotes) so backslashes are not
+# interpreted as escapes by the parser.
 [EtherTalk]
-backend = pcap
-device = "\Device\NPF_{1DFDAA9C-7DD4-40F8-B6D4-9298C273D654}"
+backend = "pcap"
+device = '\Device\NPF_{1DFDAA9C-7DD4-40F8-B6D4-9298C273D654}'
 hw_address = "DE:AD:BE:EF:CA:FE"
-bridge_mode = auto
+bridge_mode = "auto"
 seed_network_min = 3
 seed_network_max = 5
 seed_zone = "EtherTalk Network"
@@ -284,17 +286,17 @@ Provide IP connectivity to AppleTalk clients via a MacIP gateway.
 
 Example NAT-oriented configuration:
 
-~~~ini
+~~~toml
 [MacIP]
 enabled = true
-mode = nat
+mode = "nat"
 zone = "EtherTalk Network"
-nat_subnet = 192.168.100.0/24
-nat_gw = 192.168.100.1
-ip_gateway = 192.168.1.1
-nameserver = 192.168.1.1
+nat_subnet = "192.168.100.0/24"
+nat_gw = "192.168.100.1"
+ip_gateway = "192.168.1.1"
+nameserver = "192.168.1.1"
 dhcp_relay = false
-lease_file = leases.txt
+lease_file = "leases.txt"
 ~~~
 
 ### [MacIP]
@@ -356,7 +358,7 @@ Unsupported or limited:
 | zone | string | (empty) | Zone for AFP registration. Empty uses router-selected default. |
 | protocols | string | tcp,ddp | Enabled AFP transports: tcp, ddp, or both comma-separated. |
 | binding | string | :548 | TCP listen address for DSI AFP. |
-| extension_map | string | (empty) | Path to Netatalk-compatible extension map file. Relative paths are resolved from INI directory. |
+| extension_map | string | (empty) | Path to Netatalk-compatible extension map file. Relative paths are resolved from the config file's directory. |
 
 #### Filename mapping and encoding
 
@@ -370,12 +372,12 @@ Behavior:
 
 Use `[AFP] extension_map` to provide Macintosh type/creator metadata for files based on extension.
 
-Example in `server.ini`:
+Example in `server.toml`:
 
-~~~ini
+~~~toml
 [AFP]
 enabled = true
-extension_map = extmap.conf
+extension_map = "extmap.conf"
 ~~~
 
 Format rules:
@@ -435,9 +437,9 @@ Error code behavior by AFP version:
 
 Example:
 
-~~~ini
+~~~toml
 [Volumes.Sample]
-path = dist/Sample Volume
+path = "dist/Sample Volume"
 read_only = true
 ~~~
 
@@ -479,11 +481,11 @@ Common operational flags:
 - -parse-packets and -parse-output
 - -afp-volume (repeatable Name:Path)
 
-Use server.ini for repeatable deployments; use flags for quick experiments.
+Use server.toml for repeatable deployments; use flags for quick experiments.
 
 ## Rough project layout
 
-- cmd/omnitalk: entrypoint, flag handling, INI loading, runtime wiring.
+- cmd/omnitalk: entrypoint, flag handling, TOML config loading, runtime wiring.
 - router: datagram dispatch, routing table, zone information table.
 - port: transport implementations (EtherTalk, LocalTalk variants, rawlink, NAT helpers).
 - service: protocol/application services (AEP, RTMP, ZIP, ASP/ATP/DSI, AFP, MacIP, LLAP).

@@ -1,0 +1,76 @@
+[LToUdp]
+# LocalTalk over UDP Settings (used by Mini vMac UDP builds and SNOW emu)
+enabled = true                # Enable LToUDP - true for on, false for off
+seed_network = 1              # LToUDP seed network number
+seed_zone = "LToUDP Network"  # LToUDP seed zone name
+
+[TashTalk]
+# TashTalk is a PIC-based RS422 LocalTalk to serial adaptor
+# port = "COM6"                # blank to disable, otherwise the serial port to use (eg COM1, /dev/ttyAMA0)
+seed_network = 2              # TashTalk seed network number
+seed_zone = "TashTalk Network"
+
+[EtherTalk]
+# EtherTalk is a pcap-based network bridge
+backend = "pcap"              # supported: pcap, tap, tun. Leave blank to disable EtherTalk.
+device = '\Device\NPF_{B7D4E073-2185-4912-BBE8-3948C6636D02}'
+# device = '\Device\NPF_{7A63BBB0-EBC1-4FA7-A397-8E7F42E39A73}'
+hw_address = "DE:AD:BE:EF:CA:FE" # EtherTalk hardware address for the router
+seed_network_min = 3
+seed_network_max = 5
+seed_zone = "EtherTalk Network"
+bridge_mode = "auto"          # auto (default), ethernet, or wifi
+bridge_host_mac = ""          # optional host adapter MAC for Wi-Fi bridge shim
+
+[MacIP]
+# MacIP Gateway Settings. Allows TCP over DDP.
+enabled = true                # true to enable MacIP gateway
+mode = "pcap"                 # pcap or nat
+zone = ""                     # MacIP gateway zone, defaults to EtherTalk zone
+nat_subnet = ""               # in NAT mode, the subnet to use
+nat_gw = ""                   # in NAT mode, the gateway IP
+lease_file = "leases.txt"     # in NAT mode, persist DHCP leases here
+ip_gateway = ""               # upstream/default gateway on the IP-side network
+dhcp_relay = true             # convert MacTCP auto-config to DHCP requests
+nameserver = "1.1.1.1"        # DNS nameserver
+
+[AFP]
+# Apple Filing Protocol server settings
+enabled = true
+name = "OmniTalk"             # Server name. Max 31 characters.
+zone = "EtherTalk Network"
+protocols = "ddp,tcp"         # Comma-separated: ddp, tcp, or both
+binding = ":548"
+extension_map = "extmap.conf" # Netatalk-compatible extension mapping file
+
+[Volumes.Default]
+name = "Welcome"
+path = "./dist/Sample Volume"
+read_only = true
+
+[Volumes.TestVolume]
+name = "Test Volume"          # Volume name. Max 31 characters.
+path = 'C:\Mac\Test'
+cnid_backend = ""             # blank for default ("memory")
+use_decomposed_names = true
+fork_backend = "AppleDouble"
+appledouble_mode = "modern"   # "modern" (._ sidecars) or "legacy" (.appledouble folder)
+rebuild_desktop_db = false
+
+[Volumes.Volume68k]
+name = "Volume 68K"
+path = 'C:\Mac\Volume68K'
+cnid_backend = ""
+use_decomposed_names = true
+fork_backend = "AppleDouble"
+appledouble_mode = "legacy"
+rebuild_desktop_db = false
+
+[Volumes.MacGarden]
+name = "Mac Garden"
+fs_type = "macgarden"
+
+[Logging]
+level = "debug"
+parse_packets = true
+log_traffic = false

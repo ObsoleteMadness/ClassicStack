@@ -8,25 +8,25 @@ import (
 	"github.com/pgodw/omnitalk/service/afp"
 )
 
-func TestLoadConfigFromINI_ParsesSections(t *testing.T) {
+func TestLoadConfig_ParsesSections(t *testing.T) {
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "server.ini")
+	cfgPath := filepath.Join(dir, "server.toml")
 	content := `[LToUdp]
 enabled = true
-	interface = 192.168.0.103
+interface = "192.168.0.103"
 seed_network = 11
 seed_zone = "LToUDP Network"
 
 [TashTalk]
-port = COM1
+port = "COM1"
 seed_network = 12
 seed_zone = "TashTalk Network"
 
 [EtherTalk]
-backend = pcap
+backend = "pcap"
 device = "eth0"
 hw_address = "DE:AD:BE:EF:CA:FE"
-bridge_mode = wifi
+bridge_mode = "wifi"
 bridge_host_mac = "AA:BB:CC:DD:EE:FF"
 seed_network_min = 3
 seed_network_max = 9
@@ -34,33 +34,33 @@ seed_zone = "EtherTalk Network"
 
 [MacIP]
 enabled = true
-mode = nat
-nameserver = 1.1.1.1
-nat_subnet = 10.1.0.0/24
-nat_gw = 10.1.0.1
-ip_gateway = 192.168.0.1
+mode = "nat"
+nameserver = "1.1.1.1"
+nat_subnet = "10.1.0.0/24"
+nat_gw = "10.1.0.1"
+ip_gateway = "192.168.0.1"
 dhcp_relay = true
-lease_file = leases.txt
+lease_file = "leases.txt"
 zone = "MacIP Zone"
 
 [AFP]
 enabled = true
 name = "OmniTalk"
 zone = "EtherTalk Network"
-protocols = ddp,tcp
+protocols = "ddp,tcp"
 binding = ":548"
 extension_map = "extmap.conf"
 
 [Volumes.Main]
 name = "Main"
-path = "C:\Mac"
-cnid_backend = memory
+path = 'C:\Mac'
+cnid_backend = "memory"
 use_decomposed_names = true
-fork_backend = AppleDouble
-appledouble_mode = legacy
+fork_backend = "AppleDouble"
+appledouble_mode = "legacy"
 
 [Logging]
-level = debug
+level = "debug"
 parse_packets = true
 log_traffic = true
 `
@@ -68,9 +68,9 @@ log_traffic = true
 		t.Fatalf("write config: %v", err)
 	}
 
-	cfg, err := loadConfigFromINI(cfgPath)
+	cfg, err := loadConfigFromFile(cfgPath)
 	if err != nil {
-		t.Fatalf("loadConfigFromINI error: %v", err)
+		t.Fatalf("loadConfigFromFile error: %v", err)
 	}
 
 	if cfg.LogLevel != "debug" || !cfg.LogTraffic || !cfg.ParsePackets {
@@ -94,7 +94,7 @@ log_traffic = true
 	if cfg.AFPExtensionMapPath != filepath.Join(dir, "extmap.conf") {
 		t.Fatalf("AFPExtensionMapPath = %q, want %q", cfg.AFPExtensionMapPath, filepath.Join(dir, "extmap.conf"))
 	}
-	if len(cfg.AFPVolumes) != 1 || cfg.AFPVolumes[0].Path != "C:\\Mac" {
+	if len(cfg.AFPVolumes) != 1 || cfg.AFPVolumes[0].Path != `C:\Mac` {
 		t.Fatalf("unexpected AFP volumes: %#v", cfg.AFPVolumes)
 	}
 	if cfg.AFPVolumes[0].AppleDoubleMode != afp.AppleDoubleModeLegacy {
@@ -102,9 +102,9 @@ log_traffic = true
 	}
 }
 
-func TestLoadConfigFromINI_ConflictingVolumeOptions(t *testing.T) {
+func TestLoadConfig_ConflictingVolumeOptions(t *testing.T) {
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "server.ini")
+	cfgPath := filepath.Join(dir, "server.toml")
 	content := `[Volumes.One]
 name = "One"
 path = "/tmp/one"
@@ -119,28 +119,28 @@ use_decomposed_names = false
 		t.Fatalf("write config: %v", err)
 	}
 
-	if _, err := loadConfigFromINI(cfgPath); err == nil {
+	if _, err := loadConfigFromFile(cfgPath); err == nil {
 		t.Fatal("expected conflict error, got nil")
 	}
 }
 
-func TestLoadConfigFromINI_BlankNatGatewayKeepsDefault(t *testing.T) {
+func TestLoadConfig_BlankNatGatewayKeepsDefault(t *testing.T) {
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "server.ini")
+	cfgPath := filepath.Join(dir, "server.toml")
 	content := `[MacIP]
 enabled = true
-mode = nat
-	nat_subnet =
-nat_gw =
-ip_gateway = 192.168.0.1
+mode = "nat"
+nat_subnet = ""
+nat_gw = ""
+ip_gateway = "192.168.0.1"
 `
 	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	cfg, err := loadConfigFromINI(cfgPath)
+	cfg, err := loadConfigFromFile(cfgPath)
 	if err != nil {
-		t.Fatalf("loadConfigFromINI error: %v", err)
+		t.Fatalf("loadConfigFromFile error: %v", err)
 	}
 
 	if cfg.MacIPGWIP != "" {
@@ -154,37 +154,35 @@ ip_gateway = 192.168.0.1
 	}
 }
 
-
-// TestLoadConfigFromINI_PerVolumeAppleDoubleMode verifies that two volumes in the
-// same config file can independently specify different AppleDouble modes, and that
-// each volume carries its own setting rather than a shared global one.
-func TestLoadConfigFromINI_PerVolumeAppleDoubleMode(t *testing.T) {
+// TestLoadConfig_PerVolumeAppleDoubleMode verifies that two volumes in the
+// same config file can independently specify different AppleDouble modes, and
+// that each volume carries its own setting rather than a shared global one.
+func TestLoadConfig_PerVolumeAppleDoubleMode(t *testing.T) {
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "server.ini")
+	cfgPath := filepath.Join(dir, "server.toml")
 	content := `[Volumes.Modern]
 name = "Modern"
 path = "/tmp/modern"
-appledouble_mode = modern
+appledouble_mode = "modern"
 
 [Volumes.Legacy]
 name = "Legacy"
 path = "/tmp/legacy"
-appledouble_mode = legacy
+appledouble_mode = "legacy"
 `
 	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	cfg, err := loadConfigFromINI(cfgPath)
+	cfg, err := loadConfigFromFile(cfgPath)
 	if err != nil {
-		t.Fatalf("loadConfigFromINI error: %v", err)
+		t.Fatalf("loadConfigFromFile error: %v", err)
 	}
 
 	if len(cfg.AFPVolumes) != 2 {
 		t.Fatalf("expected 2 volumes, got %d", len(cfg.AFPVolumes))
 	}
 
-	// Find volumes by name regardless of parse order.
 	volsByName := make(map[string]afp.VolumeConfig)
 	for _, v := range cfg.AFPVolumes {
 		volsByName[v.Name] = v
@@ -207,26 +205,26 @@ appledouble_mode = legacy
 	}
 }
 
-func TestLoadConfigFromINI_PerVolumeFSType(t *testing.T) {
+func TestLoadConfig_PerVolumeFSType(t *testing.T) {
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "server.ini")
+	cfgPath := filepath.Join(dir, "server.toml")
 	content := `[Volumes.Local]
 name = "Local"
-path = "C:\\Mac\\Local"
-fs_type = local_fs
+path = 'C:\Mac\Local'
+fs_type = "local_fs"
 
 [Volumes.Garden]
 name = "Garden"
-path = "C:\\Mac\\Garden"
-fs_type = macgarden
+path = 'C:\Mac\Garden'
+fs_type = "macgarden"
 `
 	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	cfg, err := loadConfigFromINI(cfgPath)
+	cfg, err := loadConfigFromFile(cfgPath)
 	if err != nil {
-		t.Fatalf("loadConfigFromINI error: %v", err)
+		t.Fatalf("loadConfigFromFile error: %v", err)
 	}
 	if len(cfg.AFPVolumes) != 2 {
 		t.Fatalf("expected 2 volumes, got %d", len(cfg.AFPVolumes))
@@ -243,36 +241,36 @@ fs_type = macgarden
 	}
 }
 
-func TestLoadConfigFromINI_InvalidFSType(t *testing.T) {
+func TestLoadConfig_InvalidFSType(t *testing.T) {
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "server.ini")
+	cfgPath := filepath.Join(dir, "server.toml")
 	content := `[Volumes.Bad]
 name = "Bad"
-path = "C:\\Mac\\Bad"
-fs_type = bananas
+path = 'C:\Mac\Bad'
+fs_type = "bananas"
 `
 	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	if _, err := loadConfigFromINI(cfgPath); err == nil {
+	if _, err := loadConfigFromFile(cfgPath); err == nil {
 		t.Fatal("expected invalid fs_type error")
 	}
 }
 
-func TestLoadConfigFromINI_MacGardenWithoutPath(t *testing.T) {
+func TestLoadConfig_MacGardenWithoutPath(t *testing.T) {
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "server.ini")
+	cfgPath := filepath.Join(dir, "server.toml")
 	content := `[Volumes.MacGarden]
 name = "Mac Garden"
-fs_type = macgarden
+fs_type = "macgarden"
 `
 	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	cfg, err := loadConfigFromINI(cfgPath)
+	cfg, err := loadConfigFromFile(cfgPath)
 	if err != nil {
-		t.Fatalf("loadConfigFromINI error: %v", err)
+		t.Fatalf("loadConfigFromFile error: %v", err)
 	}
 	if len(cfg.AFPVolumes) != 1 {
 		t.Fatalf("expected 1 volume, got %d", len(cfg.AFPVolumes))
@@ -288,17 +286,17 @@ fs_type = macgarden
 	}
 }
 
-func TestLoadConfigFromINI_LocalFSWithoutPathStillFails(t *testing.T) {
+func TestLoadConfig_LocalFSWithoutPathStillFails(t *testing.T) {
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "server.ini")
+	cfgPath := filepath.Join(dir, "server.toml")
 	content := `[Volumes.Local]
 name = "Local"
-fs_type = local_fs
+fs_type = "local_fs"
 `
 	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	if _, err := loadConfigFromINI(cfgPath); err == nil {
+	if _, err := loadConfigFromFile(cfgPath); err == nil {
 		t.Fatal("expected path required error for local_fs")
 	}
 }

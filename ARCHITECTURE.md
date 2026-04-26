@@ -84,9 +84,10 @@ cmd  →  service  →  (protocol | port | pkg)
 
 Single typed tree in `config/`. Two loaders feed it:
 
-1. INI — `config.LoadINI(path)` parses `server.ini` (gopkg.in/ini.v1).
-2. Flags — `cmd/omnitalk/main.go` overlays CLI flags on top of the INI
-   defaults.
+1. TOML — `config.Load(path)` parses `server.toml` via `knadh/koanf`
+   with the `pelletier/go-toml` v2 parser.
+2. Flags — `cmd/omnitalk/main.go` overlays CLI flags on top of the
+   file defaults.
 
 `config.Root.Validate()` runs once before services start. Services
 receive typed subtrees at construction time. Construction options

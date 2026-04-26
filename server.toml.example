@@ -1,0 +1,73 @@
+[LToUdp]
+# LocalTalk over UDP Settings (used by Mini vMac UDP builds and SNOW emu)
+enabled = true                 # Enable LToUDP - true for on, false for off
+interface = "0.0.0.0"          # local IPv4 interface/address for multicast join+send (0.0.0.0 = auto)
+seed_network = 1               # LToUDP seed network number
+seed_zone = "LToUDP Network"   # LToUDP seed zone name
+
+[TashTalk]
+# TashTalk is a PIC-based RS422 LocalTalk to serial adaptor
+port = ""                      # blank to disable, otherwise the serial port to use (eg COM1, /dev/ttyAMA0)
+seed_network = 2               # TashTalk seed network number
+seed_zone = "TashTalk Network" # TashTalk seed zone name
+
+[EtherTalk]
+# EtherTalk is a pcap-based network bridge
+backend = "pcap"               # supported: pcap, tap, tun. Leave blank to disable EtherTalk.
+# device = '\Device\NPF_{B7D4E073-2185-4912-BBE8-3948C6636D02}'
+# PCap device name. Blank to disable EtherTalk. Use literal strings (single quotes) on Windows
+# so the backslashes are not interpreted as TOML escapes. Linux: "/dev/eth0".
+device = '\Device\NPF_{1DFDAA9C-7DD4-40F8-B6D4-9298C273D654}'
+hw_address = "DE:AD:BE:EF:CA:FE" # EtherTalk hardware address for the router
+bridge_mode = "auto"           # auto (default), ethernet, or wifi. Use wifi for bridge-shim rewriting on Wi-Fi adapters.
+bridge_host_mac = ""           # optional host adapter MAC for Wi-Fi bridge shim. Defaults to hw_address when blank.
+seed_network_min = 3           # EtherTalk seed network minimum
+seed_network_max = 5           # EtherTalk seed network maximum
+seed_zone = "EtherTalk Network"
+
+[MacIP]
+# MacIP Gateway Settings. Allows TCP over DDP.
+enabled = false                # true to enable MacIP gateway
+mode = "pcap"                  # pcap or nat
+zone = ""                      # MacIP gateway zone, defaults to EtherTalk zone
+nat_subnet = ""                # in NAT mode, the subnet to use (eg 192.168.100.0/24)
+nat_gw = ""                    # in NAT mode, the IP address to use for the gateway
+lease_file = "leases.txt"      # in NAT mode, persist DHCP leases to this file
+ip_gateway = "192.168.0.1"     # upstream/default gateway on the IP-side network
+dhcp_relay = true              # convert MacTCP auto-config to DHCP requests
+nameserver = "1.1.1.1"         # DNS nameserver
+
+[AFP]
+# Apple Filing Protocol server settings
+enabled = true                 # true to enable AFP server
+name = "OmniTalk"              # Server name. Max 31 characters.
+zone = "EtherTalk Network"     # AppleTalk zone to advertise the server in
+protocols = "ddp,tcp"          # Comma-separated: ddp, tcp, or both
+binding = ":548"               # When TCP is enabled, the bind address
+extension_map = "extmap.conf"  # Netatalk-compatible extension mapping file
+
+[Volumes.TestVolume]
+# Each AFP volume gets a [Volumes.<key>] section.
+name = "Test Volume"           # Volume name. Max 31 characters.
+path = 'C:\Mac\Test'           # Host path. Use literal strings on Windows to skip TOML escapes.
+fs_type = "local_fs"           # Filesystem backend: local_fs (default) or macgarden
+cnid_backend = ""              # Blank for default ("memory")
+use_decomposed_names = true    # Encode host-reserved filename characters using 0xNN tokens. Default true.
+fork_backend = "AppleDouble"   # Currently only "AppleDouble" is implemented
+appledouble_mode = "modern"    # "modern" (._ sidecars, Netatalk 4.x) or "legacy" (.appledouble folder, Netatalk 2.x)
+rebuild_desktop_db = false     # Rebuild the desktop DB from resource forks at startup
+
+[Volumes.Volume68k]
+name = "Volume 68K"
+path = 'C:\Mac\Volume68K'
+fs_type = "local_fs"
+cnid_backend = ""
+use_decomposed_names = true
+fork_backend = "AppleDouble"
+appledouble_mode = "legacy"
+rebuild_desktop_db = false
+
+[Logging]
+level = "debug"
+parse_packets = true
+log_traffic = false
