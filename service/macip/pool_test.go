@@ -1,3 +1,5 @@
+//go:build macip
+
 package macip
 
 import (

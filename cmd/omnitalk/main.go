@@ -25,7 +25,6 @@ import (
 	"github.com/pgodw/omnitalk/service/asp"
 	"github.com/pgodw/omnitalk/service/dsi"
 	"github.com/pgodw/omnitalk/service/llap"
-	"github.com/pgodw/omnitalk/service/macip"
 	"github.com/pgodw/omnitalk/service/rtmp"
 	"github.com/pgodw/omnitalk/service/zip"
 )
@@ -298,121 +297,28 @@ func main() {
 		zip.NewSendingService(),
 	}
 
-	var macipSvc *macip.Service
-
-	if *macipEnable {
-		if *etBackend != "" && *etBackend != "pcap" {
-			log.Fatalf("-macip-enabled currently requires -ethertalk-backend pcap (got %q)", *etBackend)
-		}
-
-		// MacIP shares the EtherTalk pcap interface; fall back to auto-detection.
-		ipIface := *pcapDev
-		if ipIface == "" {
-			if detected, ok := rawlink.DetectDefaultPcapInterface(); ok {
-				ipIface = detected
-				netlog.Info("[MAIN][MacIP] auto-detected pcap interface: %s", detected)
-			} else {
-				log.Fatal("-ethertalk-device is required when -macip-enabled is set (auto-detection failed)")
-			}
-		}
-
-		// Auto-detect IP-side MAC from the bridge host MAC or the interface itself.
-		ipMACStr := ""
-		if strings.TrimSpace(*etBridgeHostMAC) != "" {
-			ipMACStr = *etBridgeHostMAC
-			netlog.Info("[MAIN][MacIP] using bridge host MAC for IP-side: %s", ipMACStr)
-		} else if hostMAC, ok := rawlink.DetectHostMACForPcapInterface(ipIface); ok {
-			ipMACStr = hostMAC
-			netlog.Info("[MAIN][MacIP] auto-detected IP-side MAC from %s: %s", ipIface, ipMACStr)
-		} else {
-			ipMACStr = *pcapHWAddr
-		}
-
-		hostIPStr, hostIPDetected := detectPcapInterfaceIPv4(ipIface)
-
-		if *macipIPGW == "" {
-			if gw, ok := rawlink.DetectDefaultGatewayForPcapInterface(ipIface); ok {
-				*macipIPGW = gw
-				netlog.Info("[MAIN][MacIP] auto-detected default gateway %s for interface %s", gw, ipIface)
-			} else if hostIPDetected {
-				*macipIPGW = hostIPStr
-				netlog.Warn("[MAIN][MacIP] default gateway auto-detection failed; falling back to interface IPv4 %s on %s", hostIPStr, ipIface)
-			} else {
-				log.Fatal("-macip-ip-gateway is required when -macip-enabled is set (auto-detection failed and no IPv4 address was found)")
-			}
-		}
-
-		_, ipNet, err := net.ParseCIDR(*macipSubnet)
-		if err != nil {
-			log.Fatalf("invalid -macip-nat-subnet: %v", err)
-		}
-		ipMACAddr, err := hwaddr.ParseEthernet(ipMACStr)
-		if err != nil {
-			log.Fatalf("invalid IP-side MAC: %v", err)
-		}
-		ipMAC := ipMACAddr.HardwareAddr()
-		ipGW := net.ParseIP(*macipIPGW).To4()
-		if ipGW == nil {
-			log.Fatalf("invalid -macip-ip-gateway: %q", *macipIPGW)
-		}
-		var hostIP net.IP
-		if hostIPDetected {
-			hostIP = net.ParseIP(hostIPStr).To4()
-		}
-		gwIP := resolveMacIPGatewayIP(*macipGWIP, ipNet, ipGW, *macipNAT)
-		if gwIP == nil {
-			log.Fatalf("invalid -macip-nat-gw: %q", *macipGWIP)
-		}
-		if !*macipNAT && strings.TrimSpace(*macipGWIP) != "" {
-			netlog.Info("[MAIN][MacIP] ignoring -macip-nat-gw in non-NAT mode; using upstream gateway %s", gwIP)
-		} else if !*macipNAT {
-			netlog.Info("[MAIN][MacIP] using upstream gateway %s in non-NAT mode", gwIP)
-		}
-		if *macipNAT && gwIP.Equal(ipGW) {
-			log.Fatalf("invalid MacIP configuration: -macip-nat-gw (%s) conflicts with the host-side upstream gateway (%s); choose a different MacIP gateway IP", gwIP, ipGW)
-		}
-		nsIP := ipGW // default: physical gateway typically also serves DNS
-		if *macipNameserver != "" {
-			nsIP = net.ParseIP(*macipNameserver).To4()
-			if nsIP == nil {
-				log.Fatalf("invalid -macip-nameserver: %q", *macipNameserver)
-			}
-		}
-
-		broadcast := broadcastAddr(ipNet)
-		// Choose the NBP zone: explicit -macip-zone wins, then EtherTalk seed zone,
-		// otherwise leave empty so the service picks the first zone found at start.
-		var chosenZone []byte
-		if *macipZone != "" {
-			chosenZone = []byte(*macipZone)
-		} else if *etZone != "" {
-			chosenZone = []byte(*etZone)
-		}
-
-		// Open MacIP rawlink and apply BPF filter before injecting into the service.
-		ipLink, err := rawlink.OpenPcap(rawlink.DefaultMacIPConfig(ipIface))
-		if err != nil {
-			log.Fatalf("failed opening MacIP rawlink on %s: %v", ipIface, err)
-		}
-		if fl, ok := ipLink.(rawlink.FilterableLink); ok {
-			if err := fl.SetFilter(macipBPFFilter(ipNet, *macipDHCP)); err != nil {
-				netlog.Warn("[MAIN][MacIP] could not set BPF filter on %s: %v", ipIface, err)
-			}
-		}
-
-		macipSvc = macip.New(
-			gwIP, ipNet.IP, ipNet.Mask,
-			nsIP, broadcast,
-			chosenZone,
-			nbpSvc,
-			ipLink, ipMAC, hostIP, ipGW,
-			*macipNAT,
-			*macipDHCP,
-			*macipStateFile,
-		)
-		services = append(services, macipSvc)
-		netlog.Info("[MAIN][MacIP] gw=%s subnet=%s iface=%s host-ip=%s ip-gw=%s zone=%q nat=%t dhcp_relay=%t",
-			gwIP, *macipSubnet, ipIface, hostIP, ipGW, string(chosenZone), *macipNAT, *macipDHCP)
+	macIP, err := wireMacIP(MacIPConfig{
+		Enabled:          *macipEnable,
+		NATGatewayIP:     *macipGWIP,
+		NATSubnet:        *macipSubnet,
+		Nameserver:       *macipNameserver,
+		Zone:             *macipZone,
+		IPGateway:        *macipIPGW,
+		NAT:              *macipNAT,
+		DHCPRelay:        *macipDHCP,
+		StateFile:        *macipStateFile,
+		PcapDevice:       *pcapDev,
+		BridgeHostMAC:    *etBridgeHostMAC,
+		PcapHWAddr:       *pcapHWAddr,
+		EtherTalkZone:    *etZone,
+		EtherTalkBackend: *etBackend,
+		NBP:              nbpSvc,
+	})
+	if err != nil {
+		log.Fatalf("MacIP wiring failed: %v", err)
+	}
+	if macIP != nil {
+		services = append(services, macIP.Service())
 	}
 
 	if len(afpVolumes) > 0 {
@@ -440,16 +346,16 @@ func main() {
 
 		if hasDDP {
 			aspSvc := asp.New(*afpServerName, nil, nbpSvc, []byte(*afpZone))
-			if macipSvc != nil {
+			if macIP != nil {
 				aspSvc.SetSessionLifecycleHooks(
 					func(sess *asp.Session) {
-						macipSvc.PinLeaseToSession(sess.WSNet, sess.WSNode, sess.ID)
+						macIP.PinLeaseToSession(sess.WSNet, sess.WSNode, sess.ID)
 					},
 					func(sess *asp.Session) {
-						macipSvc.UnpinLeaseFromSession(sess.ID)
+						macIP.UnpinLeaseFromSession(sess.ID)
 					},
 					func(sess *asp.Session) {
-						macipSvc.MarkSessionActivity(sess.ID)
+						macIP.MarkSessionActivity(sess.ID)
 					},
 				)
 			}
@@ -589,24 +495,6 @@ func selectPreferredIPv4(addrs []string) (string, bool) {
 	}
 
 	return "", false
-}
-
-func resolveMacIPGatewayIP(configured string, natSubnet *net.IPNet, upstreamGateway net.IP, natMode bool) net.IP {
-	if !natMode {
-		return append(net.IP(nil), upstreamGateway.To4()...)
-	}
-	trimmed := strings.TrimSpace(configured)
-	if trimmed != "" {
-		return net.ParseIP(trimmed).To4()
-	}
-	return firstUsableIPv4(natSubnet)
-}
-
-func macipBPFFilter(ipNet *net.IPNet, dhcpMode bool) string {
-	if dhcpMode {
-		return "(arp) or (ip) or (udp dst port 68)"
-	}
-	return fmt.Sprintf("(arp) or (dst net %s)", ipNet.String())
 }
 
 func firstUsableIPv4(n *net.IPNet) net.IP {

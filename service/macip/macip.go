@@ -1,3 +1,5 @@
+//go:build macip
+
 // Package macip implements a MacIP gateway service (equivalent of macipgw).
 // It bridges IP traffic between an Ethernet rawlink and AppleTalk nodes using
 // the MacIP protocol:
