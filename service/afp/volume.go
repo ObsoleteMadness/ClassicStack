@@ -4,11 +4,12 @@ package afp
 
 import (
 	"bytes"
-	"encoding/binary"
 	"log"
 	"math"
 	"path/filepath"
 	"time"
+
+	"github.com/pgodw/omnitalk/pkg/binutil"
 )
 
 const (
@@ -120,41 +121,41 @@ func (s *Service) handleOpenVol(req *FPOpenVolReq) (*FPOpenVolRes, int32) {
 	s.mu.RUnlock()
 
 	if req.Bitmap&VolBitmapAttributes != 0 {
-		binary.Write(fixed, binary.BigEndian, s.volumeAttributes(targetVol))
+		binutil.WriteU16(fixed, s.volumeAttributes(targetVol))
 	}
 	if req.Bitmap&VolBitmapSignature != 0 {
-		binary.Write(fixed, binary.BigEndian, s.volumeType(targetVol))
+		binutil.WriteU16(fixed, s.volumeType(targetVol))
 	}
 	if req.Bitmap&VolBitmapCreateDate != 0 {
-		binary.Write(fixed, binary.BigEndian, volDate)
+		binutil.WriteU32(fixed, volDate)
 	}
 	if req.Bitmap&VolBitmapModDate != 0 {
-		binary.Write(fixed, binary.BigEndian, volDate)
+		binutil.WriteU32(fixed, volDate)
 	}
 	if req.Bitmap&VolBitmapBackupDate != 0 {
-		binary.Write(fixed, binary.BigEndian, backupDate)
+		binutil.WriteU32(fixed, backupDate)
 	}
 	if req.Bitmap&VolBitmapVolID != 0 {
-		binary.Write(fixed, binary.BigEndian, targetVol.ID)
+		binutil.WriteU16(fixed, targetVol.ID)
 	}
 	if req.Bitmap&VolBitmapBytesFree != 0 {
-		binary.Write(fixed, binary.BigEndian, capAFPBytes32(bytesFree))
+		binutil.WriteU32(fixed, capAFPBytes32(bytesFree))
 	}
 	if req.Bitmap&VolBitmapBytesTotal != 0 {
-		binary.Write(fixed, binary.BigEndian, capAFPBytes32(bytesTotal))
+		binutil.WriteU32(fixed, capAFPBytes32(bytesTotal))
 	}
 	if req.Bitmap&VolBitmapName != 0 {
-		binary.Write(fixed, binary.BigEndian, uint16(fixedSize+varBuf.Len()))
+		binutil.WriteU16(fixed, uint16(fixedSize+varBuf.Len()))
 		s.writeAFPName(&varBuf, targetVol.Config.Name, targetVol.ID)
 	}
 	if req.Bitmap&VolBitmapExtBytesFree != 0 {
-		binary.Write(fixed, binary.BigEndian, bytesFree)
+		binutil.WriteU64(fixed, bytesFree)
 	}
 	if req.Bitmap&VolBitmapExtBytesTotal != 0 {
-		binary.Write(fixed, binary.BigEndian, bytesTotal)
+		binutil.WriteU64(fixed, bytesTotal)
 	}
 	if req.Bitmap&VolBitmapBlockSize != 0 {
-		binary.Write(fixed, binary.BigEndian, uint32(4096))
+		binutil.WriteU32(fixed, 4096)
 	}
 
 	res := &FPOpenVolRes{
@@ -279,41 +280,41 @@ func (s *Service) handleGetVolParms(req *FPGetVolParmsReq) (*FPGetVolParmsRes, i
 	s.mu.RUnlock()
 
 	if req.Bitmap&VolBitmapAttributes != 0 {
-		binary.Write(fixed, binary.BigEndian, s.volumeAttributes(targetVol))
+		binutil.WriteU16(fixed, s.volumeAttributes(targetVol))
 	}
 	if req.Bitmap&VolBitmapSignature != 0 {
-		binary.Write(fixed, binary.BigEndian, s.volumeType(targetVol))
+		binutil.WriteU16(fixed, s.volumeType(targetVol))
 	}
 	if req.Bitmap&VolBitmapCreateDate != 0 {
-		binary.Write(fixed, binary.BigEndian, volDate)
+		binutil.WriteU32(fixed, volDate)
 	}
 	if req.Bitmap&VolBitmapModDate != 0 {
-		binary.Write(fixed, binary.BigEndian, volDate)
+		binutil.WriteU32(fixed, volDate)
 	}
 	if req.Bitmap&VolBitmapBackupDate != 0 {
-		binary.Write(fixed, binary.BigEndian, backupDate)
+		binutil.WriteU32(fixed, backupDate)
 	}
 	if req.Bitmap&VolBitmapVolID != 0 {
-		binary.Write(fixed, binary.BigEndian, targetVol.ID)
+		binutil.WriteU16(fixed, targetVol.ID)
 	}
 	if req.Bitmap&VolBitmapBytesFree != 0 {
-		binary.Write(fixed, binary.BigEndian, capAFPBytes32(bytesFree))
+		binutil.WriteU32(fixed, capAFPBytes32(bytesFree))
 	}
 	if req.Bitmap&VolBitmapBytesTotal != 0 {
-		binary.Write(fixed, binary.BigEndian, capAFPBytes32(bytesTotal))
+		binutil.WriteU32(fixed, capAFPBytes32(bytesTotal))
 	}
 	if req.Bitmap&VolBitmapName != 0 {
-		binary.Write(fixed, binary.BigEndian, uint16(fixedSize+varBuf.Len()))
+		binutil.WriteU16(fixed, uint16(fixedSize+varBuf.Len()))
 		s.writeAFPName(&varBuf, targetVol.Config.Name, targetVol.ID)
 	}
 	if req.Bitmap&VolBitmapExtBytesFree != 0 {
-		binary.Write(fixed, binary.BigEndian, bytesFree)
+		binutil.WriteU64(fixed, bytesFree)
 	}
 	if req.Bitmap&VolBitmapExtBytesTotal != 0 {
-		binary.Write(fixed, binary.BigEndian, bytesTotal)
+		binutil.WriteU64(fixed, bytesTotal)
 	}
 	if req.Bitmap&VolBitmapBlockSize != 0 {
-		binary.Write(fixed, binary.BigEndian, uint32(4096))
+		binutil.WriteU32(fixed, 4096)
 	}
 
 	res := &FPGetVolParmsRes{

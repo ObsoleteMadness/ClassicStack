@@ -4,7 +4,8 @@ package afp
 
 import (
 	"bytes"
-	"encoding/binary"
+
+	"github.com/pgodw/omnitalk/pkg/binutil"
 )
 
 // BuildServerInfo constructs the payload for an AFP FPGetSrvrInfo or ASP GetStatus reply.
@@ -55,14 +56,14 @@ func BuildServerInfo(serverName string) []byte {
 
 	// Write Offsets
 	// For FPGetSrvrInfo, the layout requires exactly 4 offsets.
-	binary.Write(buf, binary.BigEndian, uint16(machineOffset))
-	binary.Write(buf, binary.BigEndian, uint16(versionsOffset))
-	binary.Write(buf, binary.BigEndian, uint16(uamsOffset))
-	binary.Write(buf, binary.BigEndian, uint16(iconOffset))
+	binutil.WriteU16(buf, uint16(machineOffset))
+	binutil.WriteU16(buf, uint16(versionsOffset))
+	binutil.WriteU16(buf, uint16(uamsOffset))
+	binutil.WriteU16(buf, uint16(iconOffset))
 
 	// Write Flags
 	flags := uint16(0x0001 | 0x0002) // Supports CopyFile, Supports Choose Message (example flags)
-	binary.Write(buf, binary.BigEndian, flags)
+	binutil.WriteU16(buf, flags)
 
 	// Write Server Name (Pascal String)
 	buf.WriteByte(byte(len(serverName)))

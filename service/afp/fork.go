@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+
+	"github.com/pgodw/omnitalk/pkg/binutil"
 )
 
 func (s *Service) handleOpenFork(req *FPOpenForkReq) (*FPOpenForkRes, int32) {
@@ -531,13 +533,13 @@ func (s *Service) handleGetForkParms(req *FPGetForkParmsReq) (*FPGetForkParmsRes
 				dataLen = uint32(fi.Size())
 			}
 		}
-		binary.Write(resData, binary.BigEndian, dataLen)
+		binutil.WriteU32(resData, dataLen)
 	}
 	if req.Bitmap&FileBitmapRsrcForkLen != 0 {
 		if handle.isRsrc {
 			rsrcLen = uint32(handle.rsrcLen)
 		}
-		binary.Write(resData, binary.BigEndian, rsrcLen)
+		binutil.WriteU32(resData, rsrcLen)
 	}
 	return &FPGetForkParmsRes{Bitmap: req.Bitmap, Data: resData.Bytes()}, NoErr
 }
