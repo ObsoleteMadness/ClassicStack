@@ -98,6 +98,43 @@ func GetU64(b []byte) (uint64, int, error) {
 	return binary.BigEndian.Uint64(b), 8, nil
 }
 
+// ByteWriter is the subset of bytes.Buffer / strings.Builder used by
+// the Write* helpers below. Any io.Writer would do, but constraining
+// to ByteWriter sidesteps the (n, err) plumbing for callers that
+// already know writes to a memory buffer cannot fail.
+type ByteWriter interface {
+	Write(p []byte) (int, error)
+	WriteByte(c byte) error
+}
+
+// WriteU8 appends v to w. Errors from w are ignored: in-memory buffers
+// (bytes.Buffer, strings.Builder) cannot fail, and these helpers exist
+// to replace allocation-heavy binary.Write calls in hot paths.
+func WriteU8(w ByteWriter, v uint8) {
+	_ = w.WriteByte(v)
+}
+
+// WriteU16 appends a big-endian uint16 to w.
+func WriteU16(w ByteWriter, v uint16) {
+	var b [2]byte
+	binary.BigEndian.PutUint16(b[:], v)
+	_, _ = w.Write(b[:])
+}
+
+// WriteU32 appends a big-endian uint32 to w.
+func WriteU32(w ByteWriter, v uint32) {
+	var b [4]byte
+	binary.BigEndian.PutUint32(b[:], v)
+	_, _ = w.Write(b[:])
+}
+
+// WriteU64 appends a big-endian uint64 to w.
+func WriteU64(w ByteWriter, v uint64) {
+	var b [8]byte
+	binary.BigEndian.PutUint64(b[:], v)
+	_, _ = w.Write(b[:])
+}
+
 // PutPString writes a length-prefixed Pascal string: 1 byte length
 // followed by s. Returns ErrMalformed if len(s) > 255.
 func PutPString(b []byte, s []byte) (int, error) {

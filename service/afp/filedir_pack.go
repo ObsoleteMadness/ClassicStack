@@ -4,9 +4,10 @@ package afp
 
 import (
 	"bytes"
-	"encoding/binary"
 	"io/fs"
 	"path/filepath"
+
+	"github.com/pgodw/omnitalk/pkg/binutil"
 )
 
 // File and directory parameter wire packing. The pack functions here
@@ -134,7 +135,7 @@ func (s *Service) packFileInfo(buf *bytes.Buffer, volumeID uint16, bitmap uint16
 					dirAttrs = attrs
 				}
 			}
-			binary.Write(buf, binary.BigEndian, dirAttrs)
+			binutil.WriteU16(buf, dirAttrs)
 		}
 		if bitmap&DirBitmapParentDID != 0 {
 			// The root directory (DID=2) has a logical parent DID of 1.
@@ -145,33 +146,33 @@ func (s *Service) packFileInfo(buf *bytes.Buffer, volumeID uint16, bitmap uint16
 			} else {
 				pdir = s.getPathDID(volumeID, parentPath)
 			}
-			binary.Write(buf, binary.BigEndian, pdir)
+			binutil.WriteU32(buf, pdir)
 		}
 		if bitmap&DirBitmapCreateDate != 0 {
-			binary.Write(buf, binary.BigEndian, uint32(toAFPTime(info.ModTime())))
+			binutil.WriteU32(buf, uint32(toAFPTime(info.ModTime())))
 		}
 		if bitmap&DirBitmapModDate != 0 {
-			binary.Write(buf, binary.BigEndian, uint32(toAFPTime(info.ModTime())))
+			binutil.WriteU32(buf, uint32(toAFPTime(info.ModTime())))
 		}
 		if bitmap&DirBitmapBackupDate != 0 {
-			binary.Write(buf, binary.BigEndian, uint32(0))
+			binutil.WriteU32(buf, 0)
 		}
 		if bitmap&DirBitmapFinderInfo != 0 {
 			buf.Write(metadata.FinderInfo[:])
 		}
 		if bitmap&DirBitmapLongName != 0 {
 			offset := uint16(fixedSize + varBuf.Len())
-			binary.Write(buf, binary.BigEndian, offset)
+			binutil.WriteU16(buf, offset)
 			s.writeAFPName(&varBuf, name, volumeID)
 		}
 		if bitmap&DirBitmapShortName != 0 {
 			offset := uint16(fixedSize + varBuf.Len())
-			binary.Write(buf, binary.BigEndian, offset)
+			binutil.WriteU16(buf, offset)
 			s.writeAFPName(&varBuf, name, volumeID)
 		}
 		if bitmap&DirBitmapDirID != 0 {
 			did := s.getPathDID(volumeID, fullPath)
-			binary.Write(buf, binary.BigEndian, did)
+			binutil.WriteU32(buf, did)
 		}
 		if bitmap&DirBitmapOffspringCount != 0 {
 			count := uint16(0)
@@ -194,13 +195,13 @@ func (s *Service) packFileInfo(buf *bytes.Buffer, volumeID uint16, bitmap uint16
 					}
 				}
 			}
-			binary.Write(buf, binary.BigEndian, count)
+			binutil.WriteU16(buf, count)
 		}
 		if bitmap&DirBitmapOwnerID != 0 {
-			binary.Write(buf, binary.BigEndian, uint32(0))
+			binutil.WriteU32(buf, 0)
 		}
 		if bitmap&DirBitmapGroupID != 0 {
-			binary.Write(buf, binary.BigEndian, uint32(0))
+			binutil.WriteU32(buf, 0)
 		}
 		if bitmap&DirBitmapAccessRights != 0 {
 			rights := uint32(0x87070707)
@@ -208,7 +209,7 @@ func (s *Service) packFileInfo(buf *bytes.Buffer, volumeID uint16, bitmap uint16
 				// Read-only volumes should advertise read+search rights, not write.
 				rights = 0x87030303
 			}
-			binary.Write(buf, binary.BigEndian, rights)
+			binutil.WriteU32(buf, rights)
 		}
 		if bitmap&DirBitmapProDOSInfo != 0 {
 			buf.Write(make([]byte, 6))
@@ -221,43 +222,43 @@ func (s *Service) packFileInfo(buf *bytes.Buffer, volumeID uint16, bitmap uint16
 			if s.volumeIsReadOnly(volumeID) {
 				attr |= FileAttrWriteInhibit
 			}
-			binary.Write(buf, binary.BigEndian, attr)
+			binutil.WriteU16(buf, attr)
 		}
 		if bitmap&FileBitmapParentDID != 0 {
 			pdir := s.getPathDID(volumeID, parentPath)
-			binary.Write(buf, binary.BigEndian, pdir)
+			binutil.WriteU32(buf, pdir)
 		}
 		if bitmap&FileBitmapCreateDate != 0 {
-			binary.Write(buf, binary.BigEndian, uint32(toAFPTime(info.ModTime())))
+			binutil.WriteU32(buf, uint32(toAFPTime(info.ModTime())))
 		}
 		if bitmap&FileBitmapModDate != 0 {
-			binary.Write(buf, binary.BigEndian, uint32(toAFPTime(info.ModTime())))
+			binutil.WriteU32(buf, uint32(toAFPTime(info.ModTime())))
 		}
 		if bitmap&FileBitmapBackupDate != 0 {
-			binary.Write(buf, binary.BigEndian, uint32(0))
+			binutil.WriteU32(buf, 0)
 		}
 		if bitmap&FileBitmapFinderInfo != 0 {
 			buf.Write(metadata.FinderInfo[:])
 		}
 		if bitmap&FileBitmapLongName != 0 {
 			offset := uint16(fixedSize + varBuf.Len())
-			binary.Write(buf, binary.BigEndian, offset)
+			binutil.WriteU16(buf, offset)
 			s.writeAFPName(&varBuf, name, volumeID)
 		}
 		if bitmap&FileBitmapShortName != 0 {
 			offset := uint16(fixedSize + varBuf.Len())
-			binary.Write(buf, binary.BigEndian, offset)
+			binutil.WriteU16(buf, offset)
 			s.writeAFPName(&varBuf, name, volumeID)
 		}
 		if bitmap&FileBitmapFileNum != 0 {
 			did := s.getPathDID(volumeID, fullPath)
-			binary.Write(buf, binary.BigEndian, did)
+			binutil.WriteU32(buf, did)
 		}
 		if bitmap&FileBitmapDataForkLen != 0 {
-			binary.Write(buf, binary.BigEndian, uint32(info.Size()))
+			binutil.WriteU32(buf, uint32(info.Size()))
 		}
 		if bitmap&FileBitmapRsrcForkLen != 0 {
-			binary.Write(buf, binary.BigEndian, uint32(metadata.ResourceForkLen))
+			binutil.WriteU32(buf, uint32(metadata.ResourceForkLen))
 		}
 		if bitmap&FileBitmapProDOSInfo != 0 {
 			buf.Write(make([]byte, 6))
