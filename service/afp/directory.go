@@ -136,43 +136,10 @@ func (s *Service) handleEnumerate(req *FPEnumerateReq) (*FPEnumerateRes, int32) 
 			break
 		}
 
-		fullPath := filepath.Join(targetPath, entry.Name())
-		info, err := volFS.Stat(fullPath)
-		if err != nil {
+		entryBytes, ok := s.packEnumerateEntry(req.VolumeID, targetPath, entry, req.FileBitmap, req.DirBitmap)
+		if !ok {
 			continue
 		}
-
-		isDir := entry.IsDir()
-		if EnableAppleDoubleIconFallback && !isDir {
-			s.IngestAppleDoubleIcons(req.VolumeID, fullPath)
-		}
-
-		entryBuf := new(bytes.Buffer)
-		entryBuf.WriteByte(0)
-
-		if isDir {
-			entryBuf.WriteByte(0x80)
-		} else {
-			entryBuf.WriteByte(0x00)
-		}
-
-		bitmap := req.FileBitmap
-		if isDir {
-			bitmap = req.DirBitmap
-		}
-
-		s.packFileInfo(entryBuf, req.VolumeID, bitmap, targetPath, entry.Name(), info, isDir)
-
-		entryBytes := entryBuf.Bytes()
-		entryLength := len(entryBytes)
-
-		if entryLength%2 != 0 {
-			entryBuf.WriteByte(0)
-			entryBytes = entryBuf.Bytes()
-			entryLength++
-		}
-
-		entryBytes[0] = byte(entryLength)
 
 		if uint32(enumerateReplyHeaderLen+resData.Len()+len(entryBytes)) > req.MaxReply {
 			break
@@ -201,6 +168,50 @@ func (s *Service) handleEnumerate(req *FPEnumerateReq) (*FPEnumerateRes, int32) 
 	}
 
 	return res, errCode
+}
+
+// packEnumerateEntry serialises a single FPEnumerate result entry. It
+// returns the entry's wire bytes (with the leading length byte populated
+// and any trailing pad applied) and ok=false if the entry should be
+// skipped (Stat failure). The volFS lookup is repeated here rather than
+// threaded in so the helper stays self-contained.
+func (s *Service) packEnumerateEntry(volumeID uint16, parentPath string, entry fs.DirEntry, fileBitmap, dirBitmap uint16) ([]byte, bool) {
+	volFS := s.fsForVolume(volumeID)
+	if volFS == nil {
+		return nil, false
+	}
+	fullPath := filepath.Join(parentPath, entry.Name())
+	info, err := volFS.Stat(fullPath)
+	if err != nil {
+		return nil, false
+	}
+
+	isDir := entry.IsDir()
+	if EnableAppleDoubleIconFallback && !isDir {
+		s.IngestAppleDoubleIcons(volumeID, fullPath)
+	}
+
+	entryBuf := new(bytes.Buffer)
+	entryBuf.WriteByte(0)
+	if isDir {
+		entryBuf.WriteByte(0x80)
+	} else {
+		entryBuf.WriteByte(0x00)
+	}
+
+	bitmap := fileBitmap
+	if isDir {
+		bitmap = dirBitmap
+	}
+	s.packFileInfo(entryBuf, volumeID, bitmap, parentPath, entry.Name(), info, isDir)
+
+	entryBytes := entryBuf.Bytes()
+	if len(entryBytes)%2 != 0 {
+		entryBuf.WriteByte(0)
+		entryBytes = entryBuf.Bytes()
+	}
+	entryBytes[0] = byte(len(entryBytes))
+	return entryBytes, true
 }
 
 func minEnumerateEntryLen(fileBitmap, dirBitmap uint16) int {
