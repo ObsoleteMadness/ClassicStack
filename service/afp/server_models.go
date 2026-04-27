@@ -7,6 +7,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"strings"
+
+	"github.com/pgodw/omnitalk/pkg/binutil"
 )
 
 // FPGetSrvrInfoReq - request to obtain a block of descriptive information
@@ -53,58 +55,94 @@ type FPGetSrvrInfoRes struct {
 	Flags uint16
 }
 
-func (res *FPGetSrvrInfoRes) Marshal() []byte {
-	baseOffset := 8 + 2 + 1 + len(res.ServerName)
+// layout returns the offsets used by the GetSrvrInfo reply block, plus the
+// total wire size. The fixed header is 4 × uint16 offsets + 1 × uint16 Flags
+// = 10 bytes; the ServerName follows immediately as a Pascal string and is
+// padded to an even boundary before the rest of the variable-length fields.
+func (res *FPGetSrvrInfoRes) layout() (machineOff, versionsOff, uamsOff, total int) {
+	const headerLen = 10 // 4 offsets + Flags
+	baseOffset := headerLen + 1 + len(res.ServerName)
 	if baseOffset%2 != 0 {
 		baseOffset++
 	}
-
-	machineOffset := baseOffset
-	machineLen := 1 + len(res.MachineType)
-
-	versionsOffset := machineOffset + machineLen
-
+	machineOff = baseOffset
+	versionsOff = machineOff + 1 + len(res.MachineType)
 	versionsLen := 1
 	for _, v := range res.AFPVersions {
 		versionsLen += 1 + len(v)
 	}
-
-	uamsOffset := versionsOffset + versionsLen
-
-	iconOffset := 0
-
-	buf := new(bytes.Buffer)
-
-	binary.Write(buf, binary.BigEndian, uint16(machineOffset))
-	binary.Write(buf, binary.BigEndian, uint16(versionsOffset))
-	binary.Write(buf, binary.BigEndian, uint16(uamsOffset))
-	binary.Write(buf, binary.BigEndian, uint16(iconOffset))
-
-	binary.Write(buf, binary.BigEndian, res.Flags)
-
-	buf.WriteByte(byte(len(res.ServerName)))
-	buf.WriteString(res.ServerName)
-
-	for buf.Len() < machineOffset {
-		buf.WriteByte(0)
-	}
-
-	buf.WriteByte(byte(len(res.MachineType)))
-	buf.WriteString(res.MachineType)
-
-	buf.WriteByte(byte(len(res.AFPVersions)))
-	for _, v := range res.AFPVersions {
-		buf.WriteByte(byte(len(v)))
-		buf.WriteString(v)
-	}
-
-	buf.WriteByte(byte(len(res.UAMs)))
+	uamsOff = versionsOff + versionsLen
+	uamsLen := 1
 	for _, u := range res.UAMs {
-		buf.WriteByte(byte(len(u)))
-		buf.WriteString(u)
+		uamsLen += 1 + len(u)
+	}
+	total = uamsOff + uamsLen
+	return
+}
+
+// WireSize returns the encoded length of the reply block.
+func (res *FPGetSrvrInfoRes) WireSize() int {
+	_, _, _, total := res.layout()
+	return total
+}
+
+// MarshalWire encodes the reply block into b. Returns ErrShortBuffer if
+// b is too small.
+func (res *FPGetSrvrInfoRes) MarshalWire(b []byte) (int, error) {
+	machineOff, versionsOff, uamsOff, total := res.layout()
+	if len(b) < total {
+		return 0, binutil.ErrShortBuffer
+	}
+	// Zero the buffer first so the gap before machineOff (caused by the
+	// even-boundary pad after ServerName) is left as zero bytes.
+	for i := 0; i < total; i++ {
+		b[i] = 0
 	}
 
-	return buf.Bytes()
+	off := 0
+	n, _ := binutil.PutU16(b[off:], uint16(machineOff))
+	off += n
+	n, _ = binutil.PutU16(b[off:], uint16(versionsOff))
+	off += n
+	n, _ = binutil.PutU16(b[off:], uint16(uamsOff))
+	off += n
+	n, _ = binutil.PutU16(b[off:], 0) // iconOffset
+	off += n
+	n, _ = binutil.PutU16(b[off:], res.Flags)
+	off += n
+
+	n, _ = binutil.PutPString(b[off:], []byte(res.ServerName))
+	off += n
+
+	// Skip pad bytes (already zeroed) up to machineOff.
+	off = machineOff
+
+	n, _ = binutil.PutPString(b[off:], []byte(res.MachineType))
+	off += n
+
+	b[off] = byte(len(res.AFPVersions))
+	off++
+	for _, v := range res.AFPVersions {
+		n, _ = binutil.PutPString(b[off:], []byte(v))
+		off += n
+	}
+
+	b[off] = byte(len(res.UAMs))
+	off++
+	for _, u := range res.UAMs {
+		n, _ = binutil.PutPString(b[off:], []byte(u))
+		off += n
+	}
+
+	return off, nil
+}
+
+// Marshal allocates a buffer and encodes the reply block. Prefer MarshalWire
+// when the caller can supply a buffer.
+func (res *FPGetSrvrInfoRes) Marshal() []byte {
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
 }
 
 func (res *FPGetSrvrInfoRes) String() string {
