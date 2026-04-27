@@ -643,48 +643,6 @@ func (s *Service) deleteAppleDoubleSidecar(path string) error {
 
 // calcVolParamsSize returns the total byte size of all fixed fields (including
 // variable-name offset pointers) for a volume parameter block with the given bitmap.
-func calcVolParamsSize(bitmap uint16) int {
-	size := 0
-	if bitmap&VolBitmapAttributes != 0 {
-		size += 2
-	}
-	if bitmap&VolBitmapSignature != 0 {
-		size += 2
-	}
-	if bitmap&VolBitmapCreateDate != 0 {
-		size += 4
-	}
-	if bitmap&VolBitmapModDate != 0 {
-		size += 4
-	}
-	if bitmap&VolBitmapBackupDate != 0 {
-		size += 4
-	}
-	if bitmap&VolBitmapVolID != 0 {
-		size += 2
-	}
-	if bitmap&VolBitmapBytesFree != 0 {
-		size += 4
-	}
-	if bitmap&VolBitmapBytesTotal != 0 {
-		size += 4
-	}
-	if bitmap&VolBitmapName != 0 {
-		size += 2 // offset pointer
-	}
-	if bitmap&VolBitmapExtBytesFree != 0 {
-		size += 8
-	}
-	if bitmap&VolBitmapExtBytesTotal != 0 {
-		size += 8
-	}
-	if bitmap&VolBitmapBlockSize != 0 {
-		size += 4
-	}
-	return size
-}
-
-
 func (s *Service) catalogNameForPath(volumeID uint16, fullPath, fallbackName string) string {
 	cleanPath := filepath.Clean(fullPath)
 	for i := range s.Volumes {
