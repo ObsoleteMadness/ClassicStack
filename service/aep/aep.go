@@ -9,18 +9,21 @@ Inside Macintosh: Networking, Chapter 3.
 package aep
 
 import (
+	"github.com/pgodw/omnitalk/protocol/aep"
 	"github.com/pgodw/omnitalk/protocol/ddp"
 
 	"github.com/pgodw/omnitalk/port"
 	"github.com/pgodw/omnitalk/service"
 )
 
+// Socket is the well-known AEP socket number, re-exported from protocol/aep
+// for callers wiring a router.
+const Socket = aep.Socket
+
 const (
-	// Socket is the well-known AEP socket number.
-	Socket     = 4
-	ddpTypeAEP = 4
-	cmdRequest = 1
-	cmdReply   = 2
+	ddpTypeAEP = aep.DDPType
+	cmdRequest = aep.CmdRequest
+	cmdReply   = aep.CmdReply
 )
 
 // Service implements the AppleTalk Echo Protocol.

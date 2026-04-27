@@ -4,19 +4,21 @@ import (
 	"encoding/binary"
 
 	"github.com/pgodw/omnitalk/protocol/ddp"
+	prtmp "github.com/pgodw/omnitalk/protocol/rtmp"
 
 	"github.com/pgodw/omnitalk/service"
 )
 
+// Wire constants re-exported from protocol/rtmp.
 const (
-	SAS                    = 1
-	DDPTypeData            = 1
-	DDPTypeRequest         = 5
-	Version                = 0x82
-	FuncRequest            = 1
-	FuncRDRSplitHorizon    = 2
-	FuncRDRNoSplitHorizon  = 3
-	NotifyNeighborDistance = 31
+	SAS                    = prtmp.SAS
+	DDPTypeData            = prtmp.DDPTypeData
+	DDPTypeRequest         = prtmp.DDPTypeRequest
+	Version                = prtmp.Version
+	FuncRequest            = prtmp.FuncRequest
+	FuncRDRSplitHorizon    = prtmp.FuncRDRSplitHorizon
+	FuncRDRNoSplitHorizon  = prtmp.FuncRDRNoSplitHorizon
+	NotifyNeighborDistance = prtmp.NotifyNeighborDistance
 )
 
 func makeRoutingTableDatagramData(r service.Router, p interface {
