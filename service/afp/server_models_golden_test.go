@@ -46,6 +46,47 @@ func goldenBytes(t *testing.T, name string, got []byte) []byte {
 	return want
 }
 
+// TestFPGetSrvrParmsRes_MarshalGolden pins the wire-format output of
+// FPGetSrvrParmsRes.Marshal. Also asserts Marshal/Unmarshal round-trips.
+func TestFPGetSrvrParmsRes_MarshalGolden(t *testing.T) {
+	t.Parallel()
+	res := &FPGetSrvrParmsRes{
+		ServerTime: 0xDEADBEEF,
+		Volumes: []VolInfo{
+			{Flags: VolInfoFlagHasPassword, Name: "Macintosh HD"},
+			{Flags: 0, Name: "Public"},
+		},
+	}
+	got := res.Marshal()
+	want := goldenBytes(t, "fpgetsrvrparmsres_basic.hex", got)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("Marshal output drift:\n got:  %x\n want: %x", got, want)
+	}
+	var rt FPGetSrvrParmsRes
+	if err := rt.Unmarshal(got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if rt.ServerTime != res.ServerTime || len(rt.Volumes) != len(res.Volumes) {
+		t.Fatalf("round-trip mismatch: got %+v, want %+v", rt, *res)
+	}
+	for i := range rt.Volumes {
+		if rt.Volumes[i] != res.Volumes[i] {
+			t.Fatalf("vol[%d]: got %+v, want %+v", i, rt.Volumes[i], res.Volumes[i])
+		}
+	}
+}
+
+// TestFPLoginRes_MarshalGolden pins the wire-format output of FPLoginRes.Marshal.
+func TestFPLoginRes_MarshalGolden(t *testing.T) {
+	t.Parallel()
+	res := &FPLoginRes{SRefNum: 0x1234, IDNumber: 0x5678}
+	got := res.Marshal()
+	want := goldenBytes(t, "fploginres_basic.hex", got)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("Marshal output drift:\n got:  %x\n want: %x", got, want)
+	}
+}
+
 // TestFPGetSrvrInfoRes_MarshalGolden pins the current wire-format output of
 // FPGetSrvrInfoRes.Marshal so a future migration to MarshalWire/UnmarshalWire
 // (Step 14) can be validated by diff. Run with -update to regenerate.

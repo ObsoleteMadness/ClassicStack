@@ -188,20 +188,49 @@ const (
 	VolInfoFlagHasPassword uint8 = 1 << 0
 )
 
-func (res *FPGetSrvrParmsRes) Marshal() []byte {
-	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, res.ServerTime)
-	buf.WriteByte(uint8(len(res.Volumes)))
+// WireSize returns the encoded length: 4-byte ServerTime + 1-byte volume
+// count + per-volume (1-byte flags + 1-byte name len + name bytes, name
+// truncated to 255).
+func (res *FPGetSrvrParmsRes) WireSize() int {
+	n := 5
 	for _, v := range res.Volumes {
-		buf.WriteByte(v.Flags)
 		nameLen := len(v.Name)
 		if nameLen > 255 {
 			nameLen = 255
 		}
-		buf.WriteByte(uint8(nameLen))
-		buf.WriteString(v.Name[:nameLen])
+		n += 2 + nameLen
 	}
-	return buf.Bytes()
+	return n
+}
+
+// MarshalWire encodes the reply block into b.
+func (res *FPGetSrvrParmsRes) MarshalWire(b []byte) (int, error) {
+	if len(b) < res.WireSize() {
+		return 0, binutil.ErrShortBuffer
+	}
+	off := 0
+	n, _ := binutil.PutU32(b[off:], res.ServerTime)
+	off += n
+	b[off] = uint8(len(res.Volumes))
+	off++
+	for _, v := range res.Volumes {
+		nameLen := len(v.Name)
+		if nameLen > 255 {
+			nameLen = 255
+		}
+		b[off] = v.Flags
+		off++
+		n, _ = binutil.PutPString(b[off:], []byte(v.Name[:nameLen]))
+		off += n
+	}
+	return off, nil
+}
+
+// Marshal allocates a buffer and encodes the reply block.
+func (res *FPGetSrvrParmsRes) Marshal() []byte {
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
 }
 
 func (res *FPGetSrvrParmsRes) Unmarshal(data []byte) error {
@@ -324,11 +353,24 @@ type FPLoginRes struct {
 	IDNumber uint16
 }
 
+// WireSize returns the fixed 4-byte size of the FPLoginRes block.
+func (res *FPLoginRes) WireSize() int { return 4 }
+
+// MarshalWire encodes the reply block into b.
+func (res *FPLoginRes) MarshalWire(b []byte) (int, error) {
+	if len(b) < 4 {
+		return 0, binutil.ErrShortBuffer
+	}
+	_, _ = binutil.PutU16(b[0:], res.SRefNum)
+	_, _ = binutil.PutU16(b[2:], res.IDNumber)
+	return 4, nil
+}
+
+// Marshal allocates a buffer and encodes the reply block.
 func (res *FPLoginRes) Marshal() []byte {
-	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, res.SRefNum)
-	binary.Write(buf, binary.BigEndian, res.IDNumber)
-	return buf.Bytes()
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
 }
 
 func (res *FPLoginRes) String() string {
