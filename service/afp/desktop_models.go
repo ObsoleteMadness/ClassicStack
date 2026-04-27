@@ -5,6 +5,8 @@ package afp
 import (
 	"encoding/binary"
 	"fmt"
+
+	"github.com/pgodw/omnitalk/pkg/binutil"
 )
 
 // FPOpenDT - open the Desktop Database for a volume.
@@ -27,10 +29,16 @@ type FPOpenDTRes struct {
 	DTRefNum uint16
 }
 
+func (res *FPOpenDTRes) WireSize() int { return 2 }
+
+func (res *FPOpenDTRes) MarshalWire(b []byte) (int, error) {
+	return binutil.PutU16(b, res.DTRefNum)
+}
+
 func (res *FPOpenDTRes) Marshal() []byte {
-	buf := make([]byte, 2)
-	binary.BigEndian.PutUint16(buf, res.DTRefNum)
-	return buf
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
 }
 
 func (res *FPOpenDTRes) String() string {
@@ -260,12 +268,31 @@ type FPGetAPPLRes struct {
 	Data    []byte
 }
 
+func (res *FPGetAPPLRes) WireSize() int { return 6 + len(res.Data) }
+
+func (res *FPGetAPPLRes) MarshalWire(b []byte) (int, error) {
+	off := 0
+	n, err := binutil.PutU16(b[off:], res.Bitmap)
+	if err != nil {
+		return 0, err
+	}
+	off += n
+	n, err = binutil.PutU32(b[off:], res.APPLTag)
+	if err != nil {
+		return 0, err
+	}
+	off += n
+	if len(b[off:]) < len(res.Data) {
+		return 0, binutil.ErrShortBuffer
+	}
+	off += copy(b[off:], res.Data)
+	return off, nil
+}
+
 func (res *FPGetAPPLRes) Marshal() []byte {
-	buf := make([]byte, 6+len(res.Data))
-	binary.BigEndian.PutUint16(buf[0:2], res.Bitmap)
-	binary.BigEndian.PutUint32(buf[2:6], res.APPLTag)
-	copy(buf[6:], res.Data)
-	return buf
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
 }
 
 func (res *FPGetAPPLRes) String() string {
@@ -385,14 +412,30 @@ type FPGetCommentRes struct {
 	Comment []byte
 }
 
-func (res *FPGetCommentRes) Marshal() []byte {
-	if len(res.Comment) > 128 {
-		res.Comment = res.Comment[:128]
+func (res *FPGetCommentRes) commentLen() int {
+	n := len(res.Comment)
+	if n > 128 {
+		n = 128
 	}
-	out := make([]byte, 1+len(res.Comment))
-	out[0] = byte(len(res.Comment))
-	copy(out[1:], res.Comment)
-	return out
+	return n
+}
+
+func (res *FPGetCommentRes) WireSize() int { return 1 + res.commentLen() }
+
+func (res *FPGetCommentRes) MarshalWire(b []byte) (int, error) {
+	clen := res.commentLen()
+	if len(b) < 1+clen {
+		return 0, binutil.ErrShortBuffer
+	}
+	b[0] = byte(clen)
+	copy(b[1:], res.Comment[:clen])
+	return 1 + clen, nil
+}
+
+func (res *FPGetCommentRes) Marshal() []byte {
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
 }
 
 func (res *FPGetCommentRes) String() string {
