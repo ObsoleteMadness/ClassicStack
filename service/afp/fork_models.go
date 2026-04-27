@@ -3,9 +3,10 @@
 package afp
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
+
+	"github.com/pgodw/omnitalk/pkg/binutil"
 )
 
 // Fork type constants for FPOpenFork.
@@ -56,12 +57,31 @@ func (res *FPOpenForkRes) String() string {
 	return fmt.Sprintf("FPOpenForkRes{ForkID: %d, Bitmap: %s, DataLen: %d}", res.ForkID, formatFileBitmap(res.Bitmap), len(res.Data))
 }
 
+func (res *FPOpenForkRes) WireSize() int { return 4 + len(res.Data) }
+
+func (res *FPOpenForkRes) MarshalWire(b []byte) (int, error) {
+	off := 0
+	n, err := binutil.PutU16(b[off:], res.Bitmap)
+	if err != nil {
+		return 0, err
+	}
+	off += n
+	n, err = binutil.PutU16(b[off:], res.ForkID)
+	if err != nil {
+		return 0, err
+	}
+	off += n
+	if len(b[off:]) < len(res.Data) {
+		return 0, binutil.ErrShortBuffer
+	}
+	off += copy(b[off:], res.Data)
+	return off, nil
+}
+
 func (res *FPOpenForkRes) Marshal() []byte {
-	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, res.Bitmap)
-	binary.Write(buf, binary.BigEndian, res.ForkID)
-	buf.Write(res.Data)
-	return buf.Bytes()
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
 }
 
 type FPReadReq struct {
@@ -129,10 +149,16 @@ type FPWriteRes struct {
 	LastWritten int64
 }
 
+func (res *FPWriteRes) WireSize() int { return 4 }
+
+func (res *FPWriteRes) MarshalWire(b []byte) (int, error) {
+	return binutil.PutU32(b, uint32(int32(res.LastWritten)))
+}
+
 func (res *FPWriteRes) Marshal() []byte {
-	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, uint32(int32(res.LastWritten)))
-	return buf.Bytes()
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
 }
 
 func (res *FPWriteRes) String() string {
@@ -232,10 +258,16 @@ type FPByteRangeLockRes struct {
 	Offset int64
 }
 
+func (res *FPByteRangeLockRes) WireSize() int { return 4 }
+
+func (res *FPByteRangeLockRes) MarshalWire(b []byte) (int, error) {
+	return binutil.PutU32(b, uint32(int32(res.Offset)))
+}
+
 func (res *FPByteRangeLockRes) Marshal() []byte {
-	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, uint32(int32(res.Offset)))
-	return buf.Bytes()
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
 }
 
 func (res *FPByteRangeLockRes) String() string {
@@ -267,11 +299,26 @@ type FPGetForkParmsRes struct {
 	Data   []byte
 }
 
+func (res *FPGetForkParmsRes) WireSize() int { return 2 + len(res.Data) }
+
+func (res *FPGetForkParmsRes) MarshalWire(b []byte) (int, error) {
+	off := 0
+	n, err := binutil.PutU16(b[off:], res.Bitmap)
+	if err != nil {
+		return 0, err
+	}
+	off += n
+	if len(b[off:]) < len(res.Data) {
+		return 0, binutil.ErrShortBuffer
+	}
+	off += copy(b[off:], res.Data)
+	return off, nil
+}
+
 func (res *FPGetForkParmsRes) Marshal() []byte {
-	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, res.Bitmap)
-	buf.Write(res.Data)
-	return buf.Bytes()
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
 }
 
 func (res *FPGetForkParmsRes) String() string {
