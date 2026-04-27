@@ -7,6 +7,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"strings"
+
+	"github.com/pgodw/omnitalk/pkg/binutil"
 )
 
 func formatVolBitmap(bitmap uint16) string {
@@ -117,11 +119,26 @@ func (res *FPOpenVolRes) String() string {
 	return fmt.Sprintf("FPOpenVolRes{Bitmap: %s, DataLen: %d}", formatVolBitmap(res.Bitmap), len(res.Data))
 }
 
+func (res *FPOpenVolRes) WireSize() int { return 2 + len(res.Data) }
+
+func (res *FPOpenVolRes) MarshalWire(b []byte) (int, error) {
+	off := 0
+	n, err := binutil.PutU16(b[off:], res.Bitmap)
+	if err != nil {
+		return 0, err
+	}
+	off += n
+	if len(b[off:]) < len(res.Data) {
+		return 0, binutil.ErrShortBuffer
+	}
+	off += copy(b[off:], res.Data)
+	return off, nil
+}
+
 func (res *FPOpenVolRes) Marshal() []byte {
-	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, res.Bitmap)
-	buf.Write(res.Data)
-	return buf.Bytes()
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
 }
 
 type FPCloseVolReq struct {
@@ -186,11 +203,26 @@ func (res *FPGetVolParmsRes) String() string {
 	return fmt.Sprintf("FPGetVolParmsRes{Bitmap: %s, DataLen: %d}", formatVolBitmap(res.Bitmap), len(res.Data))
 }
 
+func (res *FPGetVolParmsRes) WireSize() int { return 2 + len(res.Data) }
+
+func (res *FPGetVolParmsRes) MarshalWire(b []byte) (int, error) {
+	off := 0
+	n, err := binutil.PutU16(b[off:], res.Bitmap)
+	if err != nil {
+		return 0, err
+	}
+	off += n
+	if len(b[off:]) < len(res.Data) {
+		return 0, binutil.ErrShortBuffer
+	}
+	off += copy(b[off:], res.Data)
+	return off, nil
+}
+
 func (res *FPGetVolParmsRes) Marshal() []byte {
-	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, res.Bitmap)
-	buf.Write(res.Data)
-	return buf.Bytes()
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
 }
 
 // FPSetVolParms - set volume parameters (AFP 2.x section 5.1.32)
