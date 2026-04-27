@@ -15,6 +15,17 @@ type MacIPHook interface {
 	MarkSessionActivity(sessID uint8)
 }
 
+// macIPAFPHooks adapts a MacIPHook to the AFPSessionHooks interface
+// expected by AFP's ASP transport, so the two optional subsystems can
+// be wired together without either side importing the other.
+type macIPAFPHooks struct{ h MacIPHook }
+
+func (a macIPAFPHooks) OnOpen(net uint16, node, sessID uint8) {
+	a.h.PinLeaseToSession(net, node, sessID)
+}
+func (a macIPAFPHooks) OnClose(sessID uint8)    { a.h.UnpinLeaseFromSession(sessID) }
+func (a macIPAFPHooks) OnActivity(sessID uint8) { a.h.MarkSessionActivity(sessID) }
+
 // MacIPConfig collects every flag value wireMacIP needs, decoupling the
 // caller (main.go, tag-neutral) from the macip package directly.
 type MacIPConfig struct {

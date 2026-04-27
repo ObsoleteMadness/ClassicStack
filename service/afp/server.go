@@ -1,3 +1,5 @@
+//go:build afp
+
 /*
 Package afp implements the AppleTalk Filing Protocol (AFP) 2.x.
 

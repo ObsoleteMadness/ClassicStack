@@ -1,3 +1,5 @@
+//go:build afp
+
 // Package asp — SessionManager.
 //
 // SessionManager owns the lifecycle of every open ASP session: tickle

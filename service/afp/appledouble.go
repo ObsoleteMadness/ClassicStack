@@ -1,3 +1,5 @@
+//go:build afp
+
 package afp
 
 // AppleDouble format helpers now live in pkg/appledouble. The aliases

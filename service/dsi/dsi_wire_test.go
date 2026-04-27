@@ -1,3 +1,5 @@
+//go:build afp
+
 package dsi
 
 import (

@@ -1,3 +1,5 @@
+//go:build afp
+
 package afp
 
 // Desktop database rebuild / ingest support. Populates the in-memory and

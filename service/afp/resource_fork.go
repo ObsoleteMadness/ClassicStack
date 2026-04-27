@@ -1,3 +1,5 @@
+//go:build afp
+
 package afp
 
 // Classic Mac OS resource-fork parsing. Used by the AFP Desktop database

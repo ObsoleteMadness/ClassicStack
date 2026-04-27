@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/pgodw/omnitalk/config"
 	"github.com/pgodw/omnitalk/netlog"
 	"github.com/pgodw/omnitalk/pkg/hwaddr"
 	"github.com/pgodw/omnitalk/pkg/logging"
@@ -21,9 +22,6 @@ import (
 	"github.com/pgodw/omnitalk/router"
 	"github.com/pgodw/omnitalk/service"
 	"github.com/pgodw/omnitalk/service/aep"
-	"github.com/pgodw/omnitalk/service/afp"
-	"github.com/pgodw/omnitalk/service/asp"
-	"github.com/pgodw/omnitalk/service/dsi"
 	"github.com/pgodw/omnitalk/service/llap"
 	"github.com/pgodw/omnitalk/service/rtmp"
 	"github.com/pgodw/omnitalk/service/zip"
@@ -75,7 +73,8 @@ func main() {
 	parsePackets := flag.Bool("parse-packets", false, "Decode and log every inbound DDP packet (ATP/ASP/AFP layers)")
 	parseOutput := flag.String("parse-output", "", "File path to write parsed packet log (appended; empty = stdout only)")
 
-	// AFP file sharing flags.
+	// AFP file sharing flags. Schemas live in service/afp; cmd-side
+	// wiring is split between afp_enabled.go and afp_disabled.go.
 	afpServerName := flag.String("afp-name", "Go File Server", "AFP server name advertised to clients")
 	afpZone := flag.String("afp-zone", "", "AppleTalk zone for AFP NBP registration (default: first zone found)")
 	afpProtocols := flag.String("afp-protocols", "tcp,ddp", "AFP protocols to enable: tcp, ddp, or tcp,ddp")
@@ -83,7 +82,7 @@ func main() {
 	afpExtensionMap := flag.String("afp-extension-map", "", "Netatalk-compatible extension map file for Macintosh type/creator fallback")
 	afpDecomposedFilenames := flag.Bool("afp-use-decomposed-names", true, "Encode host-reserved filename characters using 0xNN tokens when mapping AFP paths")
 	afpCNIDBackend := flag.String("afp-cnid-backend", "sqlite", "CNID backend to use for AFP object IDs (sqlite or memory)")
-	afpAppleDoubleMode := flag.String("afp-appledouble-mode", string(afp.AppleDoubleModeModern), "AppleDouble metadata mode: modern or legacy")
+	afpAppleDoubleMode := flag.String("afp-appledouble-mode", "modern", "AppleDouble metadata mode: modern or legacy")
 	var afpVolumes volumeFlags
 	flag.Var(&afpVolumes, "afp-volume", `AFP volume to share, format: "Name:Path" (repeatable, e.g. -afp-volume "Mac Share:c:\mac")`)
 
@@ -120,11 +119,14 @@ func main() {
 		}
 	}
 
-	if selectedConfig != "" {
-		cfg, err := loadConfigFromFile(selectedConfig)
+	var configSource config.Source
+	fromConfigFile := selectedConfig != ""
+	if fromConfigFile {
+		cfg, src, err := loadConfigFromFile(selectedConfig)
 		if err != nil {
 			log.Fatalf("failed loading config file %q: %v", selectedConfig, err)
 		}
+		configSource = src
 
 		*logLevel = cfg.LogLevel
 		*logTraffic = cfg.LogTraffic
@@ -159,20 +161,6 @@ func main() {
 
 		*parsePackets = cfg.ParsePackets
 		*parseOutput = cfg.ParseOutput
-
-		*afpServerName = cfg.AFP.Name
-		*afpZone = cfg.AFP.Zone
-		*afpProtocols = cfg.AFP.Protocols
-		*afpTCPAddr = cfg.AFP.Binding
-		*afpExtensionMap = cfg.AFP.ExtensionMap
-		*afpDecomposedFilenames = cfg.AFP.UseDecomposedNames
-		*afpCNIDBackend = cfg.AFP.CNIDBackend
-		*afpAppleDoubleMode = cfg.AFP.AppleDoubleMode
-		vols, vErr := cfg.AFP.ResolvedVolumes()
-		if vErr != nil {
-			log.Fatalf("AFP volume config: %v", vErr)
-		}
-		afpVolumes = volumeFlags(vols)
 	}
 
 	if level, ok := netlog.ParseLevel(*logLevel); ok {
@@ -326,75 +314,29 @@ func main() {
 		services = append(services, macIP.Service())
 	}
 
-	if len(afpVolumes) > 0 {
-		var transports []afp.Transport
-		var extMap *afp.ExtensionMap
-		if *afpExtensionMap != "" {
-			loadedMap, err := loadAFPExtensionMap(*afpExtensionMap)
-			if err != nil {
-				log.Fatalf("failed loading AFP extension map %q: %v", *afpExtensionMap, err)
-			}
-			extMap = loadedMap
-		}
-
-		protocols := strings.Split(*afpProtocols, ",")
-		hasDDP := false
-		hasTCP := false
-		for _, p := range protocols {
-			p = strings.TrimSpace(p)
-			if strings.EqualFold(p, "ddp") {
-				hasDDP = true
-			} else if strings.EqualFold(p, "tcp") {
-				hasTCP = true
-			}
-		}
-
-		if hasDDP {
-			aspSvc := asp.New(*afpServerName, nil, nbpSvc, []byte(*afpZone))
-			if macIP != nil {
-				aspSvc.SetSessionLifecycleHooks(
-					func(sess *asp.Session) {
-						macIP.PinLeaseToSession(sess.WSNet, sess.WSNode, sess.ID)
-					},
-					func(sess *asp.Session) {
-						macIP.UnpinLeaseFromSession(sess.ID)
-					},
-					func(sess *asp.Session) {
-						macIP.MarkSessionActivity(sess.ID)
-					},
-				)
-			}
-			transports = append(transports, aspSvc)
-			netlog.Info("[MAIN][AFP] enabled DDP transport on socket %d", asp.ServerSocket)
-		}
-
-		if hasTCP {
-			dsiSvc := dsi.NewServer(*afpServerName, *afpTCPAddr, nil)
-			transports = append(transports, dsiSvc)
-			netlog.Info("[MAIN][AFP] enabled TCP transport on %s", *afpTCPAddr)
-		}
-
-		afpSvc := afp.NewService(
-			*afpServerName,
-			[]afp.VolumeConfig(afpVolumes),
-			nil,
-			transports,
-			afp.Options{DecomposedFilenames: *afpDecomposedFilenames, CNIDBackend: *afpCNIDBackend, AppleDoubleMode: parseAppleDoubleMode(*afpAppleDoubleMode), ExtensionMap: extMap, PersistentVolumeIDs: true},
-		)
-
-		// Wire up the circular dependencies for handlers
-		for _, t := range transports {
-			switch transport := t.(type) {
-			case *asp.Service:
-				transport.SetCommandHandler(afpSvc)
-			case *dsi.Server:
-				transport.SetCommandHandler(afpSvc)
-			}
-		}
-
-		services = append(services, afpSvc)
-		netlog.Info("[MAIN][AFP] server=%q volumes=%d zone=%q protocols=%q", *afpServerName, len(afpVolumes), *afpZone, *afpProtocols)
+	afpHook, err := wireAFP(AFPWiring{
+		Source:     configSource,
+		FromConfig: fromConfigFile,
+		NBP:        nbpSvc,
+		Flags: AFPFlagInputs{
+			ServerName:       *afpServerName,
+			Zone:             *afpZone,
+			Protocols:        *afpProtocols,
+			TCPAddr:          *afpTCPAddr,
+			ExtensionMap:     *afpExtensionMap,
+			DecomposedNames:  *afpDecomposedFilenames,
+			CNIDBackend:      *afpCNIDBackend,
+			AppleDoubleMode:  *afpAppleDoubleMode,
+			VolumeFlagValues: []string(afpVolumes),
+		},
+	})
+	if err != nil {
+		log.Fatalf("AFP wiring failed: %v", err)
 	}
+	if macIP != nil {
+		afpHook.AttachMacIP(macIPAFPHooks{macIP})
+	}
+	services = append(services, afpHook.Services()...)
 
 	r := router.New("router", ports, services)
 
@@ -436,27 +378,17 @@ func broadcastAddr(n *net.IPNet) net.IP {
 	return bcast
 }
 
-// volumeFlags is a repeatable -afp-volume flag.
-type volumeFlags []afp.VolumeConfig
+// volumeFlags is a repeatable -afp-volume flag. The raw "Name:Path"
+// strings are forwarded to wireAFP, where the //go:build afp side
+// parses them via afp.ParseVolumeFlag. Keeping this neutral lets
+// minimal-build users still pass -afp-volume and get a clean warning.
+type volumeFlags []string
 
 func (v *volumeFlags) String() string { return "" }
 
 func (v *volumeFlags) Set(s string) error {
-	cfg, err := afp.ParseVolumeFlag(s)
-	if err != nil {
-		return err
-	}
-	*v = append(*v, cfg)
+	*v = append(*v, s)
 	return nil
-}
-
-func parseAppleDoubleMode(mode string) afp.AppleDoubleMode {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "legacy", string(afp.AppleDoubleModeLegacy):
-		return afp.AppleDoubleModeLegacy
-	default:
-		return afp.AppleDoubleModeModern
-	}
 }
 
 func detectPcapInterfaceIPv4(interfaceName string) (string, bool) {

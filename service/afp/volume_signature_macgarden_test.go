@@ -1,4 +1,4 @@
-//go:build macgarden
+//go:build afp && macgarden
 
 package afp
 

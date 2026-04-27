@@ -1,3 +1,5 @@
+//go:build afp
+
 /*
 Package dsi implements the Data Stream Interface (DSI).
 

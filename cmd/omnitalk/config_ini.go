@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/knadh/koanf/v2"
@@ -10,11 +9,11 @@ import (
 	"github.com/pgodw/omnitalk/config"
 	"github.com/pgodw/omnitalk/port/ethertalk"
 	"github.com/pgodw/omnitalk/port/localtalk"
-	"github.com/pgodw/omnitalk/service/afp"
 )
 
 // fileConfig is the cmd-local view of the config file. Each section is a
-// typed Config struct owned by the package that consumes it.
+// typed Config struct owned by the package that consumes it. AFP lives
+// behind //go:build afp and is wired up separately via wireAFP.
 type fileConfig struct {
 	LogLevel     string
 	LogTraffic   bool
@@ -34,8 +33,6 @@ type fileConfig struct {
 	MacIPDHCPRelay  bool
 	MacIPLeaseFile  string
 	MacIPZone       string
-
-	AFP afp.Config
 }
 
 func defaultFileConfig() fileConfig {
@@ -47,23 +44,23 @@ func defaultFileConfig() fileConfig {
 		EtherTalk: ethertalk.DefaultConfig(),
 
 		MacIPSubnet: "192.168.100.0/24",
-
-		AFP: afp.DefaultConfig(),
 	}
 }
 
-func defaultMacGardenVolumePath(name string) string { return afp.DefaultMacGardenVolumePath(name) }
-
-func loadConfigFromFile(path string) (fileConfig, error) {
+// loadConfigFromFile loads and resolves the cmd-neutral sections of the
+// TOML config. The raw config.Source is also returned so optional
+// subsystems (currently AFP, behind //go:build afp) can lazily read
+// their own sections without fileConfig having to know about them.
+func loadConfigFromFile(path string) (fileConfig, config.Source, error) {
 	src, err := config.Load(path)
 	if err != nil {
-		return defaultFileConfig(), err
+		return defaultFileConfig(), config.Source{}, err
 	}
 	cfg, err := resolveFileConfig(src)
 	if err != nil {
-		return defaultFileConfig(), err
+		return defaultFileConfig(), src, err
 	}
-	return cfg, nil
+	return cfg, src, nil
 }
 
 func resolveFileConfig(src config.Source) (fileConfig, error) {
@@ -102,10 +99,6 @@ func resolveFileConfig(src config.Source) (fileConfig, error) {
 	cfg.MacIPDHCPRelay = boolWithDefault(k, "MacIP.dhcp_relay", cfg.MacIPDHCPRelay)
 	cfg.MacIPZone = stringWithDefault(k, "MacIP.zone", cfg.MacIPZone)
 
-	if err := loadAFP(k, src.ConfigDir, &cfg.AFP); err != nil {
-		return cfg, err
-	}
-
 	cfg.LogLevel = stringWithDefault(k, "Logging.level", cfg.LogLevel)
 	cfg.ParsePackets = boolWithDefault(k, "Logging.parse_packets", cfg.ParsePackets)
 	cfg.LogTraffic = boolWithDefault(k, "Logging.log_traffic", cfg.LogTraffic)
@@ -134,21 +127,6 @@ func loadSection(k *koanf.Koanf, key string, target validatable) error {
 	}
 	if err := target.Validate(); err != nil {
 		return fmt.Errorf("[%s] %w", key, err)
-	}
-	return nil
-}
-
-// loadAFP wraps loadSection with AFP-specific path resolution: a relative
-// extension_map path is resolved against the config-file directory.
-func loadAFP(k *koanf.Koanf, configDir string, target *afp.Config) error {
-	if err := loadSection(k, "AFP", target); err != nil {
-		return err
-	}
-	if target.ExtensionMap != "" && !filepath.IsAbs(target.ExtensionMap) && configDir != "" {
-		target.ExtensionMap = filepath.Join(configDir, target.ExtensionMap)
-	}
-	if !target.Enabled {
-		target.Volumes = nil
 	}
 	return nil
 }

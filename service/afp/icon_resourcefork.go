@@ -1,3 +1,5 @@
+//go:build afp
+
 package afp
 
 // BNDL/FREF/ICN# extraction on top of the generic resource-fork parser in

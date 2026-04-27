@@ -1,3 +1,5 @@
+//go:build afp
+
 package afp
 
 // Debug enables debug logging for AFP server.

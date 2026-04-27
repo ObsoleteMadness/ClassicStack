@@ -1,3 +1,5 @@
+//go:build afp
+
 /*
 Package asp implements the AppleTalk Session Protocol (ASP) as a omnitalk
 service. The ATP transaction layer is provided by go/service/atp; this file
