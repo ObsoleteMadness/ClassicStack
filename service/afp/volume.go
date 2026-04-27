@@ -412,3 +412,22 @@ func calcVolParamsSize(bitmap uint16) int {
 	}
 	return size
 }
+
+// catalogNameForPath returns the configured volume name when fullPath
+// is the volume root, otherwise fallbackName. AFP clients see the
+// configured volume name (which may differ from the host directory
+// basename) for the root entry in catalog listings.
+func (s *Service) catalogNameForPath(volumeID uint16, fullPath, fallbackName string) string {
+	cleanPath := filepath.Clean(fullPath)
+	for i := range s.Volumes {
+		vol := s.Volumes[i]
+		if vol.ID != volumeID {
+			continue
+		}
+		if cleanPath == filepath.Clean(vol.Config.Path) && vol.Config.Name != "" {
+			return vol.Config.Name
+		}
+		break
+	}
+	return fallbackName
+}

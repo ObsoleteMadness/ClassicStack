@@ -15,19 +15,14 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
-	"io/fs"
 	"log"
-	"os"
 	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"sync"
-	"time"
 
-	"github.com/pgodw/omnitalk/protocol/ddp"
-
-	"github.com/pgodw/omnitalk/pkg/cnid"
 	"github.com/pgodw/omnitalk/port"
+	"github.com/pgodw/omnitalk/protocol/ddp"
 	"github.com/pgodw/omnitalk/service"
 )
 
@@ -464,127 +459,6 @@ func (s *Service) logResolvedPathFromDTRef(op string, dtRefNum uint16, dirID uin
 		return
 	}
 	s.logResolvedPath(op, volID, dirID, pathType, rawPath)
-}
-
-// statPathWithAppleDoubleFallback stats path and, if missing, retries with a
-// "._" prefixed basename to support orphan AppleDouble files.
-func (s *Service) statPathWithAppleDoubleFallback(path string) (string, fs.FileInfo, error) {
-	m := s.metaForPath(path)
-	if m == nil {
-		return path, nil, os.ErrNotExist
-	}
-	return m.StatWithMetadataFallback(path)
-}
-
-// iconFileNameFor returns the host filesystem name for the Mac "Icon\r" file
-// for the given volume, respecting its AppleDouble mode and decomposed filename settings.
-func (s *Service) iconFileNameFor(volID uint16) string {
-	if m := s.metaFor(volID); m != nil {
-		return m.IconFileName()
-	}
-	if s.options.DecomposedFilenames {
-		return "Icon0x0D"
-	}
-	return "Icon\r"
-}
-
-// canonicalizePath remaps any Icon\r variant in path to the canonical host
-// name for the configured backend (e.g. Icon0x0D→Icon_ in legacy mode).
-// This is applied during path resolution so both reads and writes use the
-// correct on-disk name without duplicating the alias logic in every handler.
-func (s *Service) canonicalizePath(path string) string {
-	m := s.metaForPath(path)
-	if m == nil {
-		return path
-	}
-	base := filepath.Base(path)
-	canonical := m.IconFileName()
-	if isIconFile(base) && base != canonical {
-		return filepath.Join(filepath.Dir(path), canonical)
-	}
-	return path
-}
-
-// alwaysHiddenNames lists directory and file names that are always hidden from
-// AFP clients regardless of volume backend or AppleDouble mode. Names are
-// matched case-insensitively.
-var alwaysHiddenNames = []string{
-	".appledesktop",
-	".appledouble",
-}
-
-func (s *Service) isMetadataArtifact(name string, isDir bool, volID uint16) bool {
-	if !isDir && strings.EqualFold(name, cnid.SQLiteFilename) {
-		return true
-	}
-	for _, hidden := range alwaysHiddenNames {
-		if strings.EqualFold(name, hidden) {
-			return true
-		}
-	}
-	if m := s.metaFor(volID); m != nil {
-		return m.IsMetadataArtifact(name, isDir)
-	}
-	return strings.HasPrefix(name, "._")
-}
-
-// moveAppleDoubleSidecar renames an AppleDouble sidecar (._name) alongside a
-// primary file rename/move. This is best-effort: missing sidecars are silently
-// ignored, and unexpected errors are logged but not returned to the caller so
-// that a sidecar failure never causes the already-completed primary operation
-// to report an error to the client.
-func (s *Service) moveAppleDoubleSidecar(oldPath, newPath string) error {
-	m := s.metaForPath(oldPath)
-	if m == nil {
-		return nil
-	}
-	if err := m.MoveMetadata(oldPath, newPath); err != nil {
-		log.Printf("[AFP] warning: could not move metadata %s → %s: %v", oldPath, newPath, err)
-	}
-	return nil
-}
-
-// deleteAppleDoubleSidecar removes a file's AppleDouble sidecar. This is
-// best-effort: missing sidecars are silently ignored, and unexpected errors
-// are logged but not returned to the caller.
-func (s *Service) deleteAppleDoubleSidecar(path string) error {
-	m := s.metaForPath(path)
-	if m == nil {
-		return nil
-	}
-	if err := m.DeleteMetadata(path); err != nil {
-		log.Printf("[AFP] warning: could not delete metadata for %s: %v", path, err)
-	}
-	return nil
-}
-
-// calcVolParamsSize returns the total byte size of all fixed fields (including
-// variable-name offset pointers) for a volume parameter block with the given bitmap.
-func (s *Service) catalogNameForPath(volumeID uint16, fullPath, fallbackName string) string {
-	cleanPath := filepath.Clean(fullPath)
-	for i := range s.Volumes {
-		vol := s.Volumes[i]
-		if vol.ID != volumeID {
-			continue
-		}
-		if cleanPath == filepath.Clean(vol.Config.Path) && vol.Config.Name != "" {
-			return vol.Config.Name
-		}
-		break
-	}
-	return fallbackName
-}
-
-func toAFPTime(t time.Time) uint32 {
-	epoch := time.Date(1904, 1, 1, 0, 0, 0, 0, time.Local)
-	if t.Before(epoch) {
-		return 0
-	}
-	secs := t.Sub(epoch).Seconds()
-	if secs > float64(^uint32(0)) {
-		return ^uint32(0)
-	}
-	return uint32(secs)
 }
 
 func (s *Service) handleGetSrvrMsg(req *FPGetSrvrMsgReq) (*FPGetSrvrMsgRes, int32) {

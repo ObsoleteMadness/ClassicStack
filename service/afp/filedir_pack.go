@@ -6,9 +6,24 @@ import (
 	"bytes"
 	"io/fs"
 	"path/filepath"
+	"time"
 
 	"github.com/pgodw/omnitalk/pkg/binutil"
 )
+
+// toAFPTime converts a Go time.Time to AFP's seconds-since-1904 epoch.
+// Times before the epoch clamp to 0; overflow clamps to the max uint32.
+func toAFPTime(t time.Time) uint32 {
+	epoch := time.Date(1904, 1, 1, 0, 0, 0, 0, time.Local)
+	if t.Before(epoch) {
+		return 0
+	}
+	secs := t.Sub(epoch).Seconds()
+	if secs > float64(^uint32(0)) {
+		return ^uint32(0)
+	}
+	return uint32(secs)
+}
 
 // File and directory parameter wire packing. The pack functions here
 // resolve Service state (CNID, metadata, FS capabilities) and emit the
