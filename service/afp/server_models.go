@@ -422,10 +422,29 @@ type FPMapIDRes struct {
 	Name string
 }
 
+// WireSize returns 1 byte for the length prefix plus the name length
+// (truncated to 255 bytes per the Pascal-string convention).
+func (res *FPMapIDRes) WireSize() int {
+	n := len(res.Name)
+	if n > 255 {
+		n = 255
+	}
+	return 1 + n
+}
+
+// MarshalWire encodes the reply block into b.
+func (res *FPMapIDRes) MarshalWire(b []byte) (int, error) {
+	name := res.Name
+	if len(name) > 255 {
+		name = name[:255]
+	}
+	return binutil.PutPString(b, []byte(name))
+}
+
+// Marshal allocates a buffer and encodes the reply block.
 func (res *FPMapIDRes) Marshal() []byte {
-	b := make([]byte, 1+len(res.Name))
-	b[0] = byte(len(res.Name))
-	copy(b[1:], res.Name)
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
 	return b
 }
 
@@ -458,9 +477,18 @@ type FPMapNameRes struct {
 	ID uint32
 }
 
+// WireSize returns the fixed 4-byte ID length.
+func (res *FPMapNameRes) WireSize() int { return 4 }
+
+// MarshalWire encodes the reply block into b.
+func (res *FPMapNameRes) MarshalWire(b []byte) (int, error) {
+	return binutil.PutU32(b, res.ID)
+}
+
+// Marshal allocates a buffer and encodes the reply block.
 func (res *FPMapNameRes) Marshal() []byte {
-	b := make([]byte, 4)
-	binary.BigEndian.PutUint32(b, res.ID)
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
 	return b
 }
 
@@ -491,13 +519,40 @@ type FPGetSrvrMsgRes struct {
 	Message     string
 }
 
+// WireSize returns 2-byte MessageType + 2-byte Bitmap + 1-byte length
+// + Message bytes (truncated to 255).
+func (res *FPGetSrvrMsgRes) WireSize() int {
+	n := len(res.Message)
+	if n > 255 {
+		n = 255
+	}
+	return 5 + n
+}
+
+// MarshalWire encodes the reply block into b.
+func (res *FPGetSrvrMsgRes) MarshalWire(b []byte) (int, error) {
+	if len(b) < res.WireSize() {
+		return 0, binutil.ErrShortBuffer
+	}
+	off := 0
+	n, _ := binutil.PutU16(b[off:], res.MessageType)
+	off += n
+	n, _ = binutil.PutU16(b[off:], res.Bitmap)
+	off += n
+	msg := res.Message
+	if len(msg) > 255 {
+		msg = msg[:255]
+	}
+	n, _ = binutil.PutPString(b[off:], []byte(msg))
+	off += n
+	return off, nil
+}
+
+// Marshal allocates a buffer and encodes the reply block.
 func (res *FPGetSrvrMsgRes) Marshal() []byte {
-	b := new(bytes.Buffer)
-	binary.Write(b, binary.BigEndian, res.MessageType)
-	binary.Write(b, binary.BigEndian, res.Bitmap)
-	b.WriteByte(byte(len(res.Message)))
-	b.WriteString(res.Message)
-	return b.Bytes()
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
 }
 
 func (res *FPGetSrvrMsgRes) String() string {
@@ -587,14 +642,34 @@ type FPCatSearchRes struct {
 	Data                []byte
 }
 
+// WireSize returns 16-byte CatalogPosition + 2-byte FileRsltBitmap +
+// 2-byte DirectoryRsltBitmap + 4-byte ActualCount + Data bytes.
+func (res *FPCatSearchRes) WireSize() int {
+	return 24 + len(res.Data)
+}
+
+// MarshalWire encodes the reply block into b.
+func (res *FPCatSearchRes) MarshalWire(b []byte) (int, error) {
+	if len(b) < res.WireSize() {
+		return 0, binutil.ErrShortBuffer
+	}
+	off := 0
+	off += copy(b[off:], res.CatalogPosition[:])
+	n, _ := binutil.PutU16(b[off:], res.FileRsltBitmap)
+	off += n
+	n, _ = binutil.PutU16(b[off:], res.DirectoryRsltBitmap)
+	off += n
+	n, _ = binutil.PutU32(b[off:], uint32(res.ActualCount))
+	off += n
+	off += copy(b[off:], res.Data)
+	return off, nil
+}
+
+// Marshal allocates a buffer and encodes the reply block.
 func (res *FPCatSearchRes) Marshal() []byte {
-	b := new(bytes.Buffer)
-	b.Write(res.CatalogPosition[:])
-	binary.Write(b, binary.BigEndian, res.FileRsltBitmap)
-	binary.Write(b, binary.BigEndian, res.DirectoryRsltBitmap)
-	binary.Write(b, binary.BigEndian, res.ActualCount)
-	b.Write(res.Data)
-	return b.Bytes()
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
 }
 
 func (res *FPCatSearchRes) String() string {

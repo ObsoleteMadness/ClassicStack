@@ -46,6 +46,56 @@ func goldenBytes(t *testing.T, name string, got []byte) []byte {
 	return want
 }
 
+// TestFPMapIDRes_MarshalGolden pins the wire-format output.
+func TestFPMapIDRes_MarshalGolden(t *testing.T) {
+	t.Parallel()
+	res := &FPMapIDRes{Name: "alice"}
+	got := res.Marshal()
+	want := goldenBytes(t, "fpmapidres_basic.hex", got)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("Marshal output drift:\n got:  %x\n want: %x", got, want)
+	}
+}
+
+// TestFPMapNameRes_MarshalGolden pins the wire-format output.
+func TestFPMapNameRes_MarshalGolden(t *testing.T) {
+	t.Parallel()
+	res := &FPMapNameRes{ID: 0x01020304}
+	got := res.Marshal()
+	want := goldenBytes(t, "fpmapnameres_basic.hex", got)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("Marshal output drift:\n got:  %x\n want: %x", got, want)
+	}
+}
+
+// TestFPGetSrvrMsgRes_MarshalGolden pins the wire-format output.
+func TestFPGetSrvrMsgRes_MarshalGolden(t *testing.T) {
+	t.Parallel()
+	res := &FPGetSrvrMsgRes{MessageType: 1, Bitmap: 3, Message: "Welcome to OmniTalk"}
+	got := res.Marshal()
+	want := goldenBytes(t, "fpgetsrvrmsgres_basic.hex", got)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("Marshal output drift:\n got:  %x\n want: %x", got, want)
+	}
+}
+
+// TestFPCatSearchRes_MarshalGolden pins the wire-format output.
+func TestFPCatSearchRes_MarshalGolden(t *testing.T) {
+	t.Parallel()
+	res := &FPCatSearchRes{
+		CatalogPosition:     [16]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10},
+		FileRsltBitmap:      0xAABB,
+		DirectoryRsltBitmap: 0xCCDD,
+		ActualCount:         42,
+		Data:                []byte("payload bytes"),
+	}
+	got := res.Marshal()
+	want := goldenBytes(t, "fpcatsearchres_basic.hex", got)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("Marshal output drift:\n got:  %x\n want: %x", got, want)
+	}
+}
+
 // TestFPGetSrvrParmsRes_MarshalGolden pins the wire-format output of
 // FPGetSrvrParmsRes.Marshal. Also asserts Marshal/Unmarshal round-trips.
 func TestFPGetSrvrParmsRes_MarshalGolden(t *testing.T) {
