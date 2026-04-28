@@ -174,60 +174,11 @@ func (s *Service) handleOpenVol(req *FPOpenVolReq) (*FPOpenVolRes, int32) {
 	if store, ok := s.cnidStore(targetVol.ID); ok {
 		store.EnsureReserved(cleanRoot, CNIDRoot)
 	}
-	volDate := s.volumeDate(targetVol)
-	bytesFree, bytesTotal := s.volumeCapacity(targetVol)
-
-	fixedSize := calcVolParamsSize(req.Bitmap)
-	fixed := new(bytes.Buffer)
-	var varBuf bytes.Buffer
-
-	s.mu.RLock()
-	backupDate := s.volumeBackupDate[targetVol.ID]
-	s.mu.RUnlock()
-
-	if req.Bitmap&VolBitmapAttributes != 0 {
-		binutil.WriteU16(fixed, s.volumeAttributes(targetVol))
-	}
-	if req.Bitmap&VolBitmapSignature != 0 {
-		binutil.WriteU16(fixed, s.volumeType(targetVol))
-	}
-	if req.Bitmap&VolBitmapCreateDate != 0 {
-		binutil.WriteU32(fixed, volDate)
-	}
-	if req.Bitmap&VolBitmapModDate != 0 {
-		binutil.WriteU32(fixed, volDate)
-	}
-	if req.Bitmap&VolBitmapBackupDate != 0 {
-		binutil.WriteU32(fixed, backupDate)
-	}
-	if req.Bitmap&VolBitmapVolID != 0 {
-		binutil.WriteU16(fixed, targetVol.ID)
-	}
-	if req.Bitmap&VolBitmapBytesFree != 0 {
-		binutil.WriteU32(fixed, capAFPBytes32(bytesFree))
-	}
-	if req.Bitmap&VolBitmapBytesTotal != 0 {
-		binutil.WriteU32(fixed, capAFPBytes32(bytesTotal))
-	}
-	if req.Bitmap&VolBitmapName != 0 {
-		binutil.WriteU16(fixed, uint16(fixedSize+varBuf.Len()))
-		s.writeAFPName(&varBuf, targetVol.Config.Name, targetVol.ID)
-	}
-	if req.Bitmap&VolBitmapExtBytesFree != 0 {
-		binutil.WriteU64(fixed, bytesFree)
-	}
-	if req.Bitmap&VolBitmapExtBytesTotal != 0 {
-		binutil.WriteU64(fixed, bytesTotal)
-	}
-	if req.Bitmap&VolBitmapBlockSize != 0 {
-		binutil.WriteU32(fixed, 4096)
-	}
 
 	res := &FPOpenVolRes{
 		Bitmap: req.Bitmap,
-		Data:   append(fixed.Bytes(), varBuf.Bytes()...),
+		Data:   s.packVolumeParams(targetVol, req.Bitmap),
 	}
-
 	return res, NoErr
 }
 
@@ -334,59 +285,68 @@ func (s *Service) handleGetVolParms(req *FPGetVolParmsReq) (*FPGetVolParmsRes, i
 		return &FPGetVolParmsRes{}, ErrBitmapErr
 	}
 
-	fixedSize := calcVolParamsSize(req.Bitmap)
+	res := &FPGetVolParmsRes{
+		Bitmap: req.Bitmap,
+		Data:   s.packVolumeParams(targetVol, req.Bitmap),
+	}
+	return res, NoErr
+}
+
+// packVolumeParams emits the AFP "volume parameters block" for vol per the
+// caller-supplied bitmap (AFP 2.x §5.1.30). Variable-length fields (the
+// volume name) are appended after the fixed section and referenced by an
+// offset relative to the start of the parameters block.
+func (s *Service) packVolumeParams(vol *Volume, bitmap uint16) []byte {
+	fixedSize := calcVolParamsSize(bitmap)
 	fixed := new(bytes.Buffer)
 	var varBuf bytes.Buffer
-	volDate := s.volumeDate(targetVol)
-	bytesFree, bytesTotal := s.volumeCapacity(targetVol)
+
+	volDate := s.volumeDate(vol)
+	bytesFree, bytesTotal := s.volumeCapacity(vol)
 
 	s.mu.RLock()
-	backupDate := s.volumeBackupDate[req.VolumeID]
+	backupDate := s.volumeBackupDate[vol.ID]
 	s.mu.RUnlock()
 
-	if req.Bitmap&VolBitmapAttributes != 0 {
-		binutil.WriteU16(fixed, s.volumeAttributes(targetVol))
+	if bitmap&VolBitmapAttributes != 0 {
+		binutil.WriteU16(fixed, s.volumeAttributes(vol))
 	}
-	if req.Bitmap&VolBitmapSignature != 0 {
-		binutil.WriteU16(fixed, s.volumeType(targetVol))
+	if bitmap&VolBitmapSignature != 0 {
+		binutil.WriteU16(fixed, s.volumeType(vol))
 	}
-	if req.Bitmap&VolBitmapCreateDate != 0 {
+	if bitmap&VolBitmapCreateDate != 0 {
 		binutil.WriteU32(fixed, volDate)
 	}
-	if req.Bitmap&VolBitmapModDate != 0 {
+	if bitmap&VolBitmapModDate != 0 {
 		binutil.WriteU32(fixed, volDate)
 	}
-	if req.Bitmap&VolBitmapBackupDate != 0 {
+	if bitmap&VolBitmapBackupDate != 0 {
 		binutil.WriteU32(fixed, backupDate)
 	}
-	if req.Bitmap&VolBitmapVolID != 0 {
-		binutil.WriteU16(fixed, targetVol.ID)
+	if bitmap&VolBitmapVolID != 0 {
+		binutil.WriteU16(fixed, vol.ID)
 	}
-	if req.Bitmap&VolBitmapBytesFree != 0 {
+	if bitmap&VolBitmapBytesFree != 0 {
 		binutil.WriteU32(fixed, capAFPBytes32(bytesFree))
 	}
-	if req.Bitmap&VolBitmapBytesTotal != 0 {
+	if bitmap&VolBitmapBytesTotal != 0 {
 		binutil.WriteU32(fixed, capAFPBytes32(bytesTotal))
 	}
-	if req.Bitmap&VolBitmapName != 0 {
+	if bitmap&VolBitmapName != 0 {
 		binutil.WriteU16(fixed, uint16(fixedSize+varBuf.Len()))
-		s.writeAFPName(&varBuf, targetVol.Config.Name, targetVol.ID)
+		s.writeAFPName(&varBuf, vol.Config.Name, vol.ID)
 	}
-	if req.Bitmap&VolBitmapExtBytesFree != 0 {
+	if bitmap&VolBitmapExtBytesFree != 0 {
 		binutil.WriteU64(fixed, bytesFree)
 	}
-	if req.Bitmap&VolBitmapExtBytesTotal != 0 {
+	if bitmap&VolBitmapExtBytesTotal != 0 {
 		binutil.WriteU64(fixed, bytesTotal)
 	}
-	if req.Bitmap&VolBitmapBlockSize != 0 {
+	if bitmap&VolBitmapBlockSize != 0 {
 		binutil.WriteU32(fixed, 4096)
 	}
 
-	res := &FPGetVolParmsRes{
-		Bitmap: req.Bitmap,
-		Data:   append(fixed.Bytes(), varBuf.Bytes()...),
-	}
-	return res, NoErr
+	return append(fixed.Bytes(), varBuf.Bytes()...)
 }
 
 func (s *Service) handleSetVolParms(req *FPSetVolParmsReq) (*FPSetVolParmsRes, int32) {
