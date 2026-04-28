@@ -535,3 +535,59 @@ func crcVolumeID(key string) uint16 {
 	}
 	return id
 }
+
+// metaFor returns the ForkMetadataBackend for the given volume ID.
+// If a per-volume backend is registered it is returned; otherwise the global
+// injected backend (s.meta) is used. Returns nil when neither is available.
+func (s *Service) metaFor(volID uint16) ForkMetadataBackend {
+	if s.metas != nil {
+		if m, ok := s.metas[volID]; ok {
+			return m
+		}
+	}
+	return s.meta
+}
+
+// metaForPath returns the ForkMetadataBackend for the volume whose root path
+// is a prefix of path. Falls back to the global injected backend when no
+// matching volume is found.
+func (s *Service) metaForPath(path string) ForkMetadataBackend {
+	clean := filepath.Clean(path)
+	for _, vol := range s.Volumes {
+		rel, err := filepath.Rel(vol.Config.Path, clean)
+		if err == nil && !strings.HasPrefix(rel, "..") {
+			return s.metaFor(vol.ID)
+		}
+	}
+	return s.meta
+}
+
+func (s *Service) fsForVolume(volID uint16) FileSystem {
+	if fs, ok := s.volumeFS[volID]; ok && fs != nil {
+		return fs
+	}
+	return s.fs
+}
+
+func (s *Service) fsForPath(path string) FileSystem {
+	clean := filepath.Clean(path)
+	for _, vol := range s.Volumes {
+		rel, err := filepath.Rel(filepath.Clean(vol.Config.Path), clean)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			if fs := s.fsForVolume(vol.ID); fs != nil {
+				return fs
+			}
+		}
+	}
+	return s.fs
+}
+
+func newBackendForVolumeConfig(cfg VolumeConfig) (FileSystem, error) {
+	fsType, err := NormalizeFSType(cfg.FSType)
+	if err != nil {
+		return nil, err
+	}
+	cfg.FSType = fsType
+	cfg.Path = filepath.Clean(cfg.Path)
+	return NewFS(cfg)
+}
