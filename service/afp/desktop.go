@@ -425,3 +425,11 @@ func (s *Service) handleGetComment(req *FPGetCommentReq) (*FPGetCommentRes, int3
 	}
 	return &FPGetCommentRes{Comment: []byte(comment)}, NoErr
 }
+
+func (s *Service) spawnDesktopRebuild() {
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.rebuildDesktopDBsIfConfigured()
+	}()
+}

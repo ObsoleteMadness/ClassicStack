@@ -608,3 +608,14 @@ func (s *Service) handleSetForkParms(req *FPSetForkParmsReq) (*FPSetForkParmsRes
 	log.Printf("[AFP] FPSetForkParms forkID=%d rsrc newLen=%d rsrcOff=%d lenFieldAt=%d", req.OForkRefNum, newLen, handle.rsrcOff, lenFieldAt)
 	return &FPSetForkParmsRes{}, NoErr
 }
+
+// initForkMetadata picks between an injected single ForkMetadataBackend
+// (used by tests) and the per-volume map populated by installAppleDoubleBackend
+// during volume construction.
+func (s *Service) initForkMetadata(options Options) {
+	if options.ForkMetadataBackend != nil {
+		s.meta = options.ForkMetadataBackend
+		return
+	}
+	s.metas = make(map[uint16]ForkMetadataBackend)
+}

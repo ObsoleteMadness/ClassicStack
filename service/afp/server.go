@@ -109,23 +109,12 @@ func NewService(serverName string, configs []VolumeConfig, fs FileSystem, transp
 		transports: transports,
 	}
 
-	if options.ForkMetadataBackend != nil {
-		// Test injection: single global backend for all volumes.
-		s.meta = options.ForkMetadataBackend
-	} else {
-		// Normal path: build a per-volume backend using each volume's AppleDoubleMode
-		// (falling back to options.AppleDoubleMode if the volume does not specify one).
-		s.metas = make(map[uint16]ForkMetadataBackend)
-	}
-
+	s.initForkMetadata(options)
 	s.installVolumes(configs, fs)
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		s.rebuildDesktopDBsIfConfigured()
-	}()
+	s.spawnDesktopRebuild()
 	return s
 }
+
 
 // Start initializes all underlying transports.
 func (s *Service) Start(router service.Router) error {
