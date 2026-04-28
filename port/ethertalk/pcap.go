@@ -35,23 +35,38 @@ type PcapPort struct {
 	writerDone     chan struct{}
 }
 
-func NewPcapPort(interfaceName string, hwAddr []byte, seedNetworkMin, seedNetworkMax, desiredNetwork uint16, desiredNode uint8, seedZoneNames [][]byte) (*PcapPort, error) {
-	if len(hwAddr) != 6 {
+func NewPcapPort(opts Options) (*PcapPort, error) {
+	if len(opts.HWAddr) != 6 {
 		return nil, net.InvalidAddrError("hw_addr must be exactly 6 bytes")
 	}
-	base := New(hwAddr, seedNetworkMin, seedNetworkMax, desiredNetwork, desiredNode, seedZoneNames)
+	mode, err := parseBridgeModeString(opts.BridgeMode)
+	if err != nil {
+		return nil, err
+	}
+	hostMAC := opts.BridgeHostMAC
+	if hostMAC == nil {
+		hostMAC = opts.HWAddr
+	}
+	if len(hostMAC) != 6 {
+		return nil, net.InvalidAddrError("bridge host mac must be exactly 6 bytes")
+	}
+	base := New(opts.HWAddr, opts.SeedNetworkMin, opts.SeedNetworkMax, opts.DesiredNetwork, opts.DesiredNode, opts.SeedZoneNames)
+	resolvedMode := mode
+	if resolvedMode == bridgeModeAuto {
+		resolvedMode = bridgeModeEthernet
+	}
 	p := &PcapPort{
 		Port:          base,
-		interfaceName: interfaceName,
+		interfaceName: opts.InterfaceName,
 		backendLabel:  "pcap",
 		openLink: func(name string) (rawlink.RawLink, error) {
 			return rawlink.OpenPcap(rawlink.DefaultEtherTalkConfig(name))
 		},
 		applyBPFFilter: true,
 		medium:         rawlink.MediumEthernet,
-		hostMAC:        append([]byte(nil), hwAddr...),
-		bridgeMode:     bridgeModeAuto,
-		adapter:        newEthertalkBridgeAdapterWithWiFiEncap(hwAddr, hwAddr, bridgeModeEthernet, false),
+		hostMAC:        append([]byte(nil), hostMAC...),
+		bridgeMode:     mode,
+		adapter:        newEthertalkBridgeAdapterWithWiFiEncap(hostMAC, opts.HWAddr, resolvedMode, false),
 		readerStop:     make(chan struct{}),
 		readerDone:     make(chan struct{}),
 		writerQueue:    make(chan []byte, 1024),

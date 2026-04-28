@@ -242,33 +242,34 @@ func main() {
 		if err != nil {
 			log.Fatalf("invalid -ethertalk-hw-address: %v", err)
 		}
-		var ep port.Port
-		switch *etBackend {
-		case "", "pcap":
-			ep, err = ethertalk.NewPcapPort(*pcapDev, hwAddr.Bytes(), uint16(*etNetMin), uint16(*etNetMax), uint16(*etDesiredNet), uint8(*etDesiredNode), [][]byte{[]byte(*etZone)})
-		case "tap", "tun":
-			ep, err = ethertalk.NewTapPort(*pcapDev, hwAddr.Bytes(), uint16(*etNetMin), uint16(*etNetMax), uint16(*etDesiredNet), uint8(*etDesiredNode), [][]byte{[]byte(*etZone)})
-		default:
-			log.Fatalf("unsupported EtherTalk backend: %q", *etBackend)
-		}
-		if err != nil {
-			log.Fatalf("failed creating EtherTalk port (%s): %v", *etBackend, err)
-		}
-		bc, ok := ep.(port.BridgeConfigurable)
-		if !ok {
-			log.Fatalf("EtherTalk backend %q does not support bridge configuration", *etBackend)
-		}
-		if err := bc.SetBridgeModeString(*etBridgeMode); err != nil {
-			log.Fatalf("invalid -ethertalk-bridge-mode: %v", err)
+		opts := ethertalk.Options{
+			InterfaceName:  *pcapDev,
+			HWAddr:         hwAddr.Bytes(),
+			SeedNetworkMin: uint16(*etNetMin),
+			SeedNetworkMax: uint16(*etNetMax),
+			DesiredNetwork: uint16(*etDesiredNet),
+			DesiredNode:    uint8(*etDesiredNode),
+			SeedZoneNames:  [][]byte{[]byte(*etZone)},
+			BridgeMode:     *etBridgeMode,
 		}
 		if *etBridgeHostMAC != "" {
 			hostMAC, err := hwaddr.ParseEthernet(*etBridgeHostMAC)
 			if err != nil {
 				log.Fatalf("invalid -ethertalk-bridge-host-mac: %v", err)
 			}
-			if err := bc.SetBridgeHostMAC(hostMAC.Bytes()); err != nil {
-				log.Fatalf("invalid -ethertalk-bridge-host-mac: %v", err)
-			}
+			opts.BridgeHostMAC = hostMAC.Bytes()
+		}
+		var ep port.Port
+		switch *etBackend {
+		case "", "pcap":
+			ep, err = ethertalk.NewPcapPort(opts)
+		case "tap", "tun":
+			ep, err = ethertalk.NewTapPort(opts)
+		default:
+			log.Fatalf("unsupported EtherTalk backend: %q", *etBackend)
+		}
+		if err != nil {
+			log.Fatalf("failed creating EtherTalk port (%s): %v", *etBackend, err)
 		}
 		ports = append(ports, ep)
 	}
