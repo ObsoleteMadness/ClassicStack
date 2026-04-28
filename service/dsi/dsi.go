@@ -11,6 +11,7 @@ Refer: AppleTalk Filing Protocol 2.1 & 2.2 / AFP over TCP/IP Specification.
 package dsi
 
 import (
+	"context"
 	"encoding/binary"
 	"io"
 	"net"
@@ -138,7 +139,7 @@ func (s *Server) SetCommandHandler(handler afp.CommandHandler) {
 }
 
 // Start implements afp.Transport.
-func (s *Server) Start(router service.Router) error {
+func (s *Server) Start(ctx context.Context, router service.Router) error {
 	l, err := net.Listen("tcp", s.addr)
 	if err != nil {
 		return err

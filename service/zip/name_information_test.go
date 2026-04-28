@@ -2,6 +2,7 @@ package zip
 
 import (
 	"bytes"
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -44,7 +45,7 @@ func TestNameInformationService_BrRq(t *testing.T) {
 		return nil
 	}
 
-	err := svc.Start(r)
+	err := svc.Start(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Failed to start service: %v", err)
 	}
@@ -99,7 +100,7 @@ func TestNameInformationService_LkUp(t *testing.T) {
 		return nil
 	}
 
-	err := svc.Start(r)
+	err := svc.Start(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Failed to start service: %v", err)
 	}
@@ -151,7 +152,7 @@ func TestNameInformationService_LkUpZoneWildcard(t *testing.T) {
 		return nil
 	}
 
-	err := svc.Start(r)
+	err := svc.Start(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Failed to start service: %v", err)
 	}
@@ -203,7 +204,7 @@ func TestNameInformationService_Fwd(t *testing.T) {
 		return &service.RouteEntry{Distance: 0, Port: p}, nil
 	}
 
-	err := svc.Start(r)
+	err := svc.Start(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Failed to start service: %v", err)
 	}

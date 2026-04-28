@@ -1,6 +1,7 @@
 package llap
 
 import (
+	"context"
 	"fmt"
 	"math/bits"
 	"math/rand"
@@ -64,7 +65,7 @@ func New() *Service {
 	}
 }
 
-func (s *Service) Start(router service.Router) error {
+func (s *Service) Start(ctx context.Context, router service.Router) error {
 	r, ok := router.(ddpInboundRouter)
 	if !ok {
 		return fmt.Errorf("llap: router does not support inbound datagram delivery")

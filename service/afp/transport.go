@@ -3,6 +3,8 @@
 package afp
 
 import (
+	"context"
+
 	"github.com/pgodw/omnitalk/protocol/ddp"
 
 	"github.com/pgodw/omnitalk/port"
@@ -18,7 +20,7 @@ type CommandHandler interface {
 // Transport represents a network transport that serves the AFP protocol (e.g., ASP over DDP, or DSI over TCP/IP).
 type Transport interface {
 	// Start starts the transport using the provided router (for AppleTalk NBP/routing).
-	Start(router service.Router) error
+	Start(ctx context.Context, router service.Router) error
 
 	// Stop shuts down the transport and cleans up any resources.
 	Stop() error

@@ -1,13 +1,22 @@
 package service
 
 import (
+	"context"
+
 	"github.com/pgodw/omnitalk/protocol/ddp"
 
 	"github.com/pgodw/omnitalk/port"
 )
 
+// Service is the contract every service registered with the router
+// satisfies. Start receives a parent context that is cancelled when the
+// router shuts down; implementations should derive their own per-goroutine
+// contexts from it so background work can be aborted without waiting for
+// hardcoded timeouts. Stop is still required for synchronous teardown of
+// resources that the context cannot itself release (open files, OS NAT,
+// pcap handles).
 type Service interface {
-	Start(router Router) error
+	Start(ctx context.Context, router Router) error
 	Stop() error
 	Inbound(datagram ddp.Datagram, rxPort port.Port)
 }

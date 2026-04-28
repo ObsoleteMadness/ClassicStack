@@ -141,7 +141,7 @@ func New(gwIP, network net.IP, mask net.IPMask, nameserver, broadcast net.IP,
 func (s *Service) Socket() uint8 { return Socket }
 
 // Start opens the pcap IP link, registers the NBP name and starts goroutines.
-func (s *Service) Start(r service.Router) error {
+func (s *Service) Start(ctx context.Context, r service.Router) error {
 	s.router = r
 
 	// Resolve zone name if not supplied.

@@ -115,7 +115,7 @@ func (s *Service) Socket() uint8 { return ServerSocket }
 // In this implementation, SPInit is represented by wiring the SLS endpoint and
 // validating ServiceStatusBlock size against QuantumSize before accepting
 // traffic.
-func (s *Service) Start(router service.Router) error {
+func (s *Service) Start(ctx context.Context, router service.Router) error {
 	s.router = router
 	s.lifeCtx, s.lifeCancel = context.WithCancel(context.Background())
 

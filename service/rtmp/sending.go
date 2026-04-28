@@ -1,6 +1,7 @@
 package rtmp
 
 import (
+	"context"
 	"time"
 
 	"github.com/pgodw/omnitalk/protocol/ddp"
@@ -18,7 +19,7 @@ func NewSendingService() *SendingService {
 	return &SendingService{timeout: 10 * time.Second, stop: make(chan struct{})}
 }
 
-func (s *SendingService) Start(r service.Router) error {
+func (s *SendingService) Start(ctx context.Context, r service.Router) error {
 	go func() {
 		t := time.NewTicker(s.timeout)
 		defer t.Stop()

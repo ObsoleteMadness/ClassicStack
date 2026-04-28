@@ -2,6 +2,7 @@ package zip
 
 import (
 	"bytes"
+	"context"
 	"sync"
 
 	"github.com/pgodw/omnitalk/protocol/ddp"
@@ -102,7 +103,7 @@ func (s *NameInformationService) Inbound(d ddp.Datagram, p port.Port) {
 	}
 }
 
-func (s *NameInformationService) Start(r service.Router) error {
+func (s *NameInformationService) Start(ctx context.Context, r service.Router) error {
 	go func() {
 		for {
 			select {

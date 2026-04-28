@@ -1,6 +1,7 @@
 package rtmp
 
 import (
+	"context"
 	"time"
 
 	"github.com/pgodw/omnitalk/protocol/ddp"
@@ -18,7 +19,7 @@ func NewRoutingTableAgingService() *RoutingTableAgingService {
 	return &RoutingTableAgingService{timeout: 20 * time.Second, stop: make(chan struct{})}
 }
 
-func (s *RoutingTableAgingService) Start(router service.Router) error {
+func (s *RoutingTableAgingService) Start(ctx context.Context, router service.Router) error {
 	go func() {
 		t := time.NewTicker(s.timeout)
 		defer t.Stop()

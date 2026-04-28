@@ -9,6 +9,8 @@ Inside Macintosh: Networking, Chapter 3.
 package aep
 
 import (
+	"context"
+
 	"github.com/pgodw/omnitalk/protocol/aep"
 	"github.com/pgodw/omnitalk/protocol/ddp"
 
@@ -49,7 +51,7 @@ func New() *Service {
 func (s *Service) Socket() uint8 { return Socket }
 
 // Start launches the AEP processing goroutine.
-func (s *Service) Start(router service.Router) error {
+func (s *Service) Start(ctx context.Context, router service.Router) error {
 	go func() {
 		for {
 			select {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -355,14 +356,15 @@ func main() {
 		netlog.Info("[MAIN] parse-packets enabled; output=%q", *parseOutput)
 	}
 
-	if err := r.Start(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := r.Start(ctx); err != nil {
 		log.Fatalf("failed to start router: %v", err)
 	}
 	netlog.Info("[MAIN] router away!")
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	<-sig
+	<-ctx.Done()
 
 	if err := r.Stop(); err != nil {
 		netlog.Warn("[MAIN] stop warning: %v", err)

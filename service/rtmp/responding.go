@@ -1,6 +1,7 @@
 package rtmp
 
 import (
+	"context"
 	"encoding/binary"
 
 	"github.com/pgodw/omnitalk/protocol/ddp"
@@ -27,7 +28,7 @@ func NewRespondingService() *RespondingService {
 	}
 }
 
-func (s *RespondingService) Start(r service.Router) error {
+func (s *RespondingService) Start(ctx context.Context, r service.Router) error {
 	go func() {
 		for {
 			select {

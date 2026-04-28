@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"errors"
 
 	"github.com/pgodw/omnitalk/protocol/ddp"
@@ -105,13 +106,13 @@ func (r *Router) deliver(datagram ddp.Datagram, rxPort port.Port) {
 	}
 }
 
-func (r *Router) Start() error {
+func (r *Router) Start(ctx context.Context) error {
 	for _, s := range r.Services {
 		if _, ok := s.(*llap.Service); !ok {
 			continue
 		}
 		netlog.Info("starting %T...", s)
-		if err := s.Start(r); err != nil {
+		if err := s.Start(ctx, r); err != nil {
 			return err
 		}
 	}
@@ -127,7 +128,7 @@ func (r *Router) Start() error {
 			continue
 		}
 		netlog.Info("starting %T...", s)
-		if err := s.Start(r); err != nil {
+		if err := s.Start(ctx, r); err != nil {
 			return err
 		}
 	}

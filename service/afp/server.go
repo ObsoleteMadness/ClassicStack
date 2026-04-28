@@ -12,6 +12,7 @@ https://dev.os9.ca/techpubs/mac/Networking/Networking-223.html
 package afp
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -117,9 +118,9 @@ func NewService(serverName string, configs []VolumeConfig, fs FileSystem, transp
 
 
 // Start initializes all underlying transports.
-func (s *Service) Start(router service.Router) error {
+func (s *Service) Start(ctx context.Context, router service.Router) error {
 	for _, t := range s.transports {
-		if err := t.Start(router); err != nil {
+		if err := t.Start(ctx, router); err != nil {
 			return err
 		}
 	}

@@ -2,6 +2,7 @@ package zip
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 
 	"github.com/pgodw/omnitalk/encoding"
@@ -37,7 +38,7 @@ type multicastAddresser interface {
 	MulticastAddress(zoneName []byte) []byte
 }
 
-func (s *RespondingService) Start(r service.Router) error {
+func (s *RespondingService) Start(ctx context.Context, r service.Router) error {
 	go func() {
 		for {
 			select {
