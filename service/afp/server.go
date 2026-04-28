@@ -14,9 +14,7 @@ package afp
 import (
 	"errors"
 	"fmt"
-	"log"
 	"path/filepath"
-	"runtime/debug"
 	"strings"
 	"sync"
 
@@ -288,60 +286,4 @@ func (s *Service) GetStatus() []byte {
 	return BuildServerInfo(s.ServerName)
 }
 
-type Request interface {
-	Unmarshal(data []byte) error
-	String() string
-}
-
-type Response interface {
-	Marshal() []byte
-	String() string
-}
-
-func (s *Service) HandleCommand(data []byte) (resBytes []byte, errCode int32) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[AFP] PANIC in cmd=%d: %v\n%s", data[0], r, debug.Stack())
-			resBytes = nil
-			errCode = ErrParamErr
-		}
-	}()
-	if len(data) == 0 {
-		return nil, ErrParamErr
-	}
-
-	cmd := data[0]
-	afpCommandsTotal.Inc()
-
-	spec, ok := commandRegistry[cmd]
-	if !ok {
-		log.Printf("[AFP] unknown command %d", cmd)
-		return nil, ErrCallNotSupported
-	}
-
-	req := spec.newReq()
-	cmdData := data
-	if spec.stripCmdByte {
-		cmdData = data[1:]
-	}
-
-	if err := req.Unmarshal(cmdData); err != nil {
-		log.Printf("[AFP] Error unmarshaling cmd %d: %v", cmd, err)
-		return nil, ErrParamErr
-	}
-
-	s.logPacket("[AFP] → %s", req.String())
-	s.logResolvedPaths(req)
-
-	res, errCode := spec.handle(s, req)
-
-	if res != nil {
-		s.logPacket("[AFP] ← %s (err=%d)", res.String(), errCode)
-		resBytes = res.Marshal()
-	} else if errCode != NoErr {
-		s.logPacket("[AFP] ← cmd=%d err=%d", cmd, errCode)
-	}
-
-	return resBytes, errCode
-}
 
