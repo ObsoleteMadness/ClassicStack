@@ -438,6 +438,11 @@ func (s *Service) handleWrite(req *FPWriteReq) (*FPWriteRes, int32) {
 	return &FPWriteRes{LastWritten: lastWritten}, NoErr
 }
 
+// handleGetForkParms returns the same parameter block as FPGetFileDirParms
+// for the file backing an open fork (AFP 2.x §5.1.27). It must replace
+// DataForkLen / RsrcForkLen with the live values tracked on the fork handle:
+// in-flight writes may not yet be reflected in Stat or in the AppleDouble
+// header. Packing a partial block crashes Finder ("error type 10").
 func (s *Service) handleGetForkParms(req *FPGetForkParmsReq) (*FPGetForkParmsRes, int32) {
 	s.mu.RLock()
 	handle, ok := s.forks[req.OForkRefNum]
@@ -446,89 +451,96 @@ func (s *Service) handleGetForkParms(req *FPGetForkParmsReq) (*FPGetForkParmsRes
 		return &FPGetForkParmsRes{}, ErrParamErr
 	}
 
-	// Per AFP 2.x section 5.1.27: FPGetForkParms returns file parameters using the
-	// same File Bitmap as FPGetFileDirParms. Pack the full parameter block
-	// (ParentDID, LongName, ModDate, etc.) - not just fork lengths - otherwise
-	// clients that request additional fields will receive a malformed reply
-	// and mis-parse the response (observed: Finder "error type 10" crash).
-	resData := new(bytes.Buffer)
-	if handle.filePath != "" {
-		backend := s.fsForPath(handle.filePath)
-		if backend == nil {
-			return &FPGetForkParmsRes{}, ErrObjectNotFound
-		}
-		info, err := backend.Stat(handle.filePath)
-		if err != nil {
-			return &FPGetForkParmsRes{}, ErrObjectNotFound
-		}
-		parent := filepath.Dir(handle.filePath)
-		name := filepath.Base(handle.filePath)
-		s.packFileInfo(resData, handle.volID, req.Bitmap, parent, name, info, false)
-
-		// packFileInfo derives DataForkLen from info.Size() and RsrcForkLen
-		// from the AppleDouble sidecar on disk. For an open fork, the
-		// authoritative length is the one tracked on the handle (writes may
-		// not yet be flushed to stat / the AD header is updated separately).
-		// Overwrite the corresponding fields in-place.
-		body := resData.Bytes()
-		off := 0
-		if req.Bitmap&FileBitmapAttributes != 0 {
-			off += 2
-		}
-		if req.Bitmap&FileBitmapParentDID != 0 {
-			off += 4
-		}
-		if req.Bitmap&FileBitmapCreateDate != 0 {
-			off += 4
-		}
-		if req.Bitmap&FileBitmapModDate != 0 {
-			off += 4
-		}
-		if req.Bitmap&FileBitmapBackupDate != 0 {
-			off += 4
-		}
-		if req.Bitmap&FileBitmapFinderInfo != 0 {
-			off += 32
-		}
-		if req.Bitmap&FileBitmapLongName != 0 {
-			off += 2
-		}
-		if req.Bitmap&FileBitmapShortName != 0 {
-			off += 2
-		}
-		if req.Bitmap&FileBitmapFileNum != 0 {
-			off += 4
-		}
-		if req.Bitmap&FileBitmapDataForkLen != 0 {
-			var dataLen uint32
-			if !handle.isRsrc && handle.file != nil {
-				if fi, err := handle.file.Stat(); err == nil {
-					dataLen = uint32(fi.Size())
-				}
-			} else {
-				dataLen = binary.BigEndian.Uint32(body[off : off+4])
-			}
-			binary.BigEndian.PutUint32(body[off:off+4], dataLen)
-			off += 4
-		}
-		if req.Bitmap&FileBitmapRsrcForkLen != 0 {
-			var rsrcLen uint32
-			if handle.isRsrc {
-				rsrcLen = uint32(handle.rsrcLen)
-			} else {
-				rsrcLen = binary.BigEndian.Uint32(body[off : off+4])
-			}
-			binary.BigEndian.PutUint32(body[off:off+4], rsrcLen)
-		}
-		log.Printf("[AFP] GetForkParms forkID=%d isRsrc=%t bitmap=0x%04x bodyLen=%d",
-			req.OForkRefNum, handle.isRsrc, req.Bitmap, len(body))
-		return &FPGetForkParmsRes{Bitmap: req.Bitmap, Data: body}, NoErr
+	if handle.filePath == "" {
+		// No associated file path (shouldn't happen after OpenFork): fall back
+		// to the fork-length-only legacy behaviour.
+		return &FPGetForkParmsRes{Bitmap: req.Bitmap, Data: packForkLengthsOnly(handle, req.Bitmap)}, NoErr
 	}
 
-	// No associated file path (shouldn't happen after OpenFork): fall back to
-	// the fork-length-only legacy behaviour.
-	var dataLen, rsrcLen uint32
-	if req.Bitmap&FileBitmapDataForkLen != 0 {
+	backend := s.fsForPath(handle.filePath)
+	if backend == nil {
+		return &FPGetForkParmsRes{}, ErrObjectNotFound
+	}
+	info, err := backend.Stat(handle.filePath)
+	if err != nil {
+		return &FPGetForkParmsRes{}, ErrObjectNotFound
+	}
+	resData := new(bytes.Buffer)
+	parent := filepath.Dir(handle.filePath)
+	name := filepath.Base(handle.filePath)
+	s.packFileInfo(resData, handle.volID, req.Bitmap, parent, name, info, false)
+
+	body := resData.Bytes()
+	overwriteLiveForkLengths(body, req.Bitmap, handle)
+
+	log.Printf("[AFP] GetForkParms forkID=%d isRsrc=%t bitmap=0x%04x bodyLen=%d",
+		req.OForkRefNum, handle.isRsrc, req.Bitmap, len(body))
+	return &FPGetForkParmsRes{Bitmap: req.Bitmap, Data: body}, NoErr
+}
+
+// overwriteLiveForkLengths patches the DataForkLen / RsrcForkLen fields of
+// an already-packed FileBitmap parameter block with the authoritative lengths
+// read from the open fork handle. Walks the bitmap in declared field order to
+// land on the right offset; fields not selected by the bitmap occupy zero
+// bytes in the body.
+func overwriteLiveForkLengths(body []byte, bitmap uint16, handle *forkHandle) {
+	off := 0
+	if bitmap&FileBitmapAttributes != 0 {
+		off += 2
+	}
+	if bitmap&FileBitmapParentDID != 0 {
+		off += 4
+	}
+	if bitmap&FileBitmapCreateDate != 0 {
+		off += 4
+	}
+	if bitmap&FileBitmapModDate != 0 {
+		off += 4
+	}
+	if bitmap&FileBitmapBackupDate != 0 {
+		off += 4
+	}
+	if bitmap&FileBitmapFinderInfo != 0 {
+		off += 32
+	}
+	if bitmap&FileBitmapLongName != 0 {
+		off += 2
+	}
+	if bitmap&FileBitmapShortName != 0 {
+		off += 2
+	}
+	if bitmap&FileBitmapFileNum != 0 {
+		off += 4
+	}
+	if bitmap&FileBitmapDataForkLen != 0 {
+		var dataLen uint32
+		if !handle.isRsrc && handle.file != nil {
+			if fi, err := handle.file.Stat(); err == nil {
+				dataLen = uint32(fi.Size())
+			}
+		} else {
+			dataLen = binary.BigEndian.Uint32(body[off : off+4])
+		}
+		binary.BigEndian.PutUint32(body[off:off+4], dataLen)
+		off += 4
+	}
+	if bitmap&FileBitmapRsrcForkLen != 0 {
+		var rsrcLen uint32
+		if handle.isRsrc {
+			rsrcLen = uint32(handle.rsrcLen)
+		} else {
+			rsrcLen = binary.BigEndian.Uint32(body[off : off+4])
+		}
+		binary.BigEndian.PutUint32(body[off:off+4], rsrcLen)
+	}
+}
+
+// packForkLengthsOnly emits the legacy fork-length-only reply used when the
+// fork handle has no associated file path.
+func packForkLengthsOnly(handle *forkHandle, bitmap uint16) []byte {
+	resData := new(bytes.Buffer)
+	if bitmap&FileBitmapDataForkLen != 0 {
+		var dataLen uint32
 		if !handle.isRsrc && handle.file != nil {
 			if fi, err := handle.file.Stat(); err == nil {
 				dataLen = uint32(fi.Size())
@@ -536,13 +548,14 @@ func (s *Service) handleGetForkParms(req *FPGetForkParmsReq) (*FPGetForkParmsRes
 		}
 		binutil.WriteU32(resData, dataLen)
 	}
-	if req.Bitmap&FileBitmapRsrcForkLen != 0 {
+	if bitmap&FileBitmapRsrcForkLen != 0 {
+		var rsrcLen uint32
 		if handle.isRsrc {
 			rsrcLen = uint32(handle.rsrcLen)
 		}
 		binutil.WriteU32(resData, rsrcLen)
 	}
-	return &FPGetForkParmsRes{Bitmap: req.Bitmap, Data: resData.Bytes()}, NoErr
+	return resData.Bytes()
 }
 
 func (s *Service) handleSetForkParms(req *FPSetForkParmsReq) (*FPSetForkParmsRes, int32) {
