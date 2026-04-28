@@ -4,9 +4,12 @@ package afp
 
 import (
 	"bytes"
+	"fmt"
+	"hash/crc32"
 	"log"
 	"math"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/pgodw/omnitalk/pkg/binutil"
@@ -430,4 +433,43 @@ func (s *Service) catalogNameForPath(volumeID uint16, fullPath, fallbackName str
 		break
 	}
 	return fallbackName
+}
+
+// persistentVolumeIDForConfig derives a stable 16-bit volume ID
+// from the volume's configured name and path so that clients see the
+// same VolumeID across server restarts. Collisions within a single
+// run are resolved by salting the CRC input.
+func persistentVolumeIDForConfig(cfg VolumeConfig, used map[uint16]struct{}) uint16 {
+	nameKey := strings.ToLower(strings.TrimSpace(cfg.Name))
+	pathKey := filepath.Clean(strings.TrimSpace(cfg.Path))
+
+	candidates := []string{
+		nameKey,
+		nameKey + "|" + pathKey,
+	}
+	for _, key := range candidates {
+		id := crcVolumeID(key)
+		if _, exists := used[id]; exists {
+			continue
+		}
+		used[id] = struct{}{}
+		return id
+	}
+
+	for salt := 1; ; salt++ {
+		id := crcVolumeID(fmt.Sprintf("%s|%s|%d", nameKey, pathKey, salt))
+		if _, exists := used[id]; exists {
+			continue
+		}
+		used[id] = struct{}{}
+		return id
+	}
+}
+
+func crcVolumeID(key string) uint16 {
+	id := uint16(crc32.ChecksumIEEE([]byte(key)) & 0xffff)
+	if id == 0 {
+		return 1
+	}
+	return id
 }
