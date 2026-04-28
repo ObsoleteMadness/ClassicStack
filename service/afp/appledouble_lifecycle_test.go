@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/pgodw/omnitalk/pkg/appledouble"
 )
 
 func TestHandleRename_MovesAppleDoubleSidecar(t *testing.T) {
@@ -16,8 +18,8 @@ func TestHandleRename_MovesAppleDoubleSidecar(t *testing.T) {
 	newName := "Configuration Renamed"
 	oldPath := filepath.Join(root, oldName)
 	newPath := filepath.Join(root, newName)
-	oldAD := appleDoublePath(oldPath)
-	newAD := appleDoublePath(newPath)
+	oldAD := appledouble.SidecarPath(oldPath)
+	newAD := appledouble.SidecarPath(newPath)
 
 	if err := os.WriteFile(oldPath, []byte("x"), 0644); err != nil {
 		t.Fatalf("seed file: %v", err)
@@ -55,8 +57,8 @@ func TestHandleRename_DecodesMacRomanNewNameAndMovesSidecar(t *testing.T) {
 
 	oldPath := filepath.Join(root, oldName)
 	newPath := filepath.Join(root, newHostName)
-	oldAD := appleDoublePath(oldPath)
-	newAD := appleDoublePath(newPath)
+	oldAD := appledouble.SidecarPath(oldPath)
+	newAD := appledouble.SidecarPath(newPath)
 
 	if err := os.WriteFile(oldPath, []byte("x"), 0644); err != nil {
 		t.Fatalf("seed file: %v", err)
@@ -111,8 +113,8 @@ func TestHandleMoveAndRename_MovesAppleDoubleSidecar(t *testing.T) {
 	newName := "Configuration Moved"
 	srcPath := filepath.Join(srcDir, srcName)
 	dstPath := filepath.Join(dstDir, newName)
-	srcAD := appleDoublePath(srcPath)
-	dstAD := appleDoublePath(dstPath)
+	srcAD := appledouble.SidecarPath(srcPath)
+	dstAD := appledouble.SidecarPath(dstPath)
 
 	if err := os.WriteFile(srcPath, []byte("x"), 0644); err != nil {
 		t.Fatalf("seed file: %v", err)
@@ -288,7 +290,7 @@ func TestHandleDelete_DeletesAppleDoubleSidecar(t *testing.T) {
 
 	name := "Configuration"
 	targetPath := filepath.Join(root, name)
-	targetAD := appleDoublePath(targetPath)
+	targetAD := appledouble.SidecarPath(targetPath)
 
 	if err := os.WriteFile(targetPath, []byte("x"), 0644); err != nil {
 		t.Fatalf("seed file: %v", err)

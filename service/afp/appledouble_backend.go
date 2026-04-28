@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/pgodw/omnitalk/pkg/appledouble"
 )
 
 const defaultAppleDoubleMode = AppleDoubleModeModern
@@ -222,9 +224,9 @@ func (b *AppleDoubleBackend) OpenResourceFork(path string, writable bool) (File,
 		return nil, ResourceForkInfo{}, err
 	}
 	return f, ResourceForkInfo{
-		Offset:            int64(adResourceForkStart),
+		Offset:            int64(appledouble.ResourceForkStart),
 		Length:            0,
-		LengthFieldOffset: adRsrcLenFileOffset,
+		LengthFieldOffset: appledouble.ResourceLenFileOffset,
 	}, nil
 }
 
@@ -235,7 +237,7 @@ func (b *AppleDoubleBackend) TruncateResourceFork(file File, info ResourceForkIn
 
 	lenFieldAt := info.LengthFieldOffset
 	if lenFieldAt == 0 {
-		lenFieldAt = adRsrcLenFileOffset
+		lenFieldAt = appledouble.ResourceLenFileOffset
 	}
 
 	lenBuf := make([]byte, 4)
@@ -537,7 +539,7 @@ func (b *AppleDoubleBackend) readFile(path string) ([]byte, error) {
 			return nil, readErr
 		}
 	}
-	if len(buf) < adHeaderSize {
+	if len(buf) < appledouble.HeaderSize {
 		return nil, io.ErrUnexpectedEOF
 	}
 	return buf, nil
@@ -562,7 +564,18 @@ func (b *AppleDoubleBackend) createAppleDoublePath(adPath string) error {
 	if err := b.ensureAppleDoubleDir(adPath); err != nil {
 		return err
 	}
-	return b.writeFile(adPath, buildAppleDoubleBytes(parsedAppleDouble{}, false, 0))
+	return b.writeFile(adPath, appledouble.Build(appledouble.Parsed{}, false, 0))
+}
+
+// appleDoubleData is the slim summary the fork I/O paths consume from a
+// parsed sidecar — just enough to graft Finder info and resource-fork
+// length onto an open file.
+type appleDoubleData struct {
+	finderInfo     [32]byte
+	rsrcOffset     int64
+	rsrcLength     int64
+	rsrcLenFieldAt int64
+	hasRsrc        bool
 }
 
 func (b *AppleDoubleBackend) readAppleDoubleDataPath(adPath string) appleDoubleData {
@@ -572,7 +585,7 @@ func (b *AppleDoubleBackend) readAppleDoubleDataPath(adPath string) appleDoubleD
 		return result
 	}
 
-	parsed, err := parseAppleDoubleBytes(bts)
+	parsed, err := appledouble.Parse(bts)
 	if err != nil {
 		return result
 	}
@@ -604,11 +617,11 @@ func (b *AppleDoubleBackend) writeFinderInfoPath(adPath string, fi [32]byte) err
 		}
 	}
 
-	parsed, _ := parseAppleDoubleBytes(bts)
+	parsed, _ := appledouble.Parse(bts)
 	parsed.FinderInfo = fi
 	parsed.HasFinder = true
 
-	out := buildAppleDoubleBytes(parsed, parsed.HasComment, uint32(len(parsed.Comment)))
+	out := appledouble.Build(parsed, parsed.HasComment, uint32(len(parsed.Comment)))
 	return b.writeFile(adPath, out)
 }
 
@@ -624,14 +637,14 @@ func (b *AppleDoubleBackend) writeAppleDoubleCommentPath(adPath string, comment 
 		}
 	}
 
-	parsed, _ := parseAppleDoubleBytes(bts)
+	parsed, _ := appledouble.Parse(bts)
 	if len(comment) > 199 {
 		comment = comment[:199]
 	}
 	parsed.Comment = append([]byte(nil), comment...)
 	parsed.HasComment = len(comment) > 0
 
-	out := buildAppleDoubleBytes(parsed, true, uint32(len(comment)))
+	out := appledouble.Build(parsed, true, uint32(len(comment)))
 	return b.writeFile(adPath, out)
 }
 
@@ -644,11 +657,11 @@ func (b *AppleDoubleBackend) removeAppleDoubleCommentPath(adPath string) error {
 		return err
 	}
 
-	parsed, _ := parseAppleDoubleBytes(bts)
+	parsed, _ := appledouble.Parse(bts)
 	parsed.Comment = nil
 	parsed.HasComment = false
 
-	out := buildAppleDoubleBytes(parsed, true, 0)
+	out := appledouble.Build(parsed, true, 0)
 	return b.writeFile(adPath, out)
 }
 
@@ -657,7 +670,7 @@ func (b *AppleDoubleBackend) readAppleDoubleCommentPath(adPath string) ([]byte, 
 	if err != nil {
 		return nil, false
 	}
-	parsed, err := parseAppleDoubleBytes(bts)
+	parsed, err := appledouble.Parse(bts)
 	if err != nil {
 		return nil, false
 	}

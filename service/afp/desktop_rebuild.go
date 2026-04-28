@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/pkg/appledouble"
 )
 
 // EnableAppleDoubleIconFallback controls whether FPGetIcon misses trigger a
@@ -83,7 +84,7 @@ func (s *Service) IngestAppleDoubleIcons(volID uint16, filePath string) int {
 	if err != nil {
 		return 0
 	}
-	ad, err := parseAppleDoubleBytes(raw)
+	ad, err := appledouble.Parse(raw)
 	if err != nil {
 		return 0
 	}

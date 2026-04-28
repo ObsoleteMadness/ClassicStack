@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"github.com/pgodw/omnitalk/pkg/appledouble"
 	"github.com/pgodw/omnitalk/pkg/binutil"
 )
 
@@ -417,7 +418,7 @@ func (s *Service) handleWrite(req *FPWriteReq) (*FPWriteRes, int32) {
 			// Update the resource fork length field in the AppleDouble header.
 			lenBuf := make([]byte, 4)
 			binary.BigEndian.PutUint32(lenBuf, uint32(handle.rsrcLen))
-			handle.file.WriteAt(lenBuf, adRsrcLenFileOffset)
+			handle.file.WriteAt(lenBuf, appledouble.ResourceLenFileOffset)
 		}
 	}
 
