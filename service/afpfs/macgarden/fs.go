@@ -1,6 +1,13 @@
-//go:build macgarden
+//go:build afp && macgarden
 
-package afp
+// Package macgarden implements an AFP FileSystem backend that exposes
+// macintoshgarden.org as a read-only volume tree (Apps/, Games/,
+// search/). It plugs into the AFP FileSystem registry under the
+// "macgarden" type and is gated behind the `macgarden` build tag.
+//
+// Lives in service/afpfs/ alongside future AFP filesystem backends so
+// the core AFP package never imports any specific filesystem.
+package macgarden
 
 import (
 	"errors"
@@ -17,6 +24,7 @@ import (
 	"unicode"
 
 	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/service/afp"
 	garden "github.com/pgodw/omnitalk/service/macgarden"
 )
 
@@ -95,7 +103,7 @@ func (f *macGardenFile) ReadAt(p []byte, off int64) (n int, err error) {
 	}
 	data, readErr := f.client.ReadURLRange(f.asset.URL, off, len(p))
 	if readErr != nil {
-		return 0, fmt.Errorf("%w: %v", ErrCopySourceReadEOF, readErr)
+		return 0, fmt.Errorf("%w: %v", afp.ErrCopySourceReadEOF, readErr)
 	}
 	n = copy(p, data)
 	if len(data) < requested {
@@ -190,7 +198,7 @@ type MacGardenFileSystem struct {
 }
 
 func init() {
-	RegisterFS(FSTypeMacGarden, func(cfg VolumeConfig) (FileSystem, error) {
+	afp.RegisterFS(afp.FSTypeMacGarden, func(cfg afp.VolumeConfig) (afp.FileSystem, error) {
 		return NewMacGardenFileSystem(filepath.Clean(cfg.Path)), nil
 	})
 }
@@ -925,7 +933,7 @@ func (m *MacGardenFileSystem) ChildCount(path string) (uint16, error) {
 	if len(parts) == 1 {
 		return 0, nil
 	}
-	return 0, newNotSupported("ChildCount")
+	return 0, &afp.NotSupportedError{Operation: "ChildCount"}
 }
 
 // DirAttributes returns AFP directory attribute bits for a path.
@@ -936,7 +944,7 @@ func (m *MacGardenFileSystem) DirAttributes(path string) (uint16, error) {
 		return 0, err
 	}
 	if rel == "search" {
-		return DirAttrInvisible, nil
+		return afp.DirAttrInvisible, nil
 	}
 	return 0, nil
 }
@@ -956,8 +964,8 @@ func (m *MacGardenFileSystem) SupportsCatSearch(_ string) (bool, error) {
 	return true, nil
 }
 
-func (m *MacGardenFileSystem) Capabilities() FileSystemCapabilities {
-	return FileSystemCapabilities{
+func (m *MacGardenFileSystem) Capabilities() afp.FileSystemCapabilities {
+	return afp.FileSystemCapabilities{
 		CatSearch:     true,
 		ChildCount:    true,
 		ReadDirRange:  true,
@@ -973,7 +981,7 @@ func (m *MacGardenFileSystem) Close() error {
 }
 
 func (m *MacGardenFileSystem) CreateDir(_ string) error          { return fs.ErrPermission }
-func (m *MacGardenFileSystem) CreateFile(_ string) (File, error) { return nil, fs.ErrPermission }
+func (m *MacGardenFileSystem) CreateFile(_ string) (afp.File, error) { return nil, fs.ErrPermission }
 func (m *MacGardenFileSystem) Remove(_ string) error             { return fs.ErrPermission }
 func (m *MacGardenFileSystem) Rename(_, _ string) error          { return fs.ErrPermission }
 
@@ -992,7 +1000,7 @@ func (m *MacGardenFileSystem) openAsset(a macGardenAsset) *macGardenFile {
 	return &macGardenFile{asset: a, client: m.client}
 }
 
-func (m *MacGardenFileSystem) OpenFile(path string, flag int) (File, error) {
+func (m *MacGardenFileSystem) OpenFile(path string, flag int) (afp.File, error) {
 	if flag&(os.O_WRONLY|os.O_RDWR|os.O_APPEND|os.O_CREATE|os.O_TRUNC) != 0 {
 		return nil, fs.ErrPermission
 	}
@@ -1076,11 +1084,11 @@ func (m *MacGardenFileSystem) OpenFile(path string, flag int) (File, error) {
 func (m *MacGardenFileSystem) CatSearch(_ string, query string, reqMatches int32, cursor [16]byte) ([]string, [16]byte, int32) {
 	rawQuery := strings.TrimSpace(query)
 	if rawQuery == "" {
-		return nil, cursor, ErrParamErr
+		return nil, cursor, afp.ErrParamErr
 	}
 	normalizedQuery := normalizeMacGardenSearchQuery(rawQuery)
 	if normalizedQuery == "" {
-		return nil, cursor, ErrParamErr
+		return nil, cursor, afp.ErrParamErr
 	}
 
 	limit := int(reqMatches)
@@ -1182,7 +1190,7 @@ func (m *MacGardenFileSystem) CatSearch(_ string, query string, reqMatches int32
 		nextCursor[7] = byte(nextOffset & 0xFF)
 	}
 
-	return paths, nextCursor, NoErr
+	return paths, nextCursor, afp.NoErr
 }
 
 // ensureSearchPage fetches a single MacGarden search page into the cache if it
@@ -1805,6 +1813,6 @@ func urlPathFromAbsolute(absURL string) string {
 	return u.Path
 }
 
-var _ FileSystem = (*MacGardenFileSystem)(nil)
+var _ afp.FileSystem = (*MacGardenFileSystem)(nil)
 
 var errMacGardenNotFound = errors.New("macgarden: not found")

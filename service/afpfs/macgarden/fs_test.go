@@ -1,12 +1,13 @@
-//go:build macgarden
+//go:build afp && macgarden
 
-package afp
+package macgarden
 
 import (
 	"io/fs"
 	"path/filepath"
 	"testing"
 
+	"github.com/pgodw/omnitalk/service/afp"
 	garden "github.com/pgodw/omnitalk/service/macgarden"
 )
 
@@ -262,8 +263,8 @@ func TestMacGardenCatSearch_UsesTypeSubdirectoryWhenKnown(t *testing.T) {
 
 	cursor := [16]byte{0x01, 'c', 'l', 'a'} // continuation + query hash for "cla..."
 	paths, _, errCode := fsys.CatSearch("", query, 10, cursor)
-	if errCode != NoErr {
-		t.Fatalf("CatSearch errCode=%d, want %d", errCode, NoErr)
+	if errCode != afp.NoErr {
+		t.Fatalf("CatSearch errCode=%d, want %d", errCode, afp.NoErr)
 	}
 	if len(paths) != 2 {
 		t.Fatalf("len(paths)=%d, want 2", len(paths))

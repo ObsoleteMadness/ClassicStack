@@ -1,4 +1,4 @@
-//go:build macgarden
+//go:build afp
 
 package afp
 
@@ -9,7 +9,17 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
+
+type catSearchDirInfo struct{ name string }
+
+func (i *catSearchDirInfo) Name() string       { return i.name }
+func (i *catSearchDirInfo) Size() int64        { return 0 }
+func (i *catSearchDirInfo) Mode() fs.FileMode  { return fs.ModeDir | 0o755 }
+func (i *catSearchDirInfo) ModTime() time.Time { return time.Time{} }
+func (i *catSearchDirInfo) IsDir() bool        { return true }
+func (i *catSearchDirInfo) Sys() any           { return nil }
 
 type catSearchCaptureFS struct {
 	root      string
@@ -24,11 +34,11 @@ func (f *catSearchCaptureFS) ReadDir(path string) ([]fs.DirEntry, error) {
 func (f *catSearchCaptureFS) Stat(path string) (fs.FileInfo, error) {
 	clean := filepath.Clean(path)
 	if clean == filepath.Clean(f.root) {
-		return &macGardenFileInfo{name: filepath.Base(path), isDir: true}, nil
+		return &catSearchDirInfo{name: filepath.Base(path)}, nil
 	}
 	rel, err := filepath.Rel(filepath.Clean(f.root), clean)
 	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return &macGardenFileInfo{name: filepath.Base(path), isDir: true}, nil
+		return &catSearchDirInfo{name: filepath.Base(path)}, nil
 	}
 	return nil, fs.ErrNotExist
 }

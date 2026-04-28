@@ -1,4 +1,4 @@
-//go:build macgarden
+//go:build afp
 
 package afp
 
@@ -10,9 +10,30 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/pgodw/omnitalk/encoding"
 )
+
+type enumStubInfo struct {
+	name  string
+	mode  fs.FileMode
+	isDir bool
+}
+
+func (i *enumStubInfo) Name() string       { return i.name }
+func (i *enumStubInfo) Size() int64        { return 0 }
+func (i *enumStubInfo) Mode() fs.FileMode  { return i.mode }
+func (i *enumStubInfo) ModTime() time.Time { return time.Time{} }
+func (i *enumStubInfo) IsDir() bool        { return i.isDir }
+func (i *enumStubInfo) Sys() any           { return nil }
+
+type enumStubDirEntry struct{ info fs.FileInfo }
+
+func (d enumStubDirEntry) Name() string               { return d.info.Name() }
+func (d enumStubDirEntry) IsDir() bool                { return d.info.IsDir() }
+func (d enumStubDirEntry) Type() fs.FileMode          { return d.info.Mode().Type() }
+func (d enumStubDirEntry) Info() (fs.FileInfo, error) { return d.info, nil }
 
 type childCountSpyFS struct {
 	root            string
@@ -36,8 +57,8 @@ func (s *childCountSpyFS) ReadDir(path string) ([]fs.DirEntry, error) {
 	s.readDirCalls = append(s.readDirCalls, filepath.Clean(path))
 	if filepath.Clean(path) == filepath.Clean(s.root) {
 		return []fs.DirEntry{
-			macGardenDirEntry{info: &macGardenFileInfo{name: "Apps", mode: fs.ModeDir | 0o555, isDir: true}},
-			macGardenDirEntry{info: &macGardenFileInfo{name: "Games", mode: fs.ModeDir | 0o555, isDir: true}},
+			enumStubDirEntry{info: &enumStubInfo{name: "Apps", mode: fs.ModeDir | 0o555, isDir: true}},
+			enumStubDirEntry{info: &enumStubInfo{name: "Games", mode: fs.ModeDir | 0o555, isDir: true}},
 		}, nil
 	}
 	return nil, fs.ErrPermission
@@ -46,7 +67,7 @@ func (s *childCountSpyFS) ReadDir(path string) ([]fs.DirEntry, error) {
 func (s *childCountSpyFS) Stat(path string) (fs.FileInfo, error) {
 	clean := filepath.Clean(path)
 	if clean == filepath.Clean(s.root) || clean == filepath.Join(s.root, "Apps") || clean == filepath.Join(s.root, "Games") {
-		return &macGardenFileInfo{name: filepath.Base(clean), mode: fs.ModeDir | 0o555, isDir: true}, nil
+		return &enumStubInfo{name: filepath.Base(clean), mode: fs.ModeDir | 0o555, isDir: true}, nil
 	}
 	return nil, fs.ErrNotExist
 }
@@ -78,10 +99,10 @@ func (s *rangeSpyFS) ReadDir(path string) ([]fs.DirEntry, error) {
 func (s *rangeSpyFS) Stat(path string) (fs.FileInfo, error) {
 	clean := filepath.Clean(path)
 	if clean == filepath.Clean(s.root) {
-		return &macGardenFileInfo{name: filepath.Base(clean), mode: fs.ModeDir | 0o555, isDir: true}, nil
+		return &enumStubInfo{name: filepath.Base(clean), mode: fs.ModeDir | 0o555, isDir: true}, nil
 	}
 	if clean == filepath.Join(s.root, "Gamma") || clean == filepath.Join(s.root, "Delta") {
-		return &macGardenFileInfo{name: filepath.Base(clean), mode: fs.ModeDir | 0o555, isDir: true}, nil
+		return &enumStubInfo{name: filepath.Base(clean), mode: fs.ModeDir | 0o555, isDir: true}, nil
 	}
 	return nil, fs.ErrNotExist
 }
@@ -110,8 +131,8 @@ func (s *rangeSpyFS) ReadDirRange(path string, startIndex uint16, reqCount uint1
 	s.lastStartIndex = startIndex
 	s.lastReqCount = reqCount
 	return []fs.DirEntry{
-		macGardenDirEntry{info: &macGardenFileInfo{name: "Gamma", mode: fs.ModeDir | 0o555, isDir: true}},
-		macGardenDirEntry{info: &macGardenFileInfo{name: "Delta", mode: fs.ModeDir | 0o555, isDir: true}},
+		enumStubDirEntry{info: &enumStubInfo{name: "Gamma", mode: fs.ModeDir | 0o555, isDir: true}},
+		enumStubDirEntry{info: &enumStubInfo{name: "Delta", mode: fs.ModeDir | 0o555, isDir: true}},
 	}, 7, nil
 }
 
@@ -121,7 +142,7 @@ func (s *rangeEmptySpyFS) ReadDir(path string) ([]fs.DirEntry, error) {
 
 func (s *rangeEmptySpyFS) Stat(path string) (fs.FileInfo, error) {
 	if filepath.Clean(path) == filepath.Clean(s.root) {
-		return &macGardenFileInfo{name: filepath.Base(path), mode: fs.ModeDir | 0o555, isDir: true}, nil
+		return &enumStubInfo{name: filepath.Base(path), mode: fs.ModeDir | 0o555, isDir: true}, nil
 	}
 	return nil, fs.ErrNotExist
 }
