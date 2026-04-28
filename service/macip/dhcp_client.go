@@ -7,6 +7,7 @@
 package macip
 
 import (
+	"context"
 	"encoding/binary"
 	"math/rand"
 	"net"
@@ -135,8 +136,8 @@ func fabricateMACForAT(atNet uint16, atNode uint8) net.HardwareAddr {
 
 // RequestIP performs the full DHCP Discover→Offer→Request→Ack handshake for
 // the given AppleTalk node. If preferredIP is non-nil it is sent as option 50.
-// Returns nil if DHCP fails or times out.
-func (c *dhcpClient) RequestIP(atNet uint16, atNode uint8, preferredIP net.IP) *dhcpResult {
+// Returns nil if DHCP fails, times out, the service stops, or ctx is cancelled.
+func (c *dhcpClient) RequestIP(ctx context.Context, atNet uint16, atNode uint8, preferredIP net.IP) *dhcpResult {
 	xid := rand.Uint32()
 	fabMAC := fabricateMACForAT(atNet, atNode)
 	p := &pendingDHCP{
@@ -162,6 +163,9 @@ func (c *dhcpClient) RequestIP(atNet uint16, atNode uint8, preferredIP net.IP) *
 	select {
 	case res := <-p.ch:
 		return res // nil on NAK
+	case <-ctx.Done():
+		netlog.Debug("[macip-dhcp] aborting DHCP wait for AT %d.%d xid=0x%08x: %v", atNet, atNode, xid, ctx.Err())
+		return nil
 	case <-c.stop:
 		netlog.Debug("[macip-dhcp] aborting DHCP wait for AT %d.%d xid=0x%08x: service stopping", atNet, atNode, xid)
 		return nil

@@ -12,6 +12,7 @@
 package macip
 
 import (
+	"context"
 	"encoding/binary"
 	"net"
 	"time"
@@ -84,6 +85,11 @@ type Service struct {
 
 	ch   chan inboundPkt
 	stop chan struct{}
+
+	// ctx is cancelled when Stop() is called and is the parent of any
+	// per-request contexts handed to background work (DHCP, etc.).
+	ctx       context.Context
+	ctxCancel context.CancelFunc
 }
 
 type inboundPkt struct {
@@ -109,7 +115,7 @@ func New(gwIP, network net.IP, mask net.IPMask, nameserver, broadcast net.IP,
 	zone []byte, nbp *zip.NameInformationService,
 	ipLink rawlink.RawLink, ipOurMAC net.HardwareAddr, ipHostIP, ipDefaultGW net.IP,
 	natEnabled bool, dhcpMode bool, stateFile string) *Service {
-	return &Service{
+	s := &Service{
 		gwIP:         gwIP.To4(),
 		subnetMask:   mask,
 		nameserverIP: nameserver.To4(),
@@ -127,6 +133,8 @@ func New(gwIP, network net.IP, mask net.IPMask, nameserver, broadcast net.IP,
 		ch:           make(chan inboundPkt, 256),
 		stop:         make(chan struct{}),
 	}
+	s.ctx, s.ctxCancel = context.WithCancel(context.Background())
+	return s
 }
 
 // Socket returns the AppleTalk socket number for this service.
@@ -191,6 +199,7 @@ func (s *Service) Start(r service.Router) error {
 // Stop unregisters NBP, closes the IP link and shuts down all goroutines.
 func (s *Service) Stop() error {
 	s.nbp.UnregisterName([]byte(s.gwIP.String()), []byte("IPGATEWAY"), s.zoneName)
+	s.ctxCancel()
 	close(s.stop)
 	if s.osnat != nil {
 		s.osnat.Close()
@@ -296,7 +305,7 @@ func (s *Service) handleATPConfig(d ddp.Datagram, rx port.Port) {
 				return
 			}
 		}
-		go s.handleATPConfigDHCP(d, rx, tid, requestedIP, atNet, atNode)
+		go s.handleATPConfigDHCP(s.ctx, d, rx, tid, requestedIP, atNet, atNode)
 		return
 	}
 
@@ -338,8 +347,8 @@ func (s *Service) sendATPConfigResp(d ddp.Datagram, rx port.Port, tid uint16, as
 
 // handleATPConfigDHCP runs in its own goroutine: performs a full DHCP exchange
 // and sends the ATP TResp once an address is assigned.
-func (s *Service) handleATPConfigDHCP(d ddp.Datagram, rx port.Port, tid uint16, requestedIP net.IP, atNet uint16, atNode uint8) {
-	res := s.dhcp.RequestIP(atNet, atNode, requestedIP)
+func (s *Service) handleATPConfigDHCP(ctx context.Context, d ddp.Datagram, rx port.Port, tid uint16, requestedIP net.IP, atNet uint16, atNode uint8) {
+	res := s.dhcp.RequestIP(ctx, atNet, atNode, requestedIP)
 	if res == nil {
 		netlog.Warn("macip-dhcp: no DHCP response for AT %d.%d — not replying to ATP", atNet, atNode)
 		return
