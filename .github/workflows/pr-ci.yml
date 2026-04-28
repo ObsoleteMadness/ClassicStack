@@ -73,7 +73,10 @@ jobs:
       matrix:
         tags:
           - ""
-          - "macgarden"
+          - "afp"
+          - "afp macgarden"
+          - "afp macip"
+          - "afp macgarden macip"
     steps:
       - name: Checkout
         uses: actions/checkout@v4

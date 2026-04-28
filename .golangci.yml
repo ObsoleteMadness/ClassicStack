@@ -3,7 +3,9 @@ version: "2"
 run:
   timeout: 5m
   build-tags:
+    - afp
     - macgarden
+    - macip
 
 linters:
   default: none
