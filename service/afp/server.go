@@ -120,47 +120,7 @@ func NewService(serverName string, configs []VolumeConfig, fs FileSystem, transp
 		s.metas = make(map[uint16]ForkMetadataBackend)
 	}
 
-	cnidBackend := resolveCNIDBackend(options)
-	usedVolumeIDs := make(map[uint16]struct{}, len(configs))
-	for i, cfg := range configs {
-		volumeID := uint16(i + 1)
-		if options.PersistentVolumeIDs {
-			volumeID = persistentVolumeIDForConfig(cfg, usedVolumeIDs)
-		} else {
-			usedVolumeIDs[volumeID] = struct{}{}
-		}
-		volume := Volume{
-			Config: cfg,
-			ID:     volumeID,
-		}
-		s.Volumes = append(s.Volumes, volume)
-		store := cnidBackend.Open(volume)
-		store.EnsureReserved(filepath.Clean(cfg.Path), CNIDRoot)
-		s.cnidStores[volume.ID] = store
-
-		if fs != nil {
-			s.volumeFS[volume.ID] = fs
-		}
-		if s.volumeFS[volume.ID] == nil {
-			if backend, err := newBackendForVolumeConfig(cfg); err == nil {
-				s.volumeFS[volume.ID] = backend
-			}
-		}
-
-		if s.metas != nil {
-			metaFS := s.volumeFS[volume.ID]
-			if metaFS == nil {
-				metaFS = fs
-			}
-			if metaFS != nil {
-				mode := cfg.AppleDoubleMode
-				if mode == "" {
-					mode = options.AppleDoubleMode
-				}
-				s.metas[volume.ID] = NewAppleDoubleBackend(metaFS, mode, options.DecomposedFilenames)
-			}
-		}
-	}
+	s.installVolumes(configs, fs)
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()

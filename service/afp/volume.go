@@ -20,6 +20,68 @@ const (
 	defaultAFPBytesTotal = uint64(0x20000000)
 )
 
+// installVolumes builds per-volume state from VolumeConfigs: assigns the
+// volume ID, opens the CNID store, resolves the FileSystem backend, and
+// wires the AppleDouble metadata backend. fallbackFS, when non-nil, wins
+// over the per-volume registry lookup (used by tests that inject a single
+// shared FileSystem).
+func (s *Service) installVolumes(configs []VolumeConfig, fallbackFS FileSystem) {
+	cnidBackend := resolveCNIDBackend(s.options)
+	usedVolumeIDs := make(map[uint16]struct{}, len(configs))
+
+	for i, cfg := range configs {
+		volume := Volume{
+			Config: cfg,
+			ID:     s.assignVolumeID(cfg, i, usedVolumeIDs),
+		}
+		s.Volumes = append(s.Volumes, volume)
+
+		store := cnidBackend.Open(volume)
+		store.EnsureReserved(filepath.Clean(cfg.Path), CNIDRoot)
+		s.cnidStores[volume.ID] = store
+
+		s.volumeFS[volume.ID] = resolveVolumeFS(cfg, fallbackFS)
+		s.installAppleDoubleBackend(volume.ID, cfg, fallbackFS)
+	}
+}
+
+func (s *Service) assignVolumeID(cfg VolumeConfig, i int, used map[uint16]struct{}) uint16 {
+	if s.options.PersistentVolumeIDs {
+		return persistentVolumeIDForConfig(cfg, used)
+	}
+	id := uint16(i + 1)
+	used[id] = struct{}{}
+	return id
+}
+
+func resolveVolumeFS(cfg VolumeConfig, fallbackFS FileSystem) FileSystem {
+	if fallbackFS != nil {
+		return fallbackFS
+	}
+	if backend, err := newBackendForVolumeConfig(cfg); err == nil {
+		return backend
+	}
+	return nil
+}
+
+func (s *Service) installAppleDoubleBackend(volID uint16, cfg VolumeConfig, fallbackFS FileSystem) {
+	if s.metas == nil {
+		return
+	}
+	metaFS := s.volumeFS[volID]
+	if metaFS == nil {
+		metaFS = fallbackFS
+	}
+	if metaFS == nil {
+		return
+	}
+	mode := cfg.AppleDoubleMode
+	if mode == "" {
+		mode = s.options.AppleDoubleMode
+	}
+	s.metas[volID] = NewAppleDoubleBackend(metaFS, mode, s.options.DecomposedFilenames)
+}
+
 func constrainAFPVolumeType(volType uint16) uint16 {
 	switch volType {
 	case AFPVolumeTypeFlat, AFPVolumeTypeFixedDirID, AFPVolumeTypeVariableDirID:
