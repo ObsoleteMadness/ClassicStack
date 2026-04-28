@@ -415,11 +415,8 @@ var commandRegistry = map[uint8]commandSpec{
 		name:   "FPGetSrvrMsg",
 		newReq: func() Request { return &FPGetSrvrMsgReq{} },
 		handle: func(s *Service, req Request) (Response, int32) {
-			res, err := s.handleGetSrvrMsg(req.(*FPGetSrvrMsgReq))
-			if res == nil {
-				return nil, err
-			}
-			return res, err
+			r := req.(*FPGetSrvrMsgReq)
+			return &FPGetSrvrMsgRes{MessageType: r.MessageType}, NoErr
 		},
 	},
 	FPChangePassword: {
