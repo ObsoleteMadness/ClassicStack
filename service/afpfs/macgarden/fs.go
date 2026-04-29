@@ -206,9 +206,11 @@ func init() {
 }
 
 func NewMacGardenFileSystem(root string) *MacGardenFileSystem {
+	gc := garden.NewClient()
+	gc.Prime()
 	fsys := &MacGardenFileSystem{
 		root:              filepath.Clean(root),
-		client:            garden.NewClient(),
+		client:            gc,
 		searchByName:      make(map[string]macGardenCachedResult),
 		itemURLByDir:      make(map[string]string),
 		itemByURL:         make(map[string]*garden.SoftwareItem),

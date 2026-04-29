@@ -143,9 +143,13 @@ func NewClient() *Client {
 		itemCache: make(map[string]cachedItemDetails),
 	}
 	c.loadItemCache()
-	c.primeSession()
 	return c
 }
+
+// Prime establishes a session cookie by fetching the site index. Production
+// callers invoke this once after construction; tests skip it so mock
+// transports aren't perturbed by an unsolicited GET.
+func (c *Client) Prime() { c.primeSession() }
 
 // primeSession fetches the site index so the server can set a session cookie.
 // The cookie jar on httpClient stores it automatically; all subsequent requests
