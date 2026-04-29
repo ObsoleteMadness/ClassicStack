@@ -1,4 +1,4 @@
-//go:build sqlite_cnid
+//go:build sqlite_cnid || all
 
 package cnid
 
