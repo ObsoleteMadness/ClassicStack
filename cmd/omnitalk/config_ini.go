@@ -11,10 +11,13 @@ import (
 	"github.com/pgodw/omnitalk/port/localtalk"
 )
 
-// fileConfig is the cmd-local view of the config file. Each section is a
-// typed Config struct owned by the package that consumes it. AFP lives
-// behind //go:build afp and is wired up separately via wireAFP.
-type fileConfig struct {
+// appConfig is the cmd-local view of resolved configuration. Each
+// section is a typed Config struct owned by the package that consumes
+// it. The same struct is populated either from a TOML file (via
+// loadConfigFromFile) or from CLI flags (via flagsToConfig); downstream
+// wiring reads only from this struct, never from flag pointers. AFP
+// lives behind //go:build afp and is wired up separately via wireAFP.
+type appConfig struct {
 	LogLevel     string
 	LogTraffic   bool
 	ParsePackets bool
@@ -35,8 +38,8 @@ type fileConfig struct {
 	MacIPZone       string
 }
 
-func defaultFileConfig() fileConfig {
-	return fileConfig{
+func defaultAppConfig() appConfig {
+	return appConfig{
 		LogLevel: "info",
 
 		LToUDP:    localtalk.DefaultLToUDPConfig(),
@@ -50,21 +53,21 @@ func defaultFileConfig() fileConfig {
 // loadConfigFromFile loads and resolves the cmd-neutral sections of the
 // TOML config. The raw config.Source is also returned so optional
 // subsystems (currently AFP, behind //go:build afp) can lazily read
-// their own sections without fileConfig having to know about them.
-func loadConfigFromFile(path string) (fileConfig, config.Source, error) {
+// their own sections without appConfig having to know about them.
+func loadConfigFromFile(path string) (appConfig, config.Source, error) {
 	src, err := config.Load(path)
 	if err != nil {
-		return defaultFileConfig(), config.Source{}, err
+		return defaultAppConfig(), config.Source{}, err
 	}
-	cfg, err := resolveFileConfig(src)
+	cfg, err := resolveAppConfig(src)
 	if err != nil {
-		return defaultFileConfig(), src, err
+		return defaultAppConfig(), src, err
 	}
 	return cfg, src, nil
 }
 
-func resolveFileConfig(src config.Source) (fileConfig, error) {
-	cfg := defaultFileConfig()
+func resolveAppConfig(src config.Source) (appConfig, error) {
+	cfg := defaultAppConfig()
 	k := src.K
 
 	if err := loadSection(k, "LToUdp", &cfg.LToUDP); err != nil {

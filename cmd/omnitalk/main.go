@@ -120,76 +120,79 @@ func main() {
 		}
 	}
 
-	var configSource config.Source
+	var (
+		cfg          appConfig
+		configSource config.Source
+	)
 	fromConfigFile := selectedConfig != ""
 	if fromConfigFile {
-		cfg, src, err := loadConfigFromFile(selectedConfig)
+		loaded, src, err := loadConfigFromFile(selectedConfig)
 		if err != nil {
 			log.Fatalf("failed loading config file %q: %v", selectedConfig, err)
 		}
+		cfg = loaded
 		configSource = src
-
-		*logLevel = cfg.LogLevel
-		*logTraffic = cfg.LogTraffic
-
-		*ltoudp = cfg.LToUDP.Enabled
-		*ltIface = cfg.LToUDP.Interface
-		*ltNet = cfg.LToUDP.SeedNetwork
-		*ltZone = cfg.LToUDP.SeedZone
-
-		*tashtalkSerial = cfg.TashTalk.Port
-		*ttNet = cfg.TashTalk.SeedNetwork
-		*ttZone = cfg.TashTalk.SeedZone
-
-		*pcapDev = cfg.EtherTalk.Device
-		*etBackend = cfg.EtherTalk.Backend
-		*pcapHWAddr = cfg.EtherTalk.HWAddress
-		*etBridgeMode = cfg.EtherTalk.BridgeMode
-		*etBridgeHostMAC = cfg.EtherTalk.BridgeHostMAC
-		*etNetMin = cfg.EtherTalk.SeedNetworkMin
-		*etNetMax = cfg.EtherTalk.SeedNetworkMax
-		*etZone = cfg.EtherTalk.SeedZone
-
-		*macipEnable = cfg.MacIPEnabled
-		*macipGWIP = cfg.MacIPGWIP
-		*macipSubnet = cfg.MacIPSubnet
-		*macipNameserver = cfg.MacIPNameserver
-		*macipZone = cfg.MacIPZone
-		*macipIPGW = cfg.MacIPGatewayIP
-		*macipNAT = cfg.MacIPNAT
-		*macipDHCP = cfg.MacIPDHCPRelay
-		*macipStateFile = cfg.MacIPLeaseFile
-
-		*parsePackets = cfg.ParsePackets
-		*parseOutput = cfg.ParseOutput
+	} else {
+		cfg = flagsToConfig(flagInputs{
+			LogLevel:                *logLevel,
+			LogTraffic:              *logTraffic,
+			ParsePackets:            *parsePackets,
+			ParseOutput:             *parseOutput,
+			LToUDPEnabled:           *ltoudp,
+			LToUDPInterface:         *ltIface,
+			LToUDPSeedNetwork:       *ltNet,
+			LToUDPSeedZone:          *ltZone,
+			TashTalkPort:            *tashtalkSerial,
+			TashTalkSeedNetwork:     *ttNet,
+			TashTalkSeedZone:        *ttZone,
+			EtherTalkDevice:         *pcapDev,
+			EtherTalkBackend:        *etBackend,
+			EtherTalkHWAddress:      *pcapHWAddr,
+			EtherTalkBridgeMode:     *etBridgeMode,
+			EtherTalkBridgeHostMAC:  *etBridgeHostMAC,
+			EtherTalkSeedNetworkMin: *etNetMin,
+			EtherTalkSeedNetworkMax: *etNetMax,
+			EtherTalkSeedZone:       *etZone,
+			EtherTalkDesiredNetwork: *etDesiredNet,
+			EtherTalkDesiredNode:    *etDesiredNode,
+			MacIPEnabled:            *macipEnable,
+			MacIPGWIP:               *macipGWIP,
+			MacIPSubnet:             *macipSubnet,
+			MacIPNameserver:         *macipNameserver,
+			MacIPZone:               *macipZone,
+			MacIPGatewayIP:          *macipIPGW,
+			MacIPNAT:                *macipNAT,
+			MacIPDHCPRelay:          *macipDHCP,
+			MacIPLeaseFile:          *macipStateFile,
+		})
 	}
 
-	if level, ok := netlog.ParseLevel(*logLevel); ok {
+	if level, ok := netlog.ParseLevel(cfg.LogLevel); ok {
 		netlog.SetLevel(level)
 	} else {
-		log.Fatalf("unknown -log-level %q (want debug, info, or warn)", *logLevel)
+		log.Fatalf("unknown -log-level %q (want debug, info, or warn)", cfg.LogLevel)
 	}
 
 	// Install a pkg/logging root logger as the netlog shim's target so
 	// output flows through slog with source tagging and structured
 	// attributes. Each service will eventually take a *slog.Logger
 	// directly; until then, netlog.* calls forward here.
-	slogLevel, _ := logging.ParseLevel(*logLevel)
+	slogLevel, _ := logging.ParseLevel(cfg.LogLevel)
 	rootLogger := logging.New("OmniTalk", logging.Options{
 		Sinks: []logging.Sink{{Writer: os.Stderr, Format: logging.FormatConsole, Level: slogLevel}},
 	})
 	logging.SetDefault(rootLogger)
 	netlog.SetLogger(rootLogger)
 
-	if *logTraffic {
+	if cfg.LogTraffic {
 		netlog.SetLogFunc(func(s string) { netlog.Debug("%s", s) })
 	}
 
-	*etBackend = strings.ToLower(strings.TrimSpace(*etBackend))
-	switch *etBackend {
+	cfg.EtherTalk.Backend = strings.ToLower(strings.TrimSpace(cfg.EtherTalk.Backend))
+	switch cfg.EtherTalk.Backend {
 	case "", "pcap", "tap", "tun":
 	default:
-		log.Fatalf("invalid -ethertalk-backend %q (want pcap, tap, or tun)", *etBackend)
+		log.Fatalf("invalid -ethertalk-backend %q (want pcap, tap, or tun)", cfg.EtherTalk.Backend)
 	}
 
 	if *listPcap {
@@ -218,59 +221,59 @@ func main() {
 		return
 	}
 
-	if *pcapDev == "" && *etBackend == "pcap" {
+	if cfg.EtherTalk.Device == "" && cfg.EtherTalk.Backend == "pcap" {
 		if detected, ok := rawlink.DetectDefaultPcapInterface(); ok {
 			netlog.Info("[MAIN] auto-detected pcap interface: %s", detected)
-			*pcapDev = detected
+			cfg.EtherTalk.Device = detected
 		}
 	}
-	if *pcapDev != "" && *etBackend == "pcap" && strings.TrimSpace(*etBridgeHostMAC) == "" {
-		if hostMAC, ok := rawlink.DetectHostMACForPcapInterface(*pcapDev); ok {
-			*etBridgeHostMAC = hostMAC
-			netlog.Info("[MAIN] auto-detected bridge host MAC for %s: %s", *pcapDev, hostMAC)
+	if cfg.EtherTalk.Device != "" && cfg.EtherTalk.Backend == "pcap" && strings.TrimSpace(cfg.EtherTalk.BridgeHostMAC) == "" {
+		if hostMAC, ok := rawlink.DetectHostMACForPcapInterface(cfg.EtherTalk.Device); ok {
+			cfg.EtherTalk.BridgeHostMAC = hostMAC
+			netlog.Info("[MAIN] auto-detected bridge host MAC for %s: %s", cfg.EtherTalk.Device, hostMAC)
 		}
 	}
 
 	var ports []port.Port
-	if *ltoudp {
-		ports = append(ports, localtalk.NewLtoudpPort(*ltIface, uint16(*ltNet), []byte(*ltZone)))
+	if cfg.LToUDP.Enabled {
+		ports = append(ports, localtalk.NewLtoudpPort(cfg.LToUDP.Interface, uint16(cfg.LToUDP.SeedNetwork), []byte(cfg.LToUDP.SeedZone)))
 	}
-	if *tashtalkSerial != "" {
-		ports = append(ports, localtalk.NewTashTalkPort(*tashtalkSerial, uint16(*ttNet), []byte(*ttZone)))
+	if cfg.TashTalk.Port != "" {
+		ports = append(ports, localtalk.NewTashTalkPort(cfg.TashTalk.Port, uint16(cfg.TashTalk.SeedNetwork), []byte(cfg.TashTalk.SeedZone)))
 	}
-	if *pcapDev != "" {
-		hwAddr, err := hwaddr.ParseEthernet(*pcapHWAddr)
+	if cfg.EtherTalk.Device != "" {
+		hwAddr, err := hwaddr.ParseEthernet(cfg.EtherTalk.HWAddress)
 		if err != nil {
 			log.Fatalf("invalid -ethertalk-hw-address: %v", err)
 		}
 		opts := ethertalk.Options{
-			InterfaceName:  *pcapDev,
+			InterfaceName:  cfg.EtherTalk.Device,
 			HWAddr:         hwAddr.Bytes(),
-			SeedNetworkMin: uint16(*etNetMin),
-			SeedNetworkMax: uint16(*etNetMax),
-			DesiredNetwork: uint16(*etDesiredNet),
-			DesiredNode:    uint8(*etDesiredNode),
-			SeedZoneNames:  [][]byte{[]byte(*etZone)},
-			BridgeMode:     *etBridgeMode,
+			SeedNetworkMin: uint16(cfg.EtherTalk.SeedNetworkMin),
+			SeedNetworkMax: uint16(cfg.EtherTalk.SeedNetworkMax),
+			DesiredNetwork: uint16(cfg.EtherTalk.DesiredNetwork),
+			DesiredNode:    uint8(cfg.EtherTalk.DesiredNode),
+			SeedZoneNames:  [][]byte{[]byte(cfg.EtherTalk.SeedZone)},
+			BridgeMode:     cfg.EtherTalk.BridgeMode,
 		}
-		if *etBridgeHostMAC != "" {
-			hostMAC, err := hwaddr.ParseEthernet(*etBridgeHostMAC)
+		if cfg.EtherTalk.BridgeHostMAC != "" {
+			hostMAC, err := hwaddr.ParseEthernet(cfg.EtherTalk.BridgeHostMAC)
 			if err != nil {
 				log.Fatalf("invalid -ethertalk-bridge-host-mac: %v", err)
 			}
 			opts.BridgeHostMAC = hostMAC.Bytes()
 		}
 		var ep port.Port
-		switch *etBackend {
+		switch cfg.EtherTalk.Backend {
 		case "", "pcap":
 			ep, err = ethertalk.NewPcapPort(opts)
 		case "tap", "tun":
 			ep, err = ethertalk.NewTapPort(opts)
 		default:
-			log.Fatalf("unsupported EtherTalk backend: %q", *etBackend)
+			log.Fatalf("unsupported EtherTalk backend: %q", cfg.EtherTalk.Backend)
 		}
 		if err != nil {
-			log.Fatalf("failed creating EtherTalk port (%s): %v", *etBackend, err)
+			log.Fatalf("failed creating EtherTalk port (%s): %v", cfg.EtherTalk.Backend, err)
 		}
 		ports = append(ports, ep)
 	}
@@ -293,20 +296,20 @@ func main() {
 	}
 
 	macIP, err := wireMacIP(MacIPConfig{
-		Enabled:          *macipEnable,
-		NATGatewayIP:     *macipGWIP,
-		NATSubnet:        *macipSubnet,
-		Nameserver:       *macipNameserver,
-		Zone:             *macipZone,
-		IPGateway:        *macipIPGW,
-		NAT:              *macipNAT,
-		DHCPRelay:        *macipDHCP,
-		StateFile:        *macipStateFile,
-		PcapDevice:       *pcapDev,
-		BridgeHostMAC:    *etBridgeHostMAC,
-		PcapHWAddr:       *pcapHWAddr,
-		EtherTalkZone:    *etZone,
-		EtherTalkBackend: *etBackend,
+		Enabled:          cfg.MacIPEnabled,
+		NATGatewayIP:     cfg.MacIPGWIP,
+		NATSubnet:        cfg.MacIPSubnet,
+		Nameserver:       cfg.MacIPNameserver,
+		Zone:             cfg.MacIPZone,
+		IPGateway:        cfg.MacIPGatewayIP,
+		NAT:              cfg.MacIPNAT,
+		DHCPRelay:        cfg.MacIPDHCPRelay,
+		StateFile:        cfg.MacIPLeaseFile,
+		PcapDevice:       cfg.EtherTalk.Device,
+		BridgeHostMAC:    cfg.EtherTalk.BridgeHostMAC,
+		PcapHWAddr:       cfg.EtherTalk.HWAddress,
+		EtherTalkZone:    cfg.EtherTalk.SeedZone,
+		EtherTalkBackend: cfg.EtherTalk.Backend,
 		NBP:              nbpSvc,
 	})
 	if err != nil {
@@ -342,8 +345,8 @@ func main() {
 
 	r := router.New("router", ports, services)
 
-	if *parsePackets {
-		dumper, cleanup, err := newPacketDumper(*parseOutput)
+	if cfg.ParsePackets {
+		dumper, cleanup, err := newPacketDumper(cfg.ParseOutput)
 		if err != nil {
 			log.Fatalf("parse-packets: %v", err)
 		}
@@ -353,7 +356,7 @@ func main() {
 				aware.SetPacketDumper(dumper)
 			}
 		}
-		netlog.Info("[MAIN] parse-packets enabled; output=%q", *parseOutput)
+		netlog.Info("[MAIN] parse-packets enabled; output=%q", cfg.ParseOutput)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
