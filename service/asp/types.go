@@ -20,7 +20,7 @@ const (
 
 // Version + timers.
 const (
-	ASPVersion                = pasp.ASPVersion
+	ASPVersion                = pasp.Version
 	TickleInterval            = pasp.TickleInterval
 	SessionMaintenanceTimeout = pasp.SessionMaintenanceTimeout
 )

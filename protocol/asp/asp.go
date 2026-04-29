@@ -43,7 +43,7 @@ const (
 // The OpenSess packet carries this in the 2-byte version field.
 // ---------------------------------------------------------------------------
 
-const ASPVersion uint16 = 0x0100
+const Version uint16 = 0x0100
 
 // ---------------------------------------------------------------------------
 // Timer values — §"Timeouts and retry counts" / §"Maintaining the session".
@@ -133,7 +133,7 @@ type GetParmsResult struct {
 // OpenSessPacket represents an incoming ASP OpenSess request.
 type OpenSessPacket struct {
 	WSSSocket  uint8  // workstation session socket
-	VersionNum uint16 // ASP version number (expected: ASPVersion = 0x0100)
+	VersionNum uint16 // ASP version number (expected: Version = 0x0100)
 }
 
 // ParseOpenSessPacket extracts fields from the ATP UserData of an OpenSess TReq.
