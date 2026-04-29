@@ -6,6 +6,7 @@ import (
 )
 
 func TestMacRomanToUpper(t *testing.T) {
+	t.Parallel()
 	// Re-implement the old logic for a correctness check
 	atalkLower := []byte("abcdefghijklmnopqrstuvwxyz\x88\x8A\x8B\x8C\x8D\x8E\x96\x9A\x9B\x9F\xBE\xBF\xCF")
 	atalkUpper := []byte("ABCDEFGHIJKLMNOPQRSTUVWXYZ\xCB\x80\xCC\x81\x82\x83\x84\x85\xCD\x86\xAE\xAF\xCE")
@@ -41,6 +42,7 @@ func TestMacRomanToUpper(t *testing.T) {
 }
 
 func TestMacRomanToUTF8(t *testing.T) {
+	t.Parallel()
 	input := []byte{'M', 'a', 'c', ' ', '\x80', '\x81', '\x82'}
 	expected := "Mac ÄÅÇ"
 	actual := MacRomanToUTF8(input)
@@ -50,6 +52,7 @@ func TestMacRomanToUTF8(t *testing.T) {
 }
 
 func TestUTF8ToMacRoman(t *testing.T) {
+	t.Parallel()
 	input := "Mac ÄÅÇ"
 	expected := []byte{'M', 'a', 'c', ' ', '\x80', '\x81', '\x82'}
 	actual := UTF8ToMacRoman(input)
