@@ -110,6 +110,12 @@ func (s *Service) SetCommandHandler(handler afp.CommandHandler) {
 // Socket returns the socket number this service listens on.
 func (s *Service) Socket() uint8 { return ServerSocket }
 
+// MaxReadSize implements afp.Transport. Returns ASP's negotiated quantum so
+// AFP can cap per-read allocations (e.g. HTTP range requests for virtual
+// filesystems) to what one ASP reply can carry. Zero before Start runs
+// SPGetParms.
+func (s *Service) MaxReadSize() int { return s.quantumSize }
+
 // Start performs server-side initialization corresponding to:
 //   - SPGetParms (server end; server ASP client -> ASP)
 //   - SPInit (server end; server ASP client -> ASP)
@@ -133,13 +139,6 @@ func (s *Service) Start(ctx context.Context, router service.Router) error {
 				len(status), s.quantumSize)
 		}
 		netlog.Info("[ASP] SPInit: SLS socket=%d status=%d bytes", ServerSocket, len(status))
-		// Inform the AFP handler of our quantum so it can cap per-read allocations
-		// (e.g. HTTP range requests for virtual filesystems). DSI leaves this unset.
-		type readLimiter interface{ SetMaxReadSize(int) }
-		if rl, ok := s.commandHandler.(readLimiter); ok {
-			rl.SetMaxReadSize(s.quantumSize)
-			netlog.Debug("[ASP] SetMaxReadSize=%d on command handler", s.quantumSize)
-		}
 	}
 
 	// The Endpoint's "local" address has its socket field set; the network

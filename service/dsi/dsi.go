@@ -183,6 +183,10 @@ func (s *Server) Inbound(d ddp.Datagram, p port.Port) {
 	// DSI over TCP does not process DDP packets
 }
 
+// MaxReadSize implements afp.Transport. DSI streams replies over TCP with no
+// fixed per-reply quantum, so AFP should not cap reads on this transport.
+func (s *Server) MaxReadSize() int { return 0 }
+
 func (s *Server) ListenAndServe() error {
 	l, err := net.Listen("tcp", s.addr)
 	if err != nil {

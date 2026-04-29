@@ -28,4 +28,11 @@ type Transport interface {
 	// Inbound processes an incoming AppleTalk datagram, if the transport uses DDP.
 	// For IP-only transports, this can be a no-op.
 	Inbound(d ddp.Datagram, p port.Port)
+
+	// MaxReadSize returns the largest single-reply payload the transport can
+	// deliver, used by AFP to cap FPRead ReqCount and any range-limited
+	// filesystem fetches. Transports without a fixed limit return 0.
+	// Called by AFP after the transport has resolved its quantum (e.g. ASP
+	// after SPGetParms); MaxReadSize before that point may return 0.
+	MaxReadSize() int
 }

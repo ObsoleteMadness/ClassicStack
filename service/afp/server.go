@@ -63,12 +63,15 @@ func (s *Service) SetPacketDumper(dumper service.PacketDumper) {
 	s.dumper = dumper
 }
 
-// SetMaxReadSize caps FPRead ReqCount to n bytes and propagates the same limit
-// to any filesystem that supports range limiting (e.g. MacGardenFileSystem).
-// ASP calls this with its quantum size so HTTP range requests from virtual
-// filesystems never exceed what one ASP reply can carry. DSI leaves it at 0.
-func (s *Service) SetMaxReadSize(n int) {
+// applyMaxReadSize caps FPRead ReqCount to n bytes and propagates the same
+// limit to any filesystem that supports range limiting (e.g.
+// MacGardenFileSystem). Called from Start after each transport has resolved
+// its quantum; n=0 leaves reads uncapped.
+func (s *Service) applyMaxReadSize(n int) {
 	s.maxReadSize = n
+	if n == 0 {
+		return
+	}
 	type rangeLimiter interface{ SetMaxRangeSize(int) }
 	if rl, ok := s.fs.(rangeLimiter); ok {
 		rl.SetMaxRangeSize(n)
@@ -117,13 +120,25 @@ func NewService(serverName string, configs []VolumeConfig, fs FileSystem, transp
 }
 
 
-// Start initializes all underlying transports.
+// Start initializes all underlying transports and resolves the read-size cap
+// from whichever transport advertises the smallest non-zero quantum.
 func (s *Service) Start(ctx context.Context, router service.Router) error {
 	for _, t := range s.transports {
 		if err := t.Start(ctx, router); err != nil {
 			return err
 		}
 	}
+	cap := 0
+	for _, t := range s.transports {
+		n := t.MaxReadSize()
+		if n <= 0 {
+			continue
+		}
+		if cap == 0 || n < cap {
+			cap = n
+		}
+	}
+	s.applyMaxReadSize(cap)
 	return nil
 }
 
