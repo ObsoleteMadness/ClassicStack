@@ -10,6 +10,7 @@ tag_sets=(
   "afp macgarden"
   "afp macip"
   "afp macgarden macip"
+  "all"
 )
 
 for tags in "${tag_sets[@]}"; do

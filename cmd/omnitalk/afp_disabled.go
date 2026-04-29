@@ -1,4 +1,4 @@
-//go:build !afp
+//go:build !afp && !all
 
 package main
 

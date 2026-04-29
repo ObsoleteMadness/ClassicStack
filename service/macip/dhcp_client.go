@@ -1,4 +1,4 @@
-//go:build macip
+//go:build macip || all
 
 // Package macip implements a minimal DHCP client used by the MacIP
 // gateway. It performs DHCP discover/request sequences on behalf of

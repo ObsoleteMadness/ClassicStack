@@ -1,4 +1,4 @@
-//go:build afp && macgarden
+//go:build (afp && macgarden) || all
 
 package main
 

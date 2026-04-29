@@ -1,4 +1,4 @@
-//go:build afp
+//go:build afp || all
 
 /*
 Package asp implements the AppleTalk Session Protocol (ASP) as a omnitalk

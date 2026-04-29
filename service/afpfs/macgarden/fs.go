@@ -1,4 +1,4 @@
-//go:build afp && macgarden
+//go:build (afp && macgarden) || all
 
 // Package macgarden implements an AFP FileSystem backend that exposes
 // macintoshgarden.org as a read-only volume tree (Apps/, Games/,

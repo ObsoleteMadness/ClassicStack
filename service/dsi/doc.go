@@ -1,4 +1,4 @@
-//go:build afp
+//go:build afp || all
 
 // Package dsi implements the Data Stream Interface — Apple's TCP-based
 // transport for AFP (Apple Filing Protocol) used by AFP-over-TCP/IP

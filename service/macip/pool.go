@@ -1,4 +1,4 @@
-//go:build macip
+//go:build macip || all
 
 package macip
 
