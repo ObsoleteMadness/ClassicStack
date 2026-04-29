@@ -52,18 +52,23 @@ jobs:
         run: go vet ./...
 
       - name: Race-enabled tests
-        run: go test -race -count=1 ./...
+        run: go test -tags all -race -count=1 ./...
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
-          args: --timeout=5m
+          args: --timeout=5m --build-tags=all
 
       - name: govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+          govulncheck -tags all ./...
+
+      - name: gosec (untrusted-input paths)
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          gosec -tags all ./service/macip/... ./service/macgarden/... ./service/afpfs/macgarden/...
 
   build-tags:
     name: Build-tag matrix
@@ -77,6 +82,7 @@ jobs:
           - "afp macgarden"
           - "afp macip"
           - "afp macgarden macip"
+          - "afp sqlite_cnid"
           - "all"
     steps:
       - name: Checkout

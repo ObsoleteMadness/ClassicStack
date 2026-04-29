@@ -3,18 +3,18 @@ version: "2"
 run:
   timeout: 5m
   build-tags:
-    - afp
-    - macgarden
-    - macip
+    - all
 
 linters:
   default: none
   enable:
     - errcheck
     - errorlint
+    - gocritic
     - govet
     - ineffassign
     - misspell
+    - revive
     - staticcheck
     - unused
 
@@ -23,9 +23,20 @@ linters-settings:
     errorf: true
     asserts: true
     comparison: true
+  revive:
+    rules:
+      - name: var-naming
+      - name: package-comments
+      - name: exported
+        disabled: true
+  gocritic:
+    disabled-checks:
+      - ifElseChain
+      - singleCaseSwitch
 
 issues:
   exclude-rules:
     - path: _test\.go$
       linters:
         - errcheck
+        - revive
