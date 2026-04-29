@@ -7,7 +7,7 @@ import (
 
 func TestATPHeaderWireGolden(t *testing.T) {
 	t.Parallel()
-	h := ATPHeader{
+	h := Header{
 		Control:  0x40,
 		Bitmap:   0xFF,
 		TransID:  0x1234,
@@ -20,14 +20,14 @@ func TestATPHeaderWireGolden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MarshalWire: %v", err)
 	}
-	if n != ATPHeaderSize {
-		t.Fatalf("n = %d, want %d", n, ATPHeaderSize)
+	if n != HeaderSize {
+		t.Fatalf("n = %d, want %d", n, HeaderSize)
 	}
 	if !bytes.Equal(buf, want) {
 		t.Fatalf("MarshalWire = % x, want % x", buf, want)
 	}
 
-	var out ATPHeader
+	var out Header
 	if _, err := out.UnmarshalWire(buf); err != nil {
 		t.Fatalf("UnmarshalWire: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestATPHeaderWireGolden(t *testing.T) {
 
 func TestATPHeaderShortBuffer(t *testing.T) {
 	t.Parallel()
-	h := ATPHeader{}
+	h := Header{}
 	if _, err := h.MarshalWire(make([]byte, 7)); err == nil {
 		t.Fatal("expected ErrShortBuffer on short marshal")
 	}

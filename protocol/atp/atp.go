@@ -41,16 +41,16 @@ const (
 )
 
 // FuncCode returns the function code (TReq, TResp, or TRel) from the header.
-func (h *ATPHeader) FuncCode() FuncCode { return FuncCode(h.Control & FuncMask) }
+func (h *Header) FuncCode() FuncCode { return FuncCode(h.Control & FuncMask) }
 
 // XO returns true if the XO bit is set.
-func (h *ATPHeader) XO() bool { return h.Control&XO != 0 }
+func (h *Header) XO() bool { return h.Control&XO != 0 }
 
 // EOM returns true if the EOM bit is set.
-func (h *ATPHeader) EOM() bool { return h.Control&EOM != 0 }
+func (h *Header) EOM() bool { return h.Control&EOM != 0 }
 
 // STS returns true if the STS bit is set.
-func (h *ATPHeader) STS() bool { return h.Control&STS != 0 }
+func (h *Header) STS() bool { return h.Control&STS != 0 }
 
 // TRelTimeout encodes the 3-bit TRel timeout indicator carried in the low
 // bits of the control byte for XO TReq packets.
@@ -83,12 +83,12 @@ func (t TRelTimeout) Duration() time.Duration {
 }
 
 // GetTRelTimeout extracts the TRel timeout indicator from the control byte.
-func (h *ATPHeader) GetTRelTimeout() TRelTimeout {
+func (h *Header) GetTRelTimeout() TRelTimeout {
 	return TRelTimeout(h.Control & 0x07)
 }
 
 // SetTRelTimeout encodes the TRel timeout indicator into the control byte.
-func (h *ATPHeader) SetTRelTimeout(t TRelTimeout) {
+func (h *Header) SetTRelTimeout(t TRelTimeout) {
 	h.Control = (h.Control &^ 0x07) | (uint8(t) & 0x07)
 }
 
@@ -104,7 +104,7 @@ const (
 // DDPTypeATP is the DDP type for ATP packets.
 const DDPTypeATP = 3
 
-// ATPHeader represents an ATP packet header.
+// Header represents an ATP packet header.
 // Refer: https://dev.os9.ca/techpubs/mac/Networking/Networking-145.html#HEADING145-0
 //
 //	 0               1               2               3
@@ -114,53 +114,53 @@ const DDPTypeATP = 3
 //	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 //	|                         User Data                             |
 //	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-type ATPHeader struct {
+type Header struct {
 	Control  uint8
 	Bitmap   uint8 // Sequence number for TRESP, bitmap for TREQ
 	TransID  uint16
 	UserData uint32
 }
 
-// ATPHeaderSize is the size of an ATP header in bytes.
-const ATPHeaderSize = 8
+// HeaderSize is the size of an ATP header in bytes.
+const HeaderSize = 8
 
 // WireSize returns the fixed 8-byte ATP header size.
-func (h *ATPHeader) WireSize() int { return ATPHeaderSize }
+func (h *Header) WireSize() int { return HeaderSize }
 
 // MarshalWire encodes the header into b. Returns ErrShortBuffer if
-// len(b) < ATPHeaderSize.
-func (h *ATPHeader) MarshalWire(b []byte) (int, error) {
-	if len(b) < ATPHeaderSize {
+// len(b) < HeaderSize.
+func (h *Header) MarshalWire(b []byte) (int, error) {
+	if len(b) < HeaderSize {
 		return 0, binutil.ErrShortBuffer
 	}
 	b[0] = h.Control
 	b[1] = h.Bitmap
 	_, _ = binutil.PutU16(b[2:], h.TransID)
 	_, _ = binutil.PutU32(b[4:], h.UserData)
-	return ATPHeaderSize, nil
+	return HeaderSize, nil
 }
 
 // UnmarshalWire decodes the header from b.
-func (h *ATPHeader) UnmarshalWire(b []byte) (int, error) {
-	if len(b) < ATPHeaderSize {
+func (h *Header) UnmarshalWire(b []byte) (int, error) {
+	if len(b) < HeaderSize {
 		return 0, binutil.ErrShortBuffer
 	}
 	h.Control = b[0]
 	h.Bitmap = b[1]
 	h.TransID, _, _ = binutil.GetU16(b[2:])
 	h.UserData, _, _ = binutil.GetU32(b[4:])
-	return ATPHeaderSize, nil
+	return HeaderSize, nil
 }
 
 // Marshal binary-encodes the ATP header. Allocates; prefer MarshalWire.
-func (h *ATPHeader) Marshal() []byte {
-	b := make([]byte, ATPHeaderSize)
+func (h *Header) Marshal() []byte {
+	b := make([]byte, HeaderSize)
 	_, _ = h.MarshalWire(b)
 	return b
 }
 
 // Unmarshal binary-decodes the ATP header.
-func (h *ATPHeader) Unmarshal(b []byte) error {
+func (h *Header) Unmarshal(b []byte) error {
 	_, err := h.UnmarshalWire(b)
 	if err == binutil.ErrShortBuffer {
 		return errors.New("packet too short for ATP header")
@@ -168,8 +168,8 @@ func (h *ATPHeader) Unmarshal(b []byte) error {
 	return err
 }
 
-func (h *ATPHeader) String() string {
-	return fmt.Sprintf("ATPHeader{Control:0x%02x Bitmap:0x%02x TransID:%d UserData:0x%08x}", h.Control, h.Bitmap, h.TransID, h.UserData)
+func (h *Header) String() string {
+	return fmt.Sprintf("Header{Control:0x%02x Bitmap:0x%02x TransID:%d UserData:0x%08x}", h.Control, h.Bitmap, h.TransID, h.UserData)
 }
 
-var _ protocol.Packet = (*ATPHeader)(nil)
+var _ protocol.Packet = (*Header)(nil)

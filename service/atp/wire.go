@@ -11,7 +11,7 @@ import (
 )
 
 // Header type.
-type ATPHeader = patp.ATPHeader
+type ATPHeader = patp.Header
 
 // Function-code helpers.
 type FuncCode = patp.FuncCode
@@ -49,5 +49,5 @@ const (
 	MaxResponsePackets = patp.MaxResponsePackets
 	MaxATPData         = patp.MaxATPData
 	DDPTypeATP         = patp.DDPTypeATP
-	ATPHeaderSize      = patp.ATPHeaderSize
+	ATPHeaderSize      = patp.HeaderSize
 )
