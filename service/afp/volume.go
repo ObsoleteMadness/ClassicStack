@@ -6,12 +6,12 @@ import (
 	"bytes"
 	"fmt"
 	"hash/crc32"
-	"log"
 	"math"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/pgodw/omnitalk/netlog"
 	"github.com/pgodw/omnitalk/pkg/binutil"
 )
 
@@ -125,7 +125,7 @@ func (s *Service) volumeAttributes(vol *Volume) uint16 {
 }
 
 func (s *Service) handleCloseVol(req *FPCloseVolReq) (*FPCloseVolRes, int32) {
-	log.Printf("[AFP] FPCloseVol for Volume ID %d", req.VolumeID)
+	netlog.Debug("[AFP] FPCloseVol for Volume ID %d", req.VolumeID)
 	return &FPCloseVolRes{}, NoErr
 }
 

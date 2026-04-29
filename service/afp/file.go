@@ -3,9 +3,9 @@
 package afp
 
 import (
+	"github.com/pgodw/omnitalk/netlog"
 	"errors"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 )
@@ -145,7 +145,7 @@ func (s *Service) handleCopyFile(req *FPCopyFileReq) (*FPCopyFileRes, int32) {
 	dstMeta := s.metaFor(req.DstVolumeID)
 	if srcMeta != nil && dstMeta != nil {
 		if err := dstMeta.CopyMetadataFrom(srcMeta, srcPath, dstPath); err != nil {
-			log.Printf("[AFP] warning: metadata copy failed %q -> %q: %v", srcPath, dstPath, err)
+			netlog.Debug("[AFP] warning: metadata copy failed %q -> %q: %v", srcPath, dstPath, err)
 		}
 	}
 

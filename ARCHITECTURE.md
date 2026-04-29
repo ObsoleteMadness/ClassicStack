@@ -38,9 +38,9 @@ pkg/            reusable, AppleTalk-agnostic
   binutil/      allocation-free wire codec helpers, Wire interface
   appledouble/  AppleDouble v2 sidecar format (parse/build)
   cnid/         AFP Catalog Node IDs (memory + SQLite stores)
-  logging/      slog wrapper, dual console+JSON, protolog channel
+  logging/      slog factory: handler config, level parsing
   telemetry/    Counter/Gauge/Histogram via expvar (otel build tag)
-netlog/         legacy logger, now a slog shim — call sites migrating
+netlog/         project logging API — Debug/Info/Warn facade over slog
 spec/           Apple protocol references (read this when touching wire code)
 ```
 
@@ -95,18 +95,27 @@ are immutable: ports do not mutate themselves after `Start()`.
 
 ## Logging and telemetry
 
-Logging is `pkg/logging`, a thin slog wrapper:
-- Sources are explicit: every logger is constructed with a source name
-  (`AFP`, `ASP`, `EtherTalk`, etc.) that prefixes console output and
-  becomes a `source` attribute in JSON.
-- Two formats run simultaneously when configured (console to stderr,
-  JSON to a file).
-- `pkg/logging/protolog` is a separate channel for raw wire bytes +
-  decoded structs. Off by default. Filtered per-source.
+OmniTalk has two logging packages with distinct jobs:
 
-`netlog/` is a legacy shim that forwards into slog when a custom logger
-is installed; otherwise it falls back to stdlib `log.Printf` so test
-captures still work. It is being migrated away one package at a time.
+- **`netlog/`** is the call-site API. Services and ports use
+  `netlog.Debug`, `netlog.Info`, `netlog.Warn`. The facade keeps call
+  sites short (no per-package `*slog.Logger` plumbing) while still
+  routing through whatever structured handler `cmd/omnitalk` installs.
+- **`pkg/logging/`** is the slog factory used once at startup.
+  `cmd/omnitalk` calls `logging.New("OmniTalk", ...)` to build a
+  `*slog.Logger` with the configured handler (console, JSON, or both)
+  and installs it via `netlog.SetLogger`. Use this directly only when
+  you need a `*slog.Logger` value — e.g. attaching structured fields
+  with `.With` for the lifetime of an object.
+
+Sources are tagged in two complementary ways: messages carry a
+`[AFP]` / `[ASP]` / `[EtherTalk]` prefix that grep finds in either
+format, and the slog handler stamps every record with a `source`
+attribute that JSON consumers can filter on.
+
+Stdlib `log.Printf` and `log.Fatal` are not used inside library code.
+`cmd/omnitalk/main.go` uses `log.Fatal*` only for unrecoverable startup
+errors before any logger is wired.
 
 Telemetry is `pkg/telemetry`, separate from logs. Default backend is
 `expvar` (stdlib, zero deps). Initial counters:

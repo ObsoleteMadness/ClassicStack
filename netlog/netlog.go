@@ -1,7 +1,14 @@
-// Package netlog is a compatibility shim over log/slog via pkg/logging.
-// New code should construct a *slog.Logger through pkg/logging and pass
-// it explicitly; this package exists only until the migration (plan Step
-// 7) retires every caller. Do not grow the surface here.
+// Package netlog is OmniTalk's logging API.
+//
+// It is a thin facade over log/slog: cmd/omnitalk constructs a structured
+// logger via pkg/logging and installs it here with SetLogger, then every
+// service calls Debug/Info/Warn from this package. The facade keeps call
+// sites short (no per-package logger plumbing) while still letting the
+// process-wide handler decide formatting (console vs JSON) and level.
+//
+// Use this package for ordinary diagnostic logging. Use pkg/logging
+// directly only when you need a *slog.Logger value (e.g. attaching
+// structured fields with .With for the lifetime of an object).
 package netlog
 
 import (
@@ -146,9 +153,7 @@ type ShortStringer interface {
 	ShortString() string
 }
 
-// LogFunc receives a single formatted network traffic log line. Kept for
-// the existing SetLogFunc wiring; protocol logging in pkg/logging/protolog
-// is the modern replacement.
+// LogFunc receives a single formatted network traffic log line.
 type LogFunc func(string)
 
 // NetLogger logs DDP datagrams and link-layer frames for debug purposes.

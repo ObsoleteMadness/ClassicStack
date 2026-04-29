@@ -4,11 +4,11 @@ package afp
 
 import (
 	"io/fs"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/pgodw/omnitalk/netlog"
 	"github.com/pgodw/omnitalk/pkg/cnid"
 )
 
@@ -88,7 +88,7 @@ func (s *Service) moveAppleDoubleSidecar(oldPath, newPath string) error {
 		return nil
 	}
 	if err := m.MoveMetadata(oldPath, newPath); err != nil {
-		log.Printf("[AFP] warning: could not move metadata %s → %s: %v", oldPath, newPath, err)
+		netlog.Debug("[AFP] warning: could not move metadata %s → %s: %v", oldPath, newPath, err)
 	}
 	return nil
 }
@@ -102,7 +102,7 @@ func (s *Service) deleteAppleDoubleSidecar(path string) error {
 		return nil
 	}
 	if err := m.DeleteMetadata(path); err != nil {
-		log.Printf("[AFP] warning: could not delete metadata for %s: %v", path, err)
+		netlog.Debug("[AFP] warning: could not delete metadata for %s: %v", path, err)
 	}
 	return nil
 }

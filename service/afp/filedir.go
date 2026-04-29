@@ -3,9 +3,9 @@
 package afp
 
 import (
+	"github.com/pgodw/omnitalk/netlog"
 	"bytes"
 	"io/fs"
-	"log"
 	"path/filepath"
 )
 
@@ -323,7 +323,7 @@ func (s *Service) handleExchangeFiles(req *FPExchangeFilesReq) (*FPExchangeFiles
 	s.rebindDIDSubtree(req.VolumeID, tmpPath, dstPath)
 	if m := s.metaFor(req.VolumeID); m != nil {
 		if err := m.ExchangeMetadata(srcPath, dstPath); err != nil {
-			log.Printf("[AFP] warning: metadata exchange failed %q <-> %q: %v", srcPath, dstPath, err)
+			netlog.Debug("[AFP] warning: metadata exchange failed %q <-> %q: %v", srcPath, dstPath, err)
 		}
 	}
 	return &FPExchangeFilesRes{}, NoErr

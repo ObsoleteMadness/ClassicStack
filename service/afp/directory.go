@@ -3,10 +3,10 @@
 package afp
 
 import (
+	"github.com/pgodw/omnitalk/netlog"
 	"bytes"
 	"errors"
 	"io/fs"
-	"log"
 	"os"
 	"path/filepath"
 )
@@ -39,7 +39,7 @@ func (s *Service) handleOpenDir(req *FPOpenDirReq) (*FPOpenDirRes, int32) {
 const enumerateReplyHeaderLen = 6
 
 func (s *Service) handleEnumerate(req *FPEnumerateReq) (*FPEnumerateRes, int32) {
-	log.Printf("[AFP] FPEnumerate: DirID=%d Path=%q StartIndex=%d ReqCount=%d", req.DirID, req.Path, req.StartIndex, req.ReqCount)
+	netlog.Debug("[AFP] FPEnumerate: DirID=%d Path=%q StartIndex=%d ReqCount=%d", req.DirID, req.Path, req.StartIndex, req.ReqCount)
 
 	if errCode := validateEnumerateRequest(req); errCode != NoErr {
 		return &FPEnumerateRes{}, errCode
@@ -305,7 +305,7 @@ const (
 )
 
 func (s *Service) handleCloseDir(req *FPCloseDirReq) (*FPCloseDirRes, int32) {
-	log.Printf("[AFP] FPCloseDir called for DirID %d on Vol %d", req.DirID, req.VolumeID)
+	netlog.Debug("[AFP] FPCloseDir called for DirID %d on Vol %d", req.DirID, req.VolumeID)
 	return &FPCloseDirRes{}, NoErr
 }
 

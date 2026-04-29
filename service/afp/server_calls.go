@@ -3,7 +3,7 @@
 package afp
 
 import (
-	"log"
+	"github.com/pgodw/omnitalk/netlog"
 	"time"
 )
 
@@ -41,7 +41,7 @@ func (s *Service) handleGetSrvrParms(req *FPGetSrvrParmsReq) (*FPGetSrvrParmsRes
 }
 
 func (s *Service) handleLogin(req *FPLoginReq) (*FPLoginRes, int32) {
-	log.Printf("[AFP] Login attempt: Version=%q, UAM=%q", req.AFPVersion, req.UAM)
+	netlog.Debug("[AFP] Login attempt: Version=%q, UAM=%q", req.AFPVersion, req.UAM)
 
 	if req.AFPVersion != Version20 && req.AFPVersion != Version21 {
 		return &FPLoginRes{}, ErrBadVersNum
@@ -53,7 +53,7 @@ func (s *Service) handleLogin(req *FPLoginReq) (*FPLoginRes, int32) {
 	if req.UAM == UAMNoUserAuthent {
 		// Nothing else required
 	} else if req.UAM == UAMCleartxtPasswd {
-		log.Printf("[AFP] Cleartxt Passwrd for User=%q", req.Username)
+		netlog.Debug("[AFP] Cleartxt Passwrd for User=%q", req.Username)
 		expectedPw, exists := s.users[req.Username]
 		if !exists || expectedPw != req.Password {
 			return &FPLoginRes{}, ErrUserNotAuth

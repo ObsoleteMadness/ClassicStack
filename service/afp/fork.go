@@ -9,11 +9,11 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
 	"os"
 	"path/filepath"
 	"syscall"
 
+	"github.com/pgodw/omnitalk/netlog"
 	"github.com/pgodw/omnitalk/pkg/appledouble"
 	"github.com/pgodw/omnitalk/pkg/binutil"
 )
@@ -100,7 +100,7 @@ func (s *Service) handleOpenFork(req *FPOpenForkReq) (*FPOpenForkRes, int32) {
 	if req.AccessMode&0x02 == 0 {
 		rwMode = "R/O"
 	}
-	log.Printf("[AFP] OpenFork forkID=%d %s %s path=%q", forkID, rwMode, forkType, targetPath)
+	netlog.Debug("[AFP] OpenFork forkID=%d %s %s path=%q", forkID, rwMode, forkType, targetPath)
 
 	resData := new(bytes.Buffer)
 	s.packFileInfo(resData, req.VolumeID, req.Bitmap, filepath.Dir(targetPath), filepath.Base(targetPath), info, false)
@@ -298,9 +298,9 @@ func (s *Service) handleRead(req *FPReadReq) (*FPReadRes, int32) {
 	}
 
 	if handle.isRsrc {
-		log.Printf("[AFP] Read forkID=%d rsrc: rsrcLen=%d req offset=%d count=%d", req.ForkID, handle.rsrcLen, req.Offset, req.ReqCount)
+		netlog.Debug("[AFP] Read forkID=%d rsrc: rsrcLen=%d req offset=%d count=%d", req.ForkID, handle.rsrcLen, req.Offset, req.ReqCount)
 		if handle.file == nil || handle.rsrcLen == 0 || req.Offset >= handle.rsrcLen {
-			log.Printf("[AFP] Read forkID=%d rsrc: -> ErrEOFErr (offset past end or empty fork)", req.ForkID)
+			netlog.Debug("[AFP] Read forkID=%d rsrc: -> ErrEOFErr (offset past end or empty fork)", req.ForkID)
 			return &FPReadRes{}, ErrEOFErr
 		}
 		remaining := handle.rsrcLen - req.Offset
@@ -311,18 +311,18 @@ func (s *Service) handleRead(req *FPReadReq) (*FPReadRes, int32) {
 		buf := make([]byte, readLen)
 		n, err := handle.file.ReadAt(buf, handle.rsrcOff+req.Offset)
 		if err != nil && err != io.EOF {
-			log.Printf("[AFP] Read forkID=%d rsrc: ReadAt error: %v", req.ForkID, err)
+			netlog.Debug("[AFP] Read forkID=%d rsrc: ReadAt error: %v", req.ForkID, err)
 			return &FPReadRes{}, ErrParamErr
 		}
 		if n == 0 {
-			log.Printf("[AFP] Read forkID=%d rsrc: -> ErrEOFErr (n=0)", req.ForkID)
+			netlog.Debug("[AFP] Read forkID=%d rsrc: -> ErrEOFErr (n=0)", req.ForkID)
 			return &FPReadRes{}, ErrEOFErr
 		}
 		if int64(n) < int64(req.ReqCount) {
-			log.Printf("[AFP] Read forkID=%d rsrc: -> %d bytes + ErrEOFErr (partial, requested %d)", req.ForkID, n, req.ReqCount)
+			netlog.Debug("[AFP] Read forkID=%d rsrc: -> %d bytes + ErrEOFErr (partial, requested %d)", req.ForkID, n, req.ReqCount)
 			return &FPReadRes{Data: buf[:n]}, ErrEOFErr
 		}
-		log.Printf("[AFP] Read forkID=%d rsrc: -> %d bytes NoErr", req.ForkID, n)
+		netlog.Debug("[AFP] Read forkID=%d rsrc: -> %d bytes NoErr", req.ForkID, n)
 		return &FPReadRes{Data: buf[:n]}, NoErr
 	}
 
@@ -330,22 +330,22 @@ func (s *Service) handleRead(req *FPReadReq) (*FPReadRes, int32) {
 	if fi, err := handle.file.Stat(); err == nil {
 		fileSize = fi.Size()
 	}
-	log.Printf("[AFP] Read forkID=%d data: fileSize=%d req offset=%d count=%d", req.ForkID, fileSize, req.Offset, req.ReqCount)
+	netlog.Debug("[AFP] Read forkID=%d data: fileSize=%d req offset=%d count=%d", req.ForkID, fileSize, req.Offset, req.ReqCount)
 	buf := make([]byte, req.ReqCount)
 	n, err := handle.file.ReadAt(buf, req.Offset)
 	if err != nil && err != io.EOF {
-		log.Printf("[AFP] Read forkID=%d data: ReadAt error: %v", req.ForkID, err)
+		netlog.Debug("[AFP] Read forkID=%d data: ReadAt error: %v", req.ForkID, err)
 		return &FPReadRes{}, ErrParamErr
 	}
 	if n == 0 {
-		log.Printf("[AFP] Read forkID=%d data: -> ErrEOFErr (n=0)", req.ForkID)
+		netlog.Debug("[AFP] Read forkID=%d data: -> ErrEOFErr (n=0)", req.ForkID)
 		return &FPReadRes{}, ErrEOFErr
 	}
 	if n < req.ReqCount {
-		log.Printf("[AFP] Read forkID=%d data: -> %d bytes + ErrEOFErr (partial, requested %d)", req.ForkID, n, req.ReqCount)
+		netlog.Debug("[AFP] Read forkID=%d data: -> %d bytes + ErrEOFErr (partial, requested %d)", req.ForkID, n, req.ReqCount)
 		return &FPReadRes{Data: buf[:n]}, ErrEOFErr
 	}
-	log.Printf("[AFP] Read forkID=%d data: -> %d bytes NoErr", req.ForkID, n)
+	netlog.Debug("[AFP] Read forkID=%d data: -> %d bytes NoErr", req.ForkID, n)
 	return &FPReadRes{Data: buf[:n]}, NoErr
 }
 
@@ -390,19 +390,19 @@ func (s *Service) handleWrite(req *FPWriteReq) (*FPWriteRes, int32) {
 		writeAt = offset
 	}
 
-	log.Printf("[AFP] Write forkID=%d isRsrc=%t writeAt=%d dataLen=%d", req.ForkID, handle.isRsrc, writeAt, len(req.WriteData))
+	netlog.Debug("[AFP] Write forkID=%d isRsrc=%t writeAt=%d dataLen=%d", req.ForkID, handle.isRsrc, writeAt, len(req.WriteData))
 	_, err := handle.file.WriteAt(req.WriteData, writeAt)
 	if err != nil {
 		var errno syscall.Errno
 		if errors.As(err, &errno) && errno == syscall.ENOSPC {
-			log.Printf("[AFP] Write forkID=%d: -> ErrDFull", req.ForkID)
+			netlog.Debug("[AFP] Write forkID=%d: -> ErrDFull", req.ForkID)
 			return &FPWriteRes{}, ErrDFull
 		}
 		if errors.Is(err, fs.ErrPermission) {
-			log.Printf("[AFP] Write forkID=%d: -> ErrAccessDenied: %v", req.ForkID, err)
+			netlog.Debug("[AFP] Write forkID=%d: -> ErrAccessDenied: %v", req.ForkID, err)
 			return &FPWriteRes{}, ErrAccessDenied
 		}
-		log.Printf("[AFP] Write forkID=%d: -> ErrParamErr: %v", req.ForkID, err)
+		netlog.Debug("[AFP] Write forkID=%d: -> ErrParamErr: %v", req.ForkID, err)
 		return &FPWriteRes{}, ErrParamErr
 	}
 
@@ -434,7 +434,7 @@ func (s *Service) handleWrite(req *FPWriteReq) (*FPWriteRes, int32) {
 			}
 		}
 	}
-	log.Printf("[AFP] Write forkID=%d: -> LastWritten=%d NoErr", req.ForkID, lastWritten)
+	netlog.Debug("[AFP] Write forkID=%d: -> LastWritten=%d NoErr", req.ForkID, lastWritten)
 	return &FPWriteRes{LastWritten: lastWritten}, NoErr
 }
 
@@ -473,7 +473,7 @@ func (s *Service) handleGetForkParms(req *FPGetForkParmsReq) (*FPGetForkParmsRes
 	body := resData.Bytes()
 	overwriteLiveForkLengths(body, req.Bitmap, handle)
 
-	log.Printf("[AFP] GetForkParms forkID=%d isRsrc=%t bitmap=0x%04x bodyLen=%d",
+	netlog.Debug("[AFP] GetForkParms forkID=%d isRsrc=%t bitmap=0x%04x bodyLen=%d",
 		req.OForkRefNum, handle.isRsrc, req.Bitmap, len(body))
 	return &FPGetForkParmsRes{Bitmap: req.Bitmap, Data: body}, NoErr
 }
@@ -563,7 +563,7 @@ func (s *Service) handleSetForkParms(req *FPSetForkParmsReq) (*FPSetForkParmsRes
 	handle, ok := s.forks[req.OForkRefNum]
 	s.mu.RUnlock()
 	if !ok {
-		log.Printf("[AFP] FPSetForkParms: unknown forkID=%d", req.OForkRefNum)
+		netlog.Debug("[AFP] FPSetForkParms: unknown forkID=%d", req.OForkRefNum)
 		return &FPSetForkParmsRes{}, ErrParamErr
 	}
 	if s.volumeIsReadOnly(handle.volID) {
@@ -588,17 +588,17 @@ func (s *Service) handleSetForkParms(req *FPSetForkParmsReq) (*FPSetForkParmsRes
 			return &FPSetForkParmsRes{}, ErrParamErr
 		}
 		if err := handle.file.Truncate(newLen); err != nil {
-			log.Printf("[AFP] FPSetForkParms: truncate data fork to %d: %v", newLen, err)
+			netlog.Debug("[AFP] FPSetForkParms: truncate data fork to %d: %v", newLen, err)
 			return &FPSetForkParmsRes{}, ErrMiscErr
 		}
-		log.Printf("[AFP] FPSetForkParms forkID=%d data newLen=%d", req.OForkRefNum, newLen)
+		netlog.Debug("[AFP] FPSetForkParms forkID=%d data newLen=%d", req.OForkRefNum, newLen)
 		return &FPSetForkParmsRes{}, NoErr
 	}
 
 	// Resource fork: truncate the AppleDouble sidecar and update the entry's length field.
 	if handle.file == nil {
 		// Empty-rsrc handle (no sidecar was opened). Accept no-op if newLen==0.
-		log.Printf("[AFP] FPSetForkParms forkID=%d rsrc (empty handle) newLen=%d", req.OForkRefNum, newLen)
+		netlog.Debug("[AFP] FPSetForkParms forkID=%d rsrc (empty handle) newLen=%d", req.OForkRefNum, newLen)
 		if newLen == 0 {
 			handle.rsrcLen = 0
 			return &FPSetForkParmsRes{}, NoErr
@@ -615,11 +615,11 @@ func (s *Service) handleSetForkParms(req *FPSetForkParmsReq) (*FPSetForkParmsRes
 		Length:            handle.rsrcLen,
 		LengthFieldOffset: lenFieldAt,
 	}, newLen); err != nil {
-		log.Printf("[AFP] FPSetForkParms: truncate rsrc fork to %d: %v", newLen, err)
+		netlog.Debug("[AFP] FPSetForkParms: truncate rsrc fork to %d: %v", newLen, err)
 		return &FPSetForkParmsRes{}, ErrMiscErr
 	}
 	handle.rsrcLen = newLen
-	log.Printf("[AFP] FPSetForkParms forkID=%d rsrc newLen=%d rsrcOff=%d lenFieldAt=%d", req.OForkRefNum, newLen, handle.rsrcOff, lenFieldAt)
+	netlog.Debug("[AFP] FPSetForkParms forkID=%d rsrc newLen=%d rsrcOff=%d lenFieldAt=%d", req.OForkRefNum, newLen, handle.rsrcOff, lenFieldAt)
 	return &FPSetForkParmsRes{}, NoErr
 }
 

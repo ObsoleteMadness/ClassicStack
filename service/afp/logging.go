@@ -3,8 +3,8 @@
 package afp
 
 import (
+	"github.com/pgodw/omnitalk/netlog"
 	"fmt"
-	"log"
 )
 
 func (s *Service) logPacket(format string, args ...any) {
@@ -70,10 +70,10 @@ func (s *Service) logResolvedPaths(req Request) {
 func (s *Service) logResolvedPath(op string, volumeID uint16, dirID uint32, pathType uint8, rawPath string) {
 	resolved, errCode := s.resolveVolumePath(volumeID, dirID, rawPath, pathType)
 	if errCode == NoErr {
-		log.Printf("[AFP][Path] %s vol=%d dirID=%d pathType=%d raw=%q resolved=%q", op, volumeID, dirID, pathType, rawPath, resolved)
+		netlog.Debug("[AFP][Path] %s vol=%d dirID=%d pathType=%d raw=%q resolved=%q", op, volumeID, dirID, pathType, rawPath, resolved)
 		return
 	}
-	log.Printf("[AFP][Path] %s vol=%d dirID=%d pathType=%d raw=%q unresolved err=%d", op, volumeID, dirID, pathType, rawPath, errCode)
+	netlog.Debug("[AFP][Path] %s vol=%d dirID=%d pathType=%d raw=%q unresolved err=%d", op, volumeID, dirID, pathType, rawPath, errCode)
 }
 
 func (s *Service) logResolvedPathFromDTRef(op string, dtRefNum uint16, dirID uint32, pathType uint8, rawPath string) {
@@ -81,7 +81,7 @@ func (s *Service) logResolvedPathFromDTRef(op string, dtRefNum uint16, dirID uin
 	volID, ok := s.dtRefs[dtRefNum]
 	s.mu.RUnlock()
 	if !ok {
-		log.Printf("[AFP][Path] %s dtRef=%d dirID=%d pathType=%d raw=%q unresolved err=%d", op, dtRefNum, dirID, pathType, rawPath, ErrParamErr)
+		netlog.Debug("[AFP][Path] %s dtRef=%d dirID=%d pathType=%d raw=%q unresolved err=%d", op, dtRefNum, dirID, pathType, rawPath, ErrParamErr)
 		return
 	}
 	s.logResolvedPath(op, volID, dirID, pathType, rawPath)

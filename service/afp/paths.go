@@ -3,7 +3,7 @@
 package afp
 
 import (
-	"log"
+	"github.com/pgodw/omnitalk/netlog"
 	"path/filepath"
 	"strings"
 )
@@ -135,7 +135,7 @@ func (s *Service) applyFinderInfo(bitmap uint16, finderInfo [32]byte, targetPath
 			return
 		}
 		if err := m.WriteFinderInfo(targetPath, finderInfo); err != nil {
-			log.Printf("[AFP] writeFinderInfo %q: %v", targetPath, err)
+			netlog.Debug("[AFP] writeFinderInfo %q: %v", targetPath, err)
 		}
 	}
 }

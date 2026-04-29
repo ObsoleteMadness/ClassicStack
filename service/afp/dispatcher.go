@@ -3,8 +3,9 @@
 package afp
 
 import (
-	"log"
 	"runtime/debug"
+
+	"github.com/pgodw/omnitalk/netlog"
 )
 
 // Request is the decoded form of an inbound AFP command.
@@ -26,7 +27,7 @@ type Response interface {
 func (s *Service) HandleCommand(data []byte) (resBytes []byte, errCode int32) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("[AFP] PANIC in cmd=%d: %v\n%s", data[0], r, debug.Stack())
+			netlog.Warn("[AFP] PANIC in cmd=%d: %v\n%s", data[0], r, debug.Stack())
 			resBytes = nil
 			errCode = ErrParamErr
 		}
@@ -40,7 +41,7 @@ func (s *Service) HandleCommand(data []byte) (resBytes []byte, errCode int32) {
 
 	spec, ok := commandRegistry[cmd]
 	if !ok {
-		log.Printf("[AFP] unknown command %d", cmd)
+		netlog.Debug("[AFP] unknown command %d", cmd)
 		return nil, ErrCallNotSupported
 	}
 
@@ -51,7 +52,7 @@ func (s *Service) HandleCommand(data []byte) (resBytes []byte, errCode int32) {
 	}
 
 	if err := req.Unmarshal(cmdData); err != nil {
-		log.Printf("[AFP] Error unmarshaling cmd %d: %v", cmd, err)
+		netlog.Debug("[AFP] Error unmarshaling cmd %d: %v", cmd, err)
 		return nil, ErrParamErr
 	}
 
