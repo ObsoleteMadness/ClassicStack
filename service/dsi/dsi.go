@@ -15,6 +15,7 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"sync"
 
 	"github.com/pgodw/omnitalk/protocol/ddp"
 
@@ -122,6 +123,7 @@ type Server struct {
 	afpServer  afp.CommandHandler
 	listener   net.Listener
 	stop       chan struct{}
+	wg         sync.WaitGroup
 }
 
 func NewServer(serverName string, addr string, afpHandler afp.CommandHandler) *Server {
@@ -146,7 +148,9 @@ func (s *Server) Start(ctx context.Context, router service.Router) error {
 	}
 	s.listener = l
 
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		for {
 			conn, err := s.listener.Accept()
 			if err != nil {
@@ -159,7 +163,11 @@ func (s *Server) Start(ctx context.Context, router service.Router) error {
 				continue
 			}
 			netlog.Debug("[DSI] connection accepted from %s", conn.RemoteAddr())
-			go s.handleConn(conn)
+			s.wg.Add(1)
+			go func(c net.Conn) {
+				defer s.wg.Done()
+				s.handleConn(c)
+			}(conn)
 		}
 	}()
 	return nil
@@ -169,8 +177,9 @@ func (s *Server) Start(ctx context.Context, router service.Router) error {
 func (s *Server) Stop() error {
 	close(s.stop)
 	if s.listener != nil {
-		return s.listener.Close()
+		_ = s.listener.Close()
 	}
+	s.wg.Wait()
 	return nil
 }
 
