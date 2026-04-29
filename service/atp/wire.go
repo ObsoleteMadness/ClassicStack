@@ -48,6 +48,6 @@ const (
 const (
 	MaxResponsePackets = patp.MaxResponsePackets
 	MaxATPData         = patp.MaxATPData
-	DDPTypeATP         = patp.DDPTypeATP
+	DDPTypeATP         = patp.DDPType
 	ATPHeaderSize      = patp.HeaderSize
 )

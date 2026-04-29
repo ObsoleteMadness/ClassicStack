@@ -101,8 +101,8 @@ const (
 	MaxATPData = 578
 )
 
-// DDPTypeATP is the DDP type for ATP packets.
-const DDPTypeATP = 3
+// DDPType is the DDP type for ATP packets.
+const DDPType = 3
 
 // Header represents an ATP packet header.
 // Refer: https://dev.os9.ca/techpubs/mac/Networking/Networking-145.html#HEADING145-0
