@@ -112,11 +112,6 @@ func (h *Header) Unmarshal(b []byte) error {
 	return nil
 }
 
-type AFPVersion struct {
-	VersionName string
-	Version     int
-}
-
 type Server struct {
 	serverName string
 	addr       string
