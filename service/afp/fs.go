@@ -3,7 +3,6 @@
 package afp
 
 import (
-	"errors"
 	"fmt"
 	"io/fs"
 	"maps"
@@ -53,27 +52,6 @@ func registeredFSNames() []string {
 	return slices.Sorted(maps.Keys(fsRegistry))
 }
 
-// ForkMetadata contains AFP metadata that may be stored outside the data fork.
-type ForkMetadata struct {
-	FinderInfo      [32]byte
-	ResourceForkLen int64
-	HasResourceFork bool
-}
-
-// ResourceForkInfo describes where a resource fork lives in backend storage.
-type ResourceForkInfo struct {
-	Offset            int64
-	Length            int64
-	LengthFieldOffset int64
-}
-
-type AppleDoubleMode string
-
-const (
-	AppleDoubleModeModern AppleDoubleMode = "netatalk modern"
-	AppleDoubleModeLegacy AppleDoubleMode = "netatalk legacy"
-)
-
 type FileSystem interface {
 	ReadDir(path string) ([]fs.DirEntry, error)
 	Stat(path string) (fs.FileInfo, error)
@@ -100,65 +78,6 @@ type FileSystemCapabilities struct {
 	ReadDirRange  bool
 	DirAttributes bool
 	ReadOnlyState bool
-}
-
-// ErrCopySourceReadEOF indicates a source read failure during copy that should
-// map to AFP ErrEOFErr.
-var ErrCopySourceReadEOF = errors.New("copy source read eof")
-
-// NotSupportedError indicates a filesystem operation exists but is not
-// supported by a specific backend.
-type NotSupportedError struct {
-	Operation string
-}
-
-func (e *NotSupportedError) Error() string {
-	if e == nil || e.Operation == "" {
-		return "not supported"
-	}
-	return fmt.Sprintf("not supported: %s", e.Operation)
-}
-
-func newNotSupported(op string) error {
-	return &NotSupportedError{Operation: op}
-}
-
-func isNotSupported(err error) bool {
-	var ns *NotSupportedError
-	return errors.As(err, &ns)
-}
-
-// ForkMetadataBackend abstracts where AFP metadata and resource forks are stored.
-// The default implementation is AppleDoubleBackend, but other backends can map
-// to alternate streams, xattrs, or different sidecar layouts.
-type ForkMetadataBackend interface {
-	StatWithMetadataFallback(path string) (string, fs.FileInfo, error)
-	ReadForkMetadata(path string) (ForkMetadata, error)
-	WriteFinderInfo(path string, finderInfo [32]byte) error
-	OpenResourceFork(path string, writable bool) (File, ResourceForkInfo, error)
-	TruncateResourceFork(file File, info ResourceForkInfo, newLen int64) error
-	MoveMetadata(oldpath, newpath string) error
-	DeleteMetadata(path string) error
-	CopyMetadata(srcPath, dstPath string) error
-	CopyMetadataFrom(source ForkMetadataBackend, srcPath, dstPath string) error
-	ExchangeMetadata(pathA, pathB string) error
-	IsMetadataArtifact(name string, isDir bool) bool
-
-	// MetadataPath returns the AppleDouble sidecar path for a host file path.
-	MetadataPath(path string) string
-
-	// IconFileName returns the host filesystem name for the Mac "Icon\r" file,
-	// accounting for decomposed filenames and AppleDouble mode.
-	// In legacy mode this is "Icon_"; otherwise "Icon0x0D" (decomposed) or
-	// "Icon\r" (literal).
-	IconFileName() string
-}
-
-// CommentBackend can read/write/delete Finder comments stored in sidecar metadata.
-type CommentBackend interface {
-	ReadComment(path string) ([]byte, bool)
-	WriteComment(path string, comment []byte) error
-	RemoveComment(path string) error
 }
 
 type File interface {
