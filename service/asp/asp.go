@@ -117,7 +117,7 @@ func (s *Service) Socket() uint8 { return ServerSocket }
 // traffic.
 func (s *Service) Start(ctx context.Context, router service.Router) error {
 	s.router = router
-	s.lifeCtx, s.lifeCancel = context.WithCancel(context.Background())
+	s.lifeCtx, s.lifeCancel = context.WithCancel(ctx)
 
 	parms := s.SPGetParms()
 	s.maxCmdSize = int(parms.MaxCmdSize)

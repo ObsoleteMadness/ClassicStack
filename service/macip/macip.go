@@ -133,7 +133,6 @@ func New(gwIP, network net.IP, mask net.IPMask, nameserver, broadcast net.IP,
 		ch:           make(chan inboundPkt, 256),
 		stop:         make(chan struct{}),
 	}
-	s.ctx, s.ctxCancel = context.WithCancel(context.Background())
 	return s
 }
 
@@ -143,6 +142,7 @@ func (s *Service) Socket() uint8 { return Socket }
 // Start opens the pcap IP link, registers the NBP name and starts goroutines.
 func (s *Service) Start(ctx context.Context, r service.Router) error {
 	s.router = r
+	s.ctx, s.ctxCancel = context.WithCancel(ctx)
 
 	// Resolve zone name if not supplied.
 	if len(s.zoneName) == 0 {
