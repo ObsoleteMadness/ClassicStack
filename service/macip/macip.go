@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/binary"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/pgodw/omnitalk/protocol/ddp"
@@ -90,6 +91,7 @@ type Service struct {
 	// per-request contexts handed to background work (DHCP, etc.).
 	ctx       context.Context
 	ctxCancel context.CancelFunc
+	wg        sync.WaitGroup
 }
 
 type inboundPkt struct {
@@ -180,9 +182,10 @@ func (s *Service) Start(ctx context.Context, r service.Router) error {
 	// Register as "<gwIP>:IPGATEWAY@<zone>" so Macs can find us via NBP.
 	s.nbp.RegisterName([]byte(s.gwIP.String()), []byte("IPGATEWAY"), s.zoneName, Socket)
 
-	go s.inboundLoop()
-	go s.ipInboundLoop()
-	go s.expiryLoop()
+	s.wg.Add(3)
+	go func() { defer s.wg.Done(); s.inboundLoop() }()
+	go func() { defer s.wg.Done(); s.ipInboundLoop() }()
+	go func() { defer s.wg.Done(); s.expiryLoop() }()
 
 	netlog.Info("macip: gateway started gw=%s host-ip=%s zone=%q", s.gwIP, s.ipHostIP, s.zoneName)
 	if !s.natEnabled && !s.dhcpMode {
@@ -207,6 +210,7 @@ func (s *Service) Stop() error {
 	if s.link != nil {
 		s.link.close()
 	}
+	s.wg.Wait()
 	s.pool.saveToFile(s.stateFile)
 	return nil
 }
