@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/pgodw/omnitalk/protocol/ddp"
@@ -59,6 +60,7 @@ type Service struct {
 	// of holding onto the ATP pending transaction past shutdown.
 	lifeCtx    context.Context
 	lifeCancel context.CancelFunc
+	wg         sync.WaitGroup
 }
 
 // Spec-to-implementation mapping notes:
@@ -185,6 +187,7 @@ func (s *Service) Stop() error {
 	if s.lifeCancel != nil {
 		s.lifeCancel()
 	}
+	s.wg.Wait()
 	s.sm.Stop()
 	return nil
 }
@@ -679,7 +682,11 @@ func (s *Service) sendTickle(sess *Session) {
 	}
 	// Drain in the background — we don't actually need the response, but
 	// we must release the TCB.
-	go func() { _, _ = pending.Wait(s.drainCtx()) }()
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		_, _ = pending.Wait(s.drainCtx())
+	}()
 }
 
 // errToUserBytes converts a (possibly negative) ASP error constant into the
@@ -733,7 +740,11 @@ func (s *Service) SendAttention(sessID uint8, code uint16) error {
 	if err != nil {
 		return err
 	}
-	go func() { _, _ = pending.Wait(s.drainCtx()) }()
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		_, _ = pending.Wait(s.drainCtx())
+	}()
 	netlog.Debug("[ASP] SendAttention: sess=%d code=0x%04X", sessID, code)
 	return nil
 }
