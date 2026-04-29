@@ -38,6 +38,10 @@ type Service struct {
 	mu    sync.Mutex
 	ports map[*localtalk.Port]*portState
 	rand  *rand.Rand
+
+	wg     sync.WaitGroup
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 type portState struct {
@@ -71,6 +75,7 @@ func (s *Service) Start(ctx context.Context, router service.Router) error {
 		return fmt.Errorf("llap: router does not support inbound datagram delivery")
 	}
 	s.router = r
+	s.ctx, s.cancel = context.WithCancel(ctx)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, st := range s.ports {
@@ -81,11 +86,15 @@ func (s *Service) Start(ctx context.Context, router service.Router) error {
 
 func (s *Service) Stop() error {
 	close(s.stop)
+	if s.cancel != nil {
+		s.cancel()
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for _, st := range s.ports {
 		close(st.stop)
 	}
+	s.mu.Unlock()
+	s.wg.Wait()
 	return nil
 }
 
@@ -194,7 +203,11 @@ func (s *Service) startPortLocked(st *portState) {
 		return
 	}
 	st.started = true
-	go s.acquireLoop(st)
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.acquireLoop(st)
+	}()
 }
 
 func (s *Service) acquireLoop(st *portState) {
@@ -202,6 +215,8 @@ func (s *Service) acquireLoop(st *portState) {
 	defer ticker.Stop()
 	for {
 		select {
+		case <-s.ctx.Done():
+			return
 		case <-s.stop:
 			return
 		case <-st.stop:

@@ -10,6 +10,7 @@ package aep
 
 import (
 	"context"
+	"sync"
 
 	"github.com/pgodw/omnitalk/protocol/aep"
 	"github.com/pgodw/omnitalk/protocol/ddp"
@@ -32,6 +33,7 @@ const (
 type Service struct {
 	ch   chan item
 	stop chan struct{}
+	wg   sync.WaitGroup
 }
 
 type item struct {
@@ -52,9 +54,13 @@ func (s *Service) Socket() uint8 { return Socket }
 
 // Start launches the AEP processing goroutine.
 func (s *Service) Start(ctx context.Context, router service.Router) error {
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		for {
 			select {
+			case <-ctx.Done():
+				return
 			case <-s.stop:
 				return
 			case it := <-s.ch:
@@ -73,6 +79,7 @@ func (s *Service) Start(ctx context.Context, router service.Router) error {
 // Stop shuts down the AEP service.
 func (s *Service) Stop() error {
 	close(s.stop)
+	s.wg.Wait()
 	return nil
 }
 
