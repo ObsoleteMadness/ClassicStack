@@ -2,6 +2,7 @@ package rtmp
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/pgodw/omnitalk/protocol/ddp"
@@ -13,6 +14,7 @@ import (
 type RoutingTableAgingService struct {
 	timeout time.Duration
 	stop    chan struct{}
+	wg      sync.WaitGroup
 }
 
 func NewRoutingTableAgingService() *RoutingTableAgingService {
@@ -20,11 +22,15 @@ func NewRoutingTableAgingService() *RoutingTableAgingService {
 }
 
 func (s *RoutingTableAgingService) Start(ctx context.Context, router service.Router) error {
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		t := time.NewTicker(s.timeout)
 		defer t.Stop()
 		for {
 			select {
+			case <-ctx.Done():
+				return
 			case <-s.stop:
 				return
 			case <-t.C:
@@ -35,5 +41,9 @@ func (s *RoutingTableAgingService) Start(ctx context.Context, router service.Rou
 	return nil
 }
 
-func (s *RoutingTableAgingService) Stop() error                         { close(s.stop); return nil }
+func (s *RoutingTableAgingService) Stop() error {
+	close(s.stop)
+	s.wg.Wait()
+	return nil
+}
 func (s *RoutingTableAgingService) Inbound(_ ddp.Datagram, _ port.Port) {}

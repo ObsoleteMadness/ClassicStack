@@ -38,6 +38,7 @@ type NameInformationService struct {
 		p port.Port
 	}
 	stop   chan struct{}
+	wg     sync.WaitGroup
 	nameMu sync.RWMutex
 	names  []NBPRegisteredName
 }
@@ -92,7 +93,11 @@ func NewNameInformationService() *NameInformationService {
 }
 
 func (s *NameInformationService) Socket() uint8 { return NBPSASSocket }
-func (s *NameInformationService) Stop() error   { close(s.stop); return nil }
+func (s *NameInformationService) Stop() error {
+	close(s.stop)
+	s.wg.Wait()
+	return nil
+}
 func (s *NameInformationService) Inbound(d ddp.Datagram, p port.Port) {
 	select {
 	case s.ch <- struct {
@@ -104,9 +109,13 @@ func (s *NameInformationService) Inbound(d ddp.Datagram, p port.Port) {
 }
 
 func (s *NameInformationService) Start(ctx context.Context, r service.Router) error {
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		for {
 			select {
+			case <-ctx.Done():
+				return
 			case <-s.stop:
 				return
 			case item := <-s.ch:

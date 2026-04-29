@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"sync"
 
 	"github.com/pgodw/omnitalk/encoding"
 	"github.com/pgodw/omnitalk/protocol/ddp"
@@ -20,6 +21,7 @@ type RespondingService struct {
 	}
 	stop            chan struct{}
 	pendingExtReply map[uint16]map[string]struct{} // network_min -> set of zone names
+	wg              sync.WaitGroup
 }
 
 func NewRespondingService() *RespondingService {
@@ -39,9 +41,13 @@ type multicastAddresser interface {
 }
 
 func (s *RespondingService) Start(ctx context.Context, r service.Router) error {
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		for {
 			select {
+			case <-ctx.Done():
+				return
 			case <-s.stop:
 				return
 			case item := <-s.ch:
@@ -88,7 +94,11 @@ func (s *RespondingService) Start(ctx context.Context, r service.Router) error {
 	return nil
 }
 
-func (s *RespondingService) Stop() error { close(s.stop); return nil }
+func (s *RespondingService) Stop() error {
+	close(s.stop)
+	s.wg.Wait()
+	return nil
+}
 func (s *RespondingService) Inbound(d ddp.Datagram, p port.Port) {
 	select {
 	case s.ch <- struct {

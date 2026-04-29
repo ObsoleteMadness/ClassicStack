@@ -3,6 +3,7 @@ package rtmp
 import (
 	"context"
 	"encoding/binary"
+	"sync"
 
 	"github.com/pgodw/omnitalk/protocol/ddp"
 
@@ -16,6 +17,7 @@ type RespondingService struct {
 		p port.Port
 	}
 	stop chan struct{}
+	wg   sync.WaitGroup
 }
 
 func NewRespondingService() *RespondingService {
@@ -29,9 +31,13 @@ func NewRespondingService() *RespondingService {
 }
 
 func (s *RespondingService) Start(ctx context.Context, r service.Router) error {
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		for {
 			select {
+			case <-ctx.Done():
+				return
 			case <-s.stop:
 				return
 			case item := <-s.ch:
@@ -130,7 +136,11 @@ func (s *RespondingService) Start(ctx context.Context, r service.Router) error {
 	return nil
 }
 
-func (s *RespondingService) Stop() error { close(s.stop); return nil }
+func (s *RespondingService) Stop() error {
+	close(s.stop)
+	s.wg.Wait()
+	return nil
+}
 func (s *RespondingService) Inbound(d ddp.Datagram, p port.Port) {
 	select {
 	case s.ch <- struct {
