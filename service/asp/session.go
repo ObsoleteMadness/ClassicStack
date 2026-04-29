@@ -10,6 +10,8 @@
 package asp
 
 import (
+	"maps"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -147,11 +149,7 @@ func (m *SessionManager) Get(id uint8) *Session {
 func (m *SessionManager) SessionIDs() []uint8 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	ids := make([]uint8, 0, len(m.sessions))
-	for id := range m.sessions {
-		ids = append(ids, id)
-	}
-	return ids
+	return slices.Collect(maps.Keys(m.sessions))
 }
 
 // Close terminates a session.

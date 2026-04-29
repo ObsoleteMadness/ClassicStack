@@ -6,7 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"sort"
+	"maps"
+	"slices"
 	"sync"
 )
 
@@ -49,12 +50,7 @@ func NewFS(cfg VolumeConfig) (FileSystem, error) {
 func registeredFSNames() []string {
 	fsRegistryMu.RLock()
 	defer fsRegistryMu.RUnlock()
-	out := make([]string, 0, len(fsRegistry))
-	for k := range fsRegistry {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(fsRegistry))
 }
 
 // ForkMetadata contains AFP metadata that may be stored outside the data fork.

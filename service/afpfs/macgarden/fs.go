@@ -14,9 +14,11 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -299,12 +301,8 @@ func (m *MacGardenFileSystem) readDirCore(rel string) ([]fs.DirEntry, error) {
 	// /search — list all cached search queries as subdirectories.
 	if len(parts) == 1 && parts[0] == "search" {
 		m.mu.RLock()
-		queries := make([]string, 0, len(m.catSearchCache))
-		for q := range m.catSearchCache {
-			queries = append(queries, q)
-		}
+		queries := slices.Sorted(maps.Keys(m.catSearchCache))
 		m.mu.RUnlock()
-		sort.Strings(queries)
 		entries := make([]fs.DirEntry, 0, len(queries))
 		for _, q := range queries {
 			entries = append(entries, macGardenDirEntry{info: &macGardenFileInfo{name: q, mode: fs.ModeDir | 0o555, isDir: true, modTime: time.Now().UTC()}})
@@ -320,11 +318,7 @@ func (m *MacGardenFileSystem) readDirCore(rel string) ([]fs.DirEntry, error) {
 		if !ok {
 			return nil, fs.ErrNotExist
 		}
-		pageNums := make([]int, 0, len(cache.pages))
-		for k := range cache.pages {
-			pageNums = append(pageNums, k)
-		}
-		sort.Ints(pageNums)
+		pageNums := slices.Sorted(maps.Keys(cache.pages))
 		typesSeen := map[string]struct{}{}
 		untypedSeen := map[string]struct{}{}
 		var typeNames, untypedNames []string
