@@ -54,7 +54,7 @@ type Session struct {
 	ID uint8
 
 	// state is read by every inbound handler and written by Close. atomic
-	// because it is accessed without holding writeMu/seqMu.
+	// because it is accessed without holding mu.
 	state atomic.Uint32 // sessionState
 
 	// Workstation address (where Tickle/WriteContinue/Attention go).
@@ -68,19 +68,24 @@ type Session struct {
 	SrvNet  uint16
 	SrvNode uint8
 
+	// mu serialises everything mutable that can be touched from both the
+	// engine inbound goroutine and Close (running on the maintenance
+	// goroutine or the inbound goroutine that handled CloseSess): the
+	// sequence-number filter and the two-phase write state. Hold time is
+	// microseconds; one lock is simpler to reason about than two.
+	mu sync.Mutex
+
 	// Sequence number duplicate filtering (spec §"Sequencing and duplicate
 	// filtration"). Same seqNum + different ATP TID = true ASP duplicate
 	// (drop). Same seqNum + same TID = ATP retransmission — but ATP XO
 	// already filters those before they reach us, so we can drop them.
-	seqMu      sync.Mutex
 	lastReqNum uint16
 	lastTID    uint16
 	seqInited  bool
 
 	// Two-phase Write state (one in flight per session is sufficient — the
 	// Mac client serializes Write commands behind their seqNum).
-	writeMu sync.Mutex
-	write   *writeState
+	write *writeState
 
 	lastActivity atomic.Int64 // Unix nanoseconds
 
@@ -108,8 +113,8 @@ func (s *Session) markClosed() { s.state.Store(uint32(stateClosed)) }
 // the Mac client serialises Write commands behind seqNum, but we surface the
 // invariant violation rather than silently overwrite.
 func (s *Session) beginWrite(ws *writeState) bool {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.write != nil && s.write.phase != writeIdle {
 		return false
 	}
@@ -122,8 +127,8 @@ func (s *Session) beginWrite(ws *writeState) bool {
 // returning the previous state (if any) so callers can act on its pending.
 // Safe to call on an already-Idle session — returns nil.
 func (s *Session) endWrite() *writeState {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	prev := s.write
 	s.write = nil
 	return prev
@@ -282,8 +287,8 @@ func (m *SessionManager) Close(id uint8) {
 // Returns true if the request should be processed; false if it is a duplicate
 // and should be silently dropped.
 func (s *Session) CheckDuplicate(seqNum, tid uint16) bool {
-	s.seqMu.Lock()
-	defer s.seqMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.seqInited && seqNum == s.lastReqNum && tid != s.lastTID {
 		return false
 	}
