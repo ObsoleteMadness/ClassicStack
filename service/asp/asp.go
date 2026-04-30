@@ -561,16 +561,25 @@ func (s *Service) handleASPWrite(in atp.IncomingRequest, reply atp.Replier) {
 		return
 	}
 
-	// Stash the in-flight write so CloseSess can cancel it.
-	sess.writeMu.Lock()
-	sess.write = &writeState{
+	// Record the in-flight write so CloseSess can cancel it. A second
+	// Write before this one resolves is a protocol violation (the Mac
+	// serialises Write commands behind seqNum); reject it loudly rather
+	// than silently overwrite.
+	if !sess.beginWrite(&writeState{
 		seqNum:    pkt.SeqNum,
 		cmdBlock:  pkt.CmdBlock,
 		wantBytes: wantBytes,
 		reply:     reply,
 		pending:   pending,
+	}) {
+		netlog.Warn("[ASP] Write sess=%d: write already in flight (protocol violation), cancelling new request", pkt.SessionID)
+		pending.Cancel()
+		reply(atp.ResponseMessage{
+			Buffers:   [][]byte{nil},
+			UserBytes: []uint32{errToUserBytes(SPErrorParamErr)},
+		})
+		return
 	}
-	sess.writeMu.Unlock()
 
 	wcSentAt := time.Now()
 
@@ -587,9 +596,7 @@ func (s *Service) completeWrite(sess *Session, cmdBlock []byte, wantBytes uint32
 	resp, err := pending.Wait(s.drainCtx())
 	wcRTT := time.Since(wcSentAt)
 	// Clear the pending state regardless of outcome.
-	sess.writeMu.Lock()
-	sess.write = nil
-	sess.writeMu.Unlock()
+	sess.endWrite()
 
 	if err != nil {
 		netlog.Debug("[ASP] Write sess=%d: WriteContinue failed after %v: %v", sess.ID, wcRTT.Round(time.Millisecond), err)

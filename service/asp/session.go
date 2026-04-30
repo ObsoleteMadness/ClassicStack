@@ -56,8 +56,60 @@ type Session struct {
 
 func (s *Session) touchActivity() { s.lastActivity.Store(time.Now().UnixNano()) }
 
+// beginWrite transitions the session's write state from Idle to AwaitingData
+// and records the in-flight write. Returns false (and changes nothing) if a
+// write is already in flight — protocol-wise this should not happen because
+// the Mac client serialises Write commands behind seqNum, but we surface the
+// invariant violation rather than silently overwrite.
+func (s *Session) beginWrite(ws *writeState) bool {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if s.write != nil && s.write.phase != writeIdle {
+		return false
+	}
+	ws.phase = writeAwaitingData
+	s.write = ws
+	return true
+}
+
+// endWrite transitions back to Idle and clears the in-flight write,
+// returning the previous state (if any) so callers can act on its pending.
+// Safe to call on an already-Idle session — returns nil.
+func (s *Session) endWrite() *writeState {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	prev := s.write
+	s.write = nil
+	return prev
+}
+
+// writePhase names the states of the SPWrite two-phase exchange so each
+// transition is checked against a known-legal edge instead of inferred
+// from field nil-ness. Legal edges:
+//
+//	writeIdle          -> writeAwaitingData   (handleASPWrite sent WriteContinue TReq)
+//	writeAwaitingData  -> writeIdle           (completeWrite resolved or cancelled)
+type writePhase uint8
+
+const (
+	writeIdle writePhase = iota
+	writeAwaitingData
+)
+
+func (p writePhase) String() string {
+	switch p {
+	case writeIdle:
+		return "Idle"
+	case writeAwaitingData:
+		return "AwaitingData"
+	default:
+		return "?"
+	}
+}
+
 // writeState holds in-flight state for the two-phase aspWrite protocol.
 type writeState struct {
+	phase     writePhase
 	seqNum    uint16
 	cmdBlock  []byte
 	wantBytes uint32
@@ -164,12 +216,9 @@ func (m *SessionManager) Close(id uint8) {
 	if ok {
 		close(sess.stop)
 		// Cancel any in-flight WriteContinue.
-		sess.writeMu.Lock()
-		if sess.write != nil && sess.write.pending != nil {
-			sess.write.pending.Cancel()
+		if prev := sess.endWrite(); prev != nil && prev.pending != nil {
+			prev.pending.Cancel()
 		}
-		sess.write = nil
-		sess.writeMu.Unlock()
 		if onClose != nil {
 			onClose(sess)
 		}
