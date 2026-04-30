@@ -18,9 +18,6 @@ func (s *Service) handleGetSrvrInfo(req *FPGetSrvrInfoReq) (*FPGetSrvrInfoRes, e
 }
 
 func (s *Service) handleGetSrvrParms(req *FPGetSrvrParmsReq) (*FPGetSrvrParmsRes, int32) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	res := &FPGetSrvrParmsRes{
 		ServerTime: toAFPTime(time.Now()),
 		Volumes:    make([]VolInfo, len(s.Volumes)),

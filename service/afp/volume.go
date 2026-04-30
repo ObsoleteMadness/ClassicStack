@@ -304,9 +304,7 @@ func (s *Service) packVolumeParams(vol *Volume, bitmap uint16) []byte {
 	volDate := s.volumeDate(vol)
 	bytesFree, bytesTotal := s.volumeCapacity(vol)
 
-	s.mu.RLock()
-	backupDate := s.volumeBackupDate[vol.ID]
-	s.mu.RUnlock()
+	backupDate := s.backupDates.get(vol.ID)
 
 	if bitmap&VolBitmapAttributes != 0 {
 		binutil.WriteU16(fixed, s.volumeAttributes(vol))
@@ -368,9 +366,7 @@ func (s *Service) handleSetVolParms(req *FPSetVolParmsReq) (*FPSetVolParmsRes, i
 		return &FPSetVolParmsRes{}, ErrParamErr
 	}
 
-	s.mu.Lock()
-	s.volumeBackupDate[req.VolumeID] = req.BackupDate
-	s.mu.Unlock()
+	s.backupDates.set(req.VolumeID, req.BackupDate)
 
 	return &FPSetVolParmsRes{}, NoErr
 }

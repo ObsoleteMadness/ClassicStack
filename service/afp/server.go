@@ -24,24 +24,28 @@ import (
 
 // Service implements AppleTalk Filing Protocol.
 type Service struct {
-	ServerName  string
-	Volumes     []Volume
-	fs          FileSystem
-	volumeFS    map[uint16]FileSystem
-	meta        ForkMetadataBackend            // global override when ForkMetadataBackend is injected via options
-	metas       map[uint16]ForkMetadataBackend // per-volume backends (keyed by Volume.ID)
-	mu          sync.RWMutex
+	ServerName string
+
+	// Volume registry. Populated once by installVolumes during NewService and
+	// read-only thereafter — no runtime call path adds, removes, or mutates
+	// these maps, so they need no synchronisation.
+	Volumes    []Volume
+	fs         FileSystem
+	volumeFS   map[uint16]FileSystem
+	meta       ForkMetadataBackend            // global override when ForkMetadataBackend is injected via options
+	metas      map[uint16]ForkMetadataBackend // per-volume backends (keyed by Volume.ID)
+	cnidStores map[uint16]CNIDStore
+
 	options     Options
-	cnidStores  map[uint16]CNIDStore
 	desktopDB   DesktopDBBackend
 	forks       forkState
 	maxReadSize int // transport quantum limit; 0 = unlimited
 
 	sessions sessionState
 
-	// volumeBackupDate stores AFP "backup date" (ADouble-style seconds since 1904)
-	// per volume, as set by FPSetVolParms (AFP 2.x §5.1.32).
-	volumeBackupDate map[uint16]uint32
+	// FPSetVolParms-supplied per-volume backup dates (AFP 2.x §5.1.32). Only
+	// runtime-mutable piece of volume state.
+	backupDates backupDates
 
 	// Desktop database state — one DesktopDB per volume (persists across sessions).
 	desktop desktopState
@@ -93,10 +97,8 @@ func NewService(serverName string, configs []VolumeConfig, fs FileSystem, transp
 		desktopDB:   resolveDesktopDBBackend(options),
 		forks:       newForkState(defaultMaxByteRangeLocks),
 		sessions:    newSessionState(),
-
-		volumeBackupDate: make(map[uint16]uint32),
-
-		desktop:    newDesktopState(),
+		backupDates: newBackupDates(),
+		desktop:     newDesktopState(),
 
 		transports: transports,
 	}

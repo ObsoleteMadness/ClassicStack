@@ -14,8 +14,6 @@ import (
 // and between Catalog Node IDs and the path strings they index.
 
 func (s *Service) cnidStore(volumeID uint16) (CNIDStore, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	store, ok := s.cnidStores[volumeID]
 	return store, ok
 }
@@ -104,8 +102,6 @@ func (s *Service) resolvePath(parentPath, name string, pathType uint8) (string, 
 
 	fullPath := filepath.Clean(currentPath)
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	for _, vol := range s.Volumes {
 		rel, err := filepath.Rel(vol.Config.Path, fullPath)
 		if err == nil && !strings.HasPrefix(rel, "..") {
