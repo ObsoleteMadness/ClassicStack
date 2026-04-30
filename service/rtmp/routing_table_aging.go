@@ -22,6 +22,9 @@ func NewRoutingTableAgingService() *RoutingTableAgingService {
 }
 
 func (s *RoutingTableAgingService) Start(ctx context.Context, router service.Router) error {
+	// Narrow to RouteIndex inside the goroutine so the type signature
+	// documents the only capability this loop touches.
+	idx := service.RouteIndex(router)
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -34,7 +37,7 @@ func (s *RoutingTableAgingService) Start(ctx context.Context, router service.Rou
 			case <-s.stop:
 				return
 			case <-t.C:
-				router.RoutingTableAge()
+				idx.RoutingTableAge()
 			}
 		}
 	}()

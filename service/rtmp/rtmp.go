@@ -21,7 +21,7 @@ const (
 	NotifyNeighborDistance = prtmp.NotifyNeighborDistance
 )
 
-func makeRoutingTableDatagramData(r service.Router, p interface {
+func makeRoutingTableDatagramData(r service.RouteIndex, p interface {
 	NetworkMin() uint16
 	NetworkMax() uint16
 	Network() uint16

@@ -45,7 +45,7 @@ type Service struct {
 	maxCmdSize  int
 	quantumSize int
 
-	router          service.Router
+	router          service.DatagramRouter
 	registeredZones [][]byte
 
 	endpoint *atp.Endpoint

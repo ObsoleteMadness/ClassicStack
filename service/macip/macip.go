@@ -82,7 +82,7 @@ type Service struct {
 	osnat  *nat.OSNAT
 	dhcp   *dhcpClient
 	link   *etherIPLink
-	router service.Router // set in Start(), read-only afterwards
+	router service.DatagramRouter // set in Start(), read-only afterwards
 
 	ch   chan inboundPkt
 	stop chan struct{}
