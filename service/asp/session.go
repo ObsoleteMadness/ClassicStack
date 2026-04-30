@@ -75,13 +75,9 @@ type Session struct {
 	// microseconds; one lock is simpler to reason about than two.
 	mu sync.Mutex
 
-	// Sequence number duplicate filtering (spec §"Sequencing and duplicate
-	// filtration"). Same seqNum + different ATP TID = true ASP duplicate
-	// (drop). Same seqNum + same TID = ATP retransmission — but ATP XO
-	// already filters those before they reach us, so we can drop them.
-	lastReqNum uint16
-	lastTID    uint16
-	seqInited  bool
+	// seq filters ASP-level duplicates per spec §"Sequencing and duplicate
+	// filtration". Held under mu.
+	seq seqFilter
 
 	// Two-phase Write state (one in flight per session is sufficient — the
 	// Mac client serializes Write commands behind their seqNum).
@@ -283,19 +279,39 @@ func (m *SessionManager) Close(id uint8) {
 	}
 }
 
-// CheckDuplicate implements ASP sequence-number duplicate filtration.
+// seqFilter implements ASP sequence-number duplicate filtration per spec
+// §"Sequencing and duplicate filtration". A request whose seqNum repeats
+// the last accepted seqNum but carries a different ATP TID is a true
+// ASP-level duplicate and is dropped. (Same seqNum + same TID is an ATP
+// retransmission, but ATP XO already filters those before they reach us.)
+//
+// Stored under Session.mu; the type itself is intentionally lock-free
+// so it can be unit-tested in isolation.
+type seqFilter struct {
+	lastSeq uint16
+	lastTID uint16
+	inited  bool
+}
+
+// accept records (seq, tid) and reports whether the request should be
+// processed. False means duplicate — drop.
+func (f *seqFilter) accept(seq, tid uint16) bool {
+	if f.inited && seq == f.lastSeq && tid != f.lastTID {
+		return false
+	}
+	f.lastSeq = seq
+	f.lastTID = tid
+	f.inited = true
+	return true
+}
+
+// CheckDuplicate is the locked Session-level entrypoint for seqFilter.accept.
 // Returns true if the request should be processed; false if it is a duplicate
 // and should be silently dropped.
 func (s *Session) CheckDuplicate(seqNum, tid uint16) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.seqInited && seqNum == s.lastReqNum && tid != s.lastTID {
-		return false
-	}
-	s.lastReqNum = seqNum
-	s.lastTID = tid
-	s.seqInited = true
-	return true
+	return s.seq.accept(seqNum, tid)
 }
 
 // maintenance runs the per-session tickle + inactivity-timeout loop.
