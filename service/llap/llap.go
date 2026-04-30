@@ -62,10 +62,16 @@ type portState struct {
 }
 
 func New() *Service {
+	// Pre-arm a never-cancelled ctx so handlers reached before Start (in
+	// tests that exercise transmit paths directly) don't dereference nil.
+	// Start replaces this with a real ctx derived from its caller.
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Service{
-		stop:  make(chan struct{}),
-		ports: make(map[*localtalk.Port]*portState),
-		rand:  rand.New(rand.NewSource(time.Now().UnixNano())),
+		stop:   make(chan struct{}),
+		ports:  make(map[*localtalk.Port]*portState),
+		rand:   rand.New(rand.NewSource(time.Now().UnixNano())),
+		ctx:    ctx,
+		cancel: cancel,
 	}
 }
 
@@ -75,6 +81,9 @@ func (s *Service) Start(ctx context.Context, router service.Router) error {
 		return fmt.Errorf("llap: router does not support inbound datagram delivery")
 	}
 	s.router = r
+	if s.cancel != nil {
+		s.cancel()
+	}
 	s.ctx, s.cancel = context.WithCancel(ctx)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -355,6 +364,13 @@ func (s *Service) runDirectedTransmit(st *portState, frame localtalk.LLAPFrame) 
 			st.ctsCh = nil
 			st.mu.Unlock()
 			return fmt.Errorf("llap: service stopped during CTS wait")
+		case <-s.ctx.Done():
+			ctsTimer.Stop()
+			st.mu.Lock()
+			st.expectCTSFrom = 0
+			st.ctsCh = nil
+			st.mu.Unlock()
+			return fmt.Errorf("llap: context cancelled during CTS wait: %w", s.ctx.Err())
 		case <-ctsTimer.C:
 			st.mu.Lock()
 			st.collisionHistory |= 1
