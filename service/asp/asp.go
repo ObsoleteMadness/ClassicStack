@@ -241,6 +241,43 @@ func (s *Service) sendBridge(src, dst atp.Address, payload []byte, hint any) err
 	return s.router.Route(dg, true)
 }
 
+// sessionedReplier is the shared prologue for SPCommand/SPWrite, both of
+// which carry (CmdBlock, SessionID, SeqNum) and require: cmdblock-size cap,
+// session lookup, activity touch, and ASP-level duplicate filter. Returns
+// (sess, true) on success; on rejection it has already replied and returns
+// (_, false). label is used for log lines so failures point to the right path.
+func (s *Service) sessionedReplier(label string, sessionID uint8, seqNum uint16, cmdBlockLen int, tid uint16, reply atp.Replier) (*Session, bool) {
+	if cmdBlockLen > s.effectiveMaxCmdSize() {
+		netlog.Debug("[ASP] %s: CmdBlockSize=%d exceeds MaxCmdSize=%d (SPErrorSizeErr)",
+			label, cmdBlockLen, s.effectiveMaxCmdSize())
+		reply(atp.ResponseMessage{
+			Buffers:   [][]byte{nil},
+			UserBytes: []uint32{errToUserBytes(SPErrorSizeErr)},
+		})
+		return nil, false
+	}
+	sess := s.sm.Get(sessionID)
+	if sess == nil {
+		netlog.Debug("[ASP] %s: unknown SessRefNum=%d", label, sessionID)
+		reply(atp.ResponseMessage{
+			Buffers:   [][]byte{nil},
+			UserBytes: []uint32{errToUserBytes(SPErrorParamErr)},
+		})
+		return nil, false
+	}
+	sess.touchActivity()
+	if s.onSessionActivity != nil {
+		s.onSessionActivity(sess)
+	}
+	if !sess.CheckDuplicate(seqNum, tid) {
+		netlog.Debug("[ASP] %s: ASP-level duplicate seqNum=%d on sess=%d, dropping",
+			label, seqNum, sessionID)
+		reply(atp.ResponseMessage{Buffers: [][]byte{nil}})
+		return nil, false
+	}
+	return sess, true
+}
+
 // handleATPRequest is the server-side dispatcher for ASP network requests.
 // Direction by SPFunction per spec:
 //   - workstation -> server: OpenSess, GetStatus, Command, Write, CloseSess
@@ -407,35 +444,7 @@ func (s *Service) handleCloseSession(in atp.IncomingRequest, reply atp.Replier) 
 func (s *Service) handleCommand(in atp.IncomingRequest, reply atp.Replier) {
 	receivedAt := time.Now()
 	pkt := ParseCommandPacket(in.UserBytes, in.Data)
-	if len(pkt.CmdBlock) > s.effectiveMaxCmdSize() {
-		netlog.Debug("[ASP] Command: CmdBlockSize=%d exceeds MaxCmdSize=%d (SPErrorSizeErr)",
-			len(pkt.CmdBlock), s.effectiveMaxCmdSize())
-		reply(atp.ResponseMessage{
-			Buffers:   [][]byte{nil},
-			UserBytes: []uint32{errToUserBytes(SPErrorSizeErr)},
-		})
-		return
-	}
-	sess := s.sm.Get(pkt.SessionID)
-	if sess == nil {
-		netlog.Debug("[ASP] Command: unknown SessRefNum=%d", pkt.SessionID)
-		reply(atp.ResponseMessage{
-			Buffers:   [][]byte{nil},
-			UserBytes: []uint32{errToUserBytes(SPErrorParamErr)},
-		})
-		return
-	}
-	sess.touchActivity()
-	if s.onSessionActivity != nil {
-		s.onSessionActivity(sess)
-	}
-	if !sess.CheckDuplicate(pkt.SeqNum, in.TID) {
-		netlog.Debug("[ASP] Command: ASP-level duplicate seqNum=%d on sess=%d, dropping",
-			pkt.SeqNum, pkt.SessionID)
-		// We must still respond — the ATP engine will use cached response
-		// from the RspCB if it sees a true ATP retransmit; for ASP-level
-		// duplicates we send an empty result.
-		reply(atp.ResponseMessage{Buffers: [][]byte{nil}})
+	if _, ok := s.sessionedReplier("Command", pkt.SessionID, pkt.SeqNum, len(pkt.CmdBlock), in.TID, reply); !ok {
 		return
 	}
 
@@ -486,32 +495,8 @@ func (s *Service) handleCommand(in atp.IncomingRequest, reply atp.Replier) {
 func (s *Service) handleASPWrite(in atp.IncomingRequest, reply atp.Replier) {
 	receivedAt := time.Now()
 	pkt := ParseWritePacket(in.UserBytes, in.Data)
-	if len(pkt.CmdBlock) > s.effectiveMaxCmdSize() {
-		netlog.Debug("[ASP] Write: CmdBlockSize=%d exceeds MaxCmdSize=%d (SPErrorSizeErr)",
-			len(pkt.CmdBlock), s.effectiveMaxCmdSize())
-		reply(atp.ResponseMessage{
-			Buffers:   [][]byte{nil},
-			UserBytes: []uint32{errToUserBytes(SPErrorSizeErr)},
-		})
-		return
-	}
-	sess := s.sm.Get(pkt.SessionID)
-	if sess == nil {
-		netlog.Debug("[ASP] Write: unknown SessRefNum=%d", pkt.SessionID)
-		reply(atp.ResponseMessage{
-			Buffers:   [][]byte{nil},
-			UserBytes: []uint32{errToUserBytes(SPErrorParamErr)},
-		})
-		return
-	}
-	sess.touchActivity()
-	if s.onSessionActivity != nil {
-		s.onSessionActivity(sess)
-	}
-	if !sess.CheckDuplicate(pkt.SeqNum, in.TID) {
-		netlog.Debug("[ASP] Write: duplicate seqNum=%d on sess=%d, dropping",
-			pkt.SeqNum, pkt.SessionID)
-		reply(atp.ResponseMessage{Buffers: [][]byte{nil}})
+	sess, ok := s.sessionedReplier("Write", pkt.SessionID, pkt.SeqNum, len(pkt.CmdBlock), in.TID, reply)
+	if !ok {
 		return
 	}
 
