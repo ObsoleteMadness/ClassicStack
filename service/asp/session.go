@@ -20,9 +20,42 @@ import (
 	"github.com/pgodw/omnitalk/service/atp"
 )
 
+// sessionState names the lifecycle of an ASP session. Legal transitions:
+//
+//	stateOpen    -> stateClosing  (Close called)
+//	stateClosing -> stateClosed   (teardown complete)
+//
+// Inbound handlers atomically check stateOpen at entry and bail if the
+// session is on its way down — guarding against the race where an inbound
+// frame and CloseSess interleave.
+type sessionState uint32
+
+const (
+	stateOpen sessionState = iota
+	stateClosing
+	stateClosed
+)
+
+func (s sessionState) String() string {
+	switch s {
+	case stateOpen:
+		return "Open"
+	case stateClosing:
+		return "Closing"
+	case stateClosed:
+		return "Closed"
+	default:
+		return "?"
+	}
+}
+
 // Session is the per-session state owned by SessionManager.
 type Session struct {
 	ID uint8
+
+	// state is read by every inbound handler and written by Close. atomic
+	// because it is accessed without holding writeMu/seqMu.
+	state atomic.Uint32 // sessionState
 
 	// Workstation address (where Tickle/WriteContinue/Attention go).
 	WSNet  uint16
@@ -55,6 +88,19 @@ type Session struct {
 }
 
 func (s *Session) touchActivity() { s.lastActivity.Store(time.Now().UnixNano()) }
+
+// isOpen reports whether the session is still accepting inbound traffic.
+// Once Close transitions it out of stateOpen, every handler should bail.
+func (s *Session) isOpen() bool { return sessionState(s.state.Load()) == stateOpen }
+
+// markClosing atomically transitions stateOpen->stateClosing. Returns true
+// if this caller won the transition and is responsible for teardown.
+func (s *Session) markClosing() bool {
+	return s.state.CompareAndSwap(uint32(stateOpen), uint32(stateClosing))
+}
+
+// markClosed marks teardown complete. Idempotent.
+func (s *Session) markClosed() { s.state.Store(uint32(stateClosed)) }
 
 // beginWrite transitions the session's write state from Idle to AwaitingData
 // and records the in-flight write. Returns false (and changes nothing) if a
@@ -204,7 +250,9 @@ func (m *SessionManager) SessionIDs() []uint8 {
 	return slices.Collect(maps.Keys(m.sessions))
 }
 
-// Close terminates a session.
+// Close terminates a session. The CAS on session state means concurrent
+// callers (e.g. CloseSess inbound + maintenance timeout) observe a single
+// teardown; only the winner runs the cancellation and onClose callback.
 func (m *SessionManager) Close(id uint8) {
 	m.mu.Lock()
 	sess, ok := m.sessions[id]
@@ -213,15 +261,20 @@ func (m *SessionManager) Close(id uint8) {
 		delete(m.sessions, id)
 	}
 	m.mu.Unlock()
-	if ok {
-		close(sess.stop)
-		// Cancel any in-flight WriteContinue.
-		if prev := sess.endWrite(); prev != nil && prev.pending != nil {
-			prev.pending.Cancel()
-		}
-		if onClose != nil {
-			onClose(sess)
-		}
+	if !ok {
+		return
+	}
+	if !sess.markClosing() {
+		// Another goroutine already started teardown.
+		return
+	}
+	close(sess.stop)
+	if prev := sess.endWrite(); prev != nil && prev.pending != nil {
+		prev.pending.Cancel()
+	}
+	sess.markClosed()
+	if onClose != nil {
+		onClose(sess)
 	}
 }
 

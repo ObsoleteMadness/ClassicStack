@@ -257,8 +257,8 @@ func (s *Service) sessionedReplier(label string, sessionID uint8, seqNum uint16,
 		return nil, false
 	}
 	sess := s.sm.Get(sessionID)
-	if sess == nil {
-		netlog.Debug("[ASP] %s: unknown SessRefNum=%d", label, sessionID)
+	if sess == nil || !sess.isOpen() {
+		netlog.Debug("[ASP] %s: unknown or closing SessRefNum=%d", label, sessionID)
 		reply(atp.ResponseMessage{
 			Buffers:   [][]byte{nil},
 			UserBytes: []uint32{errToUserBytes(SPErrorParamErr)},
@@ -301,7 +301,7 @@ func (s *Service) handleATPRequest(in atp.IncomingRequest, reply atp.Replier) {
 		// no buffers reserved is invalid, but the engine will still create
 		// an RspCB for XO; we reply with an empty message to drain it).
 		sessID := uint8((in.UserBytes >> 16) & 0xFF)
-		if sess := s.sm.Get(sessID); sess != nil {
+		if sess := s.sm.Get(sessID); sess != nil && sess.isOpen() {
 			sess.touchActivity()
 			if s.onSessionActivity != nil {
 				s.onSessionActivity(sess)
@@ -420,8 +420,9 @@ func (s *Service) handleOpenSession(in atp.IncomingRequest, reply atp.Replier) {
 // maps them to server-side SPCloseSession semantics.
 func (s *Service) handleCloseSession(in atp.IncomingRequest, reply atp.Replier) {
 	pkt := ParseCloseSessPacket(in.UserBytes)
-	if s.sm.Get(pkt.SessionID) == nil {
-		netlog.Debug("[ASP] CloseSess: unknown SessRefNum=%d", pkt.SessionID)
+	sess := s.sm.Get(pkt.SessionID)
+	if sess == nil || !sess.isOpen() {
+		netlog.Debug("[ASP] CloseSess: unknown or already closing SessRefNum=%d", pkt.SessionID)
 		reply(atp.ResponseMessage{
 			Buffers:   [][]byte{nil},
 			UserBytes: []uint32{errToUserBytes(SPErrorParamErr)},
