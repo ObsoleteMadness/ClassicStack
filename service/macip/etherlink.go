@@ -71,6 +71,8 @@ type etherIPLink struct {
 	dhcpInbound chan []byte
 	// stop is closed to request goroutine termination.
 	stop chan struct{}
+	// wg tracks background goroutines so close() can join them deterministically.
+	wg sync.WaitGroup
 }
 
 // newEtherIPLink wraps the provided RawLink into an etherIPLink ready to
@@ -105,8 +107,13 @@ func newEtherIPLink(link rawlink.RawLink, ourMAC net.HardwareAddr, hostIP net.IP
 // start launches background goroutines for packet capture and optionally
 // probes the configured default gateway to prime the ARP cache.
 func (l *etherIPLink) start() {
-	go l.readLoop()
+	l.wg.Add(2)
 	go func() {
+		defer l.wg.Done()
+		l.readLoop()
+	}()
+	go func() {
+		defer l.wg.Done()
 		gw := l.getDefaultGateway()
 		if _, err := l.resolveMAC(gw); err != nil {
 			netlog.Warn("macip: could not ARP for default gateway %s: %v", gw, err)
@@ -139,10 +146,13 @@ func (l *etherIPLink) setDefaultGateway(gw net.IP) {
 	l.gwMu.Unlock()
 }
 
-// close stops background processing and closes the rawlink.
+// close stops background processing and closes the rawlink. Blocks until
+// the readLoop and gateway-probe goroutines have exited so callers see a
+// fully-quiesced link on return.
 func (l *etherIPLink) close() {
 	close(l.stop)
 	l.link.Close()
+	l.wg.Wait()
 }
 
 // sendFrame transmits a raw Ethernet frame via the underlying rawlink.

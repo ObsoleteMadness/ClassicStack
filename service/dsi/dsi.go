@@ -119,6 +119,11 @@ type Server struct {
 	listener   net.Listener
 	stop       chan struct{}
 	wg         sync.WaitGroup
+
+	// connsMu protects conns. conns tracks every accepted client connection so
+	// Stop can force them closed and unblock any in-flight io.ReadFull calls.
+	connsMu sync.Mutex
+	conns   map[net.Conn]struct{}
 }
 
 func NewServer(serverName string, addr string, afpHandler afp.CommandHandler) *Server {
@@ -127,7 +132,28 @@ func NewServer(serverName string, addr string, afpHandler afp.CommandHandler) *S
 		addr:       addr,
 		afpServer:  afpHandler,
 		stop:       make(chan struct{}),
+		conns:      make(map[net.Conn]struct{}),
 	}
+}
+
+// trackConn registers conn so Stop can close it. Returns false if the server
+// is already stopping, in which case the caller must close conn itself.
+func (s *Server) trackConn(conn net.Conn) bool {
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+	select {
+	case <-s.stop:
+		return false
+	default:
+	}
+	s.conns[conn] = struct{}{}
+	return true
+}
+
+func (s *Server) untrackConn(conn net.Conn) {
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+	delete(s.conns, conn)
 }
 
 // SetCommandHandler assigns the AFP command handler to this server.
@@ -157,10 +183,15 @@ func (s *Server) Start(ctx context.Context, router service.Router) error {
 				netlog.Debug("[DSI] accept error: %v", err)
 				continue
 			}
+			if !s.trackConn(conn) {
+				_ = conn.Close()
+				return
+			}
 			netlog.Debug("[DSI] connection accepted from %s", conn.RemoteAddr())
 			s.wg.Add(1)
 			go func(c net.Conn) {
 				defer s.wg.Done()
+				defer s.untrackConn(c)
 				s.handleConn(c)
 			}(conn)
 		}
@@ -168,12 +199,19 @@ func (s *Server) Start(ctx context.Context, router service.Router) error {
 	return nil
 }
 
-// Stop implements afp.Transport.
+// Stop implements afp.Transport. Closes the listener and every active
+// client connection so per-conn handlers blocked in io.ReadFull return,
+// then waits for accept and per-conn goroutines to exit.
 func (s *Server) Stop() error {
 	close(s.stop)
 	if s.listener != nil {
 		_ = s.listener.Close()
 	}
+	s.connsMu.Lock()
+	for c := range s.conns {
+		_ = c.Close()
+	}
+	s.connsMu.Unlock()
 	s.wg.Wait()
 	return nil
 }
