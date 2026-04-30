@@ -47,9 +47,7 @@ type Service struct {
 	volumeBackupDate map[uint16]uint32
 
 	// Desktop database state — one DesktopDB per volume (persists across sessions).
-	desktopDBs map[uint16]DesktopDB
-	dtRefs     map[uint16]uint16 // DTRefNum → volume ID
-	nextDTRef  uint16
+	desktop desktopState
 
 	transports []Transport
 	dumper     service.PacketDumper
@@ -104,9 +102,7 @@ func NewService(serverName string, configs []VolumeConfig, fs FileSystem, transp
 
 		volumeBackupDate: make(map[uint16]uint32),
 
-		desktopDBs: make(map[uint16]DesktopDB),
-		dtRefs:     make(map[uint16]uint16),
-		nextDTRef:  1,
+		desktop:    newDesktopState(),
 
 		transports: transports,
 	}

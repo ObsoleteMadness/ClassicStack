@@ -11,14 +11,11 @@ import (
 	"github.com/pgodw/omnitalk/netlog"
 )
 
-// getDesktopDB looks up the DesktopDB associated with a DTRefNum.
-// Must be called with s.mu held (at least RLock).
+// getDesktopDB looks up the DesktopDB associated with a DTRefNum. The
+// returned bool is false when either the ref number is unknown or the
+// underlying DesktopDB was never opened.
 func (s *Service) getDesktopDB(dtRefNum uint16) (DesktopDB, bool) {
-	volID, ok := s.dtRefs[dtRefNum]
-	if !ok {
-		return nil, false
-	}
-	db, ok := s.desktopDBs[volID]
+	db, _, ok := s.desktop.lookupDB(dtRefNum)
 	return db, ok
 }
 
@@ -59,42 +56,28 @@ func (s *Service) handleOpenDT(req *FPOpenDTReq) (*FPOpenDTRes, int32) {
 		}
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Lazily open the .desktop.db for this volume.
-	if _, loaded := s.desktopDBs[req.VolID]; !loaded {
-		volume, vok := s.volumeByID(req.VolID)
-		if !vok {
-			return &FPOpenDTRes{}, ErrParamErr
-		}
-		s.desktopDBs[req.VolID] = s.desktopDB.Open(volume)
+	volume, vok := s.volumeByID(req.VolID)
+	if !vok {
+		return &FPOpenDTRes{}, ErrParamErr
 	}
 
-	dtRef := s.nextDTRef
-	s.nextDTRef++
-	s.dtRefs[dtRef] = req.VolID
-
+	dtRef := s.desktop.openRef(req.VolID, func() DesktopDB {
+		return s.desktopDB.Open(volume)
+	})
 	return &FPOpenDTRes{DTRefNum: dtRef}, NoErr
 }
 
 // handleCloseDT invalidates a Desktop database reference number.
 func (s *Service) handleCloseDT(req *FPCloseDTReq) (*FPCloseDTRes, int32) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.dtRefs[req.DTRefNum]; !ok {
+	if !s.desktop.closeRef(req.DTRefNum) {
 		return &FPCloseDTRes{}, ErrParamErr
 	}
-	delete(s.dtRefs, req.DTRefNum)
 	return &FPCloseDTRes{}, NoErr
 }
 
 // handleAddIcon stores an icon bitmap in the Desktop database.
 func (s *Service) handleAddIcon(req *FPAddIconReq) (*FPAddIconRes, int32) {
-	s.mu.RLock()
-	db, ok := s.getDesktopDB(req.DTRefNum)
-	volID, _ := s.dtRefs[req.DTRefNum]
-	s.mu.RUnlock()
+	db, volID, ok := s.desktop.lookupDB(req.DTRefNum)
 	if !ok {
 		netlog.Debug("[AFP][Desktop] FPAddIcon dtRef=%d creator=%q type=%q itype=%d tag=%d size=%d -> ErrParamErr (no desktop db)", req.DTRefNum, string(req.Creator[:]), string(req.Type[:]), req.IType, req.Tag, req.Size)
 		return &FPAddIconRes{}, ErrParamErr
@@ -118,9 +101,7 @@ func (s *Service) handleAddIcon(req *FPAddIconReq) (*FPAddIconRes, int32) {
 
 // handleGetIcon retrieves an icon bitmap from the Desktop database.
 func (s *Service) handleGetIcon(req *FPGetIconReq) (*FPGetIconRes, int32) {
-	s.mu.RLock()
-	db, ok := s.getDesktopDB(req.DTRefNum)
-	s.mu.RUnlock()
+	db, _, ok := s.desktop.lookupDB(req.DTRefNum)
 	if !ok {
 		netlog.Debug("[AFP][Desktop] FPGetIcon dtRef=%d creator=%q type=%q itype=%d size=%d -> ErrParamErr (no desktop db)", req.DTRefNum, string(req.Creator[:]), string(req.Type[:]), req.IType, req.Size)
 		return &FPGetIconRes{}, ErrParamErr
@@ -131,7 +112,7 @@ func (s *Service) handleGetIcon(req *FPGetIconReq) (*FPGetIconRes, int32) {
 		// creator and ingest icons from each app's AppleDouble resource fork.
 		// Bounded by the number of registered apps for the creator — never
 		// rebuilds the whole volume.
-		volID, vok := s.dtRefs[req.DTRefNum]
+		volID, vok := s.desktop.volumeOf(req.DTRefNum)
 		if vok {
 			s.ingestAppleDoubleIconsForCreator(volID, db, req.Creator)
 			entry, found = db.GetIcon(req.Creator, req.Type, req.IType)
@@ -157,9 +138,7 @@ func (s *Service) handleGetIcon(req *FPGetIconReq) (*FPGetIconRes, int32) {
 
 // handleGetIconInfo retrieves icon metadata by 1-based index for a given creator.
 func (s *Service) handleGetIconInfo(req *FPGetIconInfoReq) (*FPGetIconInfoRes, int32) {
-	s.mu.RLock()
-	db, ok := s.getDesktopDB(req.DTRefNum)
-	s.mu.RUnlock()
+	db, _, ok := s.desktop.lookupDB(req.DTRefNum)
 	if !ok {
 		netlog.Debug("[AFP][Desktop] FPGetIconInfo dtRef=%d creator=%q index=%d -> ErrParamErr (no desktop db)", req.DTRefNum, string(req.Creator[:]), req.IconIndex)
 		return &FPGetIconInfoRes{}, ErrParamErr
@@ -187,10 +166,7 @@ func (s *Service) handleGetIconInfo(req *FPGetIconInfoReq) (*FPGetIconInfoRes, i
 
 // handleAddAPPL registers an APPL mapping in the Desktop database.
 func (s *Service) handleAddAPPL(req *FPAddAPPLReq) (*FPAddAPPLRes, int32) {
-	s.mu.RLock()
-	db, ok := s.getDesktopDB(req.DTRefNum)
-	volID, _ := s.dtRefs[req.DTRefNum]
-	s.mu.RUnlock()
+	db, volID, ok := s.desktop.lookupDB(req.DTRefNum)
 	if !ok {
 		netlog.Debug("[AFP][Desktop] FPAddAPPL dtRef=%d creator=%q dirID=%d tag=%d path=%q -> ErrParamErr (no desktop db)", req.DTRefNum, string(req.Creator[:]), req.DirID, req.Tag, req.Path)
 		return &FPAddAPPLRes{}, ErrParamErr
@@ -231,10 +207,7 @@ func (s *Service) handleAddAPPL(req *FPAddAPPLReq) (*FPAddAPPLRes, int32) {
 
 // handleRemoveAPPL removes an APPL mapping from the Desktop database.
 func (s *Service) handleRemoveAPPL(req *FPRemoveAPPLReq) (*FPRemoveAPPLRes, int32) {
-	s.mu.RLock()
-	db, ok := s.getDesktopDB(req.DTRefNum)
-	volID, _ := s.dtRefs[req.DTRefNum]
-	s.mu.RUnlock()
+	db, volID, ok := s.desktop.lookupDB(req.DTRefNum)
 	if !ok {
 		return &FPRemoveAPPLRes{}, ErrParamErr
 	}
@@ -249,10 +222,7 @@ func (s *Service) handleRemoveAPPL(req *FPRemoveAPPLReq) (*FPRemoveAPPLRes, int3
 
 // handleGetAPPL retrieves an APPL mapping by 0-based index and returns file parameters.
 func (s *Service) handleGetAPPL(req *FPGetAPPLReq) (*FPGetAPPLRes, int32) {
-	s.mu.RLock()
-	db, ok := s.getDesktopDB(req.DTRefNum)
-	volID, _ := s.dtRefs[req.DTRefNum]
-	s.mu.RUnlock()
+	db, volID, ok := s.desktop.lookupDB(req.DTRefNum)
 	if !ok {
 		netlog.Debug("[AFP][Desktop] FPGetAPPL dtRef=%d creator=%q index=%d bitmap=0x%04x -> ErrParamErr (no desktop db)", req.DTRefNum, string(req.Creator[:]), req.APPLIndex, req.Bitmap)
 		return emptyGetAPPLRes(req), ErrParamErr
@@ -304,10 +274,7 @@ func emptyGetAPPLRes(req *FPGetAPPLReq) *FPGetAPPLRes {
 // handleAddComment stores a Finder comment in the AppleDouble sidecar (preferred)
 // or in the Desktop database (fallback when no CommentBackend is available).
 func (s *Service) handleAddComment(req *FPAddCommentReq) (*FPAddCommentRes, int32) {
-	s.mu.RLock()
-	volID, volOK := s.dtRefs[req.DTRefNum]
-	db, _ := s.getDesktopDB(req.DTRefNum)
-	s.mu.RUnlock()
+	db, volID, volOK := s.desktop.lookup(req.DTRefNum)
 	if !volOK {
 		return &FPAddCommentRes{}, ErrParamErr
 	}
@@ -346,10 +313,7 @@ func (s *Service) handleAddComment(req *FPAddCommentReq) (*FPAddCommentRes, int3
 // handleRemoveComment removes a Finder comment from the AppleDouble sidecar (preferred)
 // or from the Desktop database (fallback).
 func (s *Service) handleRemoveComment(req *FPRemoveCommentReq) (*FPRemoveCommentRes, int32) {
-	s.mu.RLock()
-	volID, volOK := s.dtRefs[req.DTRefNum]
-	db, _ := s.getDesktopDB(req.DTRefNum)
-	s.mu.RUnlock()
+	db, volID, volOK := s.desktop.lookup(req.DTRefNum)
 	if !volOK {
 		return &FPRemoveCommentRes{}, ErrParamErr
 	}
@@ -388,10 +352,7 @@ func (s *Service) handleRemoveComment(req *FPRemoveCommentReq) (*FPRemoveComment
 // handleGetComment retrieves a Finder comment from the AppleDouble sidecar (preferred)
 // or from the Desktop database (fallback).
 func (s *Service) handleGetComment(req *FPGetCommentReq) (*FPGetCommentRes, int32) {
-	s.mu.RLock()
-	volID, volOK := s.dtRefs[req.DTRefNum]
-	db, _ := s.getDesktopDB(req.DTRefNum)
-	s.mu.RUnlock()
+	db, volID, volOK := s.desktop.lookup(req.DTRefNum)
 	if !volOK {
 		return &FPGetCommentRes{}, ErrParamErr
 	}

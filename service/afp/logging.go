@@ -77,9 +77,7 @@ func (s *Service) logResolvedPath(op string, volumeID uint16, dirID uint32, path
 }
 
 func (s *Service) logResolvedPathFromDTRef(op string, dtRefNum uint16, dirID uint32, pathType uint8, rawPath string) {
-	s.mu.RLock()
-	volID, ok := s.dtRefs[dtRefNum]
-	s.mu.RUnlock()
+	volID, ok := s.desktop.volumeOf(dtRefNum)
 	if !ok {
 		netlog.Debug("[AFP][Path] %s dtRef=%d dirID=%d pathType=%d raw=%q unresolved err=%d", op, dtRefNum, dirID, pathType, rawPath, ErrParamErr)
 		return

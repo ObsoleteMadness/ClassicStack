@@ -24,19 +24,17 @@ import (
 // enabling it costs a one-time O(N) scan per volume on first icon miss.
 const EnableAppleDoubleIconFallback = true
 
-// volumeRootByIDLocked is the lock-free helper used from ingest paths that
-// already hold s.mu.
-func (s *Service) desktopDBForVolumeLocked(volID uint16) DesktopDB {
-	if db, ok := s.desktopDBs[volID]; ok {
-		return db
-	}
+// desktopDBForVolume returns the per-volume DesktopDB, opening it lazily on
+// first use. Safe to call from ingest paths without holding any external
+// lock — desktopState provides its own synchronisation.
+func (s *Service) desktopDBForVolume(volID uint16) DesktopDB {
 	volume, ok := s.volumeByID(volID)
 	if !ok {
 		return nil
 	}
-	db := s.desktopDB.Open(volume)
-	s.desktopDBs[volID] = db
-	return db
+	return s.desktop.dbForVolume(volID, func() DesktopDB {
+		return s.desktopDB.Open(volume)
+	})
 }
 
 // appleDoubleOwnerPath normalizes a host file path or AppleDouble sidecar path
@@ -121,9 +119,7 @@ func (s *Service) IngestAppleDoubleIcons(volID uint16, filePath string) int {
 		return 0
 	}
 
-	s.mu.Lock()
-	db := s.desktopDBForVolumeLocked(volID)
-	s.mu.Unlock()
+	db := s.desktopDBForVolume(volID)
 	if db == nil {
 		return 0
 	}

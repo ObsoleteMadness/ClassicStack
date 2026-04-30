@@ -135,8 +135,8 @@ func TestHandleGetFileParms_UsesExtensionMapWithoutPersisting(t *testing.T) {
 			}
 
 			if tc.checkNoPersistence {
-				if len(s.desktopDBs) != 0 {
-					t.Fatalf("desktopDBs len = %d, want 0", len(s.desktopDBs))
+				if n := s.desktop.dbCount(); n != 0 {
+					t.Fatalf("desktopDBs len = %d, want 0", n)
 				}
 				if _, err := os.Stat(filepath.Join(root, "._ReadMe.txt")); !os.IsNotExist(err) {
 					t.Fatalf("AppleDouble sidecar unexpectedly created: err=%v", err)

@@ -67,8 +67,8 @@ func TestHandleRemoveComment_FallsBackToAppleDoubleName(t *testing.T) {
 	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	db := NewDesktopDB(root)
-	s.desktopDBs[1] = db
-	s.dtRefs[1] = 1
+	s.desktop.putDBForTest(1, db)
+	s.desktop.putRefForTest(1, 1)
 
 	baseName := "Netscape Navigator\u2122 2.02"
 	targetPath := filepath.Join(root, baseName)
@@ -99,7 +99,7 @@ func TestHandleRemoveComment_FallsBackToAppleDoubleName(t *testing.T) {
 func TestHandleGetComment_FallsBackToUnicodeAppleDoubleName(t *testing.T) {
 	root := t.TempDir()
 	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
-	s.dtRefs[1] = 1
+	s.desktop.putRefForTest(1, 1)
 
 	targetPath := filepath.Join(root, "CD-ROM Toolkit™ Installer")
 	commentBackend, ok := s.metaFor(1).(CommentBackend)
@@ -129,7 +129,7 @@ func TestHandleGetComment_FallsBackToUnicodeAppleDoubleName(t *testing.T) {
 func TestHandleRemoveComment_FallsBackToUnicodeAppleDoubleName(t *testing.T) {
 	root := t.TempDir()
 	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
-	s.dtRefs[1] = 1
+	s.desktop.putRefForTest(1, 1)
 
 	targetPath := filepath.Join(root, "CD-ROM Toolkit™ Installer")
 	commentBackend, ok := s.metaFor(1).(CommentBackend)
@@ -197,7 +197,7 @@ func TestHandleGetComment_LegacyIconCarriageReturnAlias(t *testing.T) {
 		nil,
 		options,
 	)
-	s.dtRefs[1] = 1
+	s.desktop.putRefForTest(1, 1)
 
 	actual := filepath.Join(root, "Icon_")
 	if err := os.WriteFile(actual, []byte("icon"), 0644); err != nil {
@@ -239,8 +239,8 @@ func TestHandleAddAPPL_LegacyIconCarriageReturnAlias(t *testing.T) {
 		nil,
 		options,
 	)
-	s.desktopDBs[1] = NewDesktopDB(root)
-	s.dtRefs[1] = 1
+	s.desktop.putDBForTest(1, NewDesktopDB(root))
+	s.desktop.putRefForTest(1, 1)
 
 	actual := filepath.Join(root, "Icon_")
 	if err := os.WriteFile(actual, []byte("icon"), 0644); err != nil {
@@ -276,8 +276,8 @@ func TestHandleGetAPPL_LegacyIconCarriageReturnAlias(t *testing.T) {
 		options,
 	)
 	db := NewDesktopDB(root)
-	s.desktopDBs[1] = db
-	s.dtRefs[1] = 1
+	s.desktop.putDBForTest(1, db)
+	s.desktop.putRefForTest(1, 1)
 
 	actual := filepath.Join(root, "Icon_")
 	if err := os.WriteFile(actual, []byte("icon"), 0644); err != nil {
