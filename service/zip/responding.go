@@ -6,7 +6,7 @@ import (
 	"encoding/binary"
 	"sync"
 
-	"github.com/pgodw/omnitalk/encoding"
+	"github.com/pgodw/omnitalk/pkg/encoding"
 	"github.com/pgodw/omnitalk/protocol/ddp"
 
 	"github.com/pgodw/omnitalk/netlog"
