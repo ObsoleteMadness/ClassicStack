@@ -34,11 +34,8 @@ type Service struct {
 	options     Options
 	cnidStores  map[uint16]CNIDStore
 	desktopDB   DesktopDBBackend
-	forks       map[uint16]*forkHandle
-	nextFork    uint16
-	byteLocks   []byteRangeLock
+	forks       forkState
 	maxReadSize int // transport quantum limit; 0 = unlimited
-	maxLocks    int
 
 	sessions sessionState
 
@@ -94,10 +91,7 @@ func NewService(serverName string, configs []VolumeConfig, fs FileSystem, transp
 		options:     options,
 		cnidStores:  make(map[uint16]CNIDStore),
 		desktopDB:   resolveDesktopDBBackend(options),
-		forks:       make(map[uint16]*forkHandle),
-		nextFork:    1,
-		byteLocks:   make([]byteRangeLock, 0),
-		maxLocks:    defaultMaxByteRangeLocks,
+		forks:       newForkState(defaultMaxByteRangeLocks),
 		sessions:    newSessionState(),
 
 		volumeBackupDate: make(map[uint16]uint32),

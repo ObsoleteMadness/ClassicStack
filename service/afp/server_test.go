@@ -931,7 +931,7 @@ func TestAFP_ByteRangeLock_ErrorSemantics(t *testing.T) {
 func TestAFP_ByteRangeLock_NoMoreLocks(t *testing.T) {
 	root := t.TempDir()
 	s := NewService("TestServer", []VolumeConfig{{Name: "Mac", Path: root}}, &LocalFileSystem{}, nil)
-	s.maxLocks = 1
+	s.forks.maxLocks = 1
 
 	if _, errCode := s.handleOpenVol(&FPOpenVolReq{Bitmap: VolBitmapVolID, VolName: "Mac"}); errCode != NoErr {
 		t.Fatalf("OpenVol failed: got %d", errCode)

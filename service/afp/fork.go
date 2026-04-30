@@ -86,11 +86,7 @@ func (s *Service) handleOpenFork(req *FPOpenForkReq) (*FPOpenForkRes, int32) {
 	handle.volID = req.VolumeID
 	handle.filePath = targetPath
 
-	s.mu.Lock()
-	forkID := s.nextFork
-	s.nextFork++
-	s.forks[forkID] = handle
-	s.mu.Unlock()
+	forkID := s.forks.register(handle)
 
 	forkType := "data"
 	if handle.isRsrc {
@@ -115,22 +111,7 @@ func (s *Service) handleOpenFork(req *FPOpenForkReq) (*FPOpenForkRes, int32) {
 }
 
 func (s *Service) handleCloseFork(req *FPCloseForkReq) (*FPCloseForkRes, int32) {
-	s.mu.Lock()
-	handle, ok := s.forks[req.OForkRefNum]
-	if ok {
-		delete(s.forks, req.OForkRefNum)
-		if len(s.byteLocks) > 0 {
-			filtered := s.byteLocks[:0]
-			for i := range s.byteLocks {
-				if s.byteLocks[i].ownerFork != req.OForkRefNum {
-					filtered = append(filtered, s.byteLocks[i])
-				}
-			}
-			s.byteLocks = filtered
-		}
-	}
-	s.mu.Unlock()
-
+	handle, ok := s.forks.close(req.OForkRefNum)
 	if !ok {
 		return &FPCloseForkRes{}, ErrParamErr
 	}
@@ -141,24 +122,16 @@ func (s *Service) handleCloseFork(req *FPCloseForkReq) (*FPCloseForkRes, int32) 
 }
 
 func (s *Service) handleFlush(req *FPFlushReq) (*FPFlushRes, int32) {
-	s.mu.RLock()
-	var toSync []*forkHandle
-	for _, h := range s.forks {
+	for _, h := range s.forks.snapshot() {
 		if h.volID == req.VolumeID && h.file != nil {
-			toSync = append(toSync, h)
+			h.file.Sync() //nolint:errcheck
 		}
-	}
-	s.mu.RUnlock()
-	for _, h := range toSync {
-		h.file.Sync() //nolint:errcheck
 	}
 	return &FPFlushRes{}, NoErr
 }
 
 func (s *Service) handleFlushFork(req *FPFlushForkReq) (*FPFlushForkRes, int32) {
-	s.mu.RLock()
-	handle, ok := s.forks[req.OForkRefNum]
-	s.mu.RUnlock()
+	handle, ok := s.forks.get(req.OForkRefNum)
 	if !ok {
 		return &FPFlushForkRes{}, ErrParamErr
 	}
@@ -169,10 +142,9 @@ func (s *Service) handleFlushFork(req *FPFlushForkReq) (*FPFlushForkRes, int32) 
 }
 
 func (s *Service) handleByteRangeLock(req *FPByteRangeLockReq) (*FPByteRangeLockRes, int32) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.forks.lock()()
 
-	handle, ok := s.forks[req.ForkID]
+	handle, ok := s.forks.forks[req.ForkID]
 	if !ok {
 		return &FPByteRangeLockRes{}, ErrParamErr
 	}
@@ -211,18 +183,18 @@ func (s *Service) handleByteRangeLock(req *FPByteRangeLockReq) (*FPByteRangeLock
 	lockKey := byteRangeLockKey(handle)
 
 	if req.Unlock {
-		for i := range s.byteLocks {
-			lk := s.byteLocks[i]
+		for i := range s.forks.locks {
+			lk := s.forks.locks[i]
 			if lk.lockKey == lockKey && lk.ownerFork == req.ForkID && lk.start == offset && lk.length == req.Length {
-				s.byteLocks = append(s.byteLocks[:i], s.byteLocks[i+1:]...)
+				s.forks.locks = append(s.forks.locks[:i], s.forks.locks[i+1:]...)
 				return &FPByteRangeLockRes{Offset: offset}, NoErr
 			}
 		}
 		return &FPByteRangeLockRes{}, ErrRangeNotLocked
 	}
 
-	for i := range s.byteLocks {
-		lk := s.byteLocks[i]
+	for i := range s.forks.locks {
+		lk := s.forks.locks[i]
 		if lk.lockKey != lockKey {
 			continue
 		}
@@ -235,11 +207,11 @@ func (s *Service) handleByteRangeLock(req *FPByteRangeLockReq) (*FPByteRangeLock
 		return &FPByteRangeLockRes{}, ErrLockErr
 	}
 
-	if len(s.byteLocks) >= s.maxLocks {
+	if len(s.forks.locks) >= s.forks.maxLocks {
 		return &FPByteRangeLockRes{}, ErrNoMoreLocks
 	}
 
-	s.byteLocks = append(s.byteLocks, byteRangeLock{
+	s.forks.locks = append(s.forks.locks, byteRangeLock{
 		lockKey:   lockKey,
 		ownerFork: req.ForkID,
 		start:     offset,
@@ -280,9 +252,7 @@ func byteRangeEnd(start, length int64) (int64, bool) {
 }
 
 func (s *Service) handleRead(req *FPReadReq) (*FPReadRes, int32) {
-	s.mu.RLock()
-	handle, ok := s.forks[req.ForkID]
-	s.mu.RUnlock()
+	handle, ok := s.forks.get(req.ForkID)
 
 	if !ok {
 		return &FPReadRes{}, ErrParamErr
@@ -350,9 +320,7 @@ func (s *Service) handleRead(req *FPReadReq) (*FPReadRes, int32) {
 }
 
 func (s *Service) handleWrite(req *FPWriteReq) (*FPWriteRes, int32) {
-	s.mu.RLock()
-	handle, ok := s.forks[req.ForkID]
-	s.mu.RUnlock()
+	handle, ok := s.forks.get(req.ForkID)
 
 	if !ok {
 		return &FPWriteRes{}, ErrParamErr
@@ -444,9 +412,7 @@ func (s *Service) handleWrite(req *FPWriteReq) (*FPWriteRes, int32) {
 // in-flight writes may not yet be reflected in Stat or in the AppleDouble
 // header. Packing a partial block crashes Finder ("error type 10").
 func (s *Service) handleGetForkParms(req *FPGetForkParmsReq) (*FPGetForkParmsRes, int32) {
-	s.mu.RLock()
-	handle, ok := s.forks[req.OForkRefNum]
-	s.mu.RUnlock()
+	handle, ok := s.forks.get(req.OForkRefNum)
 	if !ok {
 		return &FPGetForkParmsRes{}, ErrParamErr
 	}
@@ -559,9 +525,7 @@ func packForkLengthsOnly(handle *forkHandle, bitmap uint16) []byte {
 }
 
 func (s *Service) handleSetForkParms(req *FPSetForkParmsReq) (*FPSetForkParmsRes, int32) {
-	s.mu.RLock()
-	handle, ok := s.forks[req.OForkRefNum]
-	s.mu.RUnlock()
+	handle, ok := s.forks.get(req.OForkRefNum)
 	if !ok {
 		netlog.Debug("[AFP] FPSetForkParms: unknown forkID=%d", req.OForkRefNum)
 		return &FPSetForkParmsRes{}, ErrParamErr
