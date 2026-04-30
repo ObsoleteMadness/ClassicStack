@@ -47,35 +47,26 @@ func (s *Service) handleLogin(req *FPLoginReq) (*FPLoginRes, int32) {
 		return &FPLoginRes{}, ErrBadVersNum
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if req.UAM == UAMNoUserAuthent {
 		// Nothing else required
 	} else if req.UAM == UAMCleartxtPasswd {
 		netlog.Debug("[AFP] Cleartxt Passwrd for User=%q", req.Username)
-		expectedPw, exists := s.users[req.Username]
-		if !exists || expectedPw != req.Password {
+		if !s.sessions.checkPassword(req.Username, req.Password) {
 			return &FPLoginRes{}, ErrUserNotAuth
 		}
 	} else {
 		return &FPLoginRes{}, ErrBadUAM
 	}
 
-	sRefNum := s.nextSRefNum
-	s.nextSRefNum++
-
 	return &FPLoginRes{
-		SRefNum:  sRefNum,
+		SRefNum:  s.sessions.allocSRef(),
 		IDNumber: 0,
 	}, NoErr
 }
 
 // AddUser adds a user to the AFP service for authentication.
 func (s *Service) AddUser(username, password string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.users[username] = password
+	s.sessions.addUser(username, password)
 }
 
 func (s *Service) handleLogout(req *FPLogoutReq) (*FPLogoutRes, int32) {

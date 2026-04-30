@@ -40,8 +40,7 @@ type Service struct {
 	maxReadSize int // transport quantum limit; 0 = unlimited
 	maxLocks    int
 
-	users       map[string]string // map[username]password
-	nextSRefNum uint16
+	sessions sessionState
 
 	// volumeBackupDate stores AFP "backup date" (ADouble-style seconds since 1904)
 	// per volume, as set by FPSetVolParms (AFP 2.x §5.1.32).
@@ -101,8 +100,7 @@ func NewService(serverName string, configs []VolumeConfig, fs FileSystem, transp
 		nextFork:    1,
 		byteLocks:   make([]byteRangeLock, 0),
 		maxLocks:    defaultMaxByteRangeLocks,
-		users:       make(map[string]string),
-		nextSRefNum: 1,
+		sessions:    newSessionState(),
 
 		volumeBackupDate: make(map[uint16]uint32),
 
