@@ -1,3 +1,5 @@
+//go:build afp || all
+
 package afp
 
 // RequestModel is implemented by decoded AFP request payload types.

@@ -1,15 +1,17 @@
+//go:build afp || all
+
 package afp
 
 import (
+	"github.com/pgodw/omnitalk/netlog"
 	"bytes"
 	"errors"
 	"io/fs"
-	"log"
 	"os"
 	"path/filepath"
 )
 
-func (s *AFPService) handleOpenDir(req *FPOpenDirReq) (*FPOpenDirRes, int32) {
+func (s *Service) handleOpenDir(req *FPOpenDirReq) (*FPOpenDirRes, int32) {
 	parentPath, ok := s.getDIDPath(req.VolumeID, req.DirID)
 	if !ok && req.DirID != 0 {
 		return &FPOpenDirRes{}, ErrObjectNotFound
@@ -32,82 +34,151 @@ func (s *AFPService) handleOpenDir(req *FPOpenDirReq) (*FPOpenDirRes, int32) {
 	return res, NoErr
 }
 
-func (s *AFPService) handleEnumerate(req *FPEnumerateReq) (*FPEnumerateRes, int32) {
-	log.Printf("[AFP] FPEnumerate: DirID=%d Path=%q StartIndex=%d ReqCount=%d", req.DirID, req.Path, req.StartIndex, req.ReqCount)
+// enumerateReplyHeaderLen is the fixed header size of an FPEnumerate reply
+// (FileBitmap+DirBitmap+ActCount); each entry is appended after it.
+const enumerateReplyHeaderLen = 6
 
+func (s *Service) handleEnumerate(req *FPEnumerateReq) (*FPEnumerateRes, int32) {
+	netlog.Debug("[AFP] FPEnumerate: DirID=%d Path=%q StartIndex=%d ReqCount=%d", req.DirID, req.Path, req.StartIndex, req.ReqCount)
+
+	if errCode := validateEnumerateRequest(req); errCode != NoErr {
+		return &FPEnumerateRes{}, errCode
+	}
+	volFS := s.fsForVolume(req.VolumeID)
+	if volFS == nil {
+		return &FPEnumerateRes{}, ErrParamErr
+	}
+
+	targetPath, errCode := s.resolveEnumerateTarget(req, volFS)
+	if errCode != NoErr {
+		return &FPEnumerateRes{}, errCode
+	}
+
+	entries, visibleCount, usedRangeFS, errCode := s.readEnumerateEntries(volFS, targetPath, req)
+	if errCode != NoErr {
+		return &FPEnumerateRes{}, errCode
+	}
+
+	resData, actCount, totalVisible := s.packEnumerateEntries(req, targetPath, entries, visibleCount, usedRangeFS)
+
+	res := &FPEnumerateRes{
+		FileBitmap: req.FileBitmap,
+		DirBitmap:  req.DirBitmap,
+		ActCount:   actCount,
+		Data:       resData,
+	}
+
+	errCode = NoErr
+	if actCount == 0 && usedRangeFS && len(entries) == 0 {
+		// Range-capable backends signal end-of-directory by returning an empty
+		// page for the requested start index.
+		errCode = ErrObjectNotFound
+	}
+	if actCount == 0 && req.StartIndex > uint16(totalVisible) {
+		errCode = ErrObjectNotFound
+	}
+
+	return res, errCode
+}
+
+// validateEnumerateRequest checks the caller-supplied bitmaps, path type, and
+// MaxReply budget. It does not touch the filesystem.
+func validateEnumerateRequest(req *FPEnumerateReq) int32 {
 	if req.FileBitmap == 0 && req.DirBitmap == 0 {
-		return &FPEnumerateRes{}, ErrBitmapErr
+		return ErrBitmapErr
 	}
 	if req.FileBitmap&^enumerateFileBitmapMask != 0 || req.DirBitmap&^enumerateDirBitmapMask != 0 {
-		return &FPEnumerateRes{}, ErrBitmapErr
-	}
-
-	if _, ok := s.volumeRootByID(req.VolumeID); !ok {
-		return &FPEnumerateRes{}, ErrParamErr
+		return ErrBitmapErr
 	}
 	if req.Path != "" && req.PathType != 1 && req.PathType != 2 {
-		return &FPEnumerateRes{}, ErrParamErr
+		return ErrParamErr
 	}
-	const enumerateReplyHeaderLen = 6
 	if req.MaxReply < uint32(enumerateReplyHeaderLen+minEnumerateEntryLen(req.FileBitmap, req.DirBitmap)) {
-		return &FPEnumerateRes{}, ErrParamErr
+		return ErrParamErr
 	}
+	return NoErr
+}
 
+// resolveEnumerateTarget walks DirID + Path to the directory whose contents
+// will be enumerated. Returns the on-disk target path or an AFP error.
+func (s *Service) resolveEnumerateTarget(req *FPEnumerateReq, volFS FileSystem) (string, int32) {
+	if _, ok := s.volumeRootByID(req.VolumeID); !ok {
+		return "", ErrParamErr
+	}
 	parentPath, ok := s.getDIDPath(req.VolumeID, req.DirID)
 	if !ok {
-		return &FPEnumerateRes{}, ErrDirNotFound
+		return "", ErrDirNotFound
 	}
-
 	targetPath := parentPath
 	if req.Path != "" {
 		resolved, errCode := s.resolvePath(parentPath, req.Path, req.PathType)
 		if errCode != NoErr {
-			if errCode == ErrAccessDenied {
-				return &FPEnumerateRes{}, ErrAccessDenied
-			}
-			return &FPEnumerateRes{}, ErrParamErr
+			return "", ErrParamErr
 		}
 		targetPath = resolved
 	}
 
-	info, err := s.fs.Stat(targetPath)
+	info, err := volFS.Stat(targetPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrPermission) {
-			return &FPEnumerateRes{}, ErrAccessDenied
+			return "", ErrAccessDenied
 		}
-		return &FPEnumerateRes{}, ErrDirNotFound
+		return "", ErrDirNotFound
 	}
 	if !info.IsDir() {
-		return &FPEnumerateRes{}, ErrObjectTypeErr
+		return "", ErrObjectTypeErr
 	}
+	return targetPath, NoErr
+}
 
-	entries, err := s.fs.ReadDir(targetPath)
+// readEnumerateEntries lists targetPath, preferring a range-aware backend when
+// available so paging stays cheap on virtual volumes. visibleCount is the
+// total entry count when the backend is range-aware (zero otherwise — the
+// pager increments it as it walks).
+func (s *Service) readEnumerateEntries(volFS FileSystem, targetPath string, req *FPEnumerateReq) ([]fs.DirEntry, int, bool, int32) {
+	if volFS.Capabilities().ReadDirRange {
+		entries, reqVisibleCount, err := volFS.ReadDirRange(targetPath, req.StartIndex, req.ReqCount)
+		if err == nil {
+			return entries, int(reqVisibleCount), true, NoErr
+		}
+		if !isNotSupported(err) {
+			return nil, 0, false, ErrDirNotFound
+		}
+	}
+	entries, err := volFS.ReadDir(targetPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrPermission) {
-			return &FPEnumerateRes{}, ErrAccessDenied
+			return nil, 0, false, ErrAccessDenied
 		}
-		return &FPEnumerateRes{}, ErrDirNotFound
+		return nil, 0, false, ErrDirNotFound
 	}
+	return entries, 0, false, NoErr
+}
 
+// packEnumerateEntries pages, filters, and serialises directory entries into
+// the FPEnumerate reply payload. Returns the wire bytes, the actual entry
+// count emitted, and the total visible entry count (which the caller uses to
+// detect "start index past end").
+func (s *Service) packEnumerateEntries(req *FPEnumerateReq, targetPath string, entries []fs.DirEntry, visibleCount int, usedRangeFS bool) ([]byte, uint16, int) {
 	resData := new(bytes.Buffer)
 	actCount := uint16(0)
 	idx := uint16(1)
-	visibleCount := 0
 
 	for _, entry := range entries {
 		if s.isMetadataArtifact(entry.Name(), entry.IsDir(), req.VolumeID) {
 			continue
 		}
-
 		if entry.IsDir() && req.DirBitmap == 0 {
 			continue
 		}
 		if !entry.IsDir() && req.FileBitmap == 0 {
 			continue
 		}
-		visibleCount++
+		if !usedRangeFS {
+			visibleCount++
+		}
 
-		if idx < req.StartIndex {
+		if !usedRangeFS && idx < req.StartIndex {
 			idx++
 			continue
 		}
@@ -115,62 +186,62 @@ func (s *AFPService) handleEnumerate(req *FPEnumerateReq) (*FPEnumerateRes, int3
 			break
 		}
 
-		fullPath := filepath.Join(targetPath, entry.Name())
-		info, err := s.fs.Stat(fullPath)
-		if err != nil {
+		entryBytes, ok := s.packEnumerateEntry(req.VolumeID, targetPath, entry, req.FileBitmap, req.DirBitmap)
+		if !ok {
 			continue
 		}
-
-		entryBuf := new(bytes.Buffer)
-		entryBuf.WriteByte(0)
-
-		isDir := entry.IsDir()
-		if isDir {
-			entryBuf.WriteByte(0x80)
-		} else {
-			entryBuf.WriteByte(0x00)
-		}
-
-		bitmap := req.FileBitmap
-		if isDir {
-			bitmap = req.DirBitmap
-		}
-
-		s.packFileInfo(entryBuf, req.VolumeID, bitmap, targetPath, entry.Name(), info, isDir)
-
-		entryBytes := entryBuf.Bytes()
-		entryLength := len(entryBytes)
-
-		if entryLength%2 != 0 {
-			entryBuf.WriteByte(0)
-			entryBytes = entryBuf.Bytes()
-			entryLength++
-		}
-
-		entryBytes[0] = byte(entryLength)
-
 		if uint32(enumerateReplyHeaderLen+resData.Len()+len(entryBytes)) > req.MaxReply {
 			break
 		}
-
 		resData.Write(entryBytes)
 		actCount++
 		idx++
 	}
+	return resData.Bytes(), actCount, visibleCount
+}
 
-	res := &FPEnumerateRes{
-		FileBitmap: req.FileBitmap,
-		DirBitmap:  req.DirBitmap,
-		ActCount:   actCount,
-		Data:       resData.Bytes(),
+// packEnumerateEntry serialises a single FPEnumerate result entry. It
+// returns the entry's wire bytes (with the leading length byte populated
+// and any trailing pad applied) and ok=false if the entry should be
+// skipped (Stat failure). The volFS lookup is repeated here rather than
+// threaded in so the helper stays self-contained.
+func (s *Service) packEnumerateEntry(volumeID uint16, parentPath string, entry fs.DirEntry, fileBitmap, dirBitmap uint16) ([]byte, bool) {
+	volFS := s.fsForVolume(volumeID)
+	if volFS == nil {
+		return nil, false
+	}
+	fullPath := filepath.Join(parentPath, entry.Name())
+	info, err := volFS.Stat(fullPath)
+	if err != nil {
+		return nil, false
 	}
 
-	errCode := NoErr
-	if actCount == 0 && req.StartIndex > uint16(visibleCount) {
-		errCode = ErrObjectNotFound
+	isDir := entry.IsDir()
+	if EnableAppleDoubleIconFallback && !isDir {
+		s.IngestAppleDoubleIcons(volumeID, fullPath)
 	}
 
-	return res, errCode
+	entryBuf := new(bytes.Buffer)
+	entryBuf.WriteByte(0)
+	if isDir {
+		entryBuf.WriteByte(0x80)
+	} else {
+		entryBuf.WriteByte(0x00)
+	}
+
+	bitmap := fileBitmap
+	if isDir {
+		bitmap = dirBitmap
+	}
+	s.packFileInfo(entryBuf, volumeID, bitmap, parentPath, entry.Name(), info, isDir)
+
+	entryBytes := entryBuf.Bytes()
+	if len(entryBytes)%2 != 0 {
+		entryBuf.WriteByte(0)
+		entryBytes = entryBuf.Bytes()
+	}
+	entryBytes[0] = byte(len(entryBytes))
+	return entryBytes, true
 }
 
 func minEnumerateEntryLen(fileBitmap, dirBitmap uint16) int {
@@ -233,12 +304,12 @@ const (
 		DirBitmapProDOSInfo
 )
 
-func (s *AFPService) handleCloseDir(req *FPCloseDirReq) (*FPCloseDirRes, int32) {
-	log.Printf("[AFP] FPCloseDir called for DirID %d on Vol %d", req.DirID, req.VolumeID)
+func (s *Service) handleCloseDir(req *FPCloseDirReq) (*FPCloseDirRes, int32) {
+	netlog.Debug("[AFP] FPCloseDir called for DirID %d on Vol %d", req.DirID, req.VolumeID)
 	return &FPCloseDirRes{}, NoErr
 }
 
-func (s *AFPService) handleSetDirParms(req *FPSetDirParmsReq) (*FPSetDirParmsRes, int32) {
+func (s *Service) handleSetDirParms(req *FPSetDirParmsReq) (*FPSetDirParmsRes, int32) {
 	if s.volumeIsReadOnly(req.VolumeID) {
 		return &FPSetDirParmsRes{}, ErrVolLocked
 	}
@@ -250,7 +321,7 @@ func (s *AFPService) handleSetDirParms(req *FPSetDirParmsReq) (*FPSetDirParmsRes
 	return &FPSetDirParmsRes{}, NoErr
 }
 
-func (s *AFPService) handleCreateDir(req *FPCreateDirReq) (*FPCreateDirRes, int32) {
+func (s *Service) handleCreateDir(req *FPCreateDirReq) (*FPCreateDirRes, int32) {
 	if s.fs == nil {
 		return &FPCreateDirRes{}, ErrAccessDenied
 	}
@@ -261,7 +332,11 @@ func (s *AFPService) handleCreateDir(req *FPCreateDirReq) (*FPCreateDirRes, int3
 	if errCode != NoErr {
 		return &FPCreateDirRes{}, errCode
 	}
-	if err := s.fs.CreateDir(targetPath); err != nil {
+	backend := s.fsForPath(targetPath)
+	if backend == nil {
+		return &FPCreateDirRes{}, ErrAccessDenied
+	}
+	if err := backend.CreateDir(targetPath); err != nil {
 		if os.IsExist(err) {
 			return &FPCreateDirRes{}, ErrObjectExists
 		}

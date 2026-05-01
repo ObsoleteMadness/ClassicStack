@@ -1,3 +1,5 @@
+//go:build afp || all
+
 package afp
 
 import (
@@ -6,7 +8,7 @@ import (
 )
 
 func TestAFPService_resolvePath(t *testing.T) {
-	s := NewAFPService("TestServer", []VolumeConfig{
+	s := NewService("TestServer", []VolumeConfig{
 		{Name: "Vol1", Path: "/volumes/share"},
 	}, nil, nil)
 
@@ -114,9 +116,9 @@ func TestAFPService_resolvePath(t *testing.T) {
 }
 
 func TestAFPService_resolvePath_ReservedCharsDisabled(t *testing.T) {
-	s := NewAFPService("TestServer", []VolumeConfig{
+	s := NewService("TestServer", []VolumeConfig{
 		{Name: "Vol1", Path: "/volumes/share"},
-	}, nil, nil, AFPOptions{DecomposedFilenames: false})
+	}, nil, nil, Options{DecomposedFilenames: false})
 
 	gotPath, gotCode := s.resolvePath("/volumes/share", "docs/file.txt", 2)
 	if gotCode != ErrAccessDenied {

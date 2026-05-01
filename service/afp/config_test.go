@@ -1,3 +1,5 @@
+//go:build afp || all
+
 package afp
 
 import "testing"

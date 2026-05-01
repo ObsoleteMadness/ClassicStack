@@ -6,9 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pgodw/omnitalk/go/appletalk"
-	"github.com/pgodw/omnitalk/go/netlog"
-	"github.com/pgodw/omnitalk/go/port"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
+	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/port"
 )
 
 const (
@@ -23,8 +24,8 @@ type FrameSender interface{ SendFrame(frame []byte) error }
 type LinkManager interface {
 	RegisterPort(p *Port)
 	InboundFrame(p *Port, frame LLAPFrame)
-	TransmitUnicast(p *Port, network uint16, node uint8, d appletalk.Datagram)
-	TransmitBroadcast(p *Port, d appletalk.Datagram)
+	TransmitUnicast(p *Port, network uint16, node uint8, d ddp.Datagram)
+	TransmitBroadcast(p *Port, d ddp.Datagram)
 }
 
 type Port struct {
@@ -78,6 +79,13 @@ func New(seedNetwork uint16, seedZoneName []byte, respondToEnq bool, desiredNode
 }
 
 func (p *Port) ConfigureSendFrame(f func(frame []byte) error) { p.sendFrameFunc = f }
+
+// SetFrameSender wires the LocalTalk Port to a FrameSender backend. It
+// is the interface-shaped counterpart to ConfigureSendFrame and the
+// preferred way to attach new backends; ConfigureSendFrame remains for
+// callers that already pass closures.
+func (p *Port) SetFrameSender(fs FrameSender) { p.sendFrameFunc = fs.SendFrame }
+
 func (p *Port) ShortString() string                           { return "LocalTalk" }
 func (p *Port) SetLLAPLinkManager(m LinkManager)              { p.linkManager = m }
 func (p *Port) SetNodeIDChangeHook(hook func(node uint8))     { p.onNodeIDChange = hook }
@@ -109,7 +117,7 @@ func (p *Port) SendRawLLAPFrame(frame LLAPFrame) error {
 	return p.sendFrameFunc(b)
 }
 
-func (p *Port) BuildDataFrame(dst uint8, d appletalk.Datagram) (LLAPFrame, error) {
+func (p *Port) BuildDataFrame(dst uint8, d ddp.Datagram) (LLAPFrame, error) {
 	p.mu.Lock()
 	src := p.node
 	network := p.network
@@ -132,17 +140,17 @@ func (p *Port) BuildDataFrame(dst uint8, d appletalk.Datagram) (LLAPFrame, error
 	return LLAPFrame{DestinationNode: dst, SourceNode: src, Type: llapAppleTalkLongHeader, Payload: payload}, nil
 }
 
-func (p *Port) ParseInboundDataFrame(frame LLAPFrame) (appletalk.Datagram, error) {
+func (p *Port) ParseInboundDataFrame(frame LLAPFrame) (ddp.Datagram, error) {
 	switch frame.Type {
 	case llapAppleTalkShortHeader:
-		return appletalk.DatagramFromShortHeaderBytes(frame.DestinationNode, frame.SourceNode, frame.Payload)
+		return ddp.DatagramFromShortHeaderBytes(frame.DestinationNode, frame.SourceNode, frame.Payload)
 	case llapAppleTalkLongHeader:
 		p.mu.Lock()
 		verifyChecksums := p.verifyChecksums
 		p.mu.Unlock()
-		return appletalk.DatagramFromLongHeaderBytes(frame.Payload, verifyChecksums)
+		return ddp.DatagramFromLongHeaderBytes(frame.Payload, verifyChecksums)
 	default:
-		return appletalk.Datagram{}, fmt.Errorf("not a LocalTalk data frame: 0x%02X", frame.Type)
+		return ddp.Datagram{}, fmt.Errorf("not a LocalTalk data frame: 0x%02X", frame.Type)
 	}
 }
 
@@ -296,7 +304,7 @@ func (p *Port) InboundFrame(frame []byte) {
 	dst, src, typ := parsed.DestinationNode, parsed.SourceNode, parsed.Type
 	switch typ {
 	case llapAppleTalkShortHeader:
-		d, err := appletalk.DatagramFromShortHeaderBytes(dst, src, parsed.Payload)
+		d, err := ddp.DatagramFromShortHeaderBytes(dst, src, parsed.Payload)
 		if err != nil {
 			netlog.Debug("%s failed to parse short-header AppleTalk datagram from LocalTalk frame: %v", p.ShortString(), err)
 		} else {
@@ -304,7 +312,7 @@ func (p *Port) InboundFrame(frame []byte) {
 			p.router.Inbound(d, p)
 		}
 	case llapAppleTalkLongHeader:
-		d, err := appletalk.DatagramFromLongHeaderBytes(parsed.Payload, p.verifyChecksums)
+		d, err := ddp.DatagramFromLongHeaderBytes(parsed.Payload, p.verifyChecksums)
 		if err != nil {
 			netlog.Debug("%s failed to parse long-header AppleTalk datagram from LocalTalk frame: %v", p.ShortString(), err)
 		} else {
@@ -333,7 +341,7 @@ func (p *Port) InboundFrame(frame []byte) {
 	}
 }
 
-func (p *Port) Unicast(network uint16, node uint8, d appletalk.Datagram) {
+func (p *Port) Unicast(network uint16, node uint8, d ddp.Datagram) {
 	if p.linkManager != nil {
 		p.linkManager.TransmitUnicast(p, network, node, d)
 		return
@@ -358,7 +366,7 @@ func (p *Port) Unicast(network uint16, node uint8, d appletalk.Datagram) {
 	_ = p.sendFrameFunc(append([]byte{node, p.node, llapAppleTalkLongHeader}, b...))
 }
 
-func (p *Port) Broadcast(d appletalk.Datagram) {
+func (p *Port) Broadcast(d ddp.Datagram) {
 	if p.linkManager != nil {
 		p.linkManager.TransmitBroadcast(p, d)
 		return
@@ -375,7 +383,7 @@ func (p *Port) Broadcast(d appletalk.Datagram) {
 	_ = p.sendFrameFunc(append([]byte{0xFF, p.node, llapAppleTalkShortHeader}, b...))
 }
 
-func (p *Port) Multicast(zoneName []byte, d appletalk.Datagram) {
+func (p *Port) Multicast(zoneName []byte, d ddp.Datagram) {
 	netlog.LogDatagramMulticast(zoneName, d, p)
 	p.Broadcast(d)
 }

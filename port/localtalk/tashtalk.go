@@ -10,9 +10,9 @@ import (
 	"time"
 
 	serial "github.com/jacobsa/go-serial/serial"
-	"github.com/pgodw/omnitalk/go/netlog"
+	"github.com/pgodw/omnitalk/netlog"
 
-	"github.com/pgodw/omnitalk/go/port"
+	"github.com/pgodw/omnitalk/port"
 )
 
 type TashTalkPort struct {
@@ -29,7 +29,7 @@ func NewTashTalkPort(serialPort string, seedNetwork uint16, seedZoneName []byte)
 	base.SetRTSCTSManagedByTransport(true)
 	base.SetCTSResponseTimeout(25 * time.Millisecond)
 	p := &TashTalkPort{Port: base, serialPort: serialPort, stop: make(chan struct{})}
-	p.ConfigureSendFrame(p.sendFrame)
+	p.SetFrameSender(p)
 	p.SetNodeIDChangeHook(p.setNodeID)
 	return p
 }
@@ -85,6 +85,11 @@ func (p *TashTalkPort) Stop() error {
 	}
 	return p.Port.Stop()
 }
+
+// SendFrame implements FrameSender by transmitting frame over the
+// TashTalk serial link with the protocol's framing byte and FCS
+// appended.
+func (p *TashTalkPort) SendFrame(frame []byte) error { return p.sendFrame(frame) }
 
 func (p *TashTalkPort) sendFrame(frame []byte) error {
 	withFCS := appendFCS(frame)

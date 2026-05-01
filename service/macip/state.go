@@ -1,3 +1,5 @@
+//go:build macip || all
+
 package macip
 
 import (
@@ -6,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/pgodw/omnitalk/go/netlog"
+	"github.com/pgodw/omnitalk/netlog"
 )
 
 type savedLease struct {

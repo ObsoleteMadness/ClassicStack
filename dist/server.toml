@@ -1,0 +1,59 @@
+[LToUdp]
+# LocalTalk over UDP Settings (used by Mini vMac UDP builds and SNOW emu)
+enabled = true                  # Enable LToUDP - true for on, false for off
+seed_network = 1                # LToUDP seed network number
+seed_zone = "LToUDP Network"
+
+[TashTalk]
+# TashTalk is a PIC-based RS422 LocalTalk to serial adaptor
+port = ""                       # blank to disable, otherwise the serial port to use (eg COM1, /dev/ttyAMA0)
+seed_network = 2
+seed_zone = "TashTalk Network"
+
+[EtherTalk]
+# EtherTalk is a pcap-based network bridge
+backend = "pcap"                # supported: pcap, tap, tun. Leave blank to disable.
+device = ""                     # PCap device name. Use -list-pcap-devices to see candidates.
+hw_address = "DE:AD:BE:EF:CA:FE"
+seed_network_min = 3
+seed_network_max = 5
+seed_zone = "EtherTalk Network"
+bridge_mode = "auto"            # auto (default), ethernet, or wifi
+bridge_host_mac = ""
+
+[MacIP]
+# MacIP Gateway Settings. Allows TCP over DDP.
+enabled = true
+mode = "pcap"                   # pcap or nat
+zone = ""
+nat_subnet = ""
+nat_gw = ""
+lease_file = "leases.txt"
+ip_gateway = ""
+dhcp_relay = true
+nameserver = "1.1.1.1"
+
+[AFP]
+enabled = true
+name = "OmniTalk"
+zone = "EtherTalk Network"
+protocols = "ddp,tcp"
+binding = ":548"
+extension_map = "extmap.conf"
+
+# AFP Volume Configuration — each volume gets an [AFP.Volumes.<key>] section.
+[AFP.Volumes.Default]
+name = "Welcome"
+path = "./Sample Volume"
+read_only = true
+rebuild_desktop_db = true
+
+[AFP.Volumes.Shared]
+name = "Shared"
+path = "./shared"
+rebuild_desktop_db = false
+
+[Logging]
+level = "warn"
+parse_packets = false
+log_traffic = false

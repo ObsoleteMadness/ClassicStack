@@ -1,11 +1,13 @@
+//go:build afp || all
+
 package afp
 
 import (
-	"log"
+	"github.com/pgodw/omnitalk/netlog"
 	"time"
 )
 
-func (s *AFPService) handleGetSrvrInfo(req *FPGetSrvrInfoReq) (*FPGetSrvrInfoRes, error) {
+func (s *Service) handleGetSrvrInfo(req *FPGetSrvrInfoReq) (*FPGetSrvrInfoRes, error) {
 	return &FPGetSrvrInfoRes{
 		MachineType: "Macintosh",
 		AFPVersions: []string{Version20, Version21},
@@ -15,10 +17,7 @@ func (s *AFPService) handleGetSrvrInfo(req *FPGetSrvrInfoReq) (*FPGetSrvrInfoRes
 	}, nil
 }
 
-func (s *AFPService) handleGetSrvrParms(req *FPGetSrvrParmsReq) (*FPGetSrvrParmsRes, int32) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
+func (s *Service) handleGetSrvrParms(req *FPGetSrvrParmsReq) (*FPGetSrvrParmsRes, int32) {
 	res := &FPGetSrvrParmsRes{
 		ServerTime: toAFPTime(time.Now()),
 		Volumes:    make([]VolInfo, len(s.Volumes)),
@@ -38,49 +37,40 @@ func (s *AFPService) handleGetSrvrParms(req *FPGetSrvrParmsReq) (*FPGetSrvrParms
 	return res, NoErr
 }
 
-func (s *AFPService) handleLogin(req *FPLoginReq) (*FPLoginRes, int32) {
-	log.Printf("[AFP] Login attempt: Version=%q, UAM=%q", req.AFPVersion, req.UAM)
+func (s *Service) handleLogin(req *FPLoginReq) (*FPLoginRes, int32) {
+	netlog.Debug("[AFP] Login attempt: Version=%q, UAM=%q", req.AFPVersion, req.UAM)
 
 	if req.AFPVersion != Version20 && req.AFPVersion != Version21 {
 		return &FPLoginRes{}, ErrBadVersNum
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if req.UAM == UAMNoUserAuthent {
 		// Nothing else required
 	} else if req.UAM == UAMCleartxtPasswd {
-		log.Printf("[AFP] Cleartxt Passwrd for User=%q", req.Username)
-		expectedPw, exists := s.users[req.Username]
-		if !exists || expectedPw != req.Password {
+		netlog.Debug("[AFP] Cleartxt Passwrd for User=%q", req.Username)
+		if !s.sessions.checkPassword(req.Username, req.Password) {
 			return &FPLoginRes{}, ErrUserNotAuth
 		}
 	} else {
 		return &FPLoginRes{}, ErrBadUAM
 	}
 
-	sRefNum := s.nextSRefNum
-	s.nextSRefNum++
-
 	return &FPLoginRes{
-		SRefNum:  sRefNum,
+		SRefNum:  s.sessions.allocSRef(),
 		IDNumber: 0,
 	}, NoErr
 }
 
 // AddUser adds a user to the AFP service for authentication.
-func (s *AFPService) AddUser(username, password string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.users[username] = password
+func (s *Service) AddUser(username, password string) {
+	s.sessions.addUser(username, password)
 }
 
-func (s *AFPService) handleLogout(req *FPLogoutReq) (*FPLogoutRes, int32) {
+func (s *Service) handleLogout(req *FPLogoutReq) (*FPLogoutRes, int32) {
 	return &FPLogoutRes{}, NoErr
 }
 
-func (s *AFPService) handleMapID(req *FPMapIDReq) (*FPMapIDRes, int32) {
+func (s *Service) handleMapID(req *FPMapIDReq) (*FPMapIDRes, int32) {
 	name := "root"
 	if req.Function == 2 || req.Function == 4 {
 		name = "wheel"
@@ -88,6 +78,6 @@ func (s *AFPService) handleMapID(req *FPMapIDReq) (*FPMapIDRes, int32) {
 	return &FPMapIDRes{Name: name}, NoErr
 }
 
-func (s *AFPService) handleMapName(req *FPMapNameReq) (*FPMapNameRes, int32) {
+func (s *Service) handleMapName(req *FPMapNameReq) (*FPMapNameRes, int32) {
 	return &FPMapNameRes{ID: 0}, NoErr
 }

@@ -1,17 +1,19 @@
 package llap
 
 import (
+	"context"
 	"fmt"
 	"math/bits"
 	"math/rand"
 	"sync"
 	"time"
 
-	"github.com/pgodw/omnitalk/go/appletalk"
-	"github.com/pgodw/omnitalk/go/netlog"
-	"github.com/pgodw/omnitalk/go/port"
-	"github.com/pgodw/omnitalk/go/port/localtalk"
-	"github.com/pgodw/omnitalk/go/service"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
+	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/port"
+	"github.com/pgodw/omnitalk/port/localtalk"
+	"github.com/pgodw/omnitalk/service"
 )
 
 const (
@@ -26,7 +28,7 @@ const (
 
 type ddpInboundRouter interface {
 	service.Router
-	Inbound(datagram appletalk.Datagram, rxPort port.Port)
+	Inbound(datagram ddp.Datagram, rxPort port.Port)
 }
 
 type Service struct {
@@ -36,6 +38,10 @@ type Service struct {
 	mu    sync.Mutex
 	ports map[*localtalk.Port]*portState
 	rand  *rand.Rand
+
+	wg     sync.WaitGroup
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 type portState struct {
@@ -56,19 +62,29 @@ type portState struct {
 }
 
 func New() *Service {
+	// Pre-arm a never-cancelled ctx so handlers reached before Start (in
+	// tests that exercise transmit paths directly) don't dereference nil.
+	// Start replaces this with a real ctx derived from its caller.
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Service{
-		stop:  make(chan struct{}),
-		ports: make(map[*localtalk.Port]*portState),
-		rand:  rand.New(rand.NewSource(time.Now().UnixNano())),
+		stop:   make(chan struct{}),
+		ports:  make(map[*localtalk.Port]*portState),
+		rand:   rand.New(rand.NewSource(time.Now().UnixNano())),
+		ctx:    ctx,
+		cancel: cancel,
 	}
 }
 
-func (s *Service) Start(router service.Router) error {
+func (s *Service) Start(ctx context.Context, router service.Router) error {
 	r, ok := router.(ddpInboundRouter)
 	if !ok {
 		return fmt.Errorf("llap: router does not support inbound datagram delivery")
 	}
 	s.router = r
+	if s.cancel != nil {
+		s.cancel()
+	}
+	s.ctx, s.cancel = context.WithCancel(ctx)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, st := range s.ports {
@@ -79,15 +95,19 @@ func (s *Service) Start(router service.Router) error {
 
 func (s *Service) Stop() error {
 	close(s.stop)
+	if s.cancel != nil {
+		s.cancel()
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for _, st := range s.ports {
 		close(st.stop)
 	}
+	s.mu.Unlock()
+	s.wg.Wait()
 	return nil
 }
 
-func (s *Service) Inbound(_ appletalk.Datagram, _ port.Port) {}
+func (s *Service) Inbound(_ ddp.Datagram, _ port.Port) {}
 
 func (s *Service) RegisterPort(p *localtalk.Port) {
 	s.mu.Lock()
@@ -139,7 +159,7 @@ func (s *Service) InboundFrame(p *localtalk.Port, frame localtalk.LLAPFrame) {
 	}
 }
 
-func (s *Service) TransmitUnicast(p *localtalk.Port, network uint16, node uint8, d appletalk.Datagram) {
+func (s *Service) TransmitUnicast(p *localtalk.Port, network uint16, node uint8, d ddp.Datagram) {
 	if network != 0 && network != p.Network() {
 		netlog.Debug("[LLAP] %s dropping unicast to network=%d local-network=%d", p.ShortString(), network, p.Network())
 		return
@@ -168,7 +188,7 @@ func (s *Service) TransmitUnicast(p *localtalk.Port, network uint16, node uint8,
 	}
 }
 
-func (s *Service) TransmitBroadcast(p *localtalk.Port, d appletalk.Datagram) {
+func (s *Service) TransmitBroadcast(p *localtalk.Port, d ddp.Datagram) {
 	st := s.stateFor(p)
 	if !st.isClaimed() {
 		netlog.Debug("[LLAP] %s dropping broadcast while node is unclaimed", p.ShortString())
@@ -192,7 +212,11 @@ func (s *Service) startPortLocked(st *portState) {
 		return
 	}
 	st.started = true
-	go s.acquireLoop(st)
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.acquireLoop(st)
+	}()
 }
 
 func (s *Service) acquireLoop(st *portState) {
@@ -200,6 +224,8 @@ func (s *Service) acquireLoop(st *portState) {
 	defer ticker.Stop()
 	for {
 		select {
+		case <-s.ctx.Done():
+			return
 		case <-s.stop:
 			return
 		case <-st.stop:
@@ -315,14 +341,37 @@ func (s *Service) runDirectedTransmit(st *portState, frame localtalk.LLAPFrame) 
 		st.ctsCh = make(chan struct{}, 1)
 		ctsCh := st.ctsCh
 		st.mu.Unlock()
+		ctsTimer := time.NewTimer(ctsTimeout)
 		select {
 		case <-ctsCh:
+			ctsTimer.Stop()
 			if err := s.sendFrame(st, frame); err != nil {
 				return err
 			}
 			netlog.Debug("[LLAP] %s transmit success dst=%d attempt=%d local-backoff=%d", st.port.ShortString(), frame.DestinationNode, attempt, localBackoff)
 			return nil
-		case <-time.After(ctsTimeout):
+		case <-st.stop:
+			ctsTimer.Stop()
+			st.mu.Lock()
+			st.expectCTSFrom = 0
+			st.ctsCh = nil
+			st.mu.Unlock()
+			return fmt.Errorf("llap: port stopped during CTS wait")
+		case <-s.stop:
+			ctsTimer.Stop()
+			st.mu.Lock()
+			st.expectCTSFrom = 0
+			st.ctsCh = nil
+			st.mu.Unlock()
+			return fmt.Errorf("llap: service stopped during CTS wait")
+		case <-s.ctx.Done():
+			ctsTimer.Stop()
+			st.mu.Lock()
+			st.expectCTSFrom = 0
+			st.ctsCh = nil
+			st.mu.Unlock()
+			return fmt.Errorf("llap: context cancelled during CTS wait: %w", s.ctx.Err())
+		case <-ctsTimer.C:
 			st.mu.Lock()
 			st.collisionHistory |= 1
 			collisionHistory := st.collisionHistory

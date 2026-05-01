@@ -1,3 +1,5 @@
+//go:build macip || all
+
 // Package macip implements a minimal DHCP client used by the MacIP
 // gateway. It performs DHCP discover/request sequences on behalf of
 // AppleTalk clients by fabricating per-node Ethernet addresses and
@@ -5,14 +7,16 @@
 package macip
 
 import (
+	"context"
 	"encoding/binary"
 	"math/rand"
 	"net"
 	"sync"
 	"time"
 
-	"github.com/pgodw/omnitalk/go/netlog"
-	"github.com/pgodw/omnitalk/go/port/nat"
+	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/pkg/hwaddr"
+	"github.com/pgodw/omnitalk/port/nat"
 )
 
 const (
@@ -89,6 +93,10 @@ type dhcpClient struct {
 	// link is the IPv4 link used to transmit/receive packets.
 	link *etherIPLink
 
+	// stop signals service shutdown; in-flight RequestIP calls abort
+	// instead of blocking on dhcpTimeout.
+	stop <-chan struct{}
+
 	// mu protects the pending map.
 	mu sync.Mutex
 	// pending maps DHCP transaction ids to active pendingDHCP entries.
@@ -96,10 +104,12 @@ type dhcpClient struct {
 }
 
 // newDHCPClient constructs a dhcpClient that will use the provided
-// IP link to perform DHCP transactions.
-func newDHCPClient(link *etherIPLink) *dhcpClient {
+// IP link to perform DHCP transactions. stop is the service's lifecycle
+// channel; once closed, in-flight DHCP transactions return early.
+func newDHCPClient(link *etherIPLink, stop <-chan struct{}) *dhcpClient {
 	return &dhcpClient{
 		link:    link,
+		stop:    stop,
 		pending: make(map[uint32]*pendingDHCP),
 	}
 }
@@ -120,14 +130,14 @@ func (c *dhcpClient) run(stop <-chan struct{}) {
 // fabricateMACForAT builds a locally administered Ethernet MAC from an
 // AppleTalk address, giving each Mac a stable identity for the DHCP server.
 func fabricateMACForAT(atNet uint16, atNode uint8) net.HardwareAddr {
-	// 0x02 = locally administered, unicast; last two bytes = "MI" (MacIP).
-	return net.HardwareAddr{0x02, byte(atNet >> 8), byte(atNet), atNode, 0x4D, 0x49}
+	e := hwaddr.MacIPEthernetFromAppleTalk(hwaddr.AppleTalk{Network: atNet, Node: atNode})
+	return e.HardwareAddr()
 }
 
 // RequestIP performs the full DHCP Discover→Offer→Request→Ack handshake for
 // the given AppleTalk node. If preferredIP is non-nil it is sent as option 50.
-// Returns nil if DHCP fails or times out.
-func (c *dhcpClient) RequestIP(atNet uint16, atNode uint8, preferredIP net.IP) *dhcpResult {
+// Returns nil if DHCP fails, times out, the service stops, or ctx is cancelled.
+func (c *dhcpClient) RequestIP(ctx context.Context, atNet uint16, atNode uint8, preferredIP net.IP) *dhcpResult {
 	xid := rand.Uint32()
 	fabMAC := fabricateMACForAT(atNet, atNode)
 	p := &pendingDHCP{
@@ -148,10 +158,18 @@ func (c *dhcpClient) RequestIP(atNet uint16, atNode uint8, preferredIP net.IP) *
 
 	c.sendDiscover(p, preferredIP)
 
+	timer := time.NewTimer(dhcpTimeout)
+	defer timer.Stop()
 	select {
 	case res := <-p.ch:
 		return res // nil on NAK
-	case <-time.After(dhcpTimeout):
+	case <-ctx.Done():
+		netlog.Debug("[macip-dhcp] aborting DHCP wait for AT %d.%d xid=0x%08x: %v", atNet, atNode, xid, ctx.Err())
+		return nil
+	case <-c.stop:
+		netlog.Debug("[macip-dhcp] aborting DHCP wait for AT %d.%d xid=0x%08x: service stopping", atNet, atNode, xid)
+		return nil
+	case <-timer.C:
 		netlog.Debug("[macip-dhcp] timeout waiting for Ack AT %d.%d xid=0x%08x", atNet, atNode, xid)
 		return nil
 	}

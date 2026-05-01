@@ -1,3 +1,5 @@
+//go:build afp || all
+
 /*
 Package asp implements the AppleTalk Session Protocol (ASP) as a omnitalk
 service. The ATP transaction layer is provided by go/service/atp; this file
@@ -13,15 +15,17 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"sync"
 	"time"
 
-	"github.com/pgodw/omnitalk/go/appletalk"
-	"github.com/pgodw/omnitalk/go/netlog"
-	"github.com/pgodw/omnitalk/go/port"
-	"github.com/pgodw/omnitalk/go/service"
-	"github.com/pgodw/omnitalk/go/service/afp"
-	"github.com/pgodw/omnitalk/go/service/atp"
-	"github.com/pgodw/omnitalk/go/service/zip"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
+	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/port"
+	"github.com/pgodw/omnitalk/service"
+	"github.com/pgodw/omnitalk/service/afp"
+	"github.com/pgodw/omnitalk/service/atp"
+	"github.com/pgodw/omnitalk/service/zip"
 )
 
 // ServerSocket is the well-known AppleTalk socket for the AFP/ASP server.
@@ -41,7 +45,7 @@ type Service struct {
 	maxCmdSize  int
 	quantumSize int
 
-	router          service.Router
+	router          service.DatagramRouter
 	registeredZones [][]byte
 
 	endpoint *atp.Endpoint
@@ -50,6 +54,13 @@ type Service struct {
 	onSessionOpen     func(*Session)
 	onSessionClose    func(*Session)
 	onSessionActivity func(*Session)
+
+	// lifeCtx is cancelled in Stop so background drain goroutines spawned
+	// for tickles, attentions, and write completions exit promptly instead
+	// of holding onto the ATP pending transaction past shutdown.
+	lifeCtx    context.Context
+	lifeCancel context.CancelFunc
+	wg         sync.WaitGroup
 }
 
 // Spec-to-implementation mapping notes:
@@ -63,7 +74,7 @@ type Service struct {
 // requestContext is what the host service threads through atp.HandleInbound
 // so the Sender bridge can use router.Reply on the way out.
 type requestContext struct {
-	d appletalk.Datagram
+	d ddp.Datagram
 	p port.Port
 }
 
@@ -99,6 +110,12 @@ func (s *Service) SetCommandHandler(handler afp.CommandHandler) {
 // Socket returns the socket number this service listens on.
 func (s *Service) Socket() uint8 { return ServerSocket }
 
+// MaxReadSize implements afp.Transport. Returns ASP's negotiated quantum so
+// AFP can cap per-read allocations (e.g. HTTP range requests for virtual
+// filesystems) to what one ASP reply can carry. Zero before Start runs
+// SPGetParms.
+func (s *Service) MaxReadSize() int { return s.quantumSize }
+
 // Start performs server-side initialization corresponding to:
 //   - SPGetParms (server end; server ASP client -> ASP)
 //   - SPInit (server end; server ASP client -> ASP)
@@ -106,8 +123,9 @@ func (s *Service) Socket() uint8 { return ServerSocket }
 // In this implementation, SPInit is represented by wiring the SLS endpoint and
 // validating ServiceStatusBlock size against QuantumSize before accepting
 // traffic.
-func (s *Service) Start(router service.Router) error {
+func (s *Service) Start(ctx context.Context, router service.Router) error {
 	s.router = router
+	s.lifeCtx, s.lifeCancel = context.WithCancel(ctx)
 
 	parms := s.SPGetParms()
 	s.maxCmdSize = int(parms.MaxCmdSize)
@@ -165,12 +183,26 @@ func (s *Service) Stop() error {
 	for _, z := range s.registeredZones {
 		s.nbp.UnregisterName([]byte(s.serverName), []byte(nbpType), z)
 	}
+	if s.lifeCancel != nil {
+		s.lifeCancel()
+	}
+	s.wg.Wait()
 	s.sm.Stop()
 	return nil
 }
 
+// drainCtx returns the lifecycle context for background drain goroutines.
+// Falls back to context.Background() if Start has not been called yet
+// (only happens in tests that exercise individual handlers in isolation).
+func (s *Service) drainCtx() context.Context {
+	if s.lifeCtx != nil {
+		return s.lifeCtx
+	}
+	return context.Background()
+}
+
 // Inbound accepts an incoming DDP datagram. ATP type only.
-func (s *Service) Inbound(d appletalk.Datagram, p port.Port) {
+func (s *Service) Inbound(d ddp.Datagram, p port.Port) {
 	if d.DDPType != atp.DDPTypeATP {
 		return
 	}
@@ -195,7 +227,7 @@ func (s *Service) sendBridge(src, dst atp.Address, payload []byte, hint any) err
 		s.router.Reply(rc.d, rc.p, atp.DDPTypeATP, payload)
 		return nil
 	}
-	dg := appletalk.Datagram{
+	dg := ddp.Datagram{
 		HopCount:           0,
 		DestinationNetwork: dst.Net,
 		DestinationNode:    dst.Node,
@@ -207,6 +239,43 @@ func (s *Service) sendBridge(src, dst atp.Address, payload []byte, hint any) err
 		Data:               append([]byte(nil), payload...),
 	}
 	return s.router.Route(dg, true)
+}
+
+// sessionedReplier is the shared prologue for SPCommand/SPWrite, both of
+// which carry (CmdBlock, SessionID, SeqNum) and require: cmdblock-size cap,
+// session lookup, activity touch, and ASP-level duplicate filter. Returns
+// (sess, true) on success; on rejection it has already replied and returns
+// (_, false). label is used for log lines so failures point to the right path.
+func (s *Service) sessionedReplier(label string, sessionID uint8, seqNum uint16, cmdBlockLen int, tid uint16, reply atp.Replier) (*Session, bool) {
+	if cmdBlockLen > s.effectiveMaxCmdSize() {
+		netlog.Debug("[ASP] %s: CmdBlockSize=%d exceeds MaxCmdSize=%d (SPErrorSizeErr)",
+			label, cmdBlockLen, s.effectiveMaxCmdSize())
+		reply(atp.ResponseMessage{
+			Buffers:   [][]byte{nil},
+			UserBytes: []uint32{errToUserBytes(SPErrorSizeErr)},
+		})
+		return nil, false
+	}
+	sess := s.sm.Get(sessionID)
+	if sess == nil || !sess.isOpen() {
+		netlog.Debug("[ASP] %s: unknown or closing SessRefNum=%d", label, sessionID)
+		reply(atp.ResponseMessage{
+			Buffers:   [][]byte{nil},
+			UserBytes: []uint32{errToUserBytes(SPErrorParamErr)},
+		})
+		return nil, false
+	}
+	sess.touchActivity()
+	if s.onSessionActivity != nil {
+		s.onSessionActivity(sess)
+	}
+	if !sess.CheckDuplicate(seqNum, tid) {
+		netlog.Debug("[ASP] %s: ASP-level duplicate seqNum=%d on sess=%d, dropping",
+			label, seqNum, sessionID)
+		reply(atp.ResponseMessage{Buffers: [][]byte{nil}})
+		return nil, false
+	}
+	return sess, true
 }
 
 // handleATPRequest is the server-side dispatcher for ASP network requests.
@@ -232,7 +301,7 @@ func (s *Service) handleATPRequest(in atp.IncomingRequest, reply atp.Replier) {
 		// no buffers reserved is invalid, but the engine will still create
 		// an RspCB for XO; we reply with an empty message to drain it).
 		sessID := uint8((in.UserBytes >> 16) & 0xFF)
-		if sess := s.sm.Get(sessID); sess != nil {
+		if sess := s.sm.Get(sessID); sess != nil && sess.isOpen() {
 			sess.touchActivity()
 			if s.onSessionActivity != nil {
 				s.onSessionActivity(sess)
@@ -351,8 +420,9 @@ func (s *Service) handleOpenSession(in atp.IncomingRequest, reply atp.Replier) {
 // maps them to server-side SPCloseSession semantics.
 func (s *Service) handleCloseSession(in atp.IncomingRequest, reply atp.Replier) {
 	pkt := ParseCloseSessPacket(in.UserBytes)
-	if s.sm.Get(pkt.SessionID) == nil {
-		netlog.Debug("[ASP] CloseSess: unknown SessRefNum=%d", pkt.SessionID)
+	sess := s.sm.Get(pkt.SessionID)
+	if sess == nil || !sess.isOpen() {
+		netlog.Debug("[ASP] CloseSess: unknown or already closing SessRefNum=%d", pkt.SessionID)
 		reply(atp.ResponseMessage{
 			Buffers:   [][]byte{nil},
 			UserBytes: []uint32{errToUserBytes(SPErrorParamErr)},
@@ -375,35 +445,7 @@ func (s *Service) handleCloseSession(in atp.IncomingRequest, reply atp.Replier) 
 func (s *Service) handleCommand(in atp.IncomingRequest, reply atp.Replier) {
 	receivedAt := time.Now()
 	pkt := ParseCommandPacket(in.UserBytes, in.Data)
-	if len(pkt.CmdBlock) > s.effectiveMaxCmdSize() {
-		netlog.Debug("[ASP] Command: CmdBlockSize=%d exceeds MaxCmdSize=%d (SPErrorSizeErr)",
-			len(pkt.CmdBlock), s.effectiveMaxCmdSize())
-		reply(atp.ResponseMessage{
-			Buffers:   [][]byte{nil},
-			UserBytes: []uint32{errToUserBytes(SPErrorSizeErr)},
-		})
-		return
-	}
-	sess := s.sm.Get(pkt.SessionID)
-	if sess == nil {
-		netlog.Debug("[ASP] Command: unknown SessRefNum=%d", pkt.SessionID)
-		reply(atp.ResponseMessage{
-			Buffers:   [][]byte{nil},
-			UserBytes: []uint32{errToUserBytes(SPErrorParamErr)},
-		})
-		return
-	}
-	sess.touchActivity()
-	if s.onSessionActivity != nil {
-		s.onSessionActivity(sess)
-	}
-	if !sess.CheckDuplicate(pkt.SeqNum, in.TID) {
-		netlog.Debug("[ASP] Command: ASP-level duplicate seqNum=%d on sess=%d, dropping",
-			pkt.SeqNum, pkt.SessionID)
-		// We must still respond — the ATP engine will use cached response
-		// from the RspCB if it sees a true ATP retransmit; for ASP-level
-		// duplicates we send an empty result.
-		reply(atp.ResponseMessage{Buffers: [][]byte{nil}})
+	if _, ok := s.sessionedReplier("Command", pkt.SessionID, pkt.SeqNum, len(pkt.CmdBlock), in.TID, reply); !ok {
 		return
 	}
 
@@ -412,24 +454,15 @@ func (s *Service) handleCommand(in atp.IncomingRequest, reply atp.Replier) {
 	if s.commandHandler != nil {
 		replyData, errCode = s.commandHandler.HandleCommand(pkt.CmdBlock)
 	}
+
+	// Per AFP-over-ASP spec: FPRead, FPWrite, FPEnumerate can succeed partially.
+	// If the reply exceeds QuantumSize, truncate it here but preserve the original
+	// AFP error code (e.g., ErrEOFErr or NoErr). The workstation will make
+	// additional requests at adjusted offsets to retrieve the rest.
 	if len(replyData) > s.effectiveQuantumSize() {
-		netlog.Debug("[ASP] Command: SessRefNum=%d CmdReplyDataSize=%d exceeds QuantumSize=%d (SPErrorSizeErr)",
-			pkt.SessionID, len(replyData), s.effectiveQuantumSize())
-		reply(atp.ResponseMessage{
-			Buffers:   [][]byte{nil},
-			UserBytes: []uint32{errToUserBytes(SPErrorSizeErr)},
-		})
-		return
-	}
-	if wsCap := bitmapMaxBytes(in.Bitmap); wsCap > 0 && len(replyData) > wsCap {
-		netlog.Debug("[ASP] Command: reply %d exceeds workstation capacity %d (SPErrorBufTooSmall)",
-			len(replyData), wsCap)
-		bufs := s.chunkResponse(replyData, in.Bitmap)
-		reply(atp.ResponseMessage{
-			Buffers:   bufs,
-			UserBytes: []uint32{errToUserBytes(SPErrorBufTooSmall)},
-		})
-		return
+		netlog.Debug("[ASP] Command: SessRefNum=%d CmdReplyDataSize=%d exceeds QuantumSize=%d (truncating, preserving errCode=%d)",
+			pkt.SessionID, len(replyData), s.effectiveQuantumSize(), errCode)
+		replyData = replyData[:s.effectiveQuantumSize()]
 	}
 	bufs := s.chunkResponse(replyData, in.Bitmap)
 	reply(atp.ResponseMessage{
@@ -463,32 +496,8 @@ func (s *Service) handleCommand(in atp.IncomingRequest, reply atp.Replier) {
 func (s *Service) handleASPWrite(in atp.IncomingRequest, reply atp.Replier) {
 	receivedAt := time.Now()
 	pkt := ParseWritePacket(in.UserBytes, in.Data)
-	if len(pkt.CmdBlock) > s.effectiveMaxCmdSize() {
-		netlog.Debug("[ASP] Write: CmdBlockSize=%d exceeds MaxCmdSize=%d (SPErrorSizeErr)",
-			len(pkt.CmdBlock), s.effectiveMaxCmdSize())
-		reply(atp.ResponseMessage{
-			Buffers:   [][]byte{nil},
-			UserBytes: []uint32{errToUserBytes(SPErrorSizeErr)},
-		})
-		return
-	}
-	sess := s.sm.Get(pkt.SessionID)
-	if sess == nil {
-		netlog.Debug("[ASP] Write: unknown SessRefNum=%d", pkt.SessionID)
-		reply(atp.ResponseMessage{
-			Buffers:   [][]byte{nil},
-			UserBytes: []uint32{errToUserBytes(SPErrorParamErr)},
-		})
-		return
-	}
-	sess.touchActivity()
-	if s.onSessionActivity != nil {
-		s.onSessionActivity(sess)
-	}
-	if !sess.CheckDuplicate(pkt.SeqNum, in.TID) {
-		netlog.Debug("[ASP] Write: duplicate seqNum=%d on sess=%d, dropping",
-			pkt.SeqNum, pkt.SessionID)
-		reply(atp.ResponseMessage{Buffers: [][]byte{nil}})
+	sess, ok := s.sessionedReplier("Write", pkt.SessionID, pkt.SeqNum, len(pkt.CmdBlock), in.TID, reply)
+	if !ok {
 		return
 	}
 
@@ -553,16 +562,25 @@ func (s *Service) handleASPWrite(in atp.IncomingRequest, reply atp.Replier) {
 		return
 	}
 
-	// Stash the in-flight write so CloseSess can cancel it.
-	sess.writeMu.Lock()
-	sess.write = &writeState{
+	// Record the in-flight write so CloseSess can cancel it. A second
+	// Write before this one resolves is a protocol violation (the Mac
+	// serialises Write commands behind seqNum); reject it loudly rather
+	// than silently overwrite.
+	if !sess.beginWrite(&writeState{
 		seqNum:    pkt.SeqNum,
 		cmdBlock:  pkt.CmdBlock,
 		wantBytes: wantBytes,
 		reply:     reply,
 		pending:   pending,
+	}) {
+		netlog.Warn("[ASP] Write sess=%d: write already in flight (protocol violation), cancelling new request", pkt.SessionID)
+		pending.Cancel()
+		reply(atp.ResponseMessage{
+			Buffers:   [][]byte{nil},
+			UserBytes: []uint32{errToUserBytes(SPErrorParamErr)},
+		})
+		return
 	}
-	sess.writeMu.Unlock()
 
 	wcSentAt := time.Now()
 
@@ -576,12 +594,10 @@ func (s *Service) handleASPWrite(in atp.IncomingRequest, reply atp.Replier) {
 // returned write data, then sends the SPWrtReply-equivalent result.
 func (s *Service) completeWrite(sess *Session, cmdBlock []byte, wantBytes uint32,
 	pending *atp.Pending, reply atp.Replier, bitmap uint8, receivedAt, wcSentAt time.Time) {
-	resp, err := pending.Wait(context.Background())
+	resp, err := pending.Wait(s.drainCtx())
 	wcRTT := time.Since(wcSentAt)
 	// Clear the pending state regardless of outcome.
-	sess.writeMu.Lock()
-	sess.write = nil
-	sess.writeMu.Unlock()
+	sess.endWrite()
 
 	if err != nil {
 		netlog.Debug("[ASP] Write sess=%d: WriteContinue failed after %v: %v", sess.ID, wcRTT.Round(time.Millisecond), err)
@@ -612,24 +628,15 @@ func (s *Service) completeWrite(sess *Session, cmdBlock []byte, wantBytes uint32
 	if s.commandHandler != nil {
 		replyData, errCode = s.commandHandler.HandleCommand(full)
 	}
+
+	// Per AFP-over-ASP spec: FPRead, FPWrite, FPEnumerate can succeed partially.
+	// If the reply exceeds QuantumSize, truncate it here but preserve the original
+	// AFP error code. The workstation will make additional requests at adjusted
+	// offsets to retrieve the rest.
 	if len(replyData) > s.effectiveQuantumSize() {
-		netlog.Debug("[ASP] Write: SessRefNum=%d WrtReplyDataSize=%d exceeds QuantumSize=%d (SPErrorSizeErr)",
-			sess.ID, len(replyData), s.effectiveQuantumSize())
-		reply(atp.ResponseMessage{
-			Buffers:   [][]byte{nil},
-			UserBytes: []uint32{errToUserBytes(SPErrorSizeErr)},
-		})
-		return
-	}
-	if wsCap := bitmapMaxBytes(bitmap); wsCap > 0 && len(replyData) > wsCap {
-		netlog.Debug("[ASP] Write: reply %d exceeds workstation capacity %d (SPErrorBufTooSmall)",
-			len(replyData), wsCap)
-		bufs := s.chunkResponse(replyData, bitmap)
-		reply(atp.ResponseMessage{
-			Buffers:   bufs,
-			UserBytes: []uint32{errToUserBytes(SPErrorBufTooSmall)},
-		})
-		return
+		netlog.Debug("[ASP] Write: SessRefNum=%d WrtReplyDataSize=%d exceeds QuantumSize=%d (truncating, preserving errCode=%d)",
+			sess.ID, len(replyData), s.effectiveQuantumSize(), errCode)
+		replyData = replyData[:s.effectiveQuantumSize()]
 	}
 	bufs := s.chunkResponse(replyData, bitmap)
 	reply(atp.ResponseMessage{
@@ -667,7 +674,11 @@ func (s *Service) sendTickle(sess *Session) {
 	}
 	// Drain in the background — we don't actually need the response, but
 	// we must release the TCB.
-	go func() { _, _ = pending.Wait(context.Background()) }()
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		_, _ = pending.Wait(s.drainCtx())
+	}()
 }
 
 // errToUserBytes converts a (possibly negative) ASP error constant into the
@@ -721,7 +732,11 @@ func (s *Service) SendAttention(sessID uint8, code uint16) error {
 	if err != nil {
 		return err
 	}
-	go func() { _, _ = pending.Wait(context.Background()) }()
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		_, _ = pending.Wait(s.drainCtx())
+	}()
 	netlog.Debug("[ASP] SendAttention: sess=%d code=0x%04X", sessID, code)
 	return nil
 }

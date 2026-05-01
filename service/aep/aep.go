@@ -9,27 +9,35 @@ Inside Macintosh: Networking, Chapter 3.
 package aep
 
 import (
-	"github.com/pgodw/omnitalk/go/appletalk"
-	"github.com/pgodw/omnitalk/go/port"
-	"github.com/pgodw/omnitalk/go/service"
+	"context"
+	"sync"
+
+	"github.com/pgodw/omnitalk/protocol/aep"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
+	"github.com/pgodw/omnitalk/port"
+	"github.com/pgodw/omnitalk/service"
 )
 
+// Socket is the well-known AEP socket number, re-exported from protocol/aep
+// for callers wiring a router.
+const Socket = aep.Socket
+
 const (
-	// Socket is the well-known AEP socket number.
-	Socket     = 4
-	ddpTypeAEP = 4
-	cmdRequest = 1
-	cmdReply   = 2
+	ddpTypeAEP = aep.DDPType
+	cmdRequest = aep.CmdRequest
+	cmdReply   = aep.CmdReply
 )
 
 // Service implements the AppleTalk Echo Protocol.
 type Service struct {
 	ch   chan item
 	stop chan struct{}
+	wg   sync.WaitGroup
 }
 
 type item struct {
-	d appletalk.Datagram
+	d ddp.Datagram
 	p port.Port
 }
 
@@ -45,10 +53,14 @@ func New() *Service {
 func (s *Service) Socket() uint8 { return Socket }
 
 // Start launches the AEP processing goroutine.
-func (s *Service) Start(router service.Router) error {
+func (s *Service) Start(ctx context.Context, router service.Router) error {
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		for {
 			select {
+			case <-ctx.Done():
+				return
 			case <-s.stop:
 				return
 			case it := <-s.ch:
@@ -67,11 +79,12 @@ func (s *Service) Start(router service.Router) error {
 // Stop shuts down the AEP service.
 func (s *Service) Stop() error {
 	close(s.stop)
+	s.wg.Wait()
 	return nil
 }
 
 // Inbound queues an incoming datagram for processing.
-func (s *Service) Inbound(d appletalk.Datagram, p port.Port) {
+func (s *Service) Inbound(d ddp.Datagram, p port.Port) {
 	select {
 	case s.ch <- item{d, p}:
 	default:

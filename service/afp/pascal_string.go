@@ -1,6 +1,8 @@
+//go:build afp || all
+
 package afp
 
-import "github.com/pgodw/omnitalk/go/appletalk"
+import "github.com/pgodw/omnitalk/pkg/encoding"
 
 // ReadPascalString reads a length-prefixed MacRoman string at idx and returns UTF-8 text plus bytes consumed.
 func ReadPascalString(data []byte, idx int) (string, int) {
@@ -11,12 +13,12 @@ func ReadPascalString(data []byte, idx int) (string, int) {
 	if idx+1+length > len(data) {
 		return "", 0
 	}
-	return appletalk.MacRomanToUTF8(data[idx+1 : idx+1+length]), length + 1
+	return encoding.MacRomanToUTF8(data[idx+1 : idx+1+length]), length + 1
 }
 
 // WritePascalString appends a UTF-8 string as a Pascal-style MacRoman string.
 func WritePascalString(dst []byte, value string) []byte {
-	encoded := appletalk.UTF8ToMacRoman(value)
+	encoded := encoding.UTF8ToMacRoman(value)
 	if len(encoded) > 255 {
 		encoded = encoded[:255]
 	}

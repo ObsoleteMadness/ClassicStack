@@ -1,9 +1,12 @@
+//go:build afp || all
+
 package afp
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
+
+	"github.com/pgodw/omnitalk/pkg/binutil"
 )
 
 type FPGetFileDirParmsReq struct {
@@ -47,18 +50,45 @@ func (res *FPGetFileDirParmsRes) String() string {
 	return fmt.Sprintf("FPGetFileDirParmsRes{FileBitmap: %s, DirBitmap: %s, IsFile: %t, DataLen: %d}", formatFileBitmap(res.FileBitmap), formatDirBitmap(res.DirBitmap), res.IsFile, len(res.Data))
 }
 
-func (res *FPGetFileDirParmsRes) Marshal() []byte {
-	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, res.FileBitmap)
-	binary.Write(buf, binary.BigEndian, res.DirBitmap)
-	if res.IsFile {
-		binary.Write(buf, binary.BigEndian, byte(0x00))
-	} else {
-		binary.Write(buf, binary.BigEndian, byte(0x80))
+func (res *FPGetFileDirParmsRes) WireSize() int { return 6 + len(res.Data) }
+
+func (res *FPGetFileDirParmsRes) MarshalWire(b []byte) (int, error) {
+	off := 0
+	n, err := binutil.PutU16(b[off:], res.FileBitmap)
+	if err != nil {
+		return 0, err
 	}
-	binary.Write(buf, binary.BigEndian, byte(0x00))
-	buf.Write(res.Data)
-	return buf.Bytes()
+	off += n
+	n, err = binutil.PutU16(b[off:], res.DirBitmap)
+	if err != nil {
+		return 0, err
+	}
+	off += n
+	flag := byte(0x80)
+	if res.IsFile {
+		flag = 0x00
+	}
+	n, err = binutil.PutU8(b[off:], flag)
+	if err != nil {
+		return 0, err
+	}
+	off += n
+	n, err = binutil.PutU8(b[off:], 0x00)
+	if err != nil {
+		return 0, err
+	}
+	off += n
+	if len(b[off:]) < len(res.Data) {
+		return 0, binutil.ErrShortBuffer
+	}
+	off += copy(b[off:], res.Data)
+	return off, nil
+}
+
+func (res *FPGetFileDirParmsRes) Marshal() []byte {
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
 }
 
 // FPMoveAndRename - atomically move and/or rename a file or directory (AFP 2.x section 5.1.23).
@@ -293,13 +323,36 @@ type FPGetDirParmsRes struct {
 	Data   []byte
 }
 
+func (res *FPGetDirParmsRes) WireSize() int { return 4 + len(res.Data) }
+
+func (res *FPGetDirParmsRes) MarshalWire(b []byte) (int, error) {
+	off := 0
+	n, err := binutil.PutU16(b[off:], res.Bitmap)
+	if err != nil {
+		return 0, err
+	}
+	off += n
+	n, err = binutil.PutU8(b[off:], 0x80)
+	if err != nil {
+		return 0, err
+	}
+	off += n
+	n, err = binutil.PutU8(b[off:], 0x00)
+	if err != nil {
+		return 0, err
+	}
+	off += n
+	if len(b[off:]) < len(res.Data) {
+		return 0, binutil.ErrShortBuffer
+	}
+	off += copy(b[off:], res.Data)
+	return off, nil
+}
+
 func (res *FPGetDirParmsRes) Marshal() []byte {
-	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, res.Bitmap)
-	buf.WriteByte(0x80)
-	buf.WriteByte(0x00)
-	buf.Write(res.Data)
-	return buf.Bytes()
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
 }
 
 func (res *FPGetDirParmsRes) String() string {
@@ -340,13 +393,36 @@ type FPGetFileParmsRes struct {
 	Data   []byte
 }
 
+func (res *FPGetFileParmsRes) WireSize() int { return 4 + len(res.Data) }
+
+func (res *FPGetFileParmsRes) MarshalWire(b []byte) (int, error) {
+	off := 0
+	n, err := binutil.PutU16(b[off:], res.Bitmap)
+	if err != nil {
+		return 0, err
+	}
+	off += n
+	n, err = binutil.PutU8(b[off:], 0x00)
+	if err != nil {
+		return 0, err
+	}
+	off += n
+	n, err = binutil.PutU8(b[off:], 0x00)
+	if err != nil {
+		return 0, err
+	}
+	off += n
+	if len(b[off:]) < len(res.Data) {
+		return 0, binutil.ErrShortBuffer
+	}
+	off += copy(b[off:], res.Data)
+	return off, nil
+}
+
 func (res *FPGetFileParmsRes) Marshal() []byte {
-	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, res.Bitmap)
-	buf.WriteByte(0x00)
-	buf.WriteByte(0x00)
-	buf.Write(res.Data)
-	return buf.Bytes()
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
 }
 
 func (res *FPGetFileParmsRes) String() string {

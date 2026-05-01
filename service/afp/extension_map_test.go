@@ -1,3 +1,5 @@
+//go:build afp || all
+
 package afp
 
 import (
@@ -105,9 +107,9 @@ func TestHandleGetFileParms_UsesExtensionMapWithoutPersisting(t *testing.T) {
 				t.Fatalf("NewExtensionMap: %v", err)
 			}
 
-			options := DefaultAFPOptions()
+			options := DefaultOptions()
 			options.ExtensionMap = extMap
-			s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil, options)
+			s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil, options)
 
 			if tc.seedFinderInfo != nil {
 				if err := s.metaFor(1).WriteFinderInfo(filePath, *tc.seedFinderInfo); err != nil {
@@ -133,8 +135,8 @@ func TestHandleGetFileParms_UsesExtensionMapWithoutPersisting(t *testing.T) {
 			}
 
 			if tc.checkNoPersistence {
-				if len(s.desktopDBs) != 0 {
-					t.Fatalf("desktopDBs len = %d, want 0", len(s.desktopDBs))
+				if n := s.desktop.dbCount(); n != 0 {
+					t.Fatalf("desktopDBs len = %d, want 0", n)
 				}
 				if _, err := os.Stat(filepath.Join(root, "._ReadMe.txt")); !os.IsNotExist(err) {
 					t.Fatalf("AppleDouble sidecar unexpectedly created: err=%v", err)

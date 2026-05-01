@@ -1,0 +1,1708 @@
+{
+  "http://macintoshgarden.org/apps/after-dark-myst-screen-saver": {
+    "fetched_at": "2026-04-23T15:29:41.5558839+10:00",
+    "software_item": {
+      "Title": "After Dark: Myst Screen Saver",
+      "URL": "http://macintoshgarden.org/apps/after-dark-myst-screen-saver",
+      "Description": "After Dark Screen Saver modules of the game Myst. In a slide-show format. Covers all of the \"Ages\" in the game Myst. You can opt to install one or more or all of the modules. This was a give-away promotion. The source of this installer was from MacFormat magazine issue 40, August 1996 CD.\n\nMD5 checksum: 54e17afffb1f755f4dc19f39ef717483    *mystscreensaver.sit\n\nMyst_Screen_Saver-hybrid_CD.iso is a hybrid Mac/PC installer disc image sourced from the Internet Archive.\n\nMyst_screensaver_images.zip includes the 249 JPEG files that are installed as part of the screen saver.\n\nRuns on a 68020 CPU, Mac OS 7.0 or newer. Does not run on Mac OS 9. - I wouldn't attempt it even on 8.0 or newer without updating the After Dark Engine vers. 3.0 that this installs 1st. You are probably safe to use this as is with a Mac OS from vers. 7.0 to 7.6.1\n\nNot native PPC but will run on PPC OK given the right conditions.\n\nNote: If you opt for the full install or install the Selenitic Tour module individually, the installer claims the image \"Selene20.JPG may be damaged, use with caution\", It can be safely deleted (there are over 200 images in total, you won't miss one less).\n\n[Warning:] The After Dark Engine that gets installed is version 3.0b - I think the \"b\" stands for buggy. In the installation process it creates on Basilisk II (perhaps other Macs too), a corrupt Preferences file in the System Folder's Preferences Folder in its own \"After Dark Preferences\" folder. What happens is; after installing you need to reboot your Mac. After booting up, After Dark immediately starts and locks you out of your computer. It asks for a nonexistent password (not the provided installation password) and you have no option but to crash your Mac and start up with Extensions turned off.\n\nThe Workaround:\n[a] Replace the installed corrupt Preferences with the supplied working After Dark Preferences file from the above 2nd Download link on this page, named \"a-dark-3-prefs.sit\". Better: Preempt the corrupt Prefs file before you install the screen saver by extracting the After Dark Prefs folder from the \"a-dark-3-prefs.sit\" file and placing this folder inside of your System Folder's Preferences folder.\n[b] Alternatively; Install the After Dark 4.0 (Engine) from here at the Macintosh Garden. And only install the Myst Saver Modules by choosing only the modules that you want to Install. That is, don't choose a Full Install or elect to install the After Dark Engine 3 from the Myst Screen Saver Installer. This would give better compatibility with newer Mac OS's too.",
+      "Downloads": [
+        {
+          "Title": "mystscreensaver.sit",
+          "Size": "24.44 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 7.0 - 7.6",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/mystscreensaver.sit?expires=1776922480\u0026token=ISNFjOjmLIMn_L_IT0nwNA\u0026st=17b538827ab4708499453429927efd7a"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/mystscreensaver.sit"
+            },
+            {
+              "Text": "54e17afffb1f755f4dc19f39ef717483",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=mystscreensaver.sit"
+            }
+          ]
+        },
+        {
+          "Title": "a-dark-3-prefs.sit",
+          "Size": "1.22 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 7.0 - 7.6",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/a-dark-3-prefs.sit?expires=1776922480\u0026token=cWRrVPNM51syzI3AanEYqg\u0026st=02efece000093e06f20ef6ca61f222bd"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/a-dark-3-prefs.sit"
+            },
+            {
+              "Text": "3c3633a865eddb97102f9b58230e4c7a",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=a-dark-3-prefs.sit"
+            }
+          ]
+        },
+        {
+          "Title": "Myst_Screen_Saver-hybrid_CD.iso_.sit",
+          "Size": "49.07 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 7.0 - 7.6",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Myst_Screen_Saver-hybrid_CD.iso_.sit?expires=1776922480\u0026token=ipRxePsCn8DcILxclNKTow\u0026st=2c7a71c4be571db21ac67f9b0ef0772b"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Myst_Screen_Saver-hybrid_CD.iso_.sit"
+            },
+            {
+              "Text": "ed8267c8f9c2747489c2df577556fca7",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Myst_Screen_Saver-hybrid_CD.iso_.sit"
+            }
+          ]
+        },
+        {
+          "Title": "Myst_screensaver_images.zip",
+          "Size": "21.77 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 7.0 - 7.6",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Myst_screensaver_images.zip?expires=1776922480\u0026token=e3WLlrubrXp167dV_sj2Xw\u0026st=8d4813d0d15e77034f94b9afa8df0751"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Myst_screensaver_images.zip"
+            },
+            {
+              "Text": "2988714aa8daea162d836dac465beea4",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Myst_screensaver_images.zip"
+            }
+          ]
+        }
+      ],
+      "Screenshots": [
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/myst-scrnsvr-01.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/myst-scrnsvr-02.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/myst-scrnsvr-03.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/myst-scrnsvr-04.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/myst-scrnsvr-05.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/myst-scrnsvr-06.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/myst-scrnsvr-07.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/myst-scrnsvr-08.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/myst-scrnsvr-09.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/myst-scrnsvr-10.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/Myst_SS_front.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/Myst_SS_back.jpg"
+      ]
+    }
+  },
+  "http://macintoshgarden.org/apps/clarisworks-2": {
+    "fetched_at": "2026-04-21T11:34:03.9289679+10:00",
+    "software_item": {
+      "Title": "ClarisWorks 2.0 \u0026 2.1",
+      "URL": "http://macintoshgarden.org/apps/clarisworks-2",
+      "Description": "See also: ClarisWorks 1, ClarisWorks 3, ClarisWorks 4, ClarisWorks 4 for Teachers, ClarisWorks 5, AppleWorks 5, AppleWorks 6, AppleWorks 6 J\n\nThe ClarisWorks 2.0 install sets are 68k native, only.\n\nThe ClarisWorks 2.1 install sets are FAT; 68k \u0026 PPC native.\n\nDL #1 is useful if you want to install this version of ClarisWorks to a 68k Macintosh, including Mini vMac \u0026 Basilisk II. It can still be updated to version 2.1CDv4 using the updater in the 3rd DL above.\n\nWith DL #2 and DL #7 above, the installer program will detect the type of Macintosh CPU you are installing to and install the appropriate (68k or PPC native) ClarisWorks program onto your Macintosh. The installer will only require and ask for \"Disk 3\" if you are installing ClarisWorks to a PPC Macintosh.\n\nWhen running ClarisWorks 2.x for the first time, you will be asked for a user name and serial. Enter a name. The serial number field is optional, and is not required.",
+      "Downloads": [
+        {
+          "Title": "clarisworks-2cdv1.sit",
+          "Size": "2.08 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/clarisworks-2cdv1.sit?expires=1776735543\u0026token=FZon-OWGTUpKF4D4NE_lPA\u0026st=e64f3f2d19f8e47863777bf5485fc0af"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/clarisworks-2cdv1.sit"
+            },
+            {
+              "Text": "e39beee76632ee0756242ea34321cbd3",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=clarisworks-2cdv1.sit"
+            }
+          ]
+        },
+        {
+          "Title": "cwks-21cdv3-mac.sit",
+          "Size": "2.92 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/cwks-21cdv3-mac.sit?expires=1776735543\u0026token=RYCJiUFmOsIssLxXPejiWg\u0026st=4a28f3cd7b32ac2c4519fbd89163ca5f"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/cwks-21cdv3-mac.sit"
+            },
+            {
+              "Text": "cb3435ec222239cdd32fec466e1fc9bd",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=cwks-21cdv3-mac.sit"
+            }
+          ]
+        },
+        {
+          "Title": "clarisworks-21cdv4-updtr.sit",
+          "Size": "604.27 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/clarisworks-21cdv4-updtr.sit?expires=1776735543\u0026token=ADdjfMsm9qSY_-DO0Uqacg\u0026st=1b2b9abcf1005ddfb6bad6e2b5c912a7"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/clarisworks-21cdv4-updtr.sit"
+            },
+            {
+              "Text": "a96642f1f0bd40b35b2c45541589a44a",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=clarisworks-21cdv4-updtr.sit"
+            }
+          ]
+        },
+        {
+          "Title": "ClarisWorks_20v1_NL.sit",
+          "Size": "2.36 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/ClarisWorks_20v1_NL.sit?expires=1776735543\u0026token=Rhuipj1g3LuOsXW6Iv19Hw\u0026st=0bccc4c857e31fe3fb48786166aec116"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/ClarisWorks_20v1_NL.sit"
+            },
+            {
+              "Text": "3931fe57f58461fe30077b6f1b96b79b",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=ClarisWorks_20v1_NL.sit"
+            }
+          ]
+        },
+        {
+          "Title": "ClarisWorks_21v4_Update_NL.sit",
+          "Size": "437.66 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/ClarisWorks_21v4_Update_NL.sit?expires=1776735543\u0026token=_7LWcMh_HSOOYcFgAgt4SA\u0026st=408f5d474ea86bae7ad4e88787aa76d8"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/ClarisWorks_21v4_Update_NL.sit"
+            },
+            {
+              "Text": "dc7f1da312a32fc8da0b00eb2f381a83",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=ClarisWorks_21v4_Update_NL.sit"
+            }
+          ]
+        },
+        {
+          "Title": "ClarisWorks_ITA.sit",
+          "Size": "2.18 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/ClarisWorks_ITA.sit?expires=1776735543\u0026token=N9TEw-ZfsgCuho33Z-x9bg\u0026st=a626ffbbfcffb3a7f6abce78f0cb4dda"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/ClarisWorks_ITA.sit"
+            },
+            {
+              "Text": "b34f6d9060fc51e4b54105973241baad",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=ClarisWorks_ITA.sit"
+            }
+          ]
+        },
+        {
+          "Title": "ClarisWorks-2.1-Sweden.sit",
+          "Size": "3.69 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/ClarisWorks-2.1-Sweden.sit?expires=1776735543\u0026token=-ah7q4pynclZVqIqtsj8lA\u0026st=d50d9d04b98780fa882da65b8b0f7f48"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/ClarisWorks-2.1-Sweden.sit"
+            },
+            {
+              "Text": "0883afa59f059b0a6f220b85bbaee818",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=ClarisWorks-2.1-Sweden.sit"
+            }
+          ]
+        },
+        {
+          "Title": "ClarisWorks_2.0v1.sit",
+          "Size": "2.09 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/ClarisWorks_2.0v1.sit?expires=1776735543\u0026token=t_tYPZivVSpOk2HOvZ6s0A\u0026st=75a00c4c732ae96b26380a3ee2baf87e"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/ClarisWorks_2.0v1.sit"
+            },
+            {
+              "Text": "931f8f3827d4715c09e2f8d99803c23a",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=ClarisWorks_2.0v1.sit"
+            }
+          ]
+        },
+        {
+          "Title": "ClarisWorks20Bv1.hqx",
+          "Size": "3.00 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/ClarisWorks20Bv1.hqx?expires=1776735543\u0026token=Y0UELIDotXVGxoi7FVxvXQ\u0026st=2ed18f8add1dd37c2e21c6fa98867c79"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/ClarisWorks20Bv1.hqx"
+            },
+            {
+              "Text": "c4e1278102e327385351a78be9a643d9",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=ClarisWorks20Bv1.hqx"
+            }
+          ]
+        },
+        {
+          "Title": "CW_2.0Bv1_Images.sit",
+          "Size": "2.48 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/CW_2.0Bv1_Images.sit?expires=1776735543\u0026token=Ahuqut_3-V_NrLKSRkAcZw\u0026st=a21c626c22aac0ee044089b9a30ca62c"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/CW_2.0Bv1_Images.sit"
+            },
+            {
+              "Text": "48f48c6a70ff9fa68c6554a9bd76d3fd",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=CW_2.0Bv1_Images.sit"
+            }
+          ]
+        }
+      ],
+      "Screenshots": [
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/claris2.1.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/cwks-21cdv3-01.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/cwks-21cdv3-02.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/cwks-21-first.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/MacFormat_002_p063.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/MacFormat_002_p064.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/MacFormat_002_p065.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/Mac_Format_15_p076.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/Mac_Format_15_p077.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/MacFormat_06_p006.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/ClarisWorks2box.jpeg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/ClarisWorks2back.jpeg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/ClarisWorks-2.1-Swede-discs.jpg"
+      ]
+    }
+  },
+  "http://macintoshgarden.org/apps/hypercard-21": {
+    "fetched_at": "2026-05-01T14:10:02.7661545+10:00",
+    "software_item": {
+      "Title": "HyperCard 2.1",
+      "URL": "http://macintoshgarden.org/apps/hypercard-21",
+      "Description": "Download #1: This is the full 800K floppy disk set in Disk Copy 4.2 image format of Apple's HyperCard 2.1 for Macintosh archived in StuffIt 3.5 format for backwards compatibility. - Not sourced from original media, these have been recovered and converted from poor copies of the original installation disk set.\n\nDownload #2: The Swedish version of Hypercard 2.1. It is unknown whether it is complete. Likely not, since it's coming only on a single 800k Disk Copy 4.2 image. Does include the Swedish application though.\n\nSee also: HyperCard 1.0.1, HyperCard Z1-1.2.2 (Australian), HyperCard DK-1.2.2 (Danish), HyperCard 1.2.5, HyperCard C1-2.0v2 (French), HyperCard 2.1 (Player), HyperCard 2.1b13 (Beta), HyperCard 2.2, HyperCard 2.3 + Addmotion II, HyperCard 2.4.1\n\nRequires the following minimum hardware and software:\n\ni. A  Macintosh computer with 1 megabyte (MB) of memory or more. To run HyperCard under MultiFinder, your system should have at least 2 MB of memory.\nii. System software version 6.0.5 or later. No idea if this runs under \"Classic\" on Mac OS X but it may do.\n\n68k coded, runs fine on PPC up to 9.2.2\n\nNote: There are two additional patched stacks supplied in with this download which fix compatibility issues with Mac OS 8–9 in their equivalent, included original stacks. (see accompanying read me texts included in DL).",
+      "Downloads": [
+        {
+          "Title": "hc-21-diskset.sit",
+          "Size": "2.58 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/hc-21-diskset.sit?expires=1777608902\u0026token=KetZJmBqMWC77waf1A4k5w\u0026st=157b1f2f237fbf4b71458ddecb7a7339"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/hc-21-diskset.sit"
+            },
+            {
+              "Text": "bafb69d076ebe2be93229d9837439229",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=hc-21-diskset.sit"
+            }
+          ]
+        },
+        {
+          "Title": "Swedish_HC_v2.1.sit",
+          "Size": "374.42 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Swedish_HC_v2.1.sit?expires=1777608902\u0026token=BN_NVzr8WmAg_Aj22ayQmg\u0026st=bffcca473faeec54677edb6c4c7e2688"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Swedish_HC_v2.1.sit"
+            },
+            {
+              "Text": "d6d5d0b455bbe79116cfbf6f0b25619e",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Swedish_HC_v2.1.sit"
+            }
+          ]
+        }
+      ],
+      "Screenshots": [
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/hc21-full-00.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/hc21-full-01.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/hc21-full-02.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/hc21-full-03.gif",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/MacFormat_06_p068.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/MacFormat_06_p069.jpg"
+      ]
+    }
+  },
+  "http://macintoshgarden.org/apps/microsoft-word": {
+    "fetched_at": "2026-04-21T12:15:58.0666396+10:00",
+    "software_item": {
+      "Title": "Microsoft Word (3–5)",
+      "URL": "http://macintoshgarden.org/apps/microsoft-word",
+      "Description": "Many still claim that version 5.1a is the \"Best. Word. Ever.\" People swore by it so much that the later Word 98 offered the choice of 5.1-style menus.\n\nDL #1 includes Microsoft Word 3.00\n\nDL #2 includes Microsoft Word 3.0.1, Microsoft Word 4.0, Microsoft Word 5.0, Microsoft Word 5.1a\n\nDL #3 contains PersonalizeWord 1.0, which customizes the user name and organization strings in Word 4.0–6.0\n\nDL #4 contains a colour replacement of the B\u0026W toolbar for Word 5.1\n\nDL #5 is Word 5.1a repackaged to .dsk images for easy use with vMac emulators\n\nDL #6 is a pre-installed German Word 4.0 salvaged from an office LC\n\nDL #7 pre-installed Swedish Word 5.0 och 5.1\n\nDL #8 Swedish install floppies for Word 5.0, previously personalized. Stuffed with StuffIt Deluxe 4.0. Swedish install media for v5.1 can be downloaded here.\n\nDL #9 Word 4.00D original disk images in Disk Copy 4.2 format. Unfortunately missing the \"Utilities 1\" disk so it is not complete, but the program is a later version than the other Word 4.0 installations uploaded here.",
+      "Downloads": [
+        {
+          "Title": "Word3.sit_.hqx",
+          "Size": "1.01 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Word3.sit_.hqx?expires=1776738057\u0026token=riOmqYH7IES7jYTmG8hOBw\u0026st=411753aadce2e081523e1e368933c616"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Word3.sit_.hqx"
+            },
+            {
+              "Text": "b42864a44114c68f9a543165e99b5a01",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Word3.sit_.hqx"
+            }
+          ]
+        },
+        {
+          "Title": "Microsoft_Word.sit",
+          "Size": "8.71 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Microsoft_Word.sit?expires=1776738057\u0026token=hTkdSzU8id6WoXNI2k8Whg\u0026st=21f89334f792c8a743c787d422f3f735"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Microsoft_Word.sit"
+            },
+            {
+              "Text": "fd4592671de8bdebfe97ad545fabe31d",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Microsoft_Word.sit"
+            }
+          ]
+        },
+        {
+          "Title": "personalizeword1.0.sit",
+          "Size": "10.66 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/personalizeword1.0.sit?expires=1776738057\u0026token=QebJ_UPovk8EuKD2y1gSdg\u0026st=45ab1a288e0a6393bfe2cd7b14376bcd"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/personalizeword1.0.sit"
+            },
+            {
+              "Text": "83a80f37ae742e28a244aa3b1d065ebd",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=personalizeword1.0.sit"
+            }
+          ]
+        },
+        {
+          "Title": "Word51ColorT.sit",
+          "Size": "63.19 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Word51ColorT.sit?expires=1776738057\u0026token=FwvaxnRjkv_jvhTlGeEhpA\u0026st=9fe72747b40956a51d08f100e377fd72"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Word51ColorT.sit"
+            },
+            {
+              "Text": "bd6ca83bb5dba99c03c1ca1e98b64185",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Word51ColorT.sit"
+            }
+          ]
+        },
+        {
+          "Title": "Word_5.1_dsk_Images.zip",
+          "Size": "4.15 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Word_5.1_dsk_Images.zip?expires=1776738057\u0026token=1zozPUXDwMiYFRq-8mmdrA\u0026st=ecc6b1738c87d960588467698dc97e8d"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Word_5.1_dsk_Images.zip"
+            },
+            {
+              "Text": "8998b7d5f4bbf4919919959a6dfdd735",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Word_5.1_dsk_Images.zip"
+            }
+          ]
+        },
+        {
+          "Title": "Word4.0.sit",
+          "Size": "928.26 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Word4.0.sit?expires=1776738057\u0026token=1Z7PEPeH3BeB_9JKoDEdBw\u0026st=df098492ddfde9c43bd59ecd60e194b3"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Word4.0.sit"
+            },
+            {
+              "Text": "7c36416e9a0cb9a7cb9eb74ef5fab4a8",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Word4.0.sit"
+            }
+          ]
+        },
+        {
+          "Title": "Word_5.x_Sv.sit",
+          "Size": "7.42 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Word_5.x_Sv.sit?expires=1776738057\u0026token=PyuR7wfbuSv4KnAp6sanCg\u0026st=2b7c87e89f118abbd76e7552789baca3"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Word_5.x_Sv.sit"
+            },
+            {
+              "Text": "7aab806f4ab97a86afa609ee425c6cf5",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Word_5.x_Sv.sit"
+            }
+          ]
+        },
+        {
+          "Title": "Microsoft_Word_5.0_sv.sit",
+          "Size": "4.04 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Microsoft_Word_5.0_sv.sit?expires=1776738057\u0026token=0bubTuwu7f9XPAaGlydzRA\u0026st=386ff9431247b3ad5c1f9dd01abb12b9"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Microsoft_Word_5.0_sv.sit"
+            },
+            {
+              "Text": "4ca08921d968ef17a7b10a8fd9a7c379",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Microsoft_Word_5.0_sv.sit"
+            }
+          ]
+        },
+        {
+          "Title": "Word_4.00D_incomplete.sit_.hqx",
+          "Size": "1,013.94 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Word_4.00D_incomplete.sit_.hqx?expires=1776738057\u0026token=WCkNbqqOog2xwEHnbZinvg\u0026st=f3aff0d1aa138cb86506c49a1fd590f3"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Word_4.00D_incomplete.sit_.hqx"
+            },
+            {
+              "Text": "f87c50c0c57a49c40e7acec7e81052fc",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Word_4.00D_incomplete.sit_.hqx"
+            }
+          ]
+        }
+      ],
+      "Screenshots": [
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/Word-5.1a-Color-Toolbar.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/ms-word-4-01.png",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/word-5.1a.png",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/MicrosftWord50_front.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/MicrosftWord50_back.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/wordflop.jpg"
+      ]
+    }
+  },
+  "http://macintoshgarden.org/apps/microsoft-word-105": {
+    "fetched_at": "2026-04-21T12:51:39.9886417+10:00",
+    "software_item": {
+      "Title": "Microsoft Word 1.00 - 1.05",
+      "URL": "http://macintoshgarden.org/apps/microsoft-word-105",
+      "Description": "After much searching I managed to find the elusive Microsoft Word 1.05.  The file included here is a .dsk image of the original disk, which also includes the invisible and protected file that is used for verifying you have an original disk.  If you copy this version of Word to another disk and launch it from there you will be prompted to insert this floppy image so it can check for the file.  However, you can boot from this disk and launch Word without any problems using Mini vMac.\n\nIn addition, Copy II HD will successfully move the files to a hard drive in MinivMac (tested using version 7.0 ).\n\nThe working disk image of Microsoft Word 1.00 I have uploaded here comes from my old backups that I made on CDs long time ago.\nIt boots under Mini vMac 36.04, loads System 1.1/Finder 1.1g and I think it’s a full image (see the pictures I uploaded).\nIt works well under System 6.0.8 too, but not with next versions of Mac OS (it freezes the system).\n\nI archived the image .zip as with DropStuff and Stuffit Expander 4.5, that I tested, the image becomes corrupted.",
+      "Downloads": [
+        {
+          "Title": "word_105.zip",
+          "Size": "430.84 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/word_105.zip?expires=1776740199\u0026token=OXePN7A0RinWALp6kseT6g\u0026st=7e370e9b372afed518b9af9d1cbba9ec"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/word_105.zip"
+            },
+            {
+              "Text": "d4d4c9a236370432c71e72915798e1f9",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=word_105.zip"
+            }
+          ]
+        },
+        {
+          "Title": "Microsoft_Word_1.00.image_.zip",
+          "Size": "228.61 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Microsoft_Word_1.00.image_.zip?expires=1776740199\u0026token=a2Grv40mCXH6eTsB3IxR6w\u0026st=e80760eb92e77f64762ead9c03a34c67"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Microsoft_Word_1.00.image_.zip"
+            },
+            {
+              "Text": "0531ba7c50c35edcf7dec4a03f37ea58",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Microsoft_Word_1.00.image_.zip"
+            }
+          ]
+        }
+      ],
+      "Screenshots": [
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/word_0.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/screen_shot_2013-12-27_at_10.22.21_pm.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/screen_shot_2013-12-27_at_10.26.20_pm.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/screen_shot_2013-12-27_at_10.26.40_pm.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/screen_shot_2013-12-27_at_10.27.42_pm.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/screen_shot_2013-12-27_at_10.28.18_pm.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/Word1.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/Word2.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/Word3.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/word1box.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/word1floppy.jpg"
+      ]
+    }
+  },
+  "http://macintoshgarden.org/apps/microsoft-word-51-0": {
+    "fetched_at": "2026-04-21T11:30:25.105751+10:00",
+    "software_item": {
+      "Title": "Microsoft Word 5.1",
+      "URL": "http://macintoshgarden.org/apps/microsoft-word-51-0",
+      "Description": "Word processing software. Well regarded to the point that users continued to use it long after the 68k transition. To personalize the program with your name, copy disk image Install to your hard disk and replace the file Word Installer with the file from Word_Installer.sit.\n\nSee Also: Office 3 (US English), Word 5.1 (Danish), Word 5.1a (Dutch), Word 5.1 (Canadian French), Word 3-5 (US English), Word 5.1a (Italian)\n\nIf running on a Macintosh Plus or earlier, the 'Clear' key can be use as a substitute for NumLock.",
+      "Downloads": [
+        {
+          "Title": "Word_5.1_EN-US.sit",
+          "Size": "4.03 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Word_5.1_EN-US.sit?expires=1776735324\u0026token=Ch_MX8VMXmmqixWA13vt9Q\u0026st=5d14f78b2d44a48edd8ff965d319a8e3"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Word_5.1_EN-US.sit"
+            },
+            {
+              "Text": "15dad616752bd47ab6a582ef0b1f6922",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Word_5.1_EN-US.sit"
+            }
+          ]
+        },
+        {
+          "Title": "Word_Installer.sit",
+          "Size": "74.72 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Word_Installer.sit?expires=1776735324\u0026token=-_UF-D540IF3eXDVIOagpw\u0026st=58eae54291457cacbe34d0762aa8c7d3"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Word_Installer.sit"
+            },
+            {
+              "Text": "7e9e5d4c6e05c5f13b99a8610156dda8",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Word_Installer.sit"
+            }
+          ]
+        },
+        {
+          "Title": "Install-w-img.sit",
+          "Size": "581.14 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Install-w-img.sit?expires=1776735324\u0026token=PzXu1y1Zv2jEHbQEdPZPfQ\u0026st=250576285558aca242cea71215ea7822"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Install-w-img.sit"
+            },
+            {
+              "Text": "060192b61064409f427b87372d9957d5",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Install-w-img.sit"
+            }
+          ]
+        },
+        {
+          "Title": "Word_5.1a_Patch.image_.hqx",
+          "Size": "25.67 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Word_5.1a_Patch.image_.hqx?expires=1776735324\u0026token=b6SR5y30feYik2THUv1o-g\u0026st=322df59db7d30057a5b19c76eee75083"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Word_5.1a_Patch.image_.hqx"
+            },
+            {
+              "Text": "f84c1e41c018ab5b49936d732641c102",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Word_5.1a_Patch.image_.hqx"
+            }
+          ]
+        },
+        {
+          "Title": "Word5.1a.sit",
+          "Size": "4.08 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Word5.1a.sit?expires=1776735324\u0026token=ahZKrVeaMM9HZR52G2ywhA\u0026st=c7555296ad4bbac371e84b44f2e4b044"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Word5.1a.sit"
+            },
+            {
+              "Text": "563c5926c123c21f12392bce9f637807",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Word5.1a.sit"
+            }
+          ]
+        },
+        {
+          "Title": "Ms-Word-51a-AUS.sit",
+          "Size": "4.89 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Ms-Word-51a-AUS.sit?expires=1776735324\u0026token=8vhPfnpORpbROKUyYhfRKA\u0026st=a8d094666be0dc34e78b287accb15e08"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Ms-Word-51a-AUS.sit"
+            },
+            {
+              "Text": "33dddca797c9fb0a03863659f319d3a7",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Ms-Word-51a-AUS.sit"
+            }
+          ]
+        },
+        {
+          "Title": "D-Word_5.1.sit",
+          "Size": "3.50 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/D-Word_5.1.sit?expires=1776735324\u0026token=ITcGOH8JfGbn1P7-QePxOA\u0026st=8dc616e055fdac0afdba6fad6155cc4a"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/D-Word_5.1.sit"
+            },
+            {
+              "Text": "3a9cbe353cce460a9de8b8d7973c9a17",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=D-Word_5.1.sit"
+            }
+          ]
+        },
+        {
+          "Title": "MS-Word-51a-iso.zip",
+          "Size": "7.96 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/MS-Word-51a-iso.zip?expires=1776735324\u0026token=EyweNnyk4zKIsigNQf6Rmg\u0026st=19f1621b5a67e7fc2ba2e0ee9116382d"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/MS-Word-51a-iso.zip"
+            },
+            {
+              "Text": "c023ad5ef44da1db702ab62ac37cc82f",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=MS-Word-51a-iso.zip"
+            }
+          ]
+        },
+        {
+          "Title": "Word-6-Converter-for-MW5x.sit",
+          "Size": "134.57 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Word-6-Converter-for-MW5x.sit?expires=1776735324\u0026token=s2m6maUaG4Em5YxFY0T3pg\u0026st=8e0301c147b6e7ab7fe5c3c4364fc171"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Word-6-Converter-for-MW5x.sit"
+            },
+            {
+              "Text": "5575e7768f83f059d6b46421e2636f48",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Word-6-Converter-for-MW5x.sit"
+            }
+          ]
+        },
+        {
+          "Title": "Word-97-8-Convrtr-for-W5-6.sit",
+          "Size": "586.22 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Word-97-8-Convrtr-for-W5-6.sit?expires=1776735324\u0026token=S0UKJwDIxZ0UPpQldzhchA\u0026st=36af2ee2fc20fba2a33e1a1191d716ef"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Word-97-8-Convrtr-for-W5-6.sit"
+            },
+            {
+              "Text": "0844b08bdec28fecc97ca96712719962",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Word-97-8-Convrtr-for-W5-6.sit"
+            }
+          ]
+        },
+        {
+          "Title": "Word5.1-Finnish.sit",
+          "Size": "4.96 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Word5.1-Finnish.sit?expires=1776735324\u0026token=vLNmndp_wxHvozvYH0cQ3A\u0026st=147b0bb9779c674dc09f990755589dc7"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Word5.1-Finnish.sit"
+            },
+            {
+              "Text": "9a8fc5b25bc50cc13d8d1698bd63915b",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Word5.1-Finnish.sit"
+            }
+          ]
+        },
+        {
+          "Title": "Microsoft_Word_5.1_sv.sit",
+          "Size": "4.44 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Microsoft_Word_5.1_sv.sit?expires=1776735324\u0026token=V8DsjLlICWpgokPNjS5cCg\u0026st=eddea2c00fdb2e883821661fc0aad3fc"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Microsoft_Word_5.1_sv.sit"
+            },
+            {
+              "Text": "ba5fe650b37425fb973fdbaede6fea18",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Microsoft_Word_5.1_sv.sit"
+            }
+          ]
+        },
+        {
+          "Title": "Word_5.1_en-GB_Proofing_Tools.sit_.bin",
+          "Size": "1.02 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Word_5.1_en-GB_Proofing_Tools.sit_.bin?expires=1776735324\u0026token=yLMz31gb3fNZufuFz_4TTw\u0026st=ccd3c08c5b3c33a95375de785a1db655"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Word_5.1_en-GB_Proofing_Tools.sit_.bin"
+            },
+            {
+              "Text": "6b8ec4ec858a8ebe3530a1f55ebdc1ae",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Word_5.1_en-GB_Proofing_Tools.sit_.bin"
+            }
+          ]
+        },
+        {
+          "Title": "Word_5.1_fr-FR_Proofing_Tools.sit_.bin",
+          "Size": "1,008.13 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Word_5.1_fr-FR_Proofing_Tools.sit__2.bin?expires=1776735324\u0026token=JajGX2FChpC3QZQcPh4uJQ\u0026st=706b90ea3abbc17dbb2e4c8f307f045a"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Word_5.1_fr-FR_Proofing_Tools.sit__2.bin"
+            },
+            {
+              "Text": "7fc061909a95c81fa562a501e25cb518",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Word_5.1_fr-FR_Proofing_Tools.sit__2.bin"
+            }
+          ]
+        },
+        {
+          "Title": "BasedWord51a.sit",
+          "Size": "3.26 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/BasedWord51a.sit?expires=1776735324\u0026token=9nhI5LRTVjrK80Cz5-3SqQ\u0026st=562eb269da570a572f2454199ac3c780"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/BasedWord51a.sit"
+            },
+            {
+              "Text": "c48e93dc61b2e5791ba73b7ce504efd2",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=BasedWord51a.sit"
+            }
+          ]
+        }
+      ],
+      "Screenshots": [
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/What_is_new_in_Microsoft_Word_5.1.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/7C34151B-D776-404D-9414-DBBA2692DD84.jpeg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/Word-6-Converter-for-Word-5x-00.png"
+      ]
+    }
+  },
+  "http://macintoshgarden.org/apps/star-trek-episode-guides": {
+    "fetched_at": "2026-04-21T13:11:32.1425914+10:00",
+    "software_item": {
+      "Title": "The Star Trek Guides",
+      "URL": "http://macintoshgarden.org/apps/star-trek-episode-guides",
+      "Description": "HyperCard stacks by David Landis with lots of information about episodes, movies, and characters of The Original Series (including the animated continuation), The Next Generation, Deep Space Nine, Voyager, and Enterprise.\n\nDownload #1: TOS/TNG/DS9/VOY/ENT v4.0, covering all episodes of the franchise through ENT Season 2, with pre-air information on early S3. (Going by Wayback Machine archives of the author's site, these are the final versions of the stacks.)\n\nDownload #2: TNG v2.1 and TOS/DS9/VOY v3.0, covering all episodes up to DS9 mid-S4 and VOY mid-S2.\n\nDownload #3: TNG v1.0, covering TNG episodes up to mid-S5.\n\nIf the stacks for all of the series are placed in the same folder, you can navigate seamlessly between them via assorted hyperlinks in the text.\n\nNeeds HyperCard or HyperCard Player to be executed.\n\nSuffers from slow dissolve transitions and crashes in Basilisk II.",
+      "Downloads": [
+        {
+          "Title": "Star_Trek_Guides_4.0.sit",
+          "Size": "3.52 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Star_Trek_Guides_4.0.sit?expires=1776741391\u0026token=Tn9ERuzjhnWn0Ej7tljfdw\u0026st=82a3f35f11b022a814b85ac900c8fb98"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Star_Trek_Guides_4.0.sit"
+            },
+            {
+              "Text": "149f6741d32db6305ef1729d8a7125d3",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Star_Trek_Guides_4.0.sit"
+            }
+          ]
+        },
+        {
+          "Title": "trek_guides.img_.sit",
+          "Size": "3.06 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/trek_guides.img_.sit?expires=1776741391\u0026token=m9lWYvuyQkeTTiV3qCxPbg\u0026st=4d8e44a314b18dab20b9931a6b90f16c"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/trek_guides.img_.sit"
+            },
+            {
+              "Text": "7ebca8d46415f8006f061bafd341fa77",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=trek_guides.img_.sit"
+            }
+          ]
+        },
+        {
+          "Title": "Star_Trek-TNG.img_.sit",
+          "Size": "294.38 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Star_Trek-TNG.img_.sit?expires=1776741391\u0026token=4P4DeGUMs7_LL_B-GweGMg\u0026st=6a96b13d8416ace9f6f64e9b5a4e7e5a"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Star_Trek-TNG.img_.sit"
+            },
+            {
+              "Text": "ad70ab43fed9017dd438a045a91dab6f",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Star_Trek-TNG.img_.sit"
+            }
+          ]
+        }
+      ],
+      "Screenshots": [
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/screen-tng.png",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/screen-ds9.png",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/1_Star_Trek_-_TOS_Guide_4.0.PNG",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/2_Star_Trek_-_TNG_Guide_4.0.PNG",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/3_Star_Trek_-_DS9_Guide_4.0.PNG",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/4_Star_Trek_-_VOY_Guide_4.0.PNG",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/5_Star_Trek_-_ENT_Guide_4.0.2.PNG"
+      ]
+    }
+  },
+  "http://macintoshgarden.org/apps/stuffit-expander-351": {
+    "fetched_at": "2026-04-21T12:54:23.1352158+10:00",
+    "software_item": {
+      "Title": "StuffIt Expander 3.5.1",
+      "URL": "http://macintoshgarden.org/apps/stuffit-expander-351",
+      "Description": "StuffIt Expander v3.5.1. Predates the standard v4.0.2 typically used with Mini vMac. Packaged as a zipped disk image.\n\nSee Also\nStuffIt Expander 5.5\nStuffIt Expander 4.5\nStuffIt Expander 4.0.2\nStuffIt Deluxe",
+      "Downloads": [
+        {
+          "Title": "stuffit_3.5.1.zip",
+          "Size": "783.42 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 1 - 5\t\t\t\t\t\t\t\t\t\t\t\t - System 7.0 - 7.6",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/stuffit_3.5.1.zip?expires=1776740362\u0026token=YzH7L_mxbk-M5WF1qWRqBA\u0026st=3605b45fd9389a11b4c9caa5a7d013a7"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/stuffit_3.5.1.zip"
+            },
+            {
+              "Text": "afdc69dd91933db1717cffb3c73660b4",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=stuffit_3.5.1.zip"
+            }
+          ]
+        }
+      ],
+      "Screenshots": [
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/StuffIt351-1_0.png",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/StuffIt351-2_0.png"
+      ]
+    }
+  },
+  "http://macintoshgarden.org/games/boom": {
+    "fetched_at": "2026-04-21T14:01:32.1058855+10:00",
+    "software_item": {
+      "Title": "BOOM",
+      "URL": "http://macintoshgarden.org/games/boom",
+      "Description": "Described by the creators as \"Bomberman meets Doom\", Boom vigorously thrusts 80 levels directly into your cranium. You and a friend/relative/hostage can traverse 8 different areas populated with creatively devious enemies to highly memorable backing music in this classic arcade thriller.\n\nMac OS 7.0.1 — Mac OS X (Sierra), download the right version for you!",
+      "Downloads": [
+        {
+          "Title": "BOOM_1.0.sit",
+          "Size": "1.89 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 7.0 - 7.6\t\t\t\t\t\t\t\t\t\t - Mac OS X",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/games/BOOM_1.0.sit?expires=1776744391\u0026token=BulDPm7RQmECvCwL7rteQw\u0026st=178d1214b6a88835b8b002e037022c53"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/games/BOOM_1.0.sit"
+            },
+            {
+              "Text": "4be430e950a21cfc207d8d684f31165a",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=BOOM_1.0.sit"
+            }
+          ]
+        },
+        {
+          "Title": "BOOM-114r2.bin",
+          "Size": "2.15 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 7.0 - 7.6\t\t\t\t\t\t\t\t\t\t - Mac OS X",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/games/BOOM-114r2.bin?expires=1776744391\u0026token=0gRdQi9VyjbC_7iI9Ut-2w\u0026st=132083b52e5be002b69abe7e9cef6ebf"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/games/BOOM-114r2.bin"
+            },
+            {
+              "Text": "f7f54ee6b74a3d7d344d86369363ec4b",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=BOOM-114r2.bin"
+            }
+          ]
+        },
+        {
+          "Title": "BOOM2.zip",
+          "Size": "19.96 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 7.0 - 7.6\t\t\t\t\t\t\t\t\t\t - Mac OS X",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/games/BOOM2.zip?expires=1776744391\u0026token=M59_qMmVPOU2swGFtiOt3g\u0026st=b1fcbc1bde36c8073fcf3138d70eb83e"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/games/BOOM2.zip"
+            },
+            {
+              "Text": "5920fdebe104a8622552b900b462c146",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=BOOM2.zip"
+            }
+          ]
+        },
+        {
+          "Title": "boom-123.sit",
+          "Size": "2.23 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 7.0 - 7.6\t\t\t\t\t\t\t\t\t\t - Mac OS X",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/games/boom-123.sit?expires=1776744391\u0026token=Od0DGZ2mQ4B2QY9eYFMaPA\u0026st=0b99220a6cc7fd0f5cb737897e514308"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/games/boom-123.sit"
+            },
+            {
+              "Text": "524e662e0dccf43456e727ec62e497a9",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=boom-123.sit"
+            }
+          ]
+        },
+        {
+          "Title": "BOOM_1.4.5.zip",
+          "Size": "2.57 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 7.0 - 7.6\t\t\t\t\t\t\t\t\t\t - Mac OS X",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/games/BOOM_1.4.5.zip?expires=1776744391\u0026token=lc4_Kng15SdiqymLP-0X1Q\u0026st=c1dcea1a5d7a716899ea2f6b63476f3e"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/games/BOOM_1.4.5.zip"
+            },
+            {
+              "Text": "69b0d79cdd7e8dad55174c2dbb68203e",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=BOOM_1.4.5.zip"
+            }
+          ]
+        },
+        {
+          "Title": "BOOM_1.4.5.sitx",
+          "Size": "2.28 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 7.0 - 7.6\t\t\t\t\t\t\t\t\t\t - Mac OS X",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/games/BOOM_1.4.5_0.sitx?expires=1776744391\u0026token=IS36hiAaADRYYedUFIRUFg\u0026st=2c27933d21934331d9c7835604ba6096"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/games/BOOM_1.4.5_0.sitx"
+            },
+            {
+              "Text": "56215de83c3fdd53f28ea65c0bb43bb5",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=BOOM_1.4.5_0.sitx"
+            }
+          ]
+        },
+        {
+          "Title": "boom-151.hqx",
+          "Size": "2.86 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 7.0 - 7.6\t\t\t\t\t\t\t\t\t\t - Mac OS X",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/games/boom-151.hqx?expires=1776744391\u0026token=GVJP2KUiqxMlzaJBXlvFeA\u0026st=ef2c41643b6395200f79d4ae86b88860"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/games/boom-151.hqx"
+            },
+            {
+              "Text": "845099dd02ea4028bed79ce35c493683",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=boom-151.hqx"
+            }
+          ]
+        },
+        {
+          "Title": "boom-154.sit",
+          "Size": "2.43 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 7.0 - 7.6\t\t\t\t\t\t\t\t\t\t - Mac OS X",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/games/boom-154.sit?expires=1776744391\u0026token=gmjZy-d5Kx6wTV9AFZAo2w\u0026st=16ac7b9a0067fe014d2eb3a936583b4d"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/games/boom-154.sit"
+            },
+            {
+              "Text": "f6ef6f73a17e4b6399e8d45c1608969c",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=boom-154.sit"
+            }
+          ]
+        },
+        {
+          "Title": "boom-155.sit",
+          "Size": "2.43 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 7.0 - 7.6\t\t\t\t\t\t\t\t\t\t - Mac OS X",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/games/boom-155.sit?expires=1776744391\u0026token=vUflKcI6ry5em3t7DyVdcQ\u0026st=26d98ec8b05299bbfbd6163dc57714c9"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/games/boom-155.sit"
+            },
+            {
+              "Text": "19c7e196f2d475d33c006daa01f60d4f",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=boom-155.sit"
+            }
+          ]
+        },
+        {
+          "Title": "boom-157.sit",
+          "Size": "2.61 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 7.0 - 7.6\t\t\t\t\t\t\t\t\t\t - Mac OS X",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/games/boom-157.sit?expires=1776744391\u0026token=f2b3oLU66aydXCkgsJ6_xQ\u0026st=f3198a03eb94d7f17a083279308322d2"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/games/boom-157.sit"
+            },
+            {
+              "Text": "833d2484e3487b452e6efead48648f90",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=boom-157.sit"
+            }
+          ]
+        },
+        {
+          "Title": "boom-162.dmg_.zip",
+          "Size": "3.16 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 7.0 - 7.6\t\t\t\t\t\t\t\t\t\t - Mac OS X",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/games/boom-162.dmg_.zip?expires=1776744391\u0026token=hnckPri4nfMREplSSpwLeA\u0026st=b4f2f9d962f4aed22dd39a9b941d5cfb"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/games/boom-162.dmg_.zip"
+            },
+            {
+              "Text": "207989d2eef47b4a1e4003c4e518fd00",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=boom-162.dmg_.zip"
+            }
+          ]
+        },
+        {
+          "Title": "boom-163.sit",
+          "Size": "2.93 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 7.0 - 7.6\t\t\t\t\t\t\t\t\t\t - Mac OS X",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/games/boom-163.sit?expires=1776744391\u0026token=E_oJlbx7uk8-qLcbQcXbMQ\u0026st=860db2dc3f7ad72316844269e6b09229"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/games/boom-163.sit"
+            },
+            {
+              "Text": "0ce6b14956306396018580bc24b13462",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=boom-163.sit"
+            }
+          ]
+        },
+        {
+          "Title": "BOOMEdit-32.dmg_.tgz",
+          "Size": "304.07 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 7.0 - 7.6\t\t\t\t\t\t\t\t\t\t - Mac OS X",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/games/BOOMEdit-32.dmg_.tgz?expires=1776744391\u0026token=4rzSJjjjIQXEZH-NF8EuvQ\u0026st=5022a0fbe4c75c9a4b034dea674ec1c0"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/games/BOOMEdit-32.dmg_.tgz"
+            },
+            {
+              "Text": "c5eacec146953c88586dea458917974f",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=BOOMEdit-32.dmg_.tgz"
+            }
+          ]
+        },
+        {
+          "Title": "boom-206.dmg",
+          "Size": "19.11 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 7.0 - 7.6\t\t\t\t\t\t\t\t\t\t - Mac OS X",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/games/boom-206.dmg?expires=1776744391\u0026token=ltkk1mxq27c6dAWXQ0HnkA\u0026st=14ba5dda1b293a7bceda0126adfe5408"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/games/boom-206.dmg"
+            },
+            {
+              "Text": "a2b556569076123ecbebf10ae6658a0a",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=boom-206.dmg"
+            }
+          ]
+        }
+      ],
+      "Screenshots": [
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/boom_1.png",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/boom_2.png",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/boom_3.png",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/Factor_Software_Logo.png",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/Loading_Screen.png"
+      ]
+    }
+  },
+  "http://macintoshgarden.org/games/mac-bestsellers-3-games": {
+    "fetched_at": "2026-04-21T11:06:07.844497+10:00",
+    "software_item": {
+      "Title": "Mac BestSellers 3 Games",
+      "URL": "http://macintoshgarden.org/games/mac-bestsellers-3-games",
+      "Description": "Toast Image of a Install Disc for 3 Games, Super Tetris 1.0, Spectre 1.0, and HellCats over the Pacific 1.0.4",
+      "Downloads": [
+        {
+          "Title": "MAC_BEST_SELLERS.toast",
+          "Size": "645.88 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 7.0 - 7.6\t\t\t\t\t\t\t\t\t\t - Mac OS 8.5 - 8.6",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/games/MAC_BEST_SELLERS.toast?expires=1776733867\u0026token=TzcgjL_jQJJ97URmhEJScw\u0026st=6a1d76ea7fe75933b03369bb63a45e7a"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/games/MAC_BEST_SELLERS.toast"
+            },
+            {
+              "Text": "2fe7fe5332ffd0292195e31078cbd348",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=MAC_BEST_SELLERS.toast"
+            }
+          ]
+        }
+      ],
+      "Screenshots": [
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/MAC_BEST_SELLERS.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/Tetris1.png",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/Tetris2.png"
+      ]
+    }
+  },
+  "http://macintoshgarden.org/games/spectre": {
+    "fetched_at": "2026-04-21T11:26:49.2907901+10:00",
+    "software_item": {
+      "Title": "Spectre",
+      "URL": "http://macintoshgarden.org/games/spectre",
+      "Description": "Capture the flags and destroy the other tanks in a polygonal 3D world. Similar to the Battlezone vector arcade game in style and gameplay, but with new elements from deathmatch/CTF-style games. This first Spectre game was exclusively for Macintosh, though some later iterations for other machines were also simply called \"Spectre.\"\n\n1st download contains DiskDup disk images of an early Beta version, as well as Version 1.0, Spectre Challenger \u0026 v1.0.2 (without \"Challenger\" branding), a World Editor, Cheats, Full Documentation, Product Photos, and Serials — all enclosed in a MacZip \".zip\" archive.\n2nd download Three different Spectre 1.0 applications in a Mar archive which you can unpack on just about every vintage Mac.\n3rd download Spectre 1.1d16 in a StuffIt archive.\n4th download is the World Editor by John Lindal, that lets you edit the world grid and colors.\n4th download is a demo of v1.0b2.\n5th download is a demo of v1.0.\n6th download is the Custom Spectre Editor which gives you speed up to 18, ammunition up to 127, and invincible shields!\n\nRead more at Wikipedia.\n\nSee the sequels: Spectre Supreme and Spectre VR.\n\nSpectre3D.com, homepage of the discontinued Spectre remake for iOS, now hosts a browser version of it in playable alpha state.\n\nMac Plus or later, System 6.0.3 or later, b/w or 16 or 256 colors.\n\nIf extracting the DL #1 zip archive on a classic Mac OS. - For best results use MacZip to correctly restore the extracted Resource fork data and Data \u0026 File Type information of the contents.",
+      "Downloads": [
+        {
+          "Title": "spectre.zip",
+          "Size": "9.09 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/games/spectre.zip?expires=1776735108\u0026token=7zXm1D8LAOnK-kBC3ouEpg\u0026st=cfe1fa841b74a73bdc233e830d718e0c"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/games/spectre.zip"
+            },
+            {
+              "Text": "022f313a8e9867deedf9dd3407c63f9f",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=spectre.zip"
+            }
+          ]
+        },
+        {
+          "Title": "Spectre_1.0.mar",
+          "Size": "3.34 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/games/Spectre_1.0.mar?expires=1776735108\u0026token=j17mrTmEAZnmW4kZkQo-DQ\u0026st=979b840abcea2e59271c48cabc1a2097"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/games/Spectre_1.0.mar"
+            },
+            {
+              "Text": "09b60f053fc383936dad4d82bc1a0479",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Spectre_1.0.mar"
+            }
+          ]
+        },
+        {
+          "Title": "Spectre_1.1.sit",
+          "Size": "765.80 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/games/Spectre_1.1.sit?expires=1776735108\u0026token=aAFsLB1c2Oz7d5XnVqGlYg\u0026st=4a0cb041b603bd0d14a6a52c53923197"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/games/Spectre_1.1.sit"
+            },
+            {
+              "Text": "8f8f95decf1e7caffa638798a302e1e9",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Spectre_1.1.sit"
+            }
+          ]
+        },
+        {
+          "Title": "Spectre_World_Editor_2.1.sit",
+          "Size": "74.55 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/games/Spectre_World_Editor_2.1.sit?expires=1776735108\u0026token=sRGt8xsbCTtcY8RWhhXWSg\u0026st=cf9e001a8da24fd8a101d70467174acd"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/games/Spectre_World_Editor_2.1.sit"
+            },
+            {
+              "Text": "6b5639eca9e21ecde3e80f8a2040d61c",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Spectre_World_Editor_2.1.sit"
+            }
+          ]
+        },
+        {
+          "Title": "SpectreDemo.sit",
+          "Size": "253.32 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/games/SpectreDemo.sit?expires=1776735108\u0026token=wGWiUKLDuNPyk0R0tHejdA\u0026st=ad7824728d6fc0c514705f147f6c423d"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/games/SpectreDemo.sit"
+            },
+            {
+              "Text": "5664ead985c70b064f3b83c12dfc5d47",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=SpectreDemo.sit"
+            }
+          ]
+        },
+        {
+          "Title": "Spectre10_demo.sit",
+          "Size": "242.30 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/games/Spectre10_demo.sit?expires=1776735108\u0026token=ndRuhgETZj3EfT4NypTosQ\u0026st=44e5481518f3f2573f69e87fa222756b"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/games/Spectre10_demo.sit"
+            },
+            {
+              "Text": "683427a1569c3270b5868965af991353",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Spectre10_demo.sit"
+            }
+          ]
+        },
+        {
+          "Title": "Custom_Spectre_Editor_v1.0.sit",
+          "Size": "21.72 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/games/Custom_Spectre_Editor_v1.0_0.sit?expires=1776735108\u0026token=qs4rFmaBgczNPx3apu_ULg\u0026st=0ca319f7a8cc3c8ddc959b5b7a7e9a04"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/games/Custom_Spectre_Editor_v1.0_0.sit"
+            },
+            {
+              "Text": "9ab427270a4bf1580ee625a7d73656bb",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Custom_Spectre_Editor_v1.0_0.sit"
+            }
+          ]
+        }
+      ],
+      "Screenshots": [
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/spectre1.png",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/spectre_2.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/spectre_3.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/s-l1600_17_0.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/s-l1600_18_0.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/s-l1600_19_0.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/s-l1600_20_0.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/s-l1600_21_0.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/s-l1600_22_0.jpg"
+      ]
+    }
+  },
+  "https://macintoshgarden.org/games/mac-bzone": {
+    "fetched_at": "2026-04-21T09:05:05.7251841+10:00",
+    "software_item": {
+      "Title": "Mac Bzone",
+      "URL": "https://macintoshgarden.org/games/mac-bzone",
+      "Description": "Mac Bzone is an unofficial Macintosh version of the 3D tank battle Battlezone (the ancestor of Spectre). You, the valiant but lone tank commander, vs a slower but infinite enemy. The enemy will always win, in time, but how much time you can buy depends on your skill as a tank commander.\n\nDownload #1: v1.3.1, including readme, encoded as a mar archive\nDownload #2: original upload of 1.3.1, application only.\n\nSerial- 5000 /Code-48406914\n\nMac Bzone requires system 6.0.7 or higher and a 68020+68881 combination or higher (it requires an FPU).  It will run on black and white systems and will take some advantage of color on color systems (it runs best in 1bit or 4bit modes).",
+      "Downloads": [
+        {
+          "Title": "MACBZONE_1.3.1.sea_.mac",
+          "Size": "119.13 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "https://download.macintoshgarden.org/games/MACBZONE_1.3.1.sea_.mac?expires=1776637641\u0026token=bVJAb9Hg8rcTw8wGIFSndA\u0026st=0a532012091baa84873e7b834616c87c"
+            },
+            {
+              "Text": "mirror",
+              "URL": "https://old.mac.gdn/games/MACBZONE_1.3.1.sea_.mac"
+            },
+            {
+              "Text": "8e01dc7db0435e636149f89d172f61cc",
+              "URL": "https://macintoshgarden.org/arch_md5.php?filename=MACBZONE_1.3.1.sea_.mac"
+            }
+          ]
+        },
+        {
+          "Title": "mac_bzone.sit",
+          "Size": "88.42 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "https://download.macintoshgarden.org/games/mac_bzone_0.sit?expires=1776637642\u0026token=OTn6fdNUutiSv9Et6C3SbQ\u0026st=7542aaeb66d11b4d2c462ffd74c82854"
+            },
+            {
+              "Text": "mirror",
+              "URL": "https://old.mac.gdn/games/mac_bzone_0.sit"
+            },
+            {
+              "Text": "d4f8287ce87caa1a21ed134d7b795d1c",
+              "URL": "https://macintoshgarden.org/arch_md5.php?filename=mac_bzone_0.sit"
+            }
+          ]
+        }
+      ],
+      "Screenshots": [
+        "https://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/mbzone.png"
+      ]
+    }
+  },
+  "https://macintoshgarden.org/games/spectre": {
+    "fetched_at": "2026-04-21T08:09:35.3637366+10:00",
+    "software_item": {
+      "Title": "Spectre",
+      "URL": "https://macintoshgarden.org/games/spectre",
+      "Description": "Capture the flags and destroy the other tanks in a polygonal 3D world. Similar to the Battlezone vector arcade game in style and gameplay, but with new elements from deathmatch/CTF-style games. This first Spectre game was exclusively for Macintosh, though some later iterations for other machines were also simply called \"Spectre.\"\n\n1st download contains DiskDup disk images of an early Beta version, as well as Version 1.0, Spectre Challenger \u0026 v1.0.2 (without \"Challenger\" branding), a World Editor, Cheats, Full Documentation, Product Photos, and Serials — all enclosed in a MacZip \".zip\" archive.\n2nd download Three different Spectre 1.0 applications in a Mar archive which you can unpack on just about every vintage Mac.\n3rd download Spectre 1.1d16 in a StuffIt archive.\n4th download is the World Editor by John Lindal, that lets you edit the world grid and colors.\n4th download is a demo of v1.0b2.\n5th download is a demo of v1.0.\n6th download is the Custom Spectre Editor which gives you speed up to 18, ammunition up to 127, and invincible shields!\n\nRead more at Wikipedia.\n\nSee the sequels: Spectre Supreme and Spectre VR.\n\nSpectre3D.com, homepage of the discontinued Spectre remake for iOS, now hosts a browser version of it in playable alpha state.\n\nMac Plus or later, System 6.0.3 or later, b/w or 16 or 256 colors.\n\nIf extracting the DL #1 zip archive on a classic Mac OS. - For best results use MacZip to correctly restore the extracted Resource fork data and Data \u0026 File Type information of the contents.",
+      "Downloads": [
+        {
+          "Title": "spectre.zip",
+          "Size": "9.09 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "https://download.macintoshgarden.org/games/spectre.zip?expires=1776648516\u0026token=KCvtq4q6h_i6oVW49j6PmA\u0026st=577457eea75029c7b9057937283f3c68"
+            },
+            {
+              "Text": "mirror",
+              "URL": "https://old.mac.gdn/games/spectre.zip"
+            },
+            {
+              "Text": "022f313a8e9867deedf9dd3407c63f9f",
+              "URL": "https://macintoshgarden.org/arch_md5.php?filename=spectre.zip"
+            }
+          ]
+        },
+        {
+          "Title": "Spectre_1.0.mar",
+          "Size": "3.34 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "https://download.macintoshgarden.org/games/Spectre_1.0.mar?expires=1776648516\u0026token=MtLvLozY4L2g1136s0D-aw\u0026st=f59145f2a074e6c4e3c75cff07b62a03"
+            },
+            {
+              "Text": "mirror",
+              "URL": "https://old.mac.gdn/games/Spectre_1.0.mar"
+            },
+            {
+              "Text": "09b60f053fc383936dad4d82bc1a0479",
+              "URL": "https://macintoshgarden.org/arch_md5.php?filename=Spectre_1.0.mar"
+            }
+          ]
+        },
+        {
+          "Title": "Spectre_1.1.sit",
+          "Size": "765.80 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "https://download.macintoshgarden.org/games/Spectre_1.1.sit?expires=1776648516\u0026token=3KxrNa-zwX2uJw3d9bFQYQ\u0026st=98228cb46c4ef8b4c9a37e745f0f79d0"
+            },
+            {
+              "Text": "mirror",
+              "URL": "https://old.mac.gdn/games/Spectre_1.1.sit"
+            },
+            {
+              "Text": "8f8f95decf1e7caffa638798a302e1e9",
+              "URL": "https://macintoshgarden.org/arch_md5.php?filename=Spectre_1.1.sit"
+            }
+          ]
+        },
+        {
+          "Title": "Spectre_World_Editor_2.1.sit",
+          "Size": "74.55 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "https://download.macintoshgarden.org/games/Spectre_World_Editor_2.1.sit?expires=1776648516\u0026token=-WOUcGbR8OOHIe_7LfiF6w\u0026st=d03ea8e27415bd2f98c7a5e76bd0b2ca"
+            },
+            {
+              "Text": "mirror",
+              "URL": "https://old.mac.gdn/games/Spectre_World_Editor_2.1.sit"
+            },
+            {
+              "Text": "6b5639eca9e21ecde3e80f8a2040d61c",
+              "URL": "https://macintoshgarden.org/arch_md5.php?filename=Spectre_World_Editor_2.1.sit"
+            }
+          ]
+        },
+        {
+          "Title": "SpectreDemo.sit",
+          "Size": "253.32 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "https://download.macintoshgarden.org/games/SpectreDemo.sit?expires=1776648516\u0026token=63oJsG1pGY1PjbTLpq3z0A\u0026st=f2b0a299fdfb9dd72ec6c3b6059bab8e"
+            },
+            {
+              "Text": "mirror",
+              "URL": "https://old.mac.gdn/games/SpectreDemo.sit"
+            },
+            {
+              "Text": "5664ead985c70b064f3b83c12dfc5d47",
+              "URL": "https://macintoshgarden.org/arch_md5.php?filename=SpectreDemo.sit"
+            }
+          ]
+        },
+        {
+          "Title": "Spectre10_demo.sit",
+          "Size": "242.30 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "https://download.macintoshgarden.org/games/Spectre10_demo.sit?expires=1776648516\u0026token=BruWeNJS1ImEsYpz7jumJQ\u0026st=a57f68b85cb857dfcfa0aeb0011b0c80"
+            },
+            {
+              "Text": "mirror",
+              "URL": "https://old.mac.gdn/games/Spectre10_demo.sit"
+            },
+            {
+              "Text": "683427a1569c3270b5868965af991353",
+              "URL": "https://macintoshgarden.org/arch_md5.php?filename=Spectre10_demo.sit"
+            }
+          ]
+        },
+        {
+          "Title": "Custom_Spectre_Editor_v1.0.sit",
+          "Size": "21.72 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "https://download.macintoshgarden.org/games/Custom_Spectre_Editor_v1.0_0.sit?expires=1776648516\u0026token=dU33fn2iJSuFrOT3ZiKIWA\u0026st=6eed3cf4895d82eec39240d56c94ce16"
+            },
+            {
+              "Text": "mirror",
+              "URL": "https://old.mac.gdn/games/Custom_Spectre_Editor_v1.0_0.sit"
+            },
+            {
+              "Text": "9ab427270a4bf1580ee625a7d73656bb",
+              "URL": "https://macintoshgarden.org/arch_md5.php?filename=Custom_Spectre_Editor_v1.0_0.sit"
+            }
+          ]
+        }
+      ],
+      "Screenshots": [
+        "https://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/spectre1.png",
+        "https://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/spectre_2.jpg",
+        "https://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/spectre_3.jpg",
+        "https://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/s-l1600_17_0.jpg",
+        "https://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/s-l1600_18_0.jpg",
+        "https://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/s-l1600_19_0.jpg",
+        "https://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/s-l1600_20_0.jpg",
+        "https://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/s-l1600_21_0.jpg",
+        "https://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/s-l1600_22_0.jpg"
+      ]
+    }
+  }
+}

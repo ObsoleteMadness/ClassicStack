@@ -1,13 +1,16 @@
+//go:build afp || all
+
 package afp
 
 import (
+	"github.com/pgodw/omnitalk/netlog"
+	"errors"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 )
 
-func (s *AFPService) handleSetFileParms(req *FPSetFileParmsReq) (*FPSetFileParmsRes, int32) {
+func (s *Service) handleSetFileParms(req *FPSetFileParmsReq) (*FPSetFileParmsRes, int32) {
 	if s.volumeIsReadOnly(req.VolumeID) {
 		return &FPSetFileParmsRes{}, ErrVolLocked
 	}
@@ -19,7 +22,7 @@ func (s *AFPService) handleSetFileParms(req *FPSetFileParmsReq) (*FPSetFileParms
 	return &FPSetFileParmsRes{}, NoErr
 }
 
-func (s *AFPService) handleCreateFile(req *FPCreateFileReq) (*FPCreateFileRes, int32) {
+func (s *Service) handleCreateFile(req *FPCreateFileReq) (*FPCreateFileRes, int32) {
 	if s.fs == nil {
 		return &FPCreateFileRes{}, ErrAccessDenied
 	}
@@ -30,14 +33,18 @@ func (s *AFPService) handleCreateFile(req *FPCreateFileReq) (*FPCreateFileRes, i
 	if errCode != NoErr {
 		return &FPCreateFileRes{}, errCode
 	}
+	backend := s.fsForPath(targetPath)
+	if backend == nil {
+		return &FPCreateFileRes{}, ErrAccessDenied
+	}
 	if req.HasFlag(FPCreateFileFlagHardCreate) {
-		f, err := s.fs.CreateFile(targetPath)
+		f, err := backend.CreateFile(targetPath)
 		if err != nil {
 			return &FPCreateFileRes{}, ErrAccessDenied
 		}
 		f.Close()
 	} else {
-		f, err := s.fs.OpenFile(targetPath, os.O_CREATE|os.O_EXCL)
+		f, err := backend.OpenFile(targetPath, os.O_CREATE|os.O_EXCL)
 		if err != nil {
 			if os.IsExist(err) {
 				return &FPCreateFileRes{}, ErrObjectExists
@@ -49,7 +56,7 @@ func (s *AFPService) handleCreateFile(req *FPCreateFileReq) (*FPCreateFileRes, i
 	return &FPCreateFileRes{}, NoErr
 }
 
-func (s *AFPService) handleCopyFile(req *FPCopyFileReq) (*FPCopyFileRes, int32) {
+func (s *Service) handleCopyFile(req *FPCopyFileReq) (*FPCopyFileRes, int32) {
 	srcParent, ok := s.resolveDIDPath(req.SrcVolumeID, req.SrcDirID)
 	if !ok {
 		return &FPCopyFileRes{}, ErrObjectNotFound
@@ -91,18 +98,23 @@ func (s *AFPService) handleCopyFile(req *FPCopyFileReq) (*FPCopyFileRes, int32) 
 		copyName = filepath.Base(srcPath)
 	}
 	dstPath := s.canonicalizePath(filepath.Join(dstParent, copyName))
+	srcBackend := s.fsForPath(srcPath)
+	dstBackend := s.fsForPath(dstPath)
+	if srcBackend == nil || dstBackend == nil {
+		return &FPCopyFileRes{}, ErrAccessDenied
+	}
 
-	if _, err := s.fs.Stat(dstPath); err == nil {
+	if _, err := dstBackend.Stat(dstPath); err == nil {
 		return &FPCopyFileRes{}, ErrObjectExists
 	}
 
-	srcFile, err := s.fs.OpenFile(srcPath, os.O_RDONLY)
+	srcFile, err := srcBackend.OpenFile(srcPath, os.O_RDONLY)
 	if err != nil {
 		return &FPCopyFileRes{}, ErrObjectNotFound
 	}
 	defer srcFile.Close()
 
-	dstFile, err := s.fs.CreateFile(dstPath)
+	dstFile, err := dstBackend.CreateFile(dstPath)
 	if err != nil {
 		return &FPCopyFileRes{}, ErrAccessDenied
 	}
@@ -122,6 +134,9 @@ func (s *AFPService) handleCopyFile(req *FPCopyFileReq) (*FPCopyFileRes, int32) 
 			break
 		}
 		if readErr != nil {
+			if errors.Is(readErr, ErrCopySourceReadEOF) {
+				return &FPCopyFileRes{}, ErrEOFErr
+			}
 			return &FPCopyFileRes{}, ErrMiscErr
 		}
 	}
@@ -130,7 +145,7 @@ func (s *AFPService) handleCopyFile(req *FPCopyFileReq) (*FPCopyFileRes, int32) 
 	dstMeta := s.metaFor(req.DstVolumeID)
 	if srcMeta != nil && dstMeta != nil {
 		if err := dstMeta.CopyMetadataFrom(srcMeta, srcPath, dstPath); err != nil {
-			log.Printf("[AFP] warning: metadata copy failed %q -> %q: %v", srcPath, dstPath, err)
+			netlog.Debug("[AFP] warning: metadata copy failed %q -> %q: %v", srcPath, dstPath, err)
 		}
 	}
 

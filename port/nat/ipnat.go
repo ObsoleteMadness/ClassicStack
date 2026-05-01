@@ -13,9 +13,10 @@ import (
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 
-	"github.com/pgodw/omnitalk/go/appletalk"
-	"github.com/pgodw/omnitalk/go/netlog"
-	"github.com/pgodw/omnitalk/go/service"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
+	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/service"
 )
 
 const (
@@ -654,7 +655,7 @@ func (n *OSNAT) routeToMac(atNet uint16, atNode uint8, pkt []byte) {
 		return
 	}
 	for _, frag := range frags {
-		_ = n.router.Route(appletalk.Datagram{
+		_ = n.router.Route(ddp.Datagram{
 			DestinationNetwork: atNet,
 			DestinationNode:    atNode,
 			DestinationSocket:  n.socket,

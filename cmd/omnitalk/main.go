@@ -1,7 +1,7 @@
 package main
 
 import (
-	"encoding/hex"
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -12,27 +12,26 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/pgodw/omnitalk/go/netlog"
-	"github.com/pgodw/omnitalk/go/port"
-	"github.com/pgodw/omnitalk/go/port/ethertalk"
-	"github.com/pgodw/omnitalk/go/port/localtalk"
-	"github.com/pgodw/omnitalk/go/port/rawlink"
-	"github.com/pgodw/omnitalk/go/router"
-	"github.com/pgodw/omnitalk/go/service"
-	"github.com/pgodw/omnitalk/go/service/aep"
-	"github.com/pgodw/omnitalk/go/service/afp"
-	"github.com/pgodw/omnitalk/go/service/asp"
-	"github.com/pgodw/omnitalk/go/service/dsi"
-	"github.com/pgodw/omnitalk/go/service/llap"
-	"github.com/pgodw/omnitalk/go/service/macip"
-	"github.com/pgodw/omnitalk/go/service/rtmp"
-	"github.com/pgodw/omnitalk/go/service/zip"
+	"github.com/pgodw/omnitalk/config"
+	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/pkg/hwaddr"
+	"github.com/pgodw/omnitalk/pkg/logging"
+	"github.com/pgodw/omnitalk/port"
+	"github.com/pgodw/omnitalk/port/ethertalk"
+	"github.com/pgodw/omnitalk/port/localtalk"
+	"github.com/pgodw/omnitalk/port/rawlink"
+	"github.com/pgodw/omnitalk/router"
+	"github.com/pgodw/omnitalk/service"
+	"github.com/pgodw/omnitalk/service/aep"
+	"github.com/pgodw/omnitalk/service/llap"
+	"github.com/pgodw/omnitalk/service/rtmp"
+	"github.com/pgodw/omnitalk/service/zip"
 )
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	configPath := flag.String("config", "", "Path to INI config file (cannot be combined with other flags)")
+	configPath := flag.String("config", "", "Path to TOML config file (cannot be combined with other flags)")
 	showVersion := flag.Bool("version", false, "Print OmniTalk version information and exit")
 
 	logLevel := flag.String("log-level", "info", "Minimum log level: debug, info, warn")
@@ -75,7 +74,8 @@ func main() {
 	parsePackets := flag.Bool("parse-packets", false, "Decode and log every inbound DDP packet (ATP/ASP/AFP layers)")
 	parseOutput := flag.String("parse-output", "", "File path to write parsed packet log (appended; empty = stdout only)")
 
-	// AFP file sharing flags.
+	// AFP file sharing flags. Schemas live in service/afp; cmd-side
+	// wiring is split between afp_enabled.go and afp_disabled.go.
 	afpServerName := flag.String("afp-name", "Go File Server", "AFP server name advertised to clients")
 	afpZone := flag.String("afp-zone", "", "AppleTalk zone for AFP NBP registration (default: first zone found)")
 	afpProtocols := flag.String("afp-protocols", "tcp,ddp", "AFP protocols to enable: tcp, ddp, or tcp,ddp")
@@ -83,7 +83,7 @@ func main() {
 	afpExtensionMap := flag.String("afp-extension-map", "", "Netatalk-compatible extension map file for Macintosh type/creator fallback")
 	afpDecomposedFilenames := flag.Bool("afp-use-decomposed-names", true, "Encode host-reserved filename characters using 0xNN tokens when mapping AFP paths")
 	afpCNIDBackend := flag.String("afp-cnid-backend", "sqlite", "CNID backend to use for AFP object IDs (sqlite or memory)")
-	afpAppleDoubleMode := flag.String("afp-appledouble-mode", string(afp.AppleDoubleModeModern), "AppleDouble metadata mode: modern or legacy")
+	afpAppleDoubleMode := flag.String("afp-appledouble-mode", "modern", "AppleDouble metadata mode: modern or legacy")
 	var afpVolumes volumeFlags
 	flag.Var(&afpVolumes, "afp-volume", `AFP volume to share, format: "Name:Path" (repeatable, e.g. -afp-volume "Mac Share:c:\mac")`)
 
@@ -110,81 +110,89 @@ func main() {
 
 	selectedConfig := *configPath
 	if selectedConfig == "" && flag.NFlag() == 0 {
-		if _, err := os.Stat("server.ini"); err == nil {
-			selectedConfig = "server.ini"
+		if _, err := os.Stat("server.toml"); err == nil {
+			selectedConfig = "server.toml"
 		} else if os.IsNotExist(err) {
 			flag.Usage()
 			return
 		} else {
-			log.Fatalf("failed checking default config file server.ini: %v", err)
+			log.Fatalf("failed checking default config file server.toml: %v", err)
 		}
 	}
 
-	if selectedConfig != "" {
-		cfg, err := loadConfigFromINI(selectedConfig)
+	var (
+		cfg          appConfig
+		configSource config.Source
+	)
+	fromConfigFile := selectedConfig != ""
+	if fromConfigFile {
+		loaded, src, err := loadConfigFromFile(selectedConfig)
 		if err != nil {
 			log.Fatalf("failed loading config file %q: %v", selectedConfig, err)
 		}
-
-		*logLevel = cfg.LogLevel
-		*logTraffic = cfg.LogTraffic
-
-		*ltoudp = cfg.LToUDPEnabled
-		*ltIface = cfg.LToUDPInterface
-		*ltNet = cfg.LToUDPSeedNetwork
-		*ltZone = cfg.LToUDPSeedZone
-
-		*tashtalkSerial = cfg.TashTalkPort
-		*ttNet = cfg.TashTalkSeedNetwork
-		*ttZone = cfg.TashTalkSeedZone
-
-		*pcapDev = cfg.EtherTalkDevice
-		*etBackend = cfg.EtherTalkBackend
-		*pcapHWAddr = cfg.EtherTalkHWAddr
-		*etBridgeMode = cfg.EtherTalkBridgeMode
-		*etBridgeHostMAC = cfg.EtherTalkBridgeHostMAC
-		*etNetMin = cfg.EtherTalkSeedNetworkMin
-		*etNetMax = cfg.EtherTalkSeedNetworkMax
-		*etZone = cfg.EtherTalkSeedZone
-
-		*macipEnable = cfg.MacIPEnabled
-		*macipGWIP = cfg.MacIPGWIP
-		*macipSubnet = cfg.MacIPSubnet
-		*macipNameserver = cfg.MacIPNameserver
-		*macipZone = cfg.MacIPZone
-		*macipIPGW = cfg.MacIPGatewayIP
-		*macipNAT = cfg.MacIPNAT
-		*macipDHCP = cfg.MacIPDHCPRelay
-		*macipStateFile = cfg.MacIPLeaseFile
-
-		*parsePackets = cfg.ParsePackets
-		*parseOutput = cfg.ParseOutput
-
-		*afpServerName = cfg.AFPServerName
-		*afpZone = cfg.AFPZone
-		*afpProtocols = cfg.AFPProtocols
-		*afpTCPAddr = cfg.AFPTCPBinding
-		*afpExtensionMap = cfg.AFPExtensionMapPath
-		*afpDecomposedFilenames = cfg.AFPDecomposedFilenames
-		*afpCNIDBackend = cfg.AFPCNIDBackend
-		afpVolumes = volumeFlags(cfg.AFPVolumes)
+		cfg = loaded
+		configSource = src
+	} else {
+		cfg = flagsToConfig(flagInputs{
+			LogLevel:                *logLevel,
+			LogTraffic:              *logTraffic,
+			ParsePackets:            *parsePackets,
+			ParseOutput:             *parseOutput,
+			LToUDPEnabled:           *ltoudp,
+			LToUDPInterface:         *ltIface,
+			LToUDPSeedNetwork:       *ltNet,
+			LToUDPSeedZone:          *ltZone,
+			TashTalkPort:            *tashtalkSerial,
+			TashTalkSeedNetwork:     *ttNet,
+			TashTalkSeedZone:        *ttZone,
+			EtherTalkDevice:         *pcapDev,
+			EtherTalkBackend:        *etBackend,
+			EtherTalkHWAddress:      *pcapHWAddr,
+			EtherTalkBridgeMode:     *etBridgeMode,
+			EtherTalkBridgeHostMAC:  *etBridgeHostMAC,
+			EtherTalkSeedNetworkMin: *etNetMin,
+			EtherTalkSeedNetworkMax: *etNetMax,
+			EtherTalkSeedZone:       *etZone,
+			EtherTalkDesiredNetwork: *etDesiredNet,
+			EtherTalkDesiredNode:    *etDesiredNode,
+			MacIPEnabled:            *macipEnable,
+			MacIPGWIP:               *macipGWIP,
+			MacIPSubnet:             *macipSubnet,
+			MacIPNameserver:         *macipNameserver,
+			MacIPZone:               *macipZone,
+			MacIPGatewayIP:          *macipIPGW,
+			MacIPNAT:                *macipNAT,
+			MacIPDHCPRelay:          *macipDHCP,
+			MacIPLeaseFile:          *macipStateFile,
+		})
 	}
 
-	if level, ok := netlog.ParseLevel(*logLevel); ok {
+	if level, ok := netlog.ParseLevel(cfg.LogLevel); ok {
 		netlog.SetLevel(level)
 	} else {
-		log.Fatalf("unknown -log-level %q (want debug, info, or warn)", *logLevel)
+		log.Fatalf("unknown -log-level %q (want debug, info, or warn)", cfg.LogLevel)
 	}
 
-	if *logTraffic {
+	// Install a pkg/logging root logger as the netlog shim's target so
+	// output flows through slog with source tagging and structured
+	// attributes. Each service will eventually take a *slog.Logger
+	// directly; until then, netlog.* calls forward here.
+	slogLevel, _ := logging.ParseLevel(cfg.LogLevel)
+	rootLogger := logging.New("OmniTalk", logging.Options{
+		Sinks: []logging.Sink{{Writer: os.Stderr, Format: logging.FormatConsole, Level: slogLevel}},
+	})
+	logging.SetDefault(rootLogger)
+	netlog.SetLogger(rootLogger)
+
+	if cfg.LogTraffic {
 		netlog.SetLogFunc(func(s string) { netlog.Debug("%s", s) })
 	}
 
-	*etBackend = strings.ToLower(strings.TrimSpace(*etBackend))
-	switch *etBackend {
+	cfg.EtherTalk.Backend = strings.ToLower(strings.TrimSpace(cfg.EtherTalk.Backend))
+	switch cfg.EtherTalk.Backend {
 	case "", "pcap", "tap", "tun":
 	default:
-		log.Fatalf("invalid -ethertalk-backend %q (want pcap, tap, or tun)", *etBackend)
+		log.Fatalf("invalid -ethertalk-backend %q (want pcap, tap, or tun)", cfg.EtherTalk.Backend)
 	}
 
 	if *listPcap {
@@ -213,54 +221,59 @@ func main() {
 		return
 	}
 
-	if *pcapDev == "" && *etBackend == "pcap" {
+	if cfg.EtherTalk.Device == "" && cfg.EtherTalk.Backend == "pcap" {
 		if detected, ok := rawlink.DetectDefaultPcapInterface(); ok {
 			netlog.Info("[MAIN] auto-detected pcap interface: %s", detected)
-			*pcapDev = detected
+			cfg.EtherTalk.Device = detected
 		}
 	}
-	if *pcapDev != "" && *etBackend == "pcap" && strings.TrimSpace(*etBridgeHostMAC) == "" {
-		if hostMAC, ok := rawlink.DetectHostMACForPcapInterface(*pcapDev); ok {
-			*etBridgeHostMAC = hostMAC
-			netlog.Info("[MAIN] auto-detected bridge host MAC for %s: %s", *pcapDev, hostMAC)
+	if cfg.EtherTalk.Device != "" && cfg.EtherTalk.Backend == "pcap" && strings.TrimSpace(cfg.EtherTalk.BridgeHostMAC) == "" {
+		if hostMAC, ok := rawlink.DetectHostMACForPcapInterface(cfg.EtherTalk.Device); ok {
+			cfg.EtherTalk.BridgeHostMAC = hostMAC
+			netlog.Info("[MAIN] auto-detected bridge host MAC for %s: %s", cfg.EtherTalk.Device, hostMAC)
 		}
 	}
 
 	var ports []port.Port
-	if *ltoudp {
-		ports = append(ports, localtalk.NewLtoudpPort(*ltIface, uint16(*ltNet), []byte(*ltZone)))
+	if cfg.LToUDP.Enabled {
+		ports = append(ports, localtalk.NewLtoudpPort(cfg.LToUDP.Interface, uint16(cfg.LToUDP.SeedNetwork), []byte(cfg.LToUDP.SeedZone)))
 	}
-	if *tashtalkSerial != "" {
-		ports = append(ports, localtalk.NewTashTalkPort(*tashtalkSerial, uint16(*ttNet), []byte(*ttZone)))
+	if cfg.TashTalk.Port != "" {
+		ports = append(ports, localtalk.NewTashTalkPort(cfg.TashTalk.Port, uint16(cfg.TashTalk.SeedNetwork), []byte(cfg.TashTalk.SeedZone)))
 	}
-	if *pcapDev != "" {
-		hwAddr, err := parseMAC(*pcapHWAddr)
+	if cfg.EtherTalk.Device != "" {
+		hwAddr, err := hwaddr.ParseEthernet(cfg.EtherTalk.HWAddress)
 		if err != nil {
 			log.Fatalf("invalid -ethertalk-hw-address: %v", err)
 		}
-		var ep *ethertalk.PcapPort
-		switch *etBackend {
-		case "", "pcap":
-			ep, err = ethertalk.NewPcapPort(*pcapDev, hwAddr, uint16(*etNetMin), uint16(*etNetMax), uint16(*etDesiredNet), uint8(*etDesiredNode), [][]byte{[]byte(*etZone)})
-		case "tap", "tun":
-			ep, err = ethertalk.NewTapPort(*pcapDev, hwAddr, uint16(*etNetMin), uint16(*etNetMax), uint16(*etDesiredNet), uint8(*etDesiredNode), [][]byte{[]byte(*etZone)})
-		default:
-			log.Fatalf("unsupported EtherTalk backend: %q", *etBackend)
+		opts := ethertalk.Options{
+			InterfaceName:  cfg.EtherTalk.Device,
+			HWAddr:         hwAddr.Bytes(),
+			SeedNetworkMin: uint16(cfg.EtherTalk.SeedNetworkMin),
+			SeedNetworkMax: uint16(cfg.EtherTalk.SeedNetworkMax),
+			DesiredNetwork: uint16(cfg.EtherTalk.DesiredNetwork),
+			DesiredNode:    uint8(cfg.EtherTalk.DesiredNode),
+			SeedZoneNames:  [][]byte{[]byte(cfg.EtherTalk.SeedZone)},
+			BridgeMode:     cfg.EtherTalk.BridgeMode,
 		}
-		if err != nil {
-			log.Fatalf("failed creating EtherTalk port (%s): %v", *etBackend, err)
-		}
-		if err := ep.SetBridgeModeString(*etBridgeMode); err != nil {
-			log.Fatalf("invalid -ethertalk-bridge-mode: %v", err)
-		}
-		if *etBridgeHostMAC != "" {
-			hostMAC, err := parseMAC(*etBridgeHostMAC)
+		if cfg.EtherTalk.BridgeHostMAC != "" {
+			hostMAC, err := hwaddr.ParseEthernet(cfg.EtherTalk.BridgeHostMAC)
 			if err != nil {
 				log.Fatalf("invalid -ethertalk-bridge-host-mac: %v", err)
 			}
-			if err := ep.SetBridgeHostMAC(hostMAC); err != nil {
-				log.Fatalf("invalid -ethertalk-bridge-host-mac: %v", err)
-			}
+			opts.BridgeHostMAC = hostMAC.Bytes()
+		}
+		var ep port.Port
+		switch cfg.EtherTalk.Backend {
+		case "", "pcap":
+			ep, err = ethertalk.NewPcapPort(opts)
+		case "tap", "tun":
+			ep, err = ethertalk.NewTapPort(opts)
+		default:
+			log.Fatalf("unsupported EtherTalk backend: %q", cfg.EtherTalk.Backend)
+		}
+		if err != nil {
+			log.Fatalf("failed creating EtherTalk port (%s): %v", cfg.EtherTalk.Backend, err)
 		}
 		ports = append(ports, ep)
 	}
@@ -282,196 +295,58 @@ func main() {
 		zip.NewSendingService(),
 	}
 
-	var macipSvc *macip.Service
-
-	if *macipEnable {
-		if *etBackend != "" && *etBackend != "pcap" {
-			log.Fatalf("-macip-enabled currently requires -ethertalk-backend pcap (got %q)", *etBackend)
-		}
-
-		// MacIP shares the EtherTalk pcap interface; fall back to auto-detection.
-		ipIface := *pcapDev
-		if ipIface == "" {
-			if detected, ok := rawlink.DetectDefaultPcapInterface(); ok {
-				ipIface = detected
-				netlog.Info("[MAIN][MacIP] auto-detected pcap interface: %s", detected)
-			} else {
-				log.Fatal("-ethertalk-device is required when -macip-enabled is set (auto-detection failed)")
-			}
-		}
-
-		// Auto-detect IP-side MAC from the bridge host MAC or the interface itself.
-		ipMACStr := ""
-		if strings.TrimSpace(*etBridgeHostMAC) != "" {
-			ipMACStr = *etBridgeHostMAC
-			netlog.Info("[MAIN][MacIP] using bridge host MAC for IP-side: %s", ipMACStr)
-		} else if hostMAC, ok := rawlink.DetectHostMACForPcapInterface(ipIface); ok {
-			ipMACStr = hostMAC
-			netlog.Info("[MAIN][MacIP] auto-detected IP-side MAC from %s: %s", ipIface, ipMACStr)
-		} else {
-			ipMACStr = *pcapHWAddr
-		}
-
-		hostIPStr, hostIPDetected := detectPcapInterfaceIPv4(ipIface)
-
-		if *macipIPGW == "" {
-			if gw, ok := rawlink.DetectDefaultGatewayForPcapInterface(ipIface); ok {
-				*macipIPGW = gw
-				netlog.Info("[MAIN][MacIP] auto-detected default gateway %s for interface %s", gw, ipIface)
-			} else if hostIPDetected {
-				*macipIPGW = hostIPStr
-				netlog.Warn("[MAIN][MacIP] default gateway auto-detection failed; falling back to interface IPv4 %s on %s", hostIPStr, ipIface)
-			} else {
-				log.Fatal("-macip-ip-gateway is required when -macip-enabled is set (auto-detection failed and no IPv4 address was found)")
-			}
-		}
-
-		_, ipNet, err := net.ParseCIDR(*macipSubnet)
-		if err != nil {
-			log.Fatalf("invalid -macip-nat-subnet: %v", err)
-		}
-		ipMAC, err := parseMAC(ipMACStr)
-		if err != nil {
-			log.Fatalf("invalid IP-side MAC: %v", err)
-		}
-		ipGW := net.ParseIP(*macipIPGW).To4()
-		if ipGW == nil {
-			log.Fatalf("invalid -macip-ip-gateway: %q", *macipIPGW)
-		}
-		var hostIP net.IP
-		if hostIPDetected {
-			hostIP = net.ParseIP(hostIPStr).To4()
-		}
-		gwIP := resolveMacIPGatewayIP(*macipGWIP, ipNet, ipGW, *macipNAT)
-		if gwIP == nil {
-			log.Fatalf("invalid -macip-nat-gw: %q", *macipGWIP)
-		}
-		if !*macipNAT && strings.TrimSpace(*macipGWIP) != "" {
-			netlog.Info("[MAIN][MacIP] ignoring -macip-nat-gw in non-NAT mode; using upstream gateway %s", gwIP)
-		} else if !*macipNAT {
-			netlog.Info("[MAIN][MacIP] using upstream gateway %s in non-NAT mode", gwIP)
-		}
-		if *macipNAT && gwIP.Equal(ipGW) {
-			log.Fatalf("invalid MacIP configuration: -macip-nat-gw (%s) conflicts with the host-side upstream gateway (%s); choose a different MacIP gateway IP", gwIP, ipGW)
-		}
-		nsIP := ipGW // default: physical gateway typically also serves DNS
-		if *macipNameserver != "" {
-			nsIP = net.ParseIP(*macipNameserver).To4()
-			if nsIP == nil {
-				log.Fatalf("invalid -macip-nameserver: %q", *macipNameserver)
-			}
-		}
-
-		broadcast := broadcastAddr(ipNet)
-		// Choose the NBP zone: explicit -macip-zone wins, then EtherTalk seed zone,
-		// otherwise leave empty so the service picks the first zone found at start.
-		var chosenZone []byte
-		if *macipZone != "" {
-			chosenZone = []byte(*macipZone)
-		} else if *etZone != "" {
-			chosenZone = []byte(*etZone)
-		}
-
-		// Open MacIP rawlink and apply BPF filter before injecting into the service.
-		ipLink, err := rawlink.OpenPcap(rawlink.DefaultMacIPConfig(ipIface))
-		if err != nil {
-			log.Fatalf("failed opening MacIP rawlink on %s: %v", ipIface, err)
-		}
-		if fl, ok := ipLink.(rawlink.FilterableLink); ok {
-			if err := fl.SetFilter(macipBPFFilter(ipNet, *macipDHCP)); err != nil {
-				netlog.Warn("[MAIN][MacIP] could not set BPF filter on %s: %v", ipIface, err)
-			}
-		}
-
-		macipSvc = macip.New(
-			gwIP, ipNet.IP, ipNet.Mask,
-			nsIP, broadcast,
-			chosenZone,
-			nbpSvc,
-			ipLink, ipMAC, hostIP, ipGW,
-			*macipNAT,
-			*macipDHCP,
-			*macipStateFile,
-		)
-		services = append(services, macipSvc)
-		netlog.Info("[MAIN][MacIP] gw=%s subnet=%s iface=%s host-ip=%s ip-gw=%s zone=%q nat=%t dhcp_relay=%t",
-			gwIP, *macipSubnet, ipIface, hostIP, ipGW, string(chosenZone), *macipNAT, *macipDHCP)
+	macIP, err := wireMacIP(MacIPConfig{
+		Enabled:          cfg.MacIPEnabled,
+		NATGatewayIP:     cfg.MacIPGWIP,
+		NATSubnet:        cfg.MacIPSubnet,
+		Nameserver:       cfg.MacIPNameserver,
+		Zone:             cfg.MacIPZone,
+		IPGateway:        cfg.MacIPGatewayIP,
+		NAT:              cfg.MacIPNAT,
+		DHCPRelay:        cfg.MacIPDHCPRelay,
+		StateFile:        cfg.MacIPLeaseFile,
+		PcapDevice:       cfg.EtherTalk.Device,
+		BridgeHostMAC:    cfg.EtherTalk.BridgeHostMAC,
+		PcapHWAddr:       cfg.EtherTalk.HWAddress,
+		EtherTalkZone:    cfg.EtherTalk.SeedZone,
+		EtherTalkBackend: cfg.EtherTalk.Backend,
+		NBP:              nbpSvc,
+	})
+	if err != nil {
+		log.Fatalf("MacIP wiring failed: %v", err)
+	}
+	if macIP != nil {
+		services = append(services, macIP.Service())
 	}
 
-	if len(afpVolumes) > 0 {
-		var transports []afp.Transport
-		var extMap *afp.ExtensionMap
-		if *afpExtensionMap != "" {
-			loadedMap, err := loadAFPExtensionMap(*afpExtensionMap)
-			if err != nil {
-				log.Fatalf("failed loading AFP extension map %q: %v", *afpExtensionMap, err)
-			}
-			extMap = loadedMap
-		}
-
-		protocols := strings.Split(*afpProtocols, ",")
-		hasDDP := false
-		hasTCP := false
-		for _, p := range protocols {
-			p = strings.TrimSpace(p)
-			if strings.EqualFold(p, "ddp") {
-				hasDDP = true
-			} else if strings.EqualFold(p, "tcp") {
-				hasTCP = true
-			}
-		}
-
-		if hasDDP {
-			aspSvc := asp.New(*afpServerName, nil, nbpSvc, []byte(*afpZone))
-			if macipSvc != nil {
-				aspSvc.SetSessionLifecycleHooks(
-					func(sess *asp.Session) {
-						macipSvc.PinLeaseToSession(sess.WSNet, sess.WSNode, sess.ID)
-					},
-					func(sess *asp.Session) {
-						macipSvc.UnpinLeaseFromSession(sess.ID)
-					},
-					func(sess *asp.Session) {
-						macipSvc.MarkSessionActivity(sess.ID)
-					},
-				)
-			}
-			transports = append(transports, aspSvc)
-			netlog.Info("[MAIN][AFP] enabled DDP transport on socket %d", asp.ServerSocket)
-		}
-
-		if hasTCP {
-			dsiSvc := dsi.NewServer(*afpServerName, *afpTCPAddr, nil)
-			transports = append(transports, dsiSvc)
-			netlog.Info("[MAIN][AFP] enabled TCP transport on %s", *afpTCPAddr)
-		}
-
-		afpSvc := afp.NewAFPService(
-			*afpServerName,
-			[]afp.VolumeConfig(afpVolumes),
-			&afp.LocalFileSystem{},
-			transports,
-			afp.AFPOptions{DecomposedFilenames: *afpDecomposedFilenames, CNIDBackend: *afpCNIDBackend, AppleDoubleMode: parseAppleDoubleMode(*afpAppleDoubleMode), ExtensionMap: extMap},
-		)
-
-		// Wire up the circular dependencies for handlers
-		for _, t := range transports {
-			switch transport := t.(type) {
-			case *asp.Service:
-				transport.SetCommandHandler(afpSvc)
-			case *dsi.Server:
-				transport.SetCommandHandler(afpSvc)
-			}
-		}
-
-		services = append(services, afpSvc)
-		netlog.Info("[MAIN][AFP] server=%q volumes=%d zone=%q protocols=%q", *afpServerName, len(afpVolumes), *afpZone, *afpProtocols)
+	afpHook, err := wireAFP(AFPWiring{
+		Source:     configSource,
+		FromConfig: fromConfigFile,
+		NBP:        nbpSvc,
+		Flags: AFPFlagInputs{
+			ServerName:       *afpServerName,
+			Zone:             *afpZone,
+			Protocols:        *afpProtocols,
+			TCPAddr:          *afpTCPAddr,
+			ExtensionMap:     *afpExtensionMap,
+			DecomposedNames:  *afpDecomposedFilenames,
+			CNIDBackend:      *afpCNIDBackend,
+			AppleDoubleMode:  *afpAppleDoubleMode,
+			VolumeFlagValues: []string(afpVolumes),
+		},
+	})
+	if err != nil {
+		log.Fatalf("AFP wiring failed: %v", err)
 	}
+	if macIP != nil {
+		afpHook.AttachMacIP(macIPAFPHooks{macIP})
+	}
+	services = append(services, afpHook.Services()...)
 
 	r := router.New("router", ports, services)
 
-	if *parsePackets {
-		dumper, cleanup, err := newPacketDumper(*parseOutput)
+	if cfg.ParsePackets {
+		dumper, cleanup, err := newPacketDumper(cfg.ParseOutput)
 		if err != nil {
 			log.Fatalf("parse-packets: %v", err)
 		}
@@ -481,17 +356,18 @@ func main() {
 				aware.SetPacketDumper(dumper)
 			}
 		}
-		netlog.Info("[MAIN] parse-packets enabled; output=%q", *parseOutput)
+		netlog.Info("[MAIN] parse-packets enabled; output=%q", cfg.ParseOutput)
 	}
 
-	if err := r.Start(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := r.Start(ctx); err != nil {
 		log.Fatalf("failed to start router: %v", err)
 	}
 	netlog.Info("[MAIN] router away!")
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	<-sig
+	<-ctx.Done()
 
 	if err := r.Stop(); err != nil {
 		netlog.Warn("[MAIN] stop warning: %v", err)
@@ -508,39 +384,17 @@ func broadcastAddr(n *net.IPNet) net.IP {
 	return bcast
 }
 
-// volumeFlags is a repeatable -afp-volume flag.
-type volumeFlags []afp.VolumeConfig
+// volumeFlags is a repeatable -afp-volume flag. The raw "Name:Path"
+// strings are forwarded to wireAFP, where the //go:build afp side
+// parses them via afp.ParseVolumeFlag. Keeping this neutral lets
+// minimal-build users still pass -afp-volume and get a clean warning.
+type volumeFlags []string
 
 func (v *volumeFlags) String() string { return "" }
 
 func (v *volumeFlags) Set(s string) error {
-	cfg, err := afp.ParseVolumeFlag(s)
-	if err != nil {
-		return err
-	}
-	*v = append(*v, cfg)
+	*v = append(*v, s)
 	return nil
-}
-
-func parseMAC(s string) ([]byte, error) {
-	normalized := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(s), ":", ""), "-", "")
-	if len(normalized) != 12 {
-		return nil, fmt.Errorf("want 12 hex digits, got %d", len(normalized))
-	}
-	b, err := hex.DecodeString(normalized)
-	if err != nil {
-		return nil, err
-	}
-	return b, nil
-}
-
-func parseAppleDoubleMode(mode string) afp.AppleDoubleMode {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "legacy", string(afp.AppleDoubleModeLegacy):
-		return afp.AppleDoubleModeLegacy
-	default:
-		return afp.AppleDoubleModeModern
-	}
 }
 
 func detectPcapInterfaceIPv4(interfaceName string) (string, bool) {
@@ -584,24 +438,6 @@ func selectPreferredIPv4(addrs []string) (string, bool) {
 	}
 
 	return "", false
-}
-
-func resolveMacIPGatewayIP(configured string, natSubnet *net.IPNet, upstreamGateway net.IP, natMode bool) net.IP {
-	if !natMode {
-		return append(net.IP(nil), upstreamGateway.To4()...)
-	}
-	trimmed := strings.TrimSpace(configured)
-	if trimmed != "" {
-		return net.ParseIP(trimmed).To4()
-	}
-	return firstUsableIPv4(natSubnet)
-}
-
-func macipBPFFilter(ipNet *net.IPNet, dhcpMode bool) string {
-	if dhcpMode {
-		return "(arp) or (ip) or (udp dst port 68)"
-	}
-	return fmt.Sprintf("(arp) or (dst net %s)", ipNet.String())
 }
 
 func firstUsableIPv4(n *net.IPNet) net.IP {

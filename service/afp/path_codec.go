@@ -1,3 +1,5 @@
+//go:build afp || all
+
 package afp
 
 import (
@@ -7,11 +9,11 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/pgodw/omnitalk/go/appletalk"
+	"github.com/pgodw/omnitalk/pkg/encoding"
 )
 
 // AFPOptions controls AFP filename/path translation behavior.
-type AFPOptions struct {
+type Options struct {
 	// DecomposedFilenames enables host-reserved character escaping using 0xNN tokens.
 	DecomposedFilenames bool
 	// CNIDBackend selects the CNID backend by name. The default is "sqlite".
@@ -28,21 +30,23 @@ type AFPOptions struct {
 	ExtensionMap *ExtensionMap
 	// ForkMetadataBackend overrides AppleDoubleMode with a concrete backend.
 	ForkMetadataBackend ForkMetadataBackend
+	// PersistentVolumeIDs assigns stable volume IDs derived from volume names.
+	PersistentVolumeIDs bool
 }
 
-func DefaultAFPOptions() AFPOptions {
-	return AFPOptions{DecomposedFilenames: true, CNIDBackend: "sqlite", DesktopBackend: "sqlite", AppleDoubleMode: defaultAppleDoubleMode}
+func DefaultOptions() Options {
+	return Options{DecomposedFilenames: true, CNIDBackend: "sqlite", DesktopBackend: "sqlite", AppleDoubleMode: defaultAppleDoubleMode}
 }
 
-func (s *AFPService) afpPathElementToHost(raw string) string {
-	decoded := appletalk.MacRomanToUTF8([]byte(raw))
+func (s *Service) afpPathElementToHost(raw string) string {
+	decoded := encoding.MacRomanToUTF8([]byte(raw))
 	if !s.options.DecomposedFilenames {
 		return decoded
 	}
 	return encodeHostReservedChars(decoded)
 }
 
-func (s *AFPService) hostNameToAFPBytes(hostName string, volID uint16) []byte {
+func (s *Service) hostNameToAFPBytes(hostName string, volID uint16) []byte {
 	name := hostName
 	// In legacy AppleDouble mode the Icon\r file is stored on disk as "Icon_".
 	// Before encoding back to AFP we need to restore the original Mac name.
@@ -52,10 +56,10 @@ func (s *AFPService) hostNameToAFPBytes(hostName string, volID uint16) []byte {
 	if s.options.DecomposedFilenames {
 		name = decodeHostReservedTokens(name)
 	}
-	return appletalk.UTF8ToMacRoman(name)
+	return encoding.UTF8ToMacRoman(name)
 }
 
-func (s *AFPService) writeAFPName(buf *bytes.Buffer, hostName string, volID uint16) {
+func (s *Service) writeAFPName(buf *bytes.Buffer, hostName string, volID uint16) {
 	nameBytes := s.hostNameToAFPBytes(hostName, volID)
 	if len(nameBytes) > 255 {
 		nameBytes = nameBytes[:255]

@@ -1,13 +1,15 @@
+//go:build afp || all
+
 package afp
 
 import (
+	"github.com/pgodw/omnitalk/netlog"
 	"bytes"
 	"io/fs"
-	"log"
 	"path/filepath"
 )
 
-func (s *AFPService) handleGetFileDirParms(req *FPGetFileDirParmsReq) (*FPGetFileDirParmsRes, int32) {
+func (s *Service) handleGetFileDirParms(req *FPGetFileDirParmsReq) (*FPGetFileDirParmsRes, int32) {
 	if req.FileBitmap == 0 && req.DirBitmap == 0 {
 		return &FPGetFileDirParmsRes{}, ErrBitmapErr
 	}
@@ -43,7 +45,11 @@ func (s *AFPService) handleGetFileDirParms(req *FPGetFileDirParmsReq) (*FPGetFil
 	if req.Path != "" {
 		infoPath, info, err = s.statPathWithAppleDoubleFallback(targetPath)
 	} else {
-		info, err = s.fs.Stat(targetPath)
+		backend := s.fsForPath(targetPath)
+		if backend == nil {
+			return emptyGetFileDirParmsRes(req), ErrObjectNotFound
+		}
+		info, err = backend.Stat(targetPath)
 	}
 	if err != nil {
 		return emptyGetFileDirParmsRes(req), ErrObjectNotFound
@@ -84,7 +90,7 @@ func emptyGetFileDirParmsRes(req *FPGetFileDirParmsReq) *FPGetFileDirParmsRes {
 	}
 }
 
-func (s *AFPService) handleRename(req *FPRenameReq) (*FPRenameRes, int32) {
+func (s *Service) handleRename(req *FPRenameReq) (*FPRenameRes, int32) {
 	if s.volumeIsReadOnly(req.VolumeID) {
 		return &FPRenameRes{}, ErrVolLocked
 	}
@@ -101,12 +107,16 @@ func (s *AFPService) handleRename(req *FPRenameReq) (*FPRenameRes, int32) {
 	if errCode != NoErr {
 		return &FPRenameRes{}, errCode
 	}
-	_, err := s.fs.Stat(oldPath)
+	backend := s.fsForPath(oldPath)
+	if backend == nil {
+		return &FPRenameRes{}, ErrObjectNotFound
+	}
+	_, err := backend.Stat(oldPath)
 	if err != nil {
 		return &FPRenameRes{}, ErrObjectNotFound
 	}
 
-	err = s.fs.Rename(oldPath, newPath)
+	err = backend.Rename(oldPath, newPath)
 	if err != nil {
 		return &FPRenameRes{}, ErrAccessDenied
 	}
@@ -115,7 +125,7 @@ func (s *AFPService) handleRename(req *FPRenameReq) (*FPRenameRes, int32) {
 	return &FPRenameRes{}, NoErr
 }
 
-func (s *AFPService) handleGetDirParms(req *FPGetDirParmsReq) (*FPGetDirParmsRes, int32) {
+func (s *Service) handleGetDirParms(req *FPGetDirParmsReq) (*FPGetDirParmsRes, int32) {
 	parentPath, ok := s.getDIDPath(req.VolumeID, req.DirID)
 	if !ok && req.DirID != 0 {
 		return &FPGetDirParmsRes{}, ErrObjectNotFound
@@ -130,7 +140,11 @@ func (s *AFPService) handleGetDirParms(req *FPGetDirParmsReq) (*FPGetDirParmsRes
 		}
 		targetPath = resolvedPath
 	}
-	info, err := s.fs.Stat(targetPath)
+	backend := s.fsForPath(targetPath)
+	if backend == nil {
+		return &FPGetDirParmsRes{}, ErrObjectNotFound
+	}
+	info, err := backend.Stat(targetPath)
 	if err != nil || !info.IsDir() {
 		return &FPGetDirParmsRes{}, ErrObjectNotFound
 	}
@@ -139,7 +153,7 @@ func (s *AFPService) handleGetDirParms(req *FPGetDirParmsReq) (*FPGetDirParmsRes
 	return &FPGetDirParmsRes{Bitmap: req.Bitmap, Data: resData.Bytes()}, NoErr
 }
 
-func (s *AFPService) handleGetFileParms(req *FPGetFileParmsReq) (*FPGetFileParmsRes, int32) {
+func (s *Service) handleGetFileParms(req *FPGetFileParmsReq) (*FPGetFileParmsRes, int32) {
 	parentPath, ok := s.getDIDPath(req.VolumeID, req.DirID)
 	if !ok && req.DirID != 0 {
 		return &FPGetFileParmsRes{}, ErrObjectNotFound
@@ -154,7 +168,11 @@ func (s *AFPService) handleGetFileParms(req *FPGetFileParmsReq) (*FPGetFileParms
 		}
 		targetPath = resolvedPath
 	}
-	info, err := s.fs.Stat(targetPath)
+	backend := s.fsForPath(targetPath)
+	if backend == nil {
+		return &FPGetFileParmsRes{}, ErrObjectNotFound
+	}
+	info, err := backend.Stat(targetPath)
 	if err != nil || info.IsDir() {
 		return &FPGetFileParmsRes{}, ErrObjectNotFound
 	}
@@ -163,7 +181,7 @@ func (s *AFPService) handleGetFileParms(req *FPGetFileParmsReq) (*FPGetFileParms
 	return &FPGetFileParmsRes{Bitmap: req.Bitmap, Data: resData.Bytes()}, NoErr
 }
 
-func (s *AFPService) handleSetFileDirParms(req *FPSetFileDirParmsReq) (*FPSetFileDirParmsRes, int32) {
+func (s *Service) handleSetFileDirParms(req *FPSetFileDirParmsReq) (*FPSetFileDirParmsRes, int32) {
 	if s.volumeIsReadOnly(req.VolumeID) {
 		return &FPSetFileDirParmsRes{}, ErrVolLocked
 	}
@@ -175,7 +193,7 @@ func (s *AFPService) handleSetFileDirParms(req *FPSetFileDirParmsReq) (*FPSetFil
 	return &FPSetFileDirParmsRes{}, NoErr
 }
 
-func (s *AFPService) handleDelete(req *FPDeleteReq) (*FPDeleteRes, int32) {
+func (s *Service) handleDelete(req *FPDeleteReq) (*FPDeleteRes, int32) {
 	if s.fs == nil {
 		return &FPDeleteRes{}, ErrAccessDenied
 	}
@@ -186,11 +204,15 @@ func (s *AFPService) handleDelete(req *FPDeleteReq) (*FPDeleteRes, int32) {
 	if errCode != NoErr {
 		return &FPDeleteRes{}, errCode
 	}
-	_, err := s.fs.Stat(targetPath)
+	backend := s.fsForPath(targetPath)
+	if backend == nil {
+		return &FPDeleteRes{}, ErrObjectNotFound
+	}
+	_, err := backend.Stat(targetPath)
 	if err != nil {
 		return &FPDeleteRes{}, ErrObjectNotFound
 	}
-	if err := s.fs.Remove(targetPath); err != nil {
+	if err := backend.Remove(targetPath); err != nil {
 		return &FPDeleteRes{}, ErrAccessDenied
 	}
 	s.deleteAppleDoubleSidecar(targetPath)
@@ -198,7 +220,7 @@ func (s *AFPService) handleDelete(req *FPDeleteReq) (*FPDeleteRes, int32) {
 	return &FPDeleteRes{}, NoErr
 }
 
-func (s *AFPService) handleMoveAndRename(req *FPMoveAndRenameReq) (*FPMoveAndRenameRes, int32) {
+func (s *Service) handleMoveAndRename(req *FPMoveAndRenameReq) (*FPMoveAndRenameRes, int32) {
 	if s.volumeIsReadOnly(req.VolumeID) {
 		return &FPMoveAndRenameRes{}, ErrVolLocked
 	}
@@ -240,12 +262,16 @@ func (s *AFPService) handleMoveAndRename(req *FPMoveAndRenameReq) (*FPMoveAndRen
 		finalName = filepath.Base(srcPath)
 	}
 	dstPath := s.canonicalizePath(filepath.Join(dstParent, finalName))
-	_, err := s.fs.Stat(srcPath)
+	backend := s.fsForPath(srcPath)
+	if backend == nil {
+		return &FPMoveAndRenameRes{}, ErrObjectNotFound
+	}
+	_, err := backend.Stat(srcPath)
 	if err != nil {
 		return &FPMoveAndRenameRes{}, ErrObjectNotFound
 	}
 
-	if err := s.fs.Rename(srcPath, dstPath); err != nil {
+	if err := backend.Rename(srcPath, dstPath); err != nil {
 		return &FPMoveAndRenameRes{}, ErrAccessDenied
 	}
 	s.moveAppleDoubleSidecar(srcPath, dstPath)
@@ -253,7 +279,7 @@ func (s *AFPService) handleMoveAndRename(req *FPMoveAndRenameReq) (*FPMoveAndRen
 	return &FPMoveAndRenameRes{}, NoErr
 }
 
-func (s *AFPService) handleExchangeFiles(req *FPExchangeFilesReq) (*FPExchangeFilesRes, int32) {
+func (s *Service) handleExchangeFiles(req *FPExchangeFilesReq) (*FPExchangeFilesRes, int32) {
 	if s.volumeIsReadOnly(req.VolumeID) {
 		return &FPExchangeFilesRes{}, ErrVolLocked
 	}
@@ -277,23 +303,27 @@ func (s *AFPService) handleExchangeFiles(req *FPExchangeFilesReq) (*FPExchangeFi
 
 	// Three-step atomic swap via temp name.
 	tmpPath := srcPath + ".__afp_swap__"
-	if err := s.fs.Rename(srcPath, tmpPath); err != nil {
+	backend := s.fsForPath(srcPath)
+	if backend == nil {
+		return &FPExchangeFilesRes{}, ErrObjectNotFound
+	}
+	if err := backend.Rename(srcPath, tmpPath); err != nil {
 		return &FPExchangeFilesRes{}, ErrAccessDenied
 	}
 	s.rebindDIDSubtree(req.VolumeID, srcPath, tmpPath)
-	if err := s.fs.Rename(dstPath, srcPath); err != nil {
+	if err := backend.Rename(dstPath, srcPath); err != nil {
 		s.rebindDIDSubtree(req.VolumeID, tmpPath, srcPath)
-		s.fs.Rename(tmpPath, srcPath) // attempt rollback
+		backend.Rename(tmpPath, srcPath) // attempt rollback
 		return &FPExchangeFilesRes{}, ErrAccessDenied
 	}
 	s.rebindDIDSubtree(req.VolumeID, dstPath, srcPath)
-	if err := s.fs.Rename(tmpPath, dstPath); err != nil {
+	if err := backend.Rename(tmpPath, dstPath); err != nil {
 		return &FPExchangeFilesRes{}, ErrAccessDenied
 	}
 	s.rebindDIDSubtree(req.VolumeID, tmpPath, dstPath)
 	if m := s.metaFor(req.VolumeID); m != nil {
 		if err := m.ExchangeMetadata(srcPath, dstPath); err != nil {
-			log.Printf("[AFP] warning: metadata exchange failed %q <-> %q: %v", srcPath, dstPath, err)
+			netlog.Debug("[AFP] warning: metadata exchange failed %q <-> %q: %v", srcPath, dstPath, err)
 		}
 	}
 	return &FPExchangeFilesRes{}, NoErr

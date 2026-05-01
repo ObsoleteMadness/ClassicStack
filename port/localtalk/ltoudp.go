@@ -12,8 +12,8 @@ import (
 
 	"golang.org/x/net/ipv4"
 
-	"github.com/pgodw/omnitalk/go/netlog"
-	"github.com/pgodw/omnitalk/go/port"
+	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/port"
 )
 
 const (
@@ -35,7 +35,7 @@ type LtoudpPort struct {
 func NewLtoudpPort(intfAddr string, seedNetwork uint16, seedZoneName []byte) *LtoudpPort {
 	base := New(seedNetwork, seedZoneName, true, 0xFE)
 	p := &LtoudpPort{Port: base, intfAddr: intfAddr, stop: make(chan struct{})}
-	p.ConfigureSendFrame(p.sendFrame)
+	p.SetFrameSender(p)
 	binary.BigEndian.PutUint32(p.senderID[:], uint32(os.Getpid()))
 	return p
 }
@@ -146,6 +146,10 @@ func (p *LtoudpPort) run() {
 		p.InboundFrame(append([]byte(nil), buf[4:n]...))
 	}
 }
+
+// SendFrame implements FrameSender by transmitting frame as one
+// LToUDP datagram on the multicast group.
+func (p *LtoudpPort) SendFrame(frame []byte) error { return p.sendFrame(frame) }
 
 func (p *LtoudpPort) sendFrame(frame []byte) error {
 	// Pull a scratch buffer from the pool so concurrent senders don't race.

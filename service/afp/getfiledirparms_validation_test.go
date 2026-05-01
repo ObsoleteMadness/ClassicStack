@@ -1,10 +1,12 @@
+//go:build afp || all
+
 package afp
 
 import "testing"
 
 func TestHandleGetFileDirParms_RejectsZeroBitmaps(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	res, errCode := s.handleGetFileDirParms(&FPGetFileDirParmsReq{
 		VolumeID:   1,
@@ -24,7 +26,7 @@ func TestHandleGetFileDirParms_RejectsZeroBitmaps(t *testing.T) {
 
 func TestHandleGetFileDirParms_RejectsUnsupportedBitmapBits(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	// Bit 14 is not supported by our packer and must not be accepted.
 	unsupported := uint16(1 << 14)
@@ -46,7 +48,7 @@ func TestHandleGetFileDirParms_RejectsUnsupportedBitmapBits(t *testing.T) {
 
 func TestHandleGetFileDirParms_RejectsInvalidPathTypeWhenPathPresent(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	res, errCode := s.handleGetFileDirParms(&FPGetFileDirParmsReq{
 		VolumeID:   1,

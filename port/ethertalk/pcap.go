@@ -1,11 +1,11 @@
 package ethertalk
 
 import (
-	"log"
 	"net"
 
-	"github.com/pgodw/omnitalk/go/port"
-	"github.com/pgodw/omnitalk/go/port/rawlink"
+	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/port"
+	"github.com/pgodw/omnitalk/port/rawlink"
 )
 
 // etherTalkBPFFilter selects EtherTalk Phase 2 frames carried as
@@ -35,23 +35,38 @@ type PcapPort struct {
 	writerDone     chan struct{}
 }
 
-func NewPcapPort(interfaceName string, hwAddr []byte, seedNetworkMin, seedNetworkMax, desiredNetwork uint16, desiredNode uint8, seedZoneNames [][]byte) (*PcapPort, error) {
-	if len(hwAddr) != 6 {
+func NewPcapPort(opts Options) (*PcapPort, error) {
+	if len(opts.HWAddr) != 6 {
 		return nil, net.InvalidAddrError("hw_addr must be exactly 6 bytes")
 	}
-	base := New(hwAddr, seedNetworkMin, seedNetworkMax, desiredNetwork, desiredNode, seedZoneNames)
+	mode, err := parseBridgeModeString(opts.BridgeMode)
+	if err != nil {
+		return nil, err
+	}
+	hostMAC := opts.BridgeHostMAC
+	if hostMAC == nil {
+		hostMAC = opts.HWAddr
+	}
+	if len(hostMAC) != 6 {
+		return nil, net.InvalidAddrError("bridge host mac must be exactly 6 bytes")
+	}
+	base := New(opts.HWAddr, opts.SeedNetworkMin, opts.SeedNetworkMax, opts.DesiredNetwork, opts.DesiredNode, opts.SeedZoneNames)
+	resolvedMode := mode
+	if resolvedMode == bridgeModeAuto {
+		resolvedMode = bridgeModeEthernet
+	}
 	p := &PcapPort{
 		Port:          base,
-		interfaceName: interfaceName,
+		interfaceName: opts.InterfaceName,
 		backendLabel:  "pcap",
 		openLink: func(name string) (rawlink.RawLink, error) {
 			return rawlink.OpenPcap(rawlink.DefaultEtherTalkConfig(name))
 		},
 		applyBPFFilter: true,
 		medium:         rawlink.MediumEthernet,
-		hostMAC:        append([]byte(nil), hwAddr...),
-		bridgeMode:     bridgeModeAuto,
-		adapter:        newEthertalkBridgeAdapterWithWiFiEncap(hwAddr, hwAddr, bridgeModeEthernet, false),
+		hostMAC:        append([]byte(nil), hostMAC...),
+		bridgeMode:     mode,
+		adapter:        newEthertalkBridgeAdapterWithWiFiEncap(hostMAC, opts.HWAddr, resolvedMode, false),
 		readerStop:     make(chan struct{}),
 		readerDone:     make(chan struct{}),
 		writerQueue:    make(chan []byte, 1024),
@@ -121,15 +136,15 @@ func (p *PcapPort) Start(r port.RouterHooks) error {
 	}
 	p.setResolvedBridgeMode(mode)
 	if p.bridgeMode == bridgeModeWiFi && !bridgeModeRequiresWiFiEncapsulation(p.medium) {
-		log.Printf("pcap wifi bridge on %s using Ethernet TX framing (medium: ethernet)", p.interfaceName)
+		netlog.Info("pcap wifi bridge on %s using Ethernet TX framing (medium: ethernet)", p.interfaceName)
 	}
-	log.Printf("%s bridge mode on %s: %s (medium: %v)", p.backendLabel, p.interfaceName, p.bridgeMode.String(), p.medium)
+	netlog.Info("%s bridge mode on %s: %s (medium: %v)", p.backendLabel, p.interfaceName, p.bridgeMode.String(), p.medium)
 
 	// Apply BPF filter when the backend supports it.
 	if p.applyBPFFilter {
 		if fl, ok := link.(rawlink.FilterableLink); ok {
 			if err := fl.SetFilter(etherTalkBPFFilter); err != nil {
-				log.Printf("warning: could not set BPF filter on %s: %v", p.interfaceName, err)
+				netlog.Warn("could not set BPF filter on %s: %v", p.interfaceName, err)
 			}
 		}
 	}
@@ -163,13 +178,13 @@ func (p *PcapPort) readRun() {
 			data, err := p.link.ReadFrame()
 			if err != nil {
 				if err != rawlink.ErrTimeout {
-					log.Printf("pcap read error on %s: %v", p.interfaceName, err)
+					netlog.Warn("pcap read error on %s: %v", p.interfaceName, err)
 				}
 				continue
 			}
 			normalized, err := p.adapter.inboundFrame(data)
 			if err != nil {
-				log.Printf("warning: failed to normalize inbound frame on %s: %v", p.interfaceName, err)
+				netlog.Warn("failed to normalize inbound frame on %s: %v", p.interfaceName, err)
 				continue
 			}
 			p.InboundFrame(normalized)
@@ -181,7 +196,7 @@ func (p *PcapPort) sendFrame(frameData []byte) {
 	select {
 	case p.writerQueue <- frameData:
 	default:
-		log.Printf("warning: pcap writer queue full, dropping outbound packet")
+		netlog.Warn("pcap writer queue full, dropping outbound packet")
 	}
 }
 
@@ -194,11 +209,11 @@ func (p *PcapPort) writeRun() {
 		case frameData := <-p.writerQueue:
 			prepared, err := p.adapter.outboundFrame(frameData)
 			if err != nil {
-				log.Printf("warning: failed to prepare outbound frame on %s: %v", p.interfaceName, err)
+				netlog.Warn("failed to prepare outbound frame on %s: %v", p.interfaceName, err)
 				continue
 			}
 			if err := p.link.WriteFrame(prepared); err != nil {
-				log.Printf("warning: couldn't send packet: %v", err)
+				netlog.Warn("couldn't send packet: %v", err)
 			}
 		}
 	}

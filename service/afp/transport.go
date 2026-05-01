@@ -1,9 +1,14 @@
+//go:build afp || all
+
 package afp
 
 import (
-	"github.com/pgodw/omnitalk/go/appletalk"
-	"github.com/pgodw/omnitalk/go/port"
-	"github.com/pgodw/omnitalk/go/service"
+	"context"
+
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
+	"github.com/pgodw/omnitalk/port"
+	"github.com/pgodw/omnitalk/service"
 )
 
 // CommandHandler handles decoded AFP commands from transport protocols.
@@ -15,12 +20,19 @@ type CommandHandler interface {
 // Transport represents a network transport that serves the AFP protocol (e.g., ASP over DDP, or DSI over TCP/IP).
 type Transport interface {
 	// Start starts the transport using the provided router (for AppleTalk NBP/routing).
-	Start(router service.Router) error
+	Start(ctx context.Context, router service.Router) error
 
 	// Stop shuts down the transport and cleans up any resources.
 	Stop() error
 
 	// Inbound processes an incoming AppleTalk datagram, if the transport uses DDP.
 	// For IP-only transports, this can be a no-op.
-	Inbound(d appletalk.Datagram, p port.Port)
+	Inbound(d ddp.Datagram, p port.Port)
+
+	// MaxReadSize returns the largest single-reply payload the transport can
+	// deliver, used by AFP to cap FPRead ReqCount and any range-limited
+	// filesystem fetches. Transports without a fixed limit return 0.
+	// Called by AFP after the transport has resolved its quantum (e.g. ASP
+	// after SPGetParms); MaxReadSize before that point may return 0.
+	MaxReadSize() int
 }

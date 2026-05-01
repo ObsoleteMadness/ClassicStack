@@ -1,3 +1,5 @@
+//go:build afp || all
+
 /*
 Package dsi implements the Data Stream Interface (DSI).
 
@@ -9,15 +11,19 @@ Refer: AppleTalk Filing Protocol 2.1 & 2.2 / AFP over TCP/IP Specification.
 package dsi
 
 import (
+	"context"
 	"encoding/binary"
 	"io"
 	"net"
+	"sync"
 
-	"github.com/pgodw/omnitalk/go/appletalk"
-	"github.com/pgodw/omnitalk/go/netlog"
-	"github.com/pgodw/omnitalk/go/port"
-	"github.com/pgodw/omnitalk/go/service"
-	"github.com/pgodw/omnitalk/go/service/afp"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
+	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/pkg/binutil"
+	"github.com/pgodw/omnitalk/port"
+	"github.com/pgodw/omnitalk/service"
+	"github.com/pgodw/omnitalk/service/afp"
 )
 
 // DSI Command Codes
@@ -62,33 +68,48 @@ type Header struct {
 
 const HeaderSize = 16
 
-func (h *Header) Marshal() []byte {
-	b := make([]byte, HeaderSize)
+// WireSize returns the fixed 16-byte DSI header size.
+func (h *Header) WireSize() int { return HeaderSize }
+
+// MarshalWire encodes the header into b.
+func (h *Header) MarshalWire(b []byte) (int, error) {
+	if len(b) < HeaderSize {
+		return 0, binutil.ErrShortBuffer
+	}
 	b[0] = h.Flags
 	b[1] = h.Command
-	binary.BigEndian.PutUint16(b[2:4], h.RequestID)
-	binary.BigEndian.PutUint32(b[4:8], h.ErrorOffset)
-	binary.BigEndian.PutUint32(b[8:12], h.DataLen)
-	binary.BigEndian.PutUint32(b[12:16], h.Reserved)
+	_, _ = binutil.PutU16(b[2:], h.RequestID)
+	_, _ = binutil.PutU32(b[4:], h.ErrorOffset)
+	_, _ = binutil.PutU32(b[8:], h.DataLen)
+	_, _ = binutil.PutU32(b[12:], h.Reserved)
+	return HeaderSize, nil
+}
+
+// UnmarshalWire decodes the header from b.
+func (h *Header) UnmarshalWire(b []byte) (int, error) {
+	if len(b) < HeaderSize {
+		return 0, binutil.ErrShortBuffer
+	}
+	h.Flags = b[0]
+	h.Command = b[1]
+	h.RequestID, _, _ = binutil.GetU16(b[2:])
+	h.ErrorOffset, _, _ = binutil.GetU32(b[4:])
+	h.DataLen, _, _ = binutil.GetU32(b[8:])
+	h.Reserved, _, _ = binutil.GetU32(b[12:])
+	return HeaderSize, nil
+}
+
+func (h *Header) Marshal() []byte {
+	b := make([]byte, HeaderSize)
+	_, _ = h.MarshalWire(b)
 	return b
 }
 
 func (h *Header) Unmarshal(b []byte) error {
-	if len(b) < HeaderSize {
+	if _, err := h.UnmarshalWire(b); err != nil {
 		return io.ErrUnexpectedEOF
 	}
-	h.Flags = b[0]
-	h.Command = b[1]
-	h.RequestID = binary.BigEndian.Uint16(b[2:4])
-	h.ErrorOffset = binary.BigEndian.Uint32(b[4:8])
-	h.DataLen = binary.BigEndian.Uint32(b[8:12])
-	h.Reserved = binary.BigEndian.Uint32(b[12:16])
 	return nil
-}
-
-type AFPVersion struct {
-	VersionName string
-	Version     int
 }
 
 type Server struct {
@@ -97,6 +118,12 @@ type Server struct {
 	afpServer  afp.CommandHandler
 	listener   net.Listener
 	stop       chan struct{}
+	wg         sync.WaitGroup
+
+	// connsMu protects conns. conns tracks every accepted client connection so
+	// Stop can force them closed and unblock any in-flight io.ReadFull calls.
+	connsMu sync.Mutex
+	conns   map[net.Conn]struct{}
 }
 
 func NewServer(serverName string, addr string, afpHandler afp.CommandHandler) *Server {
@@ -105,7 +132,28 @@ func NewServer(serverName string, addr string, afpHandler afp.CommandHandler) *S
 		addr:       addr,
 		afpServer:  afpHandler,
 		stop:       make(chan struct{}),
+		conns:      make(map[net.Conn]struct{}),
 	}
+}
+
+// trackConn registers conn so Stop can close it. Returns false if the server
+// is already stopping, in which case the caller must close conn itself.
+func (s *Server) trackConn(conn net.Conn) bool {
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+	select {
+	case <-s.stop:
+		return false
+	default:
+	}
+	s.conns[conn] = struct{}{}
+	return true
+}
+
+func (s *Server) untrackConn(conn net.Conn) {
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+	delete(s.conns, conn)
 }
 
 // SetCommandHandler assigns the AFP command handler to this server.
@@ -114,14 +162,16 @@ func (s *Server) SetCommandHandler(handler afp.CommandHandler) {
 }
 
 // Start implements afp.Transport.
-func (s *Server) Start(router service.Router) error {
+func (s *Server) Start(ctx context.Context, router service.Router) error {
 	l, err := net.Listen("tcp", s.addr)
 	if err != nil {
 		return err
 	}
 	s.listener = l
 
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		for {
 			conn, err := s.listener.Accept()
 			if err != nil {
@@ -133,26 +183,47 @@ func (s *Server) Start(router service.Router) error {
 				netlog.Debug("[DSI] accept error: %v", err)
 				continue
 			}
+			if !s.trackConn(conn) {
+				_ = conn.Close()
+				return
+			}
 			netlog.Debug("[DSI] connection accepted from %s", conn.RemoteAddr())
-			go s.handleConn(conn)
+			s.wg.Add(1)
+			go func(c net.Conn) {
+				defer s.wg.Done()
+				defer s.untrackConn(c)
+				s.handleConn(c)
+			}(conn)
 		}
 	}()
 	return nil
 }
 
-// Stop implements afp.Transport.
+// Stop implements afp.Transport. Closes the listener and every active
+// client connection so per-conn handlers blocked in io.ReadFull return,
+// then waits for accept and per-conn goroutines to exit.
 func (s *Server) Stop() error {
 	close(s.stop)
 	if s.listener != nil {
-		return s.listener.Close()
+		_ = s.listener.Close()
 	}
+	s.connsMu.Lock()
+	for c := range s.conns {
+		_ = c.Close()
+	}
+	s.connsMu.Unlock()
+	s.wg.Wait()
 	return nil
 }
 
 // Inbound implements afp.Transport.
-func (s *Server) Inbound(d appletalk.Datagram, p port.Port) {
+func (s *Server) Inbound(d ddp.Datagram, p port.Port) {
 	// DSI over TCP does not process DDP packets
 }
+
+// MaxReadSize implements afp.Transport. DSI streams replies over TCP with no
+// fixed per-reply quantum, so AFP should not cap reads on this transport.
+func (s *Server) MaxReadSize() int { return 0 }
 
 func (s *Server) ListenAndServe() error {
 	l, err := net.Listen("tcp", s.addr)

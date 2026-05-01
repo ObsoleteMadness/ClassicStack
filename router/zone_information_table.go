@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/pgodw/omnitalk/go/appletalk"
+	"github.com/pgodw/omnitalk/pkg/encoding"
 )
 
 func UCase(input []byte) []byte {
-	return appletalk.MacRomanToUpper(input)
+	return encoding.MacRomanToUpper(input)
 }
 
 type ZoneInformationTable struct {

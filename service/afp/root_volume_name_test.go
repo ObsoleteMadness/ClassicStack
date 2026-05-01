@@ -1,3 +1,5 @@
+//go:build afp || all
+
 package afp
 
 import (
@@ -36,7 +38,7 @@ func TestHandleGetDirParms_RootUsesVolumeName(t *testing.T) {
 		t.Fatalf("mkdir backing dir: %v", err)
 	}
 
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "foo", Path: backingDir}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "foo", Path: backingDir}}, &LocalFileSystem{}, nil)
 
 	res, errCode := s.handleGetDirParms(&FPGetDirParmsReq{
 		VolumeID: 1,
@@ -65,7 +67,7 @@ func TestHandleGetDirParms_ReadOnlyVolumeAccessRights(t *testing.T) {
 		t.Fatalf("mkdir backing dir: %v", err)
 	}
 
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "foo", Path: backingDir, ReadOnly: true}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "foo", Path: backingDir, ReadOnly: true}}, &LocalFileSystem{}, nil)
 
 	res, errCode := s.handleGetDirParms(&FPGetDirParmsReq{
 		VolumeID: 1,
@@ -94,7 +96,7 @@ func TestHandleGetDirParms_ReadOnlyVolumeAttributesDoNotUseWriteInhibitBit(t *te
 		t.Fatalf("mkdir backing dir: %v", err)
 	}
 
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "foo", Path: backingDir, ReadOnly: true}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "foo", Path: backingDir, ReadOnly: true}}, &LocalFileSystem{}, nil)
 
 	res, errCode := s.handleGetDirParms(&FPGetDirParmsReq{
 		VolumeID: 1,

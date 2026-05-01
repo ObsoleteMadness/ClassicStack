@@ -1,10 +1,13 @@
+//go:build afp || all
+
 package afp
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"strings"
+
+	"github.com/pgodw/omnitalk/pkg/binutil"
 )
 
 func formatDirBitmap(bitmap uint16) string {
@@ -110,10 +113,16 @@ func (res *FPOpenDirRes) String() string {
 	return fmt.Sprintf("FPOpenDirRes{DirID: %d}", res.DirID)
 }
 
+func (res *FPOpenDirRes) WireSize() int { return 4 }
+
+func (res *FPOpenDirRes) MarshalWire(b []byte) (int, error) {
+	return binutil.PutU32(b, res.DirID)
+}
+
 func (res *FPOpenDirRes) Marshal() []byte {
-	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, res.DirID)
-	return buf.Bytes()
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
 }
 
 type FPEnumerateReq struct {
@@ -166,13 +175,36 @@ func (res *FPEnumerateRes) String() string {
 	return fmt.Sprintf("FPEnumerateRes{FileBitmap: %s, DirBitmap: %s, ActCount: %d, DataLen: %d}", formatFileBitmap(res.FileBitmap), formatDirBitmap(res.DirBitmap), res.ActCount, len(res.Data))
 }
 
+func (res *FPEnumerateRes) WireSize() int { return 6 + len(res.Data) }
+
+func (res *FPEnumerateRes) MarshalWire(b []byte) (int, error) {
+	off := 0
+	n, err := binutil.PutU16(b[off:], res.FileBitmap)
+	if err != nil {
+		return 0, err
+	}
+	off += n
+	n, err = binutil.PutU16(b[off:], res.DirBitmap)
+	if err != nil {
+		return 0, err
+	}
+	off += n
+	n, err = binutil.PutU16(b[off:], res.ActCount)
+	if err != nil {
+		return 0, err
+	}
+	off += n
+	if len(b[off:]) < len(res.Data) {
+		return 0, binutil.ErrShortBuffer
+	}
+	off += copy(b[off:], res.Data)
+	return off, nil
+}
+
 func (res *FPEnumerateRes) Marshal() []byte {
-	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, res.FileBitmap)
-	binary.Write(buf, binary.BigEndian, res.DirBitmap)
-	binary.Write(buf, binary.BigEndian, res.ActCount)
-	buf.Write(res.Data)
-	return buf.Bytes()
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
 }
 
 // FPCreateDir - cmd(0), pad(1), VolumeID(2:4), DirID(4:8), PathType(8), PathLen(9), PathName(10:...)
@@ -205,10 +237,16 @@ type FPCreateDirRes struct {
 	DirID uint32
 }
 
+func (res *FPCreateDirRes) WireSize() int { return 4 }
+
+func (res *FPCreateDirRes) MarshalWire(b []byte) (int, error) {
+	return binutil.PutU32(b, res.DirID)
+}
+
 func (res *FPCreateDirRes) Marshal() []byte {
-	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, res.DirID)
-	return buf.Bytes()
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
 }
 func (res *FPCreateDirRes) String() string {
 	return fmt.Sprintf("FPCreateDirRes{DirID: %d}", res.DirID)

@@ -6,7 +6,7 @@ package nat
 import "encoding/binary"
 
 // MaxIPPerDDP is the maximum IP payload that fits in a single DDP packet
-// (appletalk.MaxDataLength = 586 bytes).
+// (ddp.MaxDataLength = 586 bytes).
 const MaxIPPerDDP = 586
 
 // FragmentIPv4 splits pkt into fragments each ≤maxSize bytes.

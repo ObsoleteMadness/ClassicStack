@@ -1,21 +1,25 @@
+//go:build afp || all
+
 package afp
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/pgodw/omnitalk/pkg/appledouble"
 )
 
 func TestHandleRename_MovesAppleDoubleSidecar(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	oldName := "Configuration"
 	newName := "Configuration Renamed"
 	oldPath := filepath.Join(root, oldName)
 	newPath := filepath.Join(root, newName)
-	oldAD := appleDoublePath(oldPath)
-	newAD := appleDoublePath(newPath)
+	oldAD := appledouble.SidecarPath(oldPath)
+	newAD := appledouble.SidecarPath(newPath)
 
 	if err := os.WriteFile(oldPath, []byte("x"), 0644); err != nil {
 		t.Fatalf("seed file: %v", err)
@@ -45,7 +49,7 @@ func TestHandleRename_MovesAppleDoubleSidecar(t *testing.T) {
 
 func TestHandleRename_DecodesMacRomanNewNameAndMovesSidecar(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	oldName := "Seed"
 	newAFPName := string([]byte{'M', 'a', 'r', 'a', 't', 'h', 'o', 'n', ' ', 0xB0, ' ', '1', '.', '5'})
@@ -53,8 +57,8 @@ func TestHandleRename_DecodesMacRomanNewNameAndMovesSidecar(t *testing.T) {
 
 	oldPath := filepath.Join(root, oldName)
 	newPath := filepath.Join(root, newHostName)
-	oldAD := appleDoublePath(oldPath)
-	newAD := appleDoublePath(newPath)
+	oldAD := appledouble.SidecarPath(oldPath)
+	newAD := appledouble.SidecarPath(newPath)
 
 	if err := os.WriteFile(oldPath, []byte("x"), 0644); err != nil {
 		t.Fatalf("seed file: %v", err)
@@ -91,7 +95,7 @@ func TestHandleRename_DecodesMacRomanNewNameAndMovesSidecar(t *testing.T) {
 
 func TestHandleMoveAndRename_MovesAppleDoubleSidecar(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	srcDir := filepath.Join(root, "src")
 	dstDir := filepath.Join(root, "dst")
@@ -109,8 +113,8 @@ func TestHandleMoveAndRename_MovesAppleDoubleSidecar(t *testing.T) {
 	newName := "Configuration Moved"
 	srcPath := filepath.Join(srcDir, srcName)
 	dstPath := filepath.Join(dstDir, newName)
-	srcAD := appleDoublePath(srcPath)
-	dstAD := appleDoublePath(dstPath)
+	srcAD := appledouble.SidecarPath(srcPath)
+	dstAD := appledouble.SidecarPath(dstPath)
 
 	if err := os.WriteFile(srcPath, []byte("x"), 0644); err != nil {
 		t.Fatalf("seed file: %v", err)
@@ -143,7 +147,7 @@ func TestHandleMoveAndRename_MovesAppleDoubleSidecar(t *testing.T) {
 
 func TestHandleMoveAndRename_LegacyMovesAppleDoubleSidecar(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root, AppleDoubleMode: AppleDoubleModeLegacy}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root, AppleDoubleMode: AppleDoubleModeLegacy}}, &LocalFileSystem{}, nil)
 
 	srcDir := filepath.Join(root, "src")
 	dstDir := filepath.Join(root, "dst")
@@ -198,7 +202,7 @@ func TestHandleMoveAndRename_LegacyMovesAppleDoubleSidecar(t *testing.T) {
 
 func TestHandleMoveAndRename_DstPathTypeZeroIgnoresDstDirMarkerPayload(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	srcDir := filepath.Join(root, "src")
 	dstDir := filepath.Join(root, "dst")
@@ -240,7 +244,7 @@ func TestHandleMoveAndRename_DstPathTypeZeroIgnoresDstDirMarkerPayload(t *testin
 
 func TestHandleMoveAndRename_DecodesMacRomanNewName(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	srcDir := filepath.Join(root, "src")
 	dstDir := filepath.Join(root, "dst")
@@ -282,11 +286,11 @@ func TestHandleMoveAndRename_DecodesMacRomanNewName(t *testing.T) {
 
 func TestHandleDelete_DeletesAppleDoubleSidecar(t *testing.T) {
 	root := t.TempDir()
-	s := NewAFPService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
+	s := NewService("TestServer", []VolumeConfig{{Name: "Vol", Path: root}}, &LocalFileSystem{}, nil)
 
 	name := "Configuration"
 	targetPath := filepath.Join(root, name)
-	targetAD := appleDoublePath(targetPath)
+	targetAD := appledouble.SidecarPath(targetPath)
 
 	if err := os.WriteFile(targetPath, []byte("x"), 0644); err != nil {
 		t.Fatalf("seed file: %v", err)

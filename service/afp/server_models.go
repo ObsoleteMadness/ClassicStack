@@ -1,9 +1,14 @@
+//go:build afp || all
+
 package afp
 
 import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"strings"
+
+	"github.com/pgodw/omnitalk/pkg/binutil"
 )
 
 // FPGetSrvrInfoReq - request to obtain a block of descriptive information
@@ -50,58 +55,94 @@ type FPGetSrvrInfoRes struct {
 	Flags uint16
 }
 
-func (res *FPGetSrvrInfoRes) Marshal() []byte {
-	baseOffset := 8 + 2 + 1 + len(res.ServerName)
+// layout returns the offsets used by the GetSrvrInfo reply block, plus the
+// total wire size. The fixed header is 4 × uint16 offsets + 1 × uint16 Flags
+// = 10 bytes; the ServerName follows immediately as a Pascal string and is
+// padded to an even boundary before the rest of the variable-length fields.
+func (res *FPGetSrvrInfoRes) layout() (machineOff, versionsOff, uamsOff, total int) {
+	const headerLen = 10 // 4 offsets + Flags
+	baseOffset := headerLen + 1 + len(res.ServerName)
 	if baseOffset%2 != 0 {
 		baseOffset++
 	}
-
-	machineOffset := baseOffset
-	machineLen := 1 + len(res.MachineType)
-
-	versionsOffset := machineOffset + machineLen
-
+	machineOff = baseOffset
+	versionsOff = machineOff + 1 + len(res.MachineType)
 	versionsLen := 1
 	for _, v := range res.AFPVersions {
 		versionsLen += 1 + len(v)
 	}
-
-	uamsOffset := versionsOffset + versionsLen
-
-	iconOffset := 0
-
-	buf := new(bytes.Buffer)
-
-	binary.Write(buf, binary.BigEndian, uint16(machineOffset))
-	binary.Write(buf, binary.BigEndian, uint16(versionsOffset))
-	binary.Write(buf, binary.BigEndian, uint16(uamsOffset))
-	binary.Write(buf, binary.BigEndian, uint16(iconOffset))
-
-	binary.Write(buf, binary.BigEndian, res.Flags)
-
-	buf.WriteByte(byte(len(res.ServerName)))
-	buf.WriteString(res.ServerName)
-
-	for buf.Len() < machineOffset {
-		buf.WriteByte(0)
-	}
-
-	buf.WriteByte(byte(len(res.MachineType)))
-	buf.WriteString(res.MachineType)
-
-	buf.WriteByte(byte(len(res.AFPVersions)))
-	for _, v := range res.AFPVersions {
-		buf.WriteByte(byte(len(v)))
-		buf.WriteString(v)
-	}
-
-	buf.WriteByte(byte(len(res.UAMs)))
+	uamsOff = versionsOff + versionsLen
+	uamsLen := 1
 	for _, u := range res.UAMs {
-		buf.WriteByte(byte(len(u)))
-		buf.WriteString(u)
+		uamsLen += 1 + len(u)
+	}
+	total = uamsOff + uamsLen
+	return
+}
+
+// WireSize returns the encoded length of the reply block.
+func (res *FPGetSrvrInfoRes) WireSize() int {
+	_, _, _, total := res.layout()
+	return total
+}
+
+// MarshalWire encodes the reply block into b. Returns ErrShortBuffer if
+// b is too small.
+func (res *FPGetSrvrInfoRes) MarshalWire(b []byte) (int, error) {
+	machineOff, versionsOff, uamsOff, total := res.layout()
+	if len(b) < total {
+		return 0, binutil.ErrShortBuffer
+	}
+	// Zero the buffer first so the gap before machineOff (caused by the
+	// even-boundary pad after ServerName) is left as zero bytes.
+	for i := 0; i < total; i++ {
+		b[i] = 0
 	}
 
-	return buf.Bytes()
+	off := 0
+	n, _ := binutil.PutU16(b[off:], uint16(machineOff))
+	off += n
+	n, _ = binutil.PutU16(b[off:], uint16(versionsOff))
+	off += n
+	n, _ = binutil.PutU16(b[off:], uint16(uamsOff))
+	off += n
+	n, _ = binutil.PutU16(b[off:], 0) // iconOffset
+	off += n
+	n, _ = binutil.PutU16(b[off:], res.Flags)
+	off += n
+
+	n, _ = binutil.PutPString(b[off:], []byte(res.ServerName))
+	off += n
+
+	// Skip pad bytes (already zeroed) up to machineOff.
+	off = machineOff
+
+	n, _ = binutil.PutPString(b[off:], []byte(res.MachineType))
+	off += n
+
+	b[off] = byte(len(res.AFPVersions))
+	off++
+	for _, v := range res.AFPVersions {
+		n, _ = binutil.PutPString(b[off:], []byte(v))
+		off += n
+	}
+
+	b[off] = byte(len(res.UAMs))
+	off++
+	for _, u := range res.UAMs {
+		n, _ = binutil.PutPString(b[off:], []byte(u))
+		off += n
+	}
+
+	return off, nil
+}
+
+// Marshal allocates a buffer and encodes the reply block. Prefer MarshalWire
+// when the caller can supply a buffer.
+func (res *FPGetSrvrInfoRes) Marshal() []byte {
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
 }
 
 func (res *FPGetSrvrInfoRes) String() string {
@@ -147,20 +188,49 @@ const (
 	VolInfoFlagHasPassword uint8 = 1 << 0
 )
 
-func (res *FPGetSrvrParmsRes) Marshal() []byte {
-	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, res.ServerTime)
-	buf.WriteByte(uint8(len(res.Volumes)))
+// WireSize returns the encoded length: 4-byte ServerTime + 1-byte volume
+// count + per-volume (1-byte flags + 1-byte name len + name bytes, name
+// truncated to 255).
+func (res *FPGetSrvrParmsRes) WireSize() int {
+	n := 5
 	for _, v := range res.Volumes {
-		buf.WriteByte(v.Flags)
 		nameLen := len(v.Name)
 		if nameLen > 255 {
 			nameLen = 255
 		}
-		buf.WriteByte(uint8(nameLen))
-		buf.WriteString(v.Name[:nameLen])
+		n += 2 + nameLen
 	}
-	return buf.Bytes()
+	return n
+}
+
+// MarshalWire encodes the reply block into b.
+func (res *FPGetSrvrParmsRes) MarshalWire(b []byte) (int, error) {
+	if len(b) < res.WireSize() {
+		return 0, binutil.ErrShortBuffer
+	}
+	off := 0
+	n, _ := binutil.PutU32(b[off:], res.ServerTime)
+	off += n
+	b[off] = uint8(len(res.Volumes))
+	off++
+	for _, v := range res.Volumes {
+		nameLen := len(v.Name)
+		if nameLen > 255 {
+			nameLen = 255
+		}
+		b[off] = v.Flags
+		off++
+		n, _ = binutil.PutPString(b[off:], []byte(v.Name[:nameLen]))
+		off += n
+	}
+	return off, nil
+}
+
+// Marshal allocates a buffer and encodes the reply block.
+func (res *FPGetSrvrParmsRes) Marshal() []byte {
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
 }
 
 func (res *FPGetSrvrParmsRes) Unmarshal(data []byte) error {
@@ -283,11 +353,24 @@ type FPLoginRes struct {
 	IDNumber uint16
 }
 
+// WireSize returns the fixed 4-byte size of the FPLoginRes block.
+func (res *FPLoginRes) WireSize() int { return 4 }
+
+// MarshalWire encodes the reply block into b.
+func (res *FPLoginRes) MarshalWire(b []byte) (int, error) {
+	if len(b) < 4 {
+		return 0, binutil.ErrShortBuffer
+	}
+	_, _ = binutil.PutU16(b[0:], res.SRefNum)
+	_, _ = binutil.PutU16(b[2:], res.IDNumber)
+	return 4, nil
+}
+
+// Marshal allocates a buffer and encodes the reply block.
 func (res *FPLoginRes) Marshal() []byte {
-	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, res.SRefNum)
-	binary.Write(buf, binary.BigEndian, res.IDNumber)
-	return buf.Bytes()
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
 }
 
 func (res *FPLoginRes) String() string {
@@ -339,10 +422,29 @@ type FPMapIDRes struct {
 	Name string
 }
 
+// WireSize returns 1 byte for the length prefix plus the name length
+// (truncated to 255 bytes per the Pascal-string convention).
+func (res *FPMapIDRes) WireSize() int {
+	n := len(res.Name)
+	if n > 255 {
+		n = 255
+	}
+	return 1 + n
+}
+
+// MarshalWire encodes the reply block into b.
+func (res *FPMapIDRes) MarshalWire(b []byte) (int, error) {
+	name := res.Name
+	if len(name) > 255 {
+		name = name[:255]
+	}
+	return binutil.PutPString(b, []byte(name))
+}
+
+// Marshal allocates a buffer and encodes the reply block.
 func (res *FPMapIDRes) Marshal() []byte {
-	b := make([]byte, 1+len(res.Name))
-	b[0] = byte(len(res.Name))
-	copy(b[1:], res.Name)
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
 	return b
 }
 
@@ -375,9 +477,18 @@ type FPMapNameRes struct {
 	ID uint32
 }
 
+// WireSize returns the fixed 4-byte ID length.
+func (res *FPMapNameRes) WireSize() int { return 4 }
+
+// MarshalWire encodes the reply block into b.
+func (res *FPMapNameRes) MarshalWire(b []byte) (int, error) {
+	return binutil.PutU32(b, res.ID)
+}
+
+// Marshal allocates a buffer and encodes the reply block.
 func (res *FPMapNameRes) Marshal() []byte {
-	b := make([]byte, 4)
-	binary.BigEndian.PutUint32(b, res.ID)
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
 	return b
 }
 
@@ -408,13 +519,40 @@ type FPGetSrvrMsgRes struct {
 	Message     string
 }
 
+// WireSize returns 2-byte MessageType + 2-byte Bitmap + 1-byte length
+// + Message bytes (truncated to 255).
+func (res *FPGetSrvrMsgRes) WireSize() int {
+	n := len(res.Message)
+	if n > 255 {
+		n = 255
+	}
+	return 5 + n
+}
+
+// MarshalWire encodes the reply block into b.
+func (res *FPGetSrvrMsgRes) MarshalWire(b []byte) (int, error) {
+	if len(b) < res.WireSize() {
+		return 0, binutil.ErrShortBuffer
+	}
+	off := 0
+	n, _ := binutil.PutU16(b[off:], res.MessageType)
+	off += n
+	n, _ = binutil.PutU16(b[off:], res.Bitmap)
+	off += n
+	msg := res.Message
+	if len(msg) > 255 {
+		msg = msg[:255]
+	}
+	n, _ = binutil.PutPString(b[off:], []byte(msg))
+	off += n
+	return off, nil
+}
+
+// Marshal allocates a buffer and encodes the reply block.
 func (res *FPGetSrvrMsgRes) Marshal() []byte {
-	b := new(bytes.Buffer)
-	binary.Write(b, binary.BigEndian, res.MessageType)
-	binary.Write(b, binary.BigEndian, res.Bitmap)
-	b.WriteByte(byte(len(res.Message)))
-	b.WriteString(res.Message)
-	return b.Bytes()
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
 }
 
 func (res *FPGetSrvrMsgRes) String() string {
@@ -426,16 +564,122 @@ type FPUnsupportedReq struct{}
 func (req *FPUnsupportedReq) Unmarshal(data []byte) error { return nil }
 func (req *FPUnsupportedReq) String() string              { return "FPUnsupportedReq{}" }
 
-// FPCatSearch - not supported; server returns ErrCallNotSupported.
-type FPCatSearchReq struct{}
+// FPCatSearch request (AFP 2.1).
+type FPCatSearchReq struct {
+	VolumeID            uint16
+	ReqMatches          int32
+	Reserved            uint32
+	CatalogPosition     [16]byte
+	FileRsltBitmap      uint16
+	DirectoryRsltBitmap uint16
+	ReqBitmap           uint32
+	Parameters          []byte
+}
 
-func (req *FPCatSearchReq) Unmarshal(data []byte) error { return nil }
-func (req *FPCatSearchReq) String() string              { return "FPCatSearchReq{}" }
+func (req *FPCatSearchReq) Unmarshal(data []byte) error {
+	if len(data) < 36 {
+		return fmt.Errorf("ErrParamErr")
+	}
+	req.VolumeID = binary.BigEndian.Uint16(data[2:4])
+	req.ReqMatches = int32(binary.BigEndian.Uint32(data[4:8]))
+	req.Reserved = binary.BigEndian.Uint32(data[8:12])
+	copy(req.CatalogPosition[:], data[12:28])
+	req.FileRsltBitmap = binary.BigEndian.Uint16(data[28:30])
+	req.DirectoryRsltBitmap = binary.BigEndian.Uint16(data[30:32])
+	req.ReqBitmap = binary.BigEndian.Uint32(data[32:36])
+	if len(data) > 36 {
+		req.Parameters = append([]byte(nil), data[36:]...)
+	} else {
+		req.Parameters = nil
+	}
+	return nil
+}
 
-type FPCatSearchRes struct{}
+func (req *FPCatSearchReq) String() string {
+	query := req.SearchQuery()
+	printable := req.searchPrintableParameters()
+	if len(printable) > 80 {
+		printable = printable[:80] + "..."
+	}
+	return fmt.Sprintf("FPCatSearchReq{VolumeID:%d ReqMatches:%d FileRsltBitmap:%s DirectoryRsltBitmap:%s ReqBitmap:0x%08x ParamsLen:%d Query:%q Params:%q}",
+		req.VolumeID,
+		req.ReqMatches,
+		formatFileBitmap(req.FileRsltBitmap),
+		formatDirBitmap(req.DirectoryRsltBitmap),
+		req.ReqBitmap,
+		len(req.Parameters),
+		query,
+		printable,
+	)
+}
 
-func (res *FPCatSearchRes) Marshal() []byte { return nil }
-func (res *FPCatSearchRes) String() string  { return "FPCatSearchRes{}" }
+func (req *FPCatSearchReq) SearchQuery() string {
+	if len(req.Parameters) == 0 {
+		return ""
+	}
+	return req.searchPrintableParameters()
+}
+
+func (req *FPCatSearchReq) searchPrintableParameters() string {
+	b := make([]byte, 0, len(req.Parameters))
+	for _, c := range req.Parameters {
+		if c >= 32 && c <= 126 {
+			b = append(b, c)
+			continue
+		}
+		if len(b) > 0 && b[len(b)-1] != ' ' {
+			b = append(b, ' ')
+		}
+	}
+	return strings.Join(strings.Fields(string(b)), " ")
+}
+
+type FPCatSearchRes struct {
+	CatalogPosition     [16]byte
+	FileRsltBitmap      uint16
+	DirectoryRsltBitmap uint16
+	ActualCount         int32
+	Data                []byte
+}
+
+// WireSize returns 16-byte CatalogPosition + 2-byte FileRsltBitmap +
+// 2-byte DirectoryRsltBitmap + 4-byte ActualCount + Data bytes.
+func (res *FPCatSearchRes) WireSize() int {
+	return 24 + len(res.Data)
+}
+
+// MarshalWire encodes the reply block into b.
+func (res *FPCatSearchRes) MarshalWire(b []byte) (int, error) {
+	if len(b) < res.WireSize() {
+		return 0, binutil.ErrShortBuffer
+	}
+	off := 0
+	off += copy(b[off:], res.CatalogPosition[:])
+	n, _ := binutil.PutU16(b[off:], res.FileRsltBitmap)
+	off += n
+	n, _ = binutil.PutU16(b[off:], res.DirectoryRsltBitmap)
+	off += n
+	n, _ = binutil.PutU32(b[off:], uint32(res.ActualCount))
+	off += n
+	off += copy(b[off:], res.Data)
+	return off, nil
+}
+
+// Marshal allocates a buffer and encodes the reply block.
+func (res *FPCatSearchRes) Marshal() []byte {
+	b := make([]byte, res.WireSize())
+	_, _ = res.MarshalWire(b)
+	return b
+}
+
+func (res *FPCatSearchRes) String() string {
+	return fmt.Sprintf("FPCatSearchRes{FileRsltBitmap:%s DirectoryRsltBitmap:%s ActualCount:%d DataLen:%d}",
+		formatFileBitmap(res.FileRsltBitmap),
+		formatDirBitmap(res.DirectoryRsltBitmap),
+		res.ActualCount,
+		len(res.Data),
+	)
+}
 
 var (
 	_ RequestModel = (*FPGetSrvrInfoReq)(nil)

@@ -39,34 +39,67 @@ jobs:
           done < <(bash scripts/ci/compute-release-metadata.sh)
 
   build:
-    name: Build And Package (${{ matrix.os }})
+    name: Build And Package (${{ matrix.os }} / ${{ matrix.variant }})
     needs: version
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          # Linux - all
           - os: ubuntu-latest
+            variant: all
             artifact_name: omnitalk-linux
             archive_name: omnitalk-${{ needs.version.outputs.release_tag }}-linux-amd64.tar.gz
             build_script: bash scripts/ci/build.sh
             package_script: bash scripts/ci/package-release.sh
             target_os: linux
             output: out/omnitalk
+          # Linux - router
+          - os: ubuntu-latest
+            variant: router
+            artifact_name: omnitalk-router-linux
+            archive_name: omnitalk-router-${{ needs.version.outputs.release_tag }}-linux-amd64.tar.gz
+            build_script: bash scripts/ci/build.sh
+            package_script: bash scripts/ci/package-release.sh
+            target_os: linux
+            output: out/omnitalk-router
+          # macOS - all
           - os: macos-latest
+            variant: all
             artifact_name: omnitalk-macos
             archive_name: omnitalk-${{ needs.version.outputs.release_tag }}-macos-amd64.zip
             build_script: bash scripts/ci/build.sh
             package_script: bash scripts/ci/package-release.sh
             target_os: macos
             output: out/omnitalk
+          # macOS - router
+          - os: macos-latest
+            variant: router
+            artifact_name: omnitalk-router-macos
+            archive_name: omnitalk-router-${{ needs.version.outputs.release_tag }}-macos-amd64.zip
+            build_script: bash scripts/ci/build.sh
+            package_script: bash scripts/ci/package-release.sh
+            target_os: macos
+            output: out/omnitalk-router
+          # Windows - all
           - os: windows-latest
+            variant: all
             artifact_name: omnitalk-windows
             archive_name: omnitalk-${{ needs.version.outputs.release_tag }}-windows-amd64.zip
             build_script: ./scripts/ci/build.ps1
             package_script: ./scripts/ci/package-release.ps1
             target_os: windows
             output: out/omnitalk.exe
+          # Windows - router
+          - os: windows-latest
+            variant: router
+            artifact_name: omnitalk-router-windows
+            archive_name: omnitalk-router-${{ needs.version.outputs.release_tag }}-windows-amd64.zip
+            build_script: ./scripts/ci/build.ps1
+            package_script: ./scripts/ci/package-release.ps1
+            target_os: windows
+            output: out/omnitalk-router.exe
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -89,6 +122,7 @@ jobs:
           BUILD_VERSION: ${{ needs.version.outputs.build_version }}
           BUILD_COMMIT: ${{ needs.version.outputs.commit_sha }}
           BUILD_DATE: ${{ needs.version.outputs.build_date }}
+          BUILD_VARIANT: ${{ matrix.variant }}
           OUTPUT: ${{ matrix.output }}
         run: ${{ matrix.build_script }}
 
@@ -99,6 +133,7 @@ jobs:
           BUILD_VERSION: ${{ needs.version.outputs.build_version }}
           BUILD_COMMIT: ${{ needs.version.outputs.commit_sha }}
           BUILD_DATE: ${{ needs.version.outputs.build_date }}
+          BUILD_VARIANT: ${{ matrix.variant }}
           OUTPUT: ${{ matrix.output }}
         run: ${{ matrix.build_script }}
 
@@ -109,6 +144,7 @@ jobs:
           TARGET_OS: ${{ matrix.target_os }}
           RELEASE_TAG: ${{ needs.version.outputs.release_tag }}
           BUILD_VERSION: ${{ needs.version.outputs.build_version }}
+          BUILD_VARIANT: ${{ matrix.variant }}
         run: ${{ matrix.package_script }}
 
       - name: Package release (Windows)
@@ -118,6 +154,7 @@ jobs:
           TARGET_OS: ${{ matrix.target_os }}
           RELEASE_TAG: ${{ needs.version.outputs.release_tag }}
           BUILD_VERSION: ${{ needs.version.outputs.build_version }}
+          BUILD_VARIANT: ${{ matrix.variant }}
         run: ${{ matrix.package_script }}
 
       - name: Upload build artifact

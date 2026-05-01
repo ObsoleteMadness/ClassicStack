@@ -8,6 +8,12 @@
 
 </div>
 
+## Architecture
+
+For a guided tour of the codebase — package layout, layering rules,
+core interfaces, logging/telemetry, and the AFP design — see
+[ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Features
 
 - Cross Platform Support: runs on Windows, MacOS and Linux.
@@ -23,24 +29,24 @@
 
 ## Quick start
 
-- Copy server.ini.example to server.ini and edit values.
-- Run OmniTalk with no flags to auto-load server.ini.
+- Copy server.toml.example to server.toml and edit values.
+- Run OmniTalk with no flags to auto-load server.toml.
 - Or pass a config file explicitly with -config.
 
 Examples:
 
 ~~~bash
-./omnitalk -config server.ini
+./omnitalk -config server.toml
 ~~~
 
 ~~~powershell
-.\omnitalk.exe -config server.ini
+.\omnitalk.exe -config server.toml
 ~~~
 
 Config-loading rule:
 
 - -config cannot be combined with other flags.
-- If no flags are supplied, OmniTalk auto-loads server.ini if present.
+- If no flags are supplied, OmniTalk auto-loads server.toml if present.
 
 ---
 
@@ -147,18 +153,18 @@ Tip: [install Npcap](https://npcap.com/#download) first, otherwise pcap devices 
 
 ### Example interface configs (Linux, macOS, Windows)
 
-These examples show only relevant keys; merge into your full server.ini.
+These examples show only relevant keys; merge into your full server.toml.
 
 Linux example:
 
-~~~ini
+~~~toml
 [LToUdp]
 enabled = true
-interface = 192.168.1.10
+interface = "192.168.1.10"
 
 [EtherTalk]
-backend = pcap
-device = eth0
+backend = "pcap"
+device = "eth0"
 hw_address = "DE:AD:BE:EF:CA:FE"
 seed_network_min = 3
 seed_network_max = 5
@@ -167,14 +173,14 @@ seed_zone = "EtherTalk Network"
 
 macOS example:
 
-~~~ini
+~~~toml
 [LToUdp]
 enabled = true
-interface = 192.168.1.20
+interface = "192.168.1.20"
 
 [EtherTalk]
-backend = pcap
-device = en0
+backend = "pcap"
+device = "en0"
 hw_address = "DE:AD:BE:EF:CA:FE"
 seed_network_min = 3
 seed_network_max = 5
@@ -183,16 +189,18 @@ seed_zone = "EtherTalk Network"
 
 Windows example:
 
-~~~ini
+~~~toml
 [LToUdp]
 enabled = true
-interface = 0.0.0.0
+interface = "0.0.0.0"
 
+# On Windows, use TOML literal strings (single quotes) so backslashes are not
+# interpreted as escapes by the parser.
 [EtherTalk]
-backend = pcap
-device = "\Device\NPF_{1DFDAA9C-7DD4-40F8-B6D4-9298C273D654}"
+backend = "pcap"
+device = '\Device\NPF_{1DFDAA9C-7DD4-40F8-B6D4-9298C273D654}'
 hw_address = "DE:AD:BE:EF:CA:FE"
-bridge_mode = auto
+bridge_mode = "auto"
 seed_network_min = 3
 seed_network_max = 5
 seed_zone = "EtherTalk Network"
@@ -278,17 +286,17 @@ Provide IP connectivity to AppleTalk clients via a MacIP gateway.
 
 Example NAT-oriented configuration:
 
-~~~ini
+~~~toml
 [MacIP]
 enabled = true
-mode = nat
+mode = "nat"
 zone = "EtherTalk Network"
-nat_subnet = 192.168.100.0/24
-nat_gw = 192.168.100.1
-ip_gateway = 192.168.1.1
-nameserver = 192.168.1.1
+nat_subnet = "192.168.100.0/24"
+nat_gw = "192.168.100.1"
+ip_gateway = "192.168.1.1"
+nameserver = "192.168.1.1"
 dhcp_relay = false
-lease_file = leases.txt
+lease_file = "leases.txt"
 ~~~
 
 ### [MacIP]
@@ -343,6 +351,8 @@ Unsupported or limited:
 
 ### [AFP]
 
+These keys are server-wide; per-volume options live in `[Volumes.<name>]` (see below).
+
 | Key | Type | Default | Description |
 |---|---|---|---|
 | enabled | bool | true | Enables AFP service. |
@@ -350,7 +360,12 @@ Unsupported or limited:
 | zone | string | (empty) | Zone for AFP registration. Empty uses router-selected default. |
 | protocols | string | tcp,ddp | Enabled AFP transports: tcp, ddp, or both comma-separated. |
 | binding | string | :548 | TCP listen address for DSI AFP. |
-| extension_map | string | (empty) | Path to Netatalk-compatible extension map file. Relative paths are resolved from INI directory. |
+| extension_map | string | (empty) | Path to Netatalk-compatible extension map file. Relative paths are resolved from the config file's directory. |
+| use_decomposed_names | bool | true | Encode host-reserved filename characters as `0xNN` tokens in AFP mapping. Server-wide. |
+| cnid_backend | string | sqlite | CNID backend used by all volumes: `sqlite` (when built with the `sqlite_cnid` or `all` tag) or `memory`. |
+| desktop_backend | string | sqlite | Backend for the AFP desktop database (icons, APPL mappings, comments). |
+| appledouble_mode | string | modern | Default metadata layout: `modern` (`._` sidecars) or `legacy` (`.AppleDouble/` directories). Volumes may override. |
+| persistent_volume_ids | bool | true | Persist per-volume IDs across restarts so clients keep their aliases. |
 
 #### Filename mapping and encoding
 
@@ -364,12 +379,12 @@ Behavior:
 
 Use `[AFP] extension_map` to provide Macintosh type/creator metadata for files based on extension.
 
-Example in `server.ini`:
+Example in `server.toml`:
 
-~~~ini
+~~~toml
 [AFP]
 enabled = true
-extension_map = extmap.conf
+extension_map = "extmap.conf"
 ~~~
 
 Format rules:
@@ -399,18 +414,19 @@ Notes:
 
 ### [Volumes.<name>]
 
-Each volume is configured as a separate `[Volumes.<section-name>]` section.
+Each volume is configured as a separate `[Volumes.<section-name>]` section. The section suffix is used as the volume name unless `name` is set.
+
+> Note: `cnid_backend`, `use_decomposed_names`, and the default `appledouble_mode` are server-wide settings under `[AFP]` — they are not configurable per volume. A volume may override `appledouble_mode` to choose a sidecar layout that differs from the server default.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | name | string | section suffix | Display name for the AFP volume (max 31 chars recommended). |
-| path | string | none (required) | Host filesystem path to export. |
+| path | string | required (except for `macgarden`) | Host filesystem path to export. For `fs_type = "macgarden"` a default path is derived from `name` if omitted. |
+| fs_type | string | local_fs | Filesystem backend: `local_fs` (host disk) or `macgarden` (read-only virtual Macintosh Garden view, requires the `macgarden` or `all` build tag). |
+| password | string | (empty) | Optional volume password. The internal cleartext-password path exists in code but is not exposed via the live authentication flow today. |
 | read_only | bool | false | Exports the volume as read-only at AFP protocol level. |
-| cnid_backend | string | sqlite | CNID backend; currently sqlite or memory depending on build/runtime support. Must not conflict across volumes. |
-| use_decomposed_names | bool | true | Encodes host-reserved filename characters as 0xNN tokens in AFP mapping. Must not conflict across volumes. |
-| fork_backend | string | (blank/AppleDouble) | Currently only AppleDouble is accepted when set. |
-| appledouble_mode | string | modern | Metadata layout mode: modern (._ sidecars) or legacy (.appledouble directory style). |
 | rebuild_desktop_db | bool | false | Rebuilds AFP desktop database from resource fork metadata at startup. |
+| appledouble_mode | string | inherits `[AFP] appledouble_mode` | Per-volume override of the metadata layout: `modern` (`._` sidecars) or `legacy` (`.AppleDouble/` directories). |
 
 #### Read-only volume behavior
 
@@ -428,9 +444,9 @@ Error code behavior by AFP version:
 
 Example:
 
-~~~ini
+~~~toml
 [Volumes.Sample]
-path = dist/Sample Volume
+path = "dist/Sample Volume"
 read_only = true
 ~~~
 
@@ -441,17 +457,18 @@ Volume naming:
 
 #### Sidecar metadata
 
-- `fork_backend` currently accepts AppleDouble storage.
+- AppleDouble is the only resource-fork/metadata storage backend.
 - `appledouble_mode=modern` uses `._filename` sidecars beside files.
 - `appledouble_mode=legacy` uses `.AppleDouble/filename` sidecars.
-- `rebuild_desktop_db=true` rebuilds desktop metadata cache at startup.
+- The default mode comes from `[AFP] appledouble_mode`; individual volumes may override it.
+- `rebuild_desktop_db=true` (per volume) rebuilds desktop metadata cache at startup.
 
 #### Netatalk compatibility
 
 - Compatible formats: Netatalk-style extension map syntax and AppleDouble modern/legacy sidecar layouts.
 - Known differences: CNID database implementation is OmniTalk-specific (sqlite or memory), not a drop-in Netatalk CNID store.
 - OmniTalk does not currently provide a Netatalk-style extended-attribute metadata backend.
-- AFP feature coverage is practical but incomplete (for example catalog search is unsupported).
+- AFP feature coverage is practical but incomplete (for example catalog search is currently implemented as name-based search and backend-dependent).
 
 ### [Logging]
 
@@ -472,11 +489,11 @@ Common operational flags:
 - -parse-packets and -parse-output
 - -afp-volume (repeatable Name:Path)
 
-Use server.ini for repeatable deployments; use flags for quick experiments.
+Use server.toml for repeatable deployments; use flags for quick experiments.
 
 ## Rough project layout
 
-- cmd/omnitalk: entrypoint, flag handling, INI loading, runtime wiring.
+- cmd/omnitalk: entrypoint, flag handling, TOML config loading, runtime wiring.
 - router: datagram dispatch, routing table, zone information table.
 - port: transport implementations (EtherTalk, LocalTalk variants, rawlink, NAT helpers).
 - service: protocol/application services (AEP, RTMP, ZIP, ASP/ATP/DSI, AFP, MacIP, LLAP).

@@ -1,3 +1,5 @@
+//go:build macip || all
+
 package macip
 
 import (
@@ -8,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pgodw/omnitalk/go/netlog"
-	"github.com/pgodw/omnitalk/go/port/rawlink"
+	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/port/rawlink"
 )
 
 const (
@@ -69,6 +71,8 @@ type etherIPLink struct {
 	dhcpInbound chan []byte
 	// stop is closed to request goroutine termination.
 	stop chan struct{}
+	// wg tracks background goroutines so close() can join them deterministically.
+	wg sync.WaitGroup
 }
 
 // newEtherIPLink wraps the provided RawLink into an etherIPLink ready to
@@ -103,8 +107,13 @@ func newEtherIPLink(link rawlink.RawLink, ourMAC net.HardwareAddr, hostIP net.IP
 // start launches background goroutines for packet capture and optionally
 // probes the configured default gateway to prime the ARP cache.
 func (l *etherIPLink) start() {
-	go l.readLoop()
+	l.wg.Add(2)
 	go func() {
+		defer l.wg.Done()
+		l.readLoop()
+	}()
+	go func() {
+		defer l.wg.Done()
 		gw := l.getDefaultGateway()
 		if _, err := l.resolveMAC(gw); err != nil {
 			netlog.Warn("macip: could not ARP for default gateway %s: %v", gw, err)
@@ -137,10 +146,13 @@ func (l *etherIPLink) setDefaultGateway(gw net.IP) {
 	l.gwMu.Unlock()
 }
 
-// close stops background processing and closes the rawlink.
+// close stops background processing and closes the rawlink. Blocks until
+// the readLoop and gateway-probe goroutines have exited so callers see a
+// fully-quiesced link on return.
 func (l *etherIPLink) close() {
 	close(l.stop)
 	l.link.Close()
+	l.wg.Wait()
 }
 
 // sendFrame transmits a raw Ethernet frame via the underlying rawlink.
@@ -397,21 +409,33 @@ func (l *etherIPLink) resolveMAC(ip net.IP) (net.HardwareAddr, error) {
 
 	l.sendARPRequest(ip4)
 
+	timer := time.NewTimer(arpLookupTimeout)
+	defer timer.Stop()
 	select {
 	case mac := <-ch:
 		return mac, nil
-	case <-time.After(arpLookupTimeout):
-		l.arpMu.Lock()
-		waiters := l.arpWait[key]
-		for i, c := range waiters {
-			if c == ch {
-				l.arpWait[key] = append(waiters[:i], waiters[i+1:]...)
-				break
-			}
-		}
-		l.arpMu.Unlock()
+	case <-l.stop:
+		l.dropARPWaiter(key, ch)
+		return nil, fmt.Errorf("ARP lookup aborted for %s: link closing", ip4)
+	case <-timer.C:
+		l.dropARPWaiter(key, ch)
 		return nil, fmt.Errorf("ARP timeout for %s", ip4)
 	}
+}
+
+// dropARPWaiter removes ch from the waiter list for key. Called when an
+// ARP request gives up (timeout or shutdown) so the next reply that
+// arrives doesn't get delivered to a goroutine that has already moved on.
+func (l *etherIPLink) dropARPWaiter(key [4]byte, ch chan net.HardwareAddr) {
+	l.arpMu.Lock()
+	waiters := l.arpWait[key]
+	for i, c := range waiters {
+		if c == ch {
+			l.arpWait[key] = append(waiters[:i], waiters[i+1:]...)
+			break
+		}
+	}
+	l.arpMu.Unlock()
 }
 
 // sendIPPacket injects a raw IPv4 packet onto the IP-side Ethernet network.

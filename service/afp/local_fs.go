@@ -1,3 +1,5 @@
+//go:build afp || all
+
 package afp
 
 import (
@@ -6,6 +8,12 @@ import (
 )
 
 type LocalFileSystem struct{}
+
+func init() {
+	RegisterFS(FSTypeLocalFS, func(cfg VolumeConfig) (FileSystem, error) {
+		return &LocalFileSystem{}, nil
+	})
+}
 
 // LocalFileSystem expects already-converted UTF-8 host paths from AFP service logic.
 
@@ -47,4 +55,43 @@ func (l *LocalFileSystem) Remove(path string) error {
 
 func (l *LocalFileSystem) Rename(oldpath, newpath string) error {
 	return os.Rename(oldpath, newpath)
+}
+
+func (l *LocalFileSystem) Capabilities() FileSystemCapabilities {
+	return FileSystemCapabilities{
+		ChildCount:    true,
+		DirAttributes: true,
+		ReadOnlyState: true,
+	}
+}
+
+func (l *LocalFileSystem) CatSearch(_ string, _ string, _ int32, cursor [16]byte) ([]string, [16]byte, int32) {
+	return nil, cursor, ErrCallNotSupported
+}
+
+func (l *LocalFileSystem) ChildCount(path string) (uint16, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return 0, err
+	}
+	if len(entries) > 0xffff {
+		return 0xffff, nil
+	}
+	return uint16(len(entries)), nil
+}
+
+func (l *LocalFileSystem) ReadDirRange(path string, startIndex uint16, reqCount uint16) ([]fs.DirEntry, uint16, error) {
+	return nil, 0, newNotSupported("ReadDirRange")
+}
+
+func (l *LocalFileSystem) DirAttributes(_ string) (uint16, error) {
+	return 0, nil
+}
+
+func (l *LocalFileSystem) IsReadOnly(_ string) (bool, error) {
+	return false, nil
+}
+
+func (l *LocalFileSystem) SupportsCatSearch(_ string) (bool, error) {
+	return false, nil
 }

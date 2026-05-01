@@ -1,11 +1,11 @@
 package ethertalk
 
-import "github.com/pgodw/omnitalk/go/port/rawlink"
+import "github.com/pgodw/omnitalk/port/rawlink"
 
 // NewTapPort creates an EtherTalk port over a TAP-style raw link backend.
 // TAP support depends on rawlink.OpenTAP for the current platform.
-func NewTapPort(interfaceName string, hwAddr []byte, seedNetworkMin, seedNetworkMax, desiredNetwork uint16, desiredNode uint8, seedZoneNames [][]byte) (*PcapPort, error) {
-	p, err := NewPcapPort(interfaceName, hwAddr, seedNetworkMin, seedNetworkMax, desiredNetwork, desiredNode, seedZoneNames)
+func NewTapPort(opts Options) (*PcapPort, error) {
+	p, err := NewPcapPort(opts)
 	if err != nil {
 		return nil, err
 	}

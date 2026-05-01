@@ -1,8 +1,9 @@
 package rawlink
 
 import (
+	"cmp"
 	"net"
-	"sort"
+	"slices"
 	"strings"
 
 	tsfaces "tailscale.com/net/interfaces"
@@ -114,7 +115,7 @@ func DetectHostMACForPcapInterface(interfaceName string) (string, bool) {
 	}
 
 	// Keep deterministic selection if multiple interfaces share the same IPv4.
-	sort.Slice(ifaces, func(i, j int) bool { return ifaces[i].Name < ifaces[j].Name })
+	slices.SortFunc(ifaces, func(a, b net.Interface) int { return cmp.Compare(a.Name, b.Name) })
 
 	for _, iface := range ifaces {
 		if len(iface.HardwareAddr) != 6 {

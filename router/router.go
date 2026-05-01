@@ -1,18 +1,23 @@
 package router
 
 import (
+	"context"
 	"errors"
 
-	"github.com/pgodw/omnitalk/go/appletalk"
-	"github.com/pgodw/omnitalk/go/netlog"
-	"github.com/pgodw/omnitalk/go/port"
-	"github.com/pgodw/omnitalk/go/port/localtalk"
-	"github.com/pgodw/omnitalk/go/service"
-	"github.com/pgodw/omnitalk/go/service/aep"
-	"github.com/pgodw/omnitalk/go/service/llap"
-	"github.com/pgodw/omnitalk/go/service/rtmp"
-	"github.com/pgodw/omnitalk/go/service/zip"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
+	"github.com/pgodw/omnitalk/netlog"
+	"github.com/pgodw/omnitalk/pkg/telemetry"
+	"github.com/pgodw/omnitalk/port"
+	"github.com/pgodw/omnitalk/port/localtalk"
+	"github.com/pgodw/omnitalk/service"
+	"github.com/pgodw/omnitalk/service/aep"
+	"github.com/pgodw/omnitalk/service/llap"
+	"github.com/pgodw/omnitalk/service/rtmp"
+	"github.com/pgodw/omnitalk/service/zip"
 )
+
+var framesInTotal = telemetry.NewCounter("omnitalk_router_frames_in_total")
 
 type Router struct {
 	shortStr             string
@@ -21,12 +26,12 @@ type Router struct {
 	servicesBySAS        map[uint8]service.Service
 	RoutingTable         *RoutingTable
 	ZoneInformationTable *ZoneInformationTable
-	observer             func(appletalk.Datagram, port.Port)
+	observer             func(ddp.Datagram, port.Port)
 }
 
 // SetObserver installs a callback that is invoked for every datagram delivered
 // locally (after DDP decoding, before service dispatch). Pass nil to remove.
-func (r *Router) SetObserver(fn func(appletalk.Datagram, port.Port)) {
+func (r *Router) SetObserver(fn func(ddp.Datagram, port.Port)) {
 	r.observer = fn
 }
 
@@ -95,19 +100,19 @@ func (r *Router) bindLLAPManager() {
 	}
 }
 
-func (r *Router) deliver(datagram appletalk.Datagram, rxPort port.Port) {
+func (r *Router) deliver(datagram ddp.Datagram, rxPort port.Port) {
 	if svc, ok := r.servicesBySAS[datagram.DestinationSocket]; ok {
 		svc.Inbound(datagram, rxPort)
 	}
 }
 
-func (r *Router) Start() error {
+func (r *Router) Start(ctx context.Context) error {
 	for _, s := range r.Services {
 		if _, ok := s.(*llap.Service); !ok {
 			continue
 		}
 		netlog.Info("starting %T...", s)
-		if err := s.Start(r); err != nil {
+		if err := s.Start(ctx, r); err != nil {
 			return err
 		}
 	}
@@ -123,7 +128,7 @@ func (r *Router) Start() error {
 			continue
 		}
 		netlog.Info("starting %T...", s)
-		if err := s.Start(r); err != nil {
+		if err := s.Start(ctx, r); err != nil {
 			return err
 		}
 	}
@@ -153,7 +158,8 @@ func (r *Router) Stop() error {
 	return nil
 }
 
-func (r *Router) Inbound(datagram appletalk.Datagram, rxPort port.Port) {
+func (r *Router) Inbound(datagram ddp.Datagram, rxPort port.Port) {
+	framesInTotal.Inc()
 	if rxPort.Network() != 0 {
 		if datagram.DestinationNetwork == 0 && datagram.SourceNetwork == 0 {
 			datagram.DestinationNetwork = rxPort.Network()
@@ -188,7 +194,7 @@ func (r *Router) Inbound(datagram appletalk.Datagram, rxPort port.Port) {
 	_ = r.Route(datagram, false)
 }
 
-func (r *Router) Route(datagram appletalk.Datagram, originating bool) error {
+func (r *Router) Route(datagram ddp.Datagram, originating bool) error {
 	if originating {
 		if datagram.HopCount != 0 {
 			return errors.New("originated datagrams must have hop count of 0")
@@ -239,13 +245,13 @@ func (r *Router) Route(datagram appletalk.Datagram, originating bool) error {
 	return nil
 }
 
-func (r *Router) Reply(datagram appletalk.Datagram, rxPort port.Port, ddpType uint8, data []byte) {
+func (r *Router) Reply(datagram ddp.Datagram, rxPort port.Port, ddpType uint8, data []byte) {
 	if datagram.SourceNode == 0 || datagram.SourceNode == 0xFF {
 		return
 	}
 	if rxPort.Node() != 0 && (datagram.SourceNetwork == 0 || (datagram.SourceNetwork >= 0xFF00 && datagram.SourceNetwork <= 0xFFFE) ||
 		datagram.SourceNetwork < rxPort.NetworkMin() || datagram.SourceNetwork > rxPort.NetworkMax()) {
-		rxPort.Broadcast(appletalk.Datagram{
+		rxPort.Broadcast(ddp.Datagram{
 			HopCount:           0,
 			DestinationNetwork: 0,
 			SourceNetwork:      rxPort.Network(),
@@ -258,7 +264,7 @@ func (r *Router) Reply(datagram appletalk.Datagram, rxPort port.Port, ddpType ui
 		})
 		return
 	}
-	_ = r.Route(appletalk.Datagram{
+	_ = r.Route(ddp.Datagram{
 		HopCount:           0,
 		DestinationNetwork: datagram.SourceNetwork,
 		SourceNetwork:      datagram.DestinationNetwork, // reply FROM the address the client sent TO

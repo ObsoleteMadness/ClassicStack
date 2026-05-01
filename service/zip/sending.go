@@ -1,28 +1,36 @@
 package zip
 
 import (
+	"context"
+	"sync"
 	"time"
 
-	"github.com/pgodw/omnitalk/go/appletalk"
-	"github.com/pgodw/omnitalk/go/port"
-	"github.com/pgodw/omnitalk/go/service"
+	"github.com/pgodw/omnitalk/protocol/ddp"
+
+	"github.com/pgodw/omnitalk/port"
+	"github.com/pgodw/omnitalk/service"
 )
 
 type SendingService struct {
 	timeout time.Duration
 	stop    chan struct{}
+	wg      sync.WaitGroup
 }
 
 func NewSendingService() *SendingService {
 	return &SendingService{timeout: 10 * time.Second, stop: make(chan struct{})}
 }
 
-func (s *SendingService) Start(r service.Router) error {
+func (s *SendingService) Start(ctx context.Context, r service.Router) error {
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		t := time.NewTicker(s.timeout)
 		defer t.Stop()
 		for {
 			select {
+			case <-ctx.Done():
+				return
 			case <-s.stop:
 				return
 			case <-t.C:
@@ -37,12 +45,12 @@ func (s *SendingService) Start(r service.Router) error {
 					}
 					data := []byte{FuncQuery, 1, byte(e.NetworkMin >> 8), byte(e.NetworkMin)}
 					if e.Distance == 0 {
-						e.Port.Broadcast(appletalk.Datagram{
+						e.Port.Broadcast(ddp.Datagram{
 							DestinationNetwork: 0, SourceNetwork: e.Port.Network(), DestinationNode: 0xFF, SourceNode: e.Port.Node(),
 							DestinationSocket: SAS, SourceSocket: SAS, DDPType: DDPType, Data: data,
 						})
 					} else {
-						e.Port.Unicast(e.NextNetwork, e.NextNode, appletalk.Datagram{
+						e.Port.Unicast(e.NextNetwork, e.NextNode, ddp.Datagram{
 							DestinationNetwork: e.NextNetwork, SourceNetwork: e.Port.Network(), DestinationNode: e.NextNode, SourceNode: e.Port.Node(),
 							DestinationSocket: SAS, SourceSocket: SAS, DDPType: DDPType, Data: data,
 						})
@@ -54,5 +62,10 @@ func (s *SendingService) Start(r service.Router) error {
 	return nil
 }
 
-func (s *SendingService) Stop() error                               { close(s.stop); return nil }
-func (s *SendingService) Inbound(_ appletalk.Datagram, _ port.Port) {}
+func (s *SendingService) Stop() error {
+	close(s.stop)
+	s.wg.Wait()
+	return nil
+}
+
+func (s *SendingService) Inbound(_ ddp.Datagram, _ port.Port) {}

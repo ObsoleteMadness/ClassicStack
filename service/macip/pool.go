@@ -1,3 +1,5 @@
+//go:build macip || all
+
 package macip
 
 import (
@@ -7,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pgodw/omnitalk/go/netlog"
+	"github.com/pgodw/omnitalk/netlog"
 )
 
 const leaseDuration = 5 * time.Minute
