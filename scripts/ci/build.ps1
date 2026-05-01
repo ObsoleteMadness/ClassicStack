@@ -3,7 +3,21 @@ $ErrorActionPreference = 'Stop'
 $buildVersion = if ($env:BUILD_VERSION) { $env:BUILD_VERSION } else { '0.0.0-dev' }
 $buildCommit = if ($env:BUILD_COMMIT) { $env:BUILD_COMMIT } else { (git rev-parse --short=12 HEAD).Trim() }
 $buildDate = if ($env:BUILD_DATE) { $env:BUILD_DATE } else { [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ') }
-$output = if ($env:OUTPUT) { $env:OUTPUT } else { 'out/omnitalk.exe' }
+$buildVariant = if ($env:BUILD_VARIANT) { $env:BUILD_VARIANT } else { 'all' }
+
+switch ($buildVariant) {
+    'all'    { $tags = 'all' }
+    'router' { $tags = '' }
+    default  { throw "Unsupported BUILD_VARIANT: $buildVariant (expected: all|router)" }
+}
+
+if ($env:OUTPUT) {
+    $output = $env:OUTPUT
+} elseif ($buildVariant -eq 'all') {
+    $output = 'out/omnitalk.exe'
+} else {
+    $output = "out/omnitalk-$buildVariant.exe"
+}
 
 $versionForRc = '0.0.0.0'
 if ($buildVersion -match '^([0-9]+)\.([0-9]+)\.([0-9]+)(?:[-+].*)?$') {
@@ -15,16 +29,19 @@ $minor = [int]$parts[1]
 $patch = [int]$parts[2]
 $build = [int]$parts[3]
 
+$exeName = Split-Path -Leaf $output
+$descriptionSuffix = if ($buildVariant -eq 'all') { '' } else { " ($buildVariant)" }
+
 @"
 {
   "StringFileInfo": {
     "Comments": "OmniTalk",
     "CompanyName": "ObsoleteMadness",
-    "FileDescription": "OmniTalk AppleTalk Router",
+    "FileDescription": "OmniTalk AppleTalk Router$descriptionSuffix",
     "FileVersion": "$buildVersion",
     "InternalName": "omnitalk",
     "LegalCopyright": "GPL-3.0",
-    "OriginalFilename": "omnitalk.exe",
+    "OriginalFilename": "$exeName",
     "ProductName": "OmniTalk",
     "ProductVersion": "$buildVersion"
   },
@@ -63,6 +80,10 @@ if ($parent) {
     New-Item -Path $parent -ItemType Directory -Force | Out-Null
 }
 
-go build -trimpath `
-  -ldflags "-s -w -X main.BuildVersion=$buildVersion -X main.BuildCommit=$buildCommit -X main.BuildDate=$buildDate" `
-  -o $output ./cmd/omnitalk
+$ldflags = "-s -w -X main.BuildVersion=$buildVersion -X main.BuildCommit=$buildCommit -X main.BuildDate=$buildDate"
+
+if ($tags) {
+    go build -trimpath -tags $tags -ldflags $ldflags -o $output ./cmd/omnitalk
+} else {
+    go build -trimpath -ldflags $ldflags -o $output ./cmd/omnitalk
+}
