@@ -351,6 +351,8 @@ Unsupported or limited:
 
 ### [AFP]
 
+These keys are server-wide; per-volume options live in `[Volumes.<name>]` (see below).
+
 | Key | Type | Default | Description |
 |---|---|---|---|
 | enabled | bool | true | Enables AFP service. |
@@ -359,6 +361,11 @@ Unsupported or limited:
 | protocols | string | tcp,ddp | Enabled AFP transports: tcp, ddp, or both comma-separated. |
 | binding | string | :548 | TCP listen address for DSI AFP. |
 | extension_map | string | (empty) | Path to Netatalk-compatible extension map file. Relative paths are resolved from the config file's directory. |
+| use_decomposed_names | bool | true | Encode host-reserved filename characters as `0xNN` tokens in AFP mapping. Server-wide. |
+| cnid_backend | string | sqlite | CNID backend used by all volumes: `sqlite` (when built with the `sqlite_cnid` or `all` tag) or `memory`. |
+| desktop_backend | string | sqlite | Backend for the AFP desktop database (icons, APPL mappings, comments). |
+| appledouble_mode | string | modern | Default metadata layout: `modern` (`._` sidecars) or `legacy` (`.AppleDouble/` directories). Volumes may override. |
+| persistent_volume_ids | bool | true | Persist per-volume IDs across restarts so clients keep their aliases. |
 
 #### Filename mapping and encoding
 
@@ -407,19 +414,19 @@ Notes:
 
 ### [Volumes.<name>]
 
-Each volume is configured as a separate `[Volumes.<section-name>]` section.
+Each volume is configured as a separate `[Volumes.<section-name>]` section. The section suffix is used as the volume name unless `name` is set.
+
+> Note: `cnid_backend`, `use_decomposed_names`, and the default `appledouble_mode` are server-wide settings under `[AFP]` — they are not configurable per volume. A volume may override `appledouble_mode` to choose a sidecar layout that differs from the server default.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | name | string | section suffix | Display name for the AFP volume (max 31 chars recommended). |
-| path | string | none (required) | Host filesystem path to export. |
-| fs_type | string | local_fs | Filesystem backend for the volume: local_fs (host disk) or macgarden (read-only virtual Macintosh Garden view). |
+| path | string | required (except for `macgarden`) | Host filesystem path to export. For `fs_type = "macgarden"` a default path is derived from `name` if omitted. |
+| fs_type | string | local_fs | Filesystem backend: `local_fs` (host disk) or `macgarden` (read-only virtual Macintosh Garden view, requires the `macgarden` or `all` build tag). |
+| password | string | (empty) | Optional volume password. The internal cleartext-password path exists in code but is not exposed via the live authentication flow today. |
 | read_only | bool | false | Exports the volume as read-only at AFP protocol level. |
-| cnid_backend | string | sqlite | CNID backend; currently sqlite or memory depending on build/runtime support. Must not conflict across volumes. |
-| use_decomposed_names | bool | true | Encodes host-reserved filename characters as 0xNN tokens in AFP mapping. Must not conflict across volumes. |
-| fork_backend | string | (blank/AppleDouble) | Currently only AppleDouble is accepted when set. |
-| appledouble_mode | string | modern | Metadata layout mode: modern (._ sidecars) or legacy (.appledouble directory style). |
 | rebuild_desktop_db | bool | false | Rebuilds AFP desktop database from resource fork metadata at startup. |
+| appledouble_mode | string | inherits `[AFP] appledouble_mode` | Per-volume override of the metadata layout: `modern` (`._` sidecars) or `legacy` (`.AppleDouble/` directories). |
 
 #### Read-only volume behavior
 
@@ -450,10 +457,11 @@ Volume naming:
 
 #### Sidecar metadata
 
-- `fork_backend` currently accepts AppleDouble storage.
+- AppleDouble is the only resource-fork/metadata storage backend.
 - `appledouble_mode=modern` uses `._filename` sidecars beside files.
 - `appledouble_mode=legacy` uses `.AppleDouble/filename` sidecars.
-- `rebuild_desktop_db=true` rebuilds desktop metadata cache at startup.
+- The default mode comes from `[AFP] appledouble_mode`; individual volumes may override it.
+- `rebuild_desktop_db=true` (per volume) rebuilds desktop metadata cache at startup.
 
 #### Netatalk compatibility
 
