@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgodw/omnitalk/internal/testutil"
-	"github.com/pgodw/omnitalk/protocol/ddp"
-	"github.com/pgodw/omnitalk/service"
+	"github.com/ObsoleteMadness/ClassicStack/internal/testutil"
+	"github.com/ObsoleteMadness/ClassicStack/protocol/ddp"
+	"github.com/ObsoleteMadness/ClassicStack/service"
 )
 
 func newMockPort(network uint16, node uint8, shortString string, isExtended bool) *mockPort {

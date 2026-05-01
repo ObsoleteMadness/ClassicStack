@@ -110,13 +110,13 @@ jobs:
         include:
           - os: ubuntu-latest
             script: bash scripts/ci/build.sh
-            output: out/omnitalk
+            output: out/classicstack
           - os: macos-latest
             script: bash scripts/ci/build.sh
-            output: out/omnitalk
+            output: out/classicstack
           - os: windows-latest
             script: ./scripts/ci/build.ps1
-            output: out/omnitalk.exe
+            output: out/classicstack.exe
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -132,7 +132,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libpcap-dev
 
-      - name: Build omnitalk (Linux/macOS)
+      - name: Build classicstack (Linux/macOS)
         if: runner.os != 'Windows'
         shell: bash
         env:
@@ -141,7 +141,7 @@ jobs:
           OUTPUT: ${{ matrix.output }}
         run: ${{ matrix.script }}
 
-      - name: Build omnitalk (Windows)
+      - name: Build classicstack (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         env:

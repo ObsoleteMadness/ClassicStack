@@ -1,10 +1,10 @@
-// Package config abstracts where OmniTalk's configuration comes from
+// Package config abstracts where ClassicStack's configuration comes from
 // (TOML file today; environment variables, JSON, etc. tomorrow). It owns
 // no schema knowledge: each component decides what keys it consumes by
 // reading from the returned koanf instance.
 //
 // Defaults live with the consumers (typically as flag defaults in
-// cmd/omnitalk). The config package's only job is to surface a populated
+// cmd/classicstack). The config package's only job is to surface a populated
 // koanf source to those consumers.
 package config
 

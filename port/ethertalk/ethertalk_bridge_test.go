@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/pgodw/omnitalk/port/rawlink"
+	"github.com/ObsoleteMadness/ClassicStack/port/rawlink"
 )
 
 func TestBridgeAdapterInboundPassThroughCopy(t *testing.T) {

@@ -35,7 +35,7 @@ nameserver = "1.1.1.1"
 
 [AFP]
 enabled = true
-name = "OmniTalk"
+name = "ClassicStack"
 zone = "EtherTalk Network"
 protocols = "ddp,tcp"
 binding = ":548"

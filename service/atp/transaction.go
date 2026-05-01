@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pgodw/omnitalk/netlog"
-	patp "github.com/pgodw/omnitalk/protocol/atp"
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	patp "github.com/ObsoleteMadness/ClassicStack/protocol/atp"
 )
 
 // ----- Address / Sender / Clock -------------------------------------------

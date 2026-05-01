@@ -1,4 +1,4 @@
-// Package telemetry is OmniTalk's metrics abstraction. It exposes
+// Package telemetry is ClassicStack's metrics abstraction. It exposes
 // Counter, Gauge, and Histogram types with a default expvar-backed
 // implementation that ships as part of the stdlib and requires no
 // extra dependencies. A build-tagged OpenTelemetry backend may be
@@ -10,13 +10,13 @@
 //
 // Usage:
 //
-//	var framesIn = telemetry.NewCounter("omnitalk_router_frames_in_total")
+//	var framesIn = telemetry.NewCounter("classicstack_router_frames_in_total")
 //	framesIn.Inc()
 //	framesIn.Add(n)
 //
 // Metric names follow Prometheus-style lower_snake_case with a unit
 // suffix (_total, _seconds, _bytes). Labels are encoded into the name
-// for the expvar backend (e.g. "omnitalk_afp_commands_total_OpenFork")
+// for the expvar backend (e.g. "classicstack_afp_commands_total_OpenFork")
 // because expvar does not support label dimensions natively; the OTel
 // backend splits them back out.
 package telemetry
@@ -88,17 +88,17 @@ func NewHistogram(name string) Histogram {
 
 type expvarCounter struct{ n atomic.Int64 }
 
-func (c *expvarCounter) Inc()             { c.n.Add(1) }
-func (c *expvarCounter) Add(d int64)      { c.n.Add(d) }
-func (c *expvarCounter) Value() int64     { return c.n.Load() }
-func (c *expvarCounter) String() string   { return i64string(c.n.Load()) }
+func (c *expvarCounter) Inc()           { c.n.Add(1) }
+func (c *expvarCounter) Add(d int64)    { c.n.Add(d) }
+func (c *expvarCounter) Value() int64   { return c.n.Load() }
+func (c *expvarCounter) String() string { return i64string(c.n.Load()) }
 
 type expvarGauge struct{ n atomic.Int64 }
 
-func (g *expvarGauge) Set(v int64)      { g.n.Store(v) }
-func (g *expvarGauge) Add(d int64)      { g.n.Add(d) }
-func (g *expvarGauge) Value() int64     { return g.n.Load() }
-func (g *expvarGauge) String() string   { return i64string(g.n.Load()) }
+func (g *expvarGauge) Set(v int64)    { g.n.Store(v) }
+func (g *expvarGauge) Add(d int64)    { g.n.Add(d) }
+func (g *expvarGauge) Value() int64   { return g.n.Load() }
+func (g *expvarGauge) String() string { return i64string(g.n.Load()) }
 
 type expvarHistogram struct {
 	count atomic.Int64

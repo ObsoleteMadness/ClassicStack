@@ -5,12 +5,12 @@ import (
 	"context"
 	"sync"
 
-	"github.com/pgodw/omnitalk/protocol/ddp"
-	"github.com/pgodw/omnitalk/protocol/nbp"
+	"github.com/ObsoleteMadness/ClassicStack/protocol/ddp"
+	"github.com/ObsoleteMadness/ClassicStack/protocol/nbp"
 
-	"github.com/pgodw/omnitalk/netlog"
-	"github.com/pgodw/omnitalk/port"
-	"github.com/pgodw/omnitalk/service"
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/port"
+	"github.com/ObsoleteMadness/ClassicStack/service"
 )
 
 // NBP wire-format constants are re-exported from protocol/nbp so the

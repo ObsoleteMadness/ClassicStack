@@ -1,4 +1,4 @@
-# OmniTalk Service Specifications — Overview
+# ClassicStack Service Specifications — Overview
 
 This directory contains implementation-level specifications for each service in the OmniRouter AppleTalk router. These documents are intended to provide sufficient detail for an independent implementor to create a conformant implementation.
 

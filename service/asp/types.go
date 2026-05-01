@@ -3,7 +3,7 @@
 package asp
 
 import (
-	pasp "github.com/pgodw/omnitalk/protocol/asp"
+	pasp "github.com/ObsoleteMadness/ClassicStack/protocol/asp"
 )
 
 // SPFunction codes.
@@ -66,10 +66,10 @@ type (
 
 // Parse helpers.
 var (
-	ParseOpenSessPacket     = pasp.ParseOpenSessPacket
-	ParseCloseSessPacket    = pasp.ParseCloseSessPacket
-	ParseGetStatusPacket    = pasp.ParseGetStatusPacket
-	ParseCommandPacket      = pasp.ParseCommandPacket
-	ParseWritePacket        = pasp.ParseWritePacket
-	CloseSessReplyUserData  = pasp.CloseSessReplyUserData
+	ParseOpenSessPacket    = pasp.ParseOpenSessPacket
+	ParseCloseSessPacket   = pasp.ParseCloseSessPacket
+	ParseGetStatusPacket   = pasp.ParseGetStatusPacket
+	ParseCommandPacket     = pasp.ParseCommandPacket
+	ParseWritePacket       = pasp.ParseWritePacket
+	CloseSessReplyUserData = pasp.CloseSessReplyUserData
 )

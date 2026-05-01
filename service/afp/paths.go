@@ -3,9 +3,10 @@
 package afp
 
 import (
-	"github.com/pgodw/omnitalk/netlog"
 	"path/filepath"
 	"strings"
+
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
 )
 
 // CNID-backed path/DID resolution and AFP path-string parsing. The

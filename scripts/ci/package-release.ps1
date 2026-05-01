@@ -5,14 +5,14 @@ $buildVariant = if ($env:BUILD_VARIANT) { $env:BUILD_VARIANT } else { 'all' }
 
 if ($buildVariant -eq 'all') {
     $variantSlug = ''
-    $exeName = 'omnitalk.exe'
+    $exeName = 'classicstack.exe'
 } else {
     $variantSlug = "-$buildVariant"
-    $exeName = "omnitalk-$buildVariant.exe"
+    $exeName = "classicstack-$buildVariant.exe"
 }
 
-$stage = "release/omnitalk$variantSlug-$releaseTag-windows-amd64"
-$archiveName = "omnitalk$variantSlug-$releaseTag-windows-amd64.zip"
+$stage = "release/classicstack$variantSlug-$releaseTag-windows-amd64"
+$archiveName = "classicstack$variantSlug-$releaseTag-windows-amd64.zip"
 
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 Copy-Item "out/$exeName" "$stage/$exeName"

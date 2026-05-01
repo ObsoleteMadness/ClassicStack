@@ -71,7 +71,7 @@ func TestFPMapNameRes_MarshalGolden(t *testing.T) {
 // TestFPGetSrvrMsgRes_MarshalGolden pins the wire-format output.
 func TestFPGetSrvrMsgRes_MarshalGolden(t *testing.T) {
 	t.Parallel()
-	res := &FPGetSrvrMsgRes{MessageType: 1, Bitmap: 3, Message: "Welcome to OmniTalk"}
+	res := &FPGetSrvrMsgRes{MessageType: 1, Bitmap: 3, Message: "Welcome to ClassicStack"}
 	got := res.Marshal()
 	want := goldenBytes(t, "fpgetsrvrmsgres_basic.hex", got)
 	if !bytes.Equal(got, want) {
@@ -143,7 +143,7 @@ func TestFPLoginRes_MarshalGolden(t *testing.T) {
 func TestFPGetSrvrInfoRes_MarshalGolden(t *testing.T) {
 	t.Parallel()
 	res := &FPGetSrvrInfoRes{
-		MachineType: "OmniTalk",
+		MachineType: "ClassicStack",
 		AFPVersions: []string{"AFPVersion 1.1", "AFPVersion 2.0", "AFPVersion 2.1"},
 		UAMs:        []string{"No User Authent", "Cleartxt Passwrd"},
 		ServerName:  "Test Server",

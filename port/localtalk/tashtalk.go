@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
 	serial "github.com/jacobsa/go-serial/serial"
-	"github.com/pgodw/omnitalk/netlog"
 
-	"github.com/pgodw/omnitalk/port"
+	"github.com/ObsoleteMadness/ClassicStack/port"
 )
 
 type TashTalkPort struct {

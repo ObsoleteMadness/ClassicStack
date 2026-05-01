@@ -25,9 +25,9 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/pgodw/omnitalk/netlog"
-	"github.com/pgodw/omnitalk/service/afp"
-	garden "github.com/pgodw/omnitalk/service/macgarden"
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/service/afp"
+	garden "github.com/ObsoleteMadness/ClassicStack/service/macgarden"
 )
 
 const macGardenEnumerateWindow = 10
@@ -976,10 +976,10 @@ func (m *MacGardenFileSystem) Close() error {
 	return nil
 }
 
-func (m *MacGardenFileSystem) CreateDir(_ string) error          { return fs.ErrPermission }
+func (m *MacGardenFileSystem) CreateDir(_ string) error              { return fs.ErrPermission }
 func (m *MacGardenFileSystem) CreateFile(_ string) (afp.File, error) { return nil, fs.ErrPermission }
-func (m *MacGardenFileSystem) Remove(_ string) error             { return fs.ErrPermission }
-func (m *MacGardenFileSystem) Rename(_, _ string) error          { return fs.ErrPermission }
+func (m *MacGardenFileSystem) Remove(_ string) error                 { return fs.ErrPermission }
+func (m *MacGardenFileSystem) Rename(_, _ string) error              { return fs.ErrPermission }
 
 // openAsset wraps an asset in a macGardenFile, populating Content from the
 // in-memory screenshot cache when the image has already been downloaded.

@@ -3,7 +3,7 @@ TAGS ?= all
 .PHONY: build test test-race test-tags lint vuln gosec fuzz clean
 
 build:
-	go build -tags "$(TAGS)" -o omnitalk ./cmd/omnitalk
+	go build -tags "$(TAGS)" -o classicstack ./cmd/classicstack
 
 test:
 	go test -tags "$(TAGS)" ./...
@@ -30,5 +30,5 @@ fuzz:
 	done
 
 clean:
-	rm -f omnitalk omnitalk.exe
+	rm -f classicstack classicstack.exe
 	rm -rf out dist

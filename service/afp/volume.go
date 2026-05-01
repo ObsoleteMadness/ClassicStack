@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pgodw/omnitalk/netlog"
-	"github.com/pgodw/omnitalk/pkg/binutil"
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/binutil"
 )
 
 const (
@@ -92,7 +92,7 @@ func constrainAFPVolumeType(volType uint16) uint16 {
 }
 
 func (s *Service) volumeType(_ *Volume) uint16 {
-	// OmniTalk exposes hierarchical volumes with CNID-based directory IDs,
+	// ClassicStack exposes hierarchical volumes with CNID-based directory IDs,
 	// so we advertise Variable Directory ID semantics.
 	return constrainAFPVolumeType(AFPVolumeTypeFixedDirID)
 }

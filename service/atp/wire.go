@@ -7,7 +7,7 @@
 package atp
 
 import (
-	patp "github.com/pgodw/omnitalk/protocol/atp"
+	patp "github.com/ObsoleteMadness/ClassicStack/protocol/atp"
 )
 
 // Header type.

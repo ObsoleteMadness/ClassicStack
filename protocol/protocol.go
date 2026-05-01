@@ -1,4 +1,4 @@
-// Package protocol defines cross-protocol contracts used by OmniTalk's wire
+// Package protocol defines cross-protocol contracts used by ClassicStack's wire
 // implementations (DDP, ATP, ASP, ZIP, RTMP, AEP, LLAP, NBP). Each protocol
 // lives in its own subpackage; this package carries only interfaces common to
 // all of them.

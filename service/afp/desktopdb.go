@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/pgodw/omnitalk/netlog"
-	"github.com/pgodw/omnitalk/pkg/cnid"
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/cnid"
 )
 
 const desktopDBFilename = ".desktop.db"

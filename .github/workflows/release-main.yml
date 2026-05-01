@@ -49,57 +49,57 @@ jobs:
           # Linux - all
           - os: ubuntu-latest
             variant: all
-            artifact_name: omnitalk-linux
-            archive_name: omnitalk-${{ needs.version.outputs.release_tag }}-linux-amd64.tar.gz
+            artifact_name: classicstack-linux
+            archive_name: classicstack-${{ needs.version.outputs.release_tag }}-linux-amd64.tar.gz
             build_script: bash scripts/ci/build.sh
             package_script: bash scripts/ci/package-release.sh
             target_os: linux
-            output: out/omnitalk
+            output: out/classicstack
           # Linux - router
           - os: ubuntu-latest
             variant: router
-            artifact_name: omnitalk-router-linux
-            archive_name: omnitalk-router-${{ needs.version.outputs.release_tag }}-linux-amd64.tar.gz
+            artifact_name: classicstack-router-linux
+            archive_name: classicstack-router-${{ needs.version.outputs.release_tag }}-linux-amd64.tar.gz
             build_script: bash scripts/ci/build.sh
             package_script: bash scripts/ci/package-release.sh
             target_os: linux
-            output: out/omnitalk-router
+            output: out/classicstack-router
           # macOS - all
           - os: macos-latest
             variant: all
-            artifact_name: omnitalk-macos
-            archive_name: omnitalk-${{ needs.version.outputs.release_tag }}-macos-amd64.zip
+            artifact_name: classicstack-macos
+            archive_name: classicstack-${{ needs.version.outputs.release_tag }}-macos-amd64.zip
             build_script: bash scripts/ci/build.sh
             package_script: bash scripts/ci/package-release.sh
             target_os: macos
-            output: out/omnitalk
+            output: out/classicstack
           # macOS - router
           - os: macos-latest
             variant: router
-            artifact_name: omnitalk-router-macos
-            archive_name: omnitalk-router-${{ needs.version.outputs.release_tag }}-macos-amd64.zip
+            artifact_name: classicstack-router-macos
+            archive_name: classicstack-router-${{ needs.version.outputs.release_tag }}-macos-amd64.zip
             build_script: bash scripts/ci/build.sh
             package_script: bash scripts/ci/package-release.sh
             target_os: macos
-            output: out/omnitalk-router
+            output: out/classicstack-router
           # Windows - all
           - os: windows-latest
             variant: all
-            artifact_name: omnitalk-windows
-            archive_name: omnitalk-${{ needs.version.outputs.release_tag }}-windows-amd64.zip
+            artifact_name: classicstack-windows
+            archive_name: classicstack-${{ needs.version.outputs.release_tag }}-windows-amd64.zip
             build_script: ./scripts/ci/build.ps1
             package_script: ./scripts/ci/package-release.ps1
             target_os: windows
-            output: out/omnitalk.exe
+            output: out/classicstack.exe
           # Windows - router
           - os: windows-latest
             variant: router
-            artifact_name: omnitalk-router-windows
-            archive_name: omnitalk-router-${{ needs.version.outputs.release_tag }}-windows-amd64.zip
+            artifact_name: classicstack-router-windows
+            archive_name: classicstack-router-${{ needs.version.outputs.release_tag }}-windows-amd64.zip
             build_script: ./scripts/ci/build.ps1
             package_script: ./scripts/ci/package-release.ps1
             target_os: windows
-            output: out/omnitalk-router.exe
+            output: out/classicstack-router.exe
     steps:
       - name: Checkout
         uses: actions/checkout@v4

@@ -13,9 +13,9 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/pgodw/omnitalk/netlog"
-	"github.com/pgodw/omnitalk/pkg/appledouble"
-	"github.com/pgodw/omnitalk/pkg/binutil"
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/appledouble"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/binutil"
 )
 
 func (s *Service) handleOpenFork(req *FPOpenForkReq) (*FPOpenForkRes, int32) {

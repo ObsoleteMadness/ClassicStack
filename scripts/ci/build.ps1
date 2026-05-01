@@ -14,9 +14,9 @@ switch ($buildVariant) {
 if ($env:OUTPUT) {
     $output = $env:OUTPUT
 } elseif ($buildVariant -eq 'all') {
-    $output = 'out/omnitalk.exe'
+    $output = 'out/classicstack.exe'
 } else {
-    $output = "out/omnitalk-$buildVariant.exe"
+    $output = "out/classicstack-$buildVariant.exe"
 }
 
 $versionForRc = '0.0.0.0'
@@ -35,14 +35,14 @@ $descriptionSuffix = if ($buildVariant -eq 'all') { '' } else { " ($buildVariant
 @"
 {
   "StringFileInfo": {
-    "Comments": "OmniTalk",
+    "Comments": "ClassicStack",
     "CompanyName": "ObsoleteMadness",
-    "FileDescription": "OmniTalk AppleTalk Router$descriptionSuffix",
+    "FileDescription": "ClassicStack AppleTalk Router$descriptionSuffix",
     "FileVersion": "$buildVersion",
-    "InternalName": "omnitalk",
+    "InternalName": "classicstack",
     "LegalCopyright": "GPL-3.0",
     "OriginalFilename": "$exeName",
-    "ProductName": "OmniTalk",
+    "ProductName": "ClassicStack",
     "ProductVersion": "$buildVersion"
   },
   "FixedFileInfo": {
@@ -64,14 +64,14 @@ $descriptionSuffix = if ($buildVariant -eq 'all') { '' } else { " ($buildVariant
     "FileType": "01",
     "FileSubType": "00"
   },
-  "IconPath": "../../icons/omnitalk.ico"
+  "IconPath": "../../icons/classicstack.ico"
 }
-"@ | Set-Content -Path cmd/omnitalk/versioninfo.json -NoNewline
+"@ | Set-Content -Path cmd/classicstack/versioninfo.json -NoNewline
 
 if (-not (Get-Command goversioninfo -ErrorAction SilentlyContinue)) {
     go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
 }
-Push-Location cmd/omnitalk
+Push-Location cmd/classicstack
 goversioninfo -64
 Pop-Location
 
@@ -83,7 +83,7 @@ if ($parent) {
 $ldflags = "-s -w -X main.BuildVersion=$buildVersion -X main.BuildCommit=$buildCommit -X main.BuildDate=$buildDate"
 
 if ($tags) {
-    go build -trimpath -tags $tags -ldflags $ldflags -o $output ./cmd/omnitalk
+    go build -trimpath -tags $tags -ldflags $ldflags -o $output ./cmd/classicstack
 } else {
-    go build -trimpath -ldflags $ldflags -o $output ./cmd/omnitalk
+    go build -trimpath -ldflags $ldflags -o $output ./cmd/classicstack
 }

@@ -18,9 +18,9 @@ esac
 if [[ -n "${OUTPUT:-}" ]]; then
   output="$OUTPUT"
 elif [[ "$build_variant" == "all" ]]; then
-  output="out/omnitalk"
+  output="out/classicstack"
 else
-  output="out/omnitalk-${build_variant}"
+  output="out/classicstack-${build_variant}"
 fi
 
 mkdir -p "$(dirname "$output")"
@@ -28,7 +28,7 @@ mkdir -p "$(dirname "$output")"
 ldflags="-s -w -X main.BuildVersion=${build_version} -X main.BuildCommit=${build_commit} -X main.BuildDate=${build_date}"
 
 if [[ -n "$tags" ]]; then
-  go build -trimpath -tags "$tags" -ldflags "$ldflags" -o "$output" ./cmd/omnitalk
+  go build -trimpath -tags "$tags" -ldflags "$ldflags" -o "$output" ./cmd/classicstack
 else
-  go build -trimpath -ldflags "$ldflags" -o "$output" ./cmd/omnitalk
+  go build -trimpath -ldflags "$ldflags" -o "$output" ./cmd/classicstack
 fi

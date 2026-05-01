@@ -1,6 +1,6 @@
 package zip
 
-import pzip "github.com/pgodw/omnitalk/protocol/zip"
+import pzip "github.com/ObsoleteMadness/ClassicStack/protocol/zip"
 
 // Wire constants re-exported from protocol/zip.
 const (

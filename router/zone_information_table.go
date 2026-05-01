@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/pgodw/omnitalk/pkg/encoding"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/encoding"
 )
 
 func UCase(input []byte) []byte {

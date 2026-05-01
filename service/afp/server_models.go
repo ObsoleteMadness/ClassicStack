@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pgodw/omnitalk/pkg/binutil"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/binutil"
 )
 
 // FPGetSrvrInfoReq - request to obtain a block of descriptive information

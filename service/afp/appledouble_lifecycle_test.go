@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pgodw/omnitalk/pkg/appledouble"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/appledouble"
 )
 
 func TestHandleRename_MovesAppleDoubleSidecar(t *testing.T) {

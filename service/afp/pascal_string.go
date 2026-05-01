@@ -2,7 +2,7 @@
 
 package afp
 
-import "github.com/pgodw/omnitalk/pkg/encoding"
+import "github.com/ObsoleteMadness/ClassicStack/pkg/encoding"
 
 // ReadPascalString reads a length-prefixed MacRoman string at idx and returns UTF-8 text plus bytes consumed.
 func ReadPascalString(data []byte, idx int) (string, int) {

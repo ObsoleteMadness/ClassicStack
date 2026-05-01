@@ -3,9 +3,9 @@ package service
 import (
 	"context"
 
-	"github.com/pgodw/omnitalk/protocol/ddp"
+	"github.com/ObsoleteMadness/ClassicStack/protocol/ddp"
 
-	"github.com/pgodw/omnitalk/port"
+	"github.com/ObsoleteMadness/ClassicStack/port"
 )
 
 // Service is the contract every service registered with the router

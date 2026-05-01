@@ -3,10 +3,11 @@
 package afp
 
 import (
-	"github.com/pgodw/omnitalk/netlog"
 	"bytes"
 	"io/fs"
 	"path/filepath"
+
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
 )
 
 func (s *Service) handleGetFileDirParms(req *FPGetFileDirParmsReq) (*FPGetFileDirParmsRes, int32) {

@@ -1,11 +1,11 @@
-// Package testutil provides shared test helpers used across OmniTalk's
+// Package testutil provides shared test helpers used across ClassicStack's
 // service and port packages. Live under internal/ so external consumers
 // cannot depend on these mocks; only project tests may import.
 package testutil
 
 import (
-	"github.com/pgodw/omnitalk/port"
-	"github.com/pgodw/omnitalk/protocol/ddp"
+	"github.com/ObsoleteMadness/ClassicStack/port"
+	"github.com/ObsoleteMadness/ClassicStack/protocol/ddp"
 )
 
 // MockPort is a fake port.Port whose behaviour is driven by func fields.

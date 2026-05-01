@@ -21,8 +21,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
 	"github.com/PuerkitoBio/goquery"
-	"github.com/pgodw/omnitalk/netlog"
 )
 
 const (

@@ -3,8 +3,9 @@
 package afp
 
 import (
-	"github.com/pgodw/omnitalk/netlog"
 	"fmt"
+
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
 )
 
 func (s *Service) logPacket(format string, args ...any) {

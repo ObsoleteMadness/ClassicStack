@@ -18,14 +18,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pgodw/omnitalk/protocol/ddp"
+	"github.com/ObsoleteMadness/ClassicStack/protocol/ddp"
 
-	"github.com/pgodw/omnitalk/netlog"
-	"github.com/pgodw/omnitalk/port"
-	"github.com/pgodw/omnitalk/port/nat"
-	"github.com/pgodw/omnitalk/port/rawlink"
-	"github.com/pgodw/omnitalk/service"
-	"github.com/pgodw/omnitalk/service/zip"
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/port"
+	"github.com/ObsoleteMadness/ClassicStack/port/nat"
+	"github.com/ObsoleteMadness/ClassicStack/port/rawlink"
+	"github.com/ObsoleteMadness/ClassicStack/service"
+	"github.com/ObsoleteMadness/ClassicStack/service/zip"
 )
 
 const (

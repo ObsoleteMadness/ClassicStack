@@ -1,4 +1,4 @@
-module github.com/pgodw/omnitalk
+module github.com/ObsoleteMadness/ClassicStack
 
 go 1.23.0
 

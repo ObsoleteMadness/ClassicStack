@@ -17,13 +17,13 @@ import (
 	"net"
 	"sync"
 
-	"github.com/pgodw/omnitalk/protocol/ddp"
+	"github.com/ObsoleteMadness/ClassicStack/protocol/ddp"
 
-	"github.com/pgodw/omnitalk/netlog"
-	"github.com/pgodw/omnitalk/pkg/binutil"
-	"github.com/pgodw/omnitalk/port"
-	"github.com/pgodw/omnitalk/service"
-	"github.com/pgodw/omnitalk/service/afp"
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/binutil"
+	"github.com/ObsoleteMadness/ClassicStack/port"
+	"github.com/ObsoleteMadness/ClassicStack/service"
+	"github.com/ObsoleteMadness/ClassicStack/service/afp"
 )
 
 // DSI Command Codes
