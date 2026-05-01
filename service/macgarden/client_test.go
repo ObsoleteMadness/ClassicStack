@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -14,6 +15,15 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 )
+
+// requireLiveTests skips tests that reach the public Macintosh Garden site
+// unless OMNITALK_LIVE_TESTS=1 is set. CI runners do not run these.
+func requireLiveTests(t *testing.T) {
+	t.Helper()
+	if os.Getenv("OMNITALK_LIVE_TESTS") != "1" {
+		t.Skip("skipping live macintoshgarden.org test; set OMNITALK_LIVE_TESTS=1 to enable")
+	}
+}
 
 type headErrorRoundTripper struct {
 	hits int
@@ -122,6 +132,7 @@ func TestParseSearchResults_ExtractsTypeAndUploadDate(t *testing.T) {
 }
 
 func TestParseCategoryResults_FromCategoryPage(t *testing.T) {
+	requireLiveTests(t)
 	html := `
 	<html><body>
 	<h2><a href="/apps/anti-virus-boot-disk">Anti-Virus Boot Disk</a></h2>
@@ -435,6 +446,7 @@ func TestFetchDocument_UsesDiskCacheAcrossClients(t *testing.T) {
 }
 
 func TestHeadContentLength_FailureIsCached_NoRetry(t *testing.T) {
+	requireLiveTests(t)
 	rt := &headErrorRoundTripper{}
 	c := NewClient()
 	c.httpClient = &http.Client{Transport: rt}
@@ -455,6 +467,7 @@ func TestHeadContentLength_FailureIsCached_NoRetry(t *testing.T) {
 }
 
 func TestHeadContentLength_DownloadHost_UsesRangedProbe(t *testing.T) {
+	requireLiveTests(t)
 	rt := &probeRoundTripper{}
 	c := NewClient()
 	c.httpClient = &http.Client{Transport: rt}
@@ -477,6 +490,7 @@ func TestHeadContentLength_DownloadHost_UsesRangedProbe(t *testing.T) {
 }
 
 func TestHeadContentLength_FallbackToRangedProbe_WhenHeadHasNoLength(t *testing.T) {
+	requireLiveTests(t)
 	rt := &probeRoundTripper{mode: "head-no-length"}
 	c := NewClient()
 	c.httpClient = &http.Client{Transport: rt}
