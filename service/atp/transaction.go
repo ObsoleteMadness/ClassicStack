@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/pgodw/omnitalk/netlog"
+	patp "github.com/pgodw/omnitalk/protocol/atp"
 )
 
 // ----- Address / Sender / Clock -------------------------------------------
@@ -84,7 +85,7 @@ type Request struct {
 	Data         []byte
 	NumBuffers   int // number of TResp packets the caller has reserved (1..8)
 	XO           bool
-	TRelTO       TRelTimeout
+	TRelTO       patp.TRelTimeout
 	RetryTimeout time.Duration
 	MaxRetries   int // -1 = infinite
 }
@@ -92,7 +93,7 @@ type Request struct {
 // Response is the assembled result of a successful transaction.
 type Response struct {
 	Buffers   [][]byte // index = sequence number; nil if not received (only possible after EOM)
-	UserBytes [MaxResponsePackets]uint32
+	UserBytes [patp.MaxResponsePackets]uint32
 	Count     int // number of packets actually delivered
 }
 
@@ -105,7 +106,7 @@ type IncomingRequest struct {
 	Data      []byte
 	Bitmap    uint8
 	XO        bool
-	TRelTO    TRelTimeout
+	TRelTO    patp.TRelTimeout
 }
 
 // ResponseMessage is what the responder handler returns.
@@ -223,7 +224,7 @@ type tcb struct {
 	dst          Address
 	tid          uint16
 	xo           bool
-	trelTO       TRelTimeout
+	trelTO       patp.TRelTimeout
 	bitmap       uint8 // bits still outstanding
 	expected     int   // number of buffers requested
 	resp         Response
@@ -266,10 +267,10 @@ func (p *Pending) Cancel() {
 
 // SendRequest issues a new transaction and returns a Pending handle.
 func (e *Endpoint) SendRequest(req Request) (*Pending, error) {
-	if req.NumBuffers < 1 || req.NumBuffers > MaxResponsePackets {
+	if req.NumBuffers < 1 || req.NumBuffers > patp.MaxResponsePackets {
 		return nil, ErrInvalidNumBuffers
 	}
-	if len(req.Data) > MaxATPData {
+	if len(req.Data) > patp.MaxATPData {
 		return nil, ErrDataTooLarge
 	}
 	if req.RetryTimeout <= 0 {
@@ -308,15 +309,15 @@ func (e *Endpoint) SendRequest(req Request) (*Pending, error) {
 }
 
 func (e *Endpoint) buildTReq(t *tcb, userBytes uint32, data []byte) []byte {
-	ctrl := uint8(TREQ)
+	ctrl := uint8(patp.TREQ)
 	if t.xo {
-		ctrl |= XO
+		ctrl |= patp.XO
 		ctrl |= uint8(t.trelTO) & 0x07
 	}
-	h := ATPHeader{Control: ctrl, Bitmap: t.bitmap, TransID: t.tid, UserData: userBytes}
-	out := make([]byte, ATPHeaderSize+len(data))
+	h := patp.Header{Control: ctrl, Bitmap: t.bitmap, TransID: t.tid, UserData: userBytes}
+	out := make([]byte, patp.HeaderSize+len(data))
 	copy(out, h.Marshal())
-	copy(out[ATPHeaderSize:], data)
+	copy(out[patp.HeaderSize:], data)
 	return out
 }
 
@@ -434,25 +435,25 @@ type ResponsePacket struct {
 // it to retain a pointer to the original datagram + rxPort so the Sender
 // implementation can call e.g. router.Reply.
 func (e *Endpoint) HandleInbound(packet []byte, src, local Address, hint any) {
-	var h ATPHeader
+	var h patp.Header
 	if err := h.Unmarshal(packet); err != nil {
 		return
 	}
 	var data []byte
-	if len(packet) > ATPHeaderSize {
-		data = packet[ATPHeaderSize:]
+	if len(packet) > patp.HeaderSize {
+		data = packet[patp.HeaderSize:]
 	}
 	switch h.FuncCode() {
-	case FuncTReq:
+	case patp.FuncTReq:
 		e.handleTReq(h, data, src, local, hint)
-	case FuncTResp:
+	case patp.FuncTResp:
 		e.handleTResp(h, data, src)
-	case FuncTRel:
+	case patp.FuncTRel:
 		e.handleTRel(h, src)
 	}
 }
 
-func (e *Endpoint) handleTResp(h ATPHeader, data []byte, src Address) {
+func (e *Endpoint) handleTResp(h patp.Header, data []byte, src Address) {
 	e.mu.Lock()
 	t, ok := e.tcbs[h.TransID]
 	if !ok || t.dst != src {
@@ -461,7 +462,7 @@ func (e *Endpoint) handleTResp(h ATPHeader, data []byte, src Address) {
 		return
 	}
 	seq := h.Bitmap // sequence number for TResp
-	if int(seq) >= MaxResponsePackets || int(seq) >= t.expected {
+	if int(seq) >= patp.MaxResponsePackets || int(seq) >= t.expected {
 		e.mu.Unlock()
 		return
 	}
@@ -476,7 +477,7 @@ func (e *Endpoint) handleTResp(h ATPHeader, data []byte, src Address) {
 	}
 	if h.EOM() {
 		// Clear all higher bits.
-		for s := int(seq) + 1; s < MaxResponsePackets; s++ {
+		for s := int(seq) + 1; s < patp.MaxResponsePackets; s++ {
 			t.bitmap &^= 1 << s
 		}
 	}
@@ -520,14 +521,14 @@ func (e *Endpoint) handleTResp(h ATPHeader, data []byte, src Address) {
 }
 
 func (e *Endpoint) sendTRel(src, dst Address, tid uint16) {
-	h := ATPHeader{Control: TREL, TransID: tid}
+	h := patp.Header{Control: patp.TREL, TransID: tid}
 	pkt := h.Marshal()
 	_ = e.sender.Send(src, dst, pkt, nil)
 }
 
 // ----- Responder ----------------------------------------------------------
 
-func (e *Endpoint) handleTReq(h ATPHeader, data []byte, src, local Address, hint any) {
+func (e *Endpoint) handleTReq(h patp.Header, data []byte, src, local Address, hint any) {
 	if !e.admissible(src) {
 		return
 	}
@@ -605,11 +606,11 @@ func (e *Endpoint) handleTReq(h ATPHeader, data []byte, src, local Address, hint
 	bitmap := h.Bitmap
 	reply := func(resp ResponseMessage) {
 		replied.Do(func() {
-			if len(resp.Buffers) > MaxResponsePackets {
+			if len(resp.Buffers) > patp.MaxResponsePackets {
 				return
 			}
 			for _, b := range resp.Buffers {
-				if len(b) > MaxATPData {
+				if len(b) > patp.MaxATPData {
 					return
 				}
 			}
@@ -654,15 +655,15 @@ func buildResponsePackets(tid uint16, resp ResponseMessage) []ResponsePacket {
 	out := make([]ResponsePacket, len(resp.Buffers))
 	last := len(resp.Buffers) - 1
 	for i, data := range resp.Buffers {
-		ctrl := uint8(TRESP)
+		ctrl := uint8(patp.TRESP)
 		if i == last {
-			ctrl |= EOM
+			ctrl |= patp.EOM
 		}
 		var ub uint32
 		if i < len(resp.UserBytes) {
 			ub = resp.UserBytes[i]
 		}
-		h := ATPHeader{Control: ctrl, Bitmap: uint8(i), TransID: tid, UserData: ub}
+		h := patp.Header{Control: ctrl, Bitmap: uint8(i), TransID: tid, UserData: ub}
 		out[i] = ResponsePacket{
 			Header: h.Marshal(),
 			Data:   append([]byte(nil), data...),
@@ -738,7 +739,7 @@ func (e *Endpoint) relaxResponderPacingLocked(dst Address) {
 	p.interPacketDelay -= adaptivePacerRecoveryStep
 }
 
-func (e *Endpoint) handleTRel(h ATPHeader, src Address) {
+func (e *Endpoint) handleTRel(h patp.Header, src Address) {
 	e.mu.Lock()
 	key := rspKey{src: src, tid: h.TransID}
 	r, ok := e.rspcbs[key]
@@ -765,7 +766,7 @@ func (e *Endpoint) expireRspCB(r *rspcb) {
 // ----- helpers ------------------------------------------------------------
 
 func fullBitmap(n int) uint8 {
-	if n >= MaxResponsePackets {
+	if n >= patp.MaxResponsePackets {
 		return 0xFF
 	}
 	return (1 << uint(n)) - 1
