@@ -314,6 +314,62 @@
       ]
     }
   },
+  "http://macintoshgarden.org/apps/hypercard-21": {
+    "fetched_at": "2026-05-01T14:10:02.7661545+10:00",
+    "software_item": {
+      "Title": "HyperCard 2.1",
+      "URL": "http://macintoshgarden.org/apps/hypercard-21",
+      "Description": "Download #1: This is the full 800K floppy disk set in Disk Copy 4.2 image format of Apple's HyperCard 2.1 for Macintosh archived in StuffIt 3.5 format for backwards compatibility. - Not sourced from original media, these have been recovered and converted from poor copies of the original installation disk set.\n\nDownload #2: The Swedish version of Hypercard 2.1. It is unknown whether it is complete. Likely not, since it's coming only on a single 800k Disk Copy 4.2 image. Does include the Swedish application though.\n\nSee also: HyperCard 1.0.1, HyperCard Z1-1.2.2 (Australian), HyperCard DK-1.2.2 (Danish), HyperCard 1.2.5, HyperCard C1-2.0v2 (French), HyperCard 2.1 (Player), HyperCard 2.1b13 (Beta), HyperCard 2.2, HyperCard 2.3 + Addmotion II, HyperCard 2.4.1\n\nRequires the following minimum hardware and software:\n\ni. A  Macintosh computer with 1 megabyte (MB) of memory or more. To run HyperCard under MultiFinder, your system should have at least 2 MB of memory.\nii. System software version 6.0.5 or later. No idea if this runs under \"Classic\" on Mac OS X but it may do.\n\n68k coded, runs fine on PPC up to 9.2.2\n\nNote: There are two additional patched stacks supplied in with this download which fix compatibility issues with Mac OS 8–9 in their equivalent, included original stacks. (see accompanying read me texts included in DL).",
+      "Downloads": [
+        {
+          "Title": "hc-21-diskset.sit",
+          "Size": "2.58 MB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/hc-21-diskset.sit?expires=1777608902\u0026token=KetZJmBqMWC77waf1A4k5w\u0026st=157b1f2f237fbf4b71458ddecb7a7339"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/hc-21-diskset.sit"
+            },
+            {
+              "Text": "bafb69d076ebe2be93229d9837439229",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=hc-21-diskset.sit"
+            }
+          ]
+        },
+        {
+          "Title": "Swedish_HC_v2.1.sit",
+          "Size": "374.42 KB",
+          "OS": "For\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tSystem 6.x\t\t\t\t\t\t\t\t\t\t\t\t - Mac OS 9",
+          "Links": [
+            {
+              "Text": "www",
+              "URL": "http://download.macintoshgarden.org/apps/Swedish_HC_v2.1.sit?expires=1777608902\u0026token=BN_NVzr8WmAg_Aj22ayQmg\u0026st=bffcca473faeec54677edb6c4c7e2688"
+            },
+            {
+              "Text": "mirror",
+              "URL": "http://old.mac.gdn/apps/Swedish_HC_v2.1.sit"
+            },
+            {
+              "Text": "d6d5d0b455bbe79116cfbf6f0b25619e",
+              "URL": "http://macintoshgarden.org/arch_md5.php?filename=Swedish_HC_v2.1.sit"
+            }
+          ]
+        }
+      ],
+      "Screenshots": [
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/hc21-full-00.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/hc21-full-01.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/hc21-full-02.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/hc21-full-03.gif",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/MacFormat_06_p068.jpg",
+        "http://macintoshgarden.org/sites/macintoshgarden.org/files/screenshots/MacFormat_06_p069.jpg"
+      ]
+    }
+  },
   "http://macintoshgarden.org/apps/microsoft-word": {
     "fetched_at": "2026-04-21T12:15:58.0666396+10:00",
     "software_item": {
