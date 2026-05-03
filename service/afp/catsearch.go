@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/pgodw/omnitalk/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
 )
 
 // catSearchMaxDataLen is the maximum bytes of ResultsRecord data per reply.

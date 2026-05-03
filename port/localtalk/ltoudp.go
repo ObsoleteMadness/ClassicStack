@@ -12,8 +12,8 @@ import (
 
 	"golang.org/x/net/ipv4"
 
-	"github.com/pgodw/omnitalk/netlog"
-	"github.com/pgodw/omnitalk/port"
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/port"
 )
 
 const (

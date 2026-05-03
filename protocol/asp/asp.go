@@ -19,7 +19,7 @@ package asp
 import (
 	"time"
 
-	"github.com/pgodw/omnitalk/pkg/binutil"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/binutil"
 )
 
 // ---------------------------------------------------------------------------

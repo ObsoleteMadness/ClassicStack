@@ -5,10 +5,10 @@ package afp
 import (
 	"context"
 
-	"github.com/pgodw/omnitalk/protocol/ddp"
+	"github.com/ObsoleteMadness/ClassicStack/protocol/ddp"
 
-	"github.com/pgodw/omnitalk/port"
-	"github.com/pgodw/omnitalk/service"
+	"github.com/ObsoleteMadness/ClassicStack/port"
+	"github.com/ObsoleteMadness/ClassicStack/service"
 )
 
 // CommandHandler handles decoded AFP commands from transport protocols.

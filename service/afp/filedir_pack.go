@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/pgodw/omnitalk/pkg/binutil"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/binutil"
 )
 
 // toAFPTime converts a Go time.Time to AFP's seconds-since-1904 epoch.

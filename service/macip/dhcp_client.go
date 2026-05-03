@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pgodw/omnitalk/netlog"
-	"github.com/pgodw/omnitalk/pkg/hwaddr"
-	"github.com/pgodw/omnitalk/port/nat"
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/hwaddr"
+	"github.com/ObsoleteMadness/ClassicStack/port/nat"
 )
 
 const (

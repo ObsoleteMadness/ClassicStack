@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pgodw/omnitalk/netlog"
-	"github.com/pgodw/omnitalk/port/rawlink"
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/port/rawlink"
 )
 
 const (

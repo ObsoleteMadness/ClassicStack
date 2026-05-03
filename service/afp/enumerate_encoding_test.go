@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgodw/omnitalk/pkg/encoding"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/encoding"
 )
 
 type enumStubInfo struct {

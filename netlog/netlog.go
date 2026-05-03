@@ -1,6 +1,6 @@
-// Package netlog is OmniTalk's logging API.
+// Package netlog is ClassicStack's logging API.
 //
-// It is a thin facade over log/slog: cmd/omnitalk constructs a structured
+// It is a thin facade over log/slog: cmd/classicstack constructs a structured
 // logger via pkg/logging and installs it here with SetLogger, then every
 // service calls Debug/Info/Warn from this package. The facade keeps call
 // sites short (no per-package logger plumbing) while still letting the
@@ -20,7 +20,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/pgodw/omnitalk/protocol/ddp"
+	"github.com/ObsoleteMadness/ClassicStack/protocol/ddp"
 )
 
 // Level mirrors the legacy three-value enum but maps onto slog.Level.

@@ -1,5 +1,5 @@
 // Package localtalk implements LocalTalk (AppleTalk Phase 1) as an
-// OmniTalk port.
+// ClassicStack port.
 //
 // LLAP frames travel over one of several physical/virtual transports
 // implemented in subpackages: LToUDP (UDP multicast on

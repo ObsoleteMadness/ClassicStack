@@ -40,7 +40,7 @@ nameserver = "1.1.1.1"         # DNS nameserver
 [AFP]
 # Apple Filing Protocol server settings
 enabled = true                 # true to enable AFP server
-name = "OmniTalk"              # Server name. Max 31 characters.
+name = "ClassicStack"              # Server name. Max 31 characters.
 zone = "EtherTalk Network"     # AppleTalk zone to advertise the server in
 protocols = "ddp,tcp"          # Comma-separated: ddp, tcp, or both
 binding = ":548"               # When TCP is enabled, the bind address

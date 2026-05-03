@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/pgodw/omnitalk/netlog"
-	"github.com/pgodw/omnitalk/pkg/cnid"
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/cnid"
 )
 
 // AppleDouble sidecar / hidden-name / icon canonicalisation helpers.

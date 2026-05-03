@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pgodw/omnitalk/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
 )
 
 const leaseDuration = 5 * time.Minute

@@ -1,6 +1,6 @@
 package localtalk
 
-import "github.com/pgodw/omnitalk/protocol/llap"
+import "github.com/ObsoleteMadness/ClassicStack/protocol/llap"
 
 // LLAP wire-format types and codes have moved to protocol/llap.
 // These aliases keep existing port-internal call sites unchanged while

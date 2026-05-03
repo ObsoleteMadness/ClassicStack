@@ -6,10 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pgodw/omnitalk/protocol/ddp"
+	"github.com/ObsoleteMadness/ClassicStack/protocol/ddp"
 
-	"github.com/pgodw/omnitalk/netlog"
-	"github.com/pgodw/omnitalk/port"
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/port"
 )
 
 const (
@@ -86,9 +86,9 @@ func (p *Port) ConfigureSendFrame(f func(frame []byte) error) { p.sendFrameFunc 
 // callers that already pass closures.
 func (p *Port) SetFrameSender(fs FrameSender) { p.sendFrameFunc = fs.SendFrame }
 
-func (p *Port) ShortString() string                           { return "LocalTalk" }
-func (p *Port) SetLLAPLinkManager(m LinkManager)              { p.linkManager = m }
-func (p *Port) SetNodeIDChangeHook(hook func(node uint8))     { p.onNodeIDChange = hook }
+func (p *Port) ShortString() string                       { return "LocalTalk" }
+func (p *Port) SetLLAPLinkManager(m LinkManager)          { p.linkManager = m }
+func (p *Port) SetNodeIDChangeHook(hook func(node uint8)) { p.onNodeIDChange = hook }
 
 func (p *Port) SetCTSResponseTimeout(timeout time.Duration) {
 	p.mu.Lock()

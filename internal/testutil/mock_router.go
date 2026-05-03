@@ -1,9 +1,9 @@
 package testutil
 
 import (
-	"github.com/pgodw/omnitalk/port"
-	"github.com/pgodw/omnitalk/protocol/ddp"
-	"github.com/pgodw/omnitalk/service"
+	"github.com/ObsoleteMadness/ClassicStack/port"
+	"github.com/ObsoleteMadness/ClassicStack/protocol/ddp"
+	"github.com/ObsoleteMadness/ClassicStack/service"
 )
 
 // MockRouter is a fake service.Router whose behaviour is driven by func

@@ -3,8 +3,8 @@
 package afp
 
 import (
-	"github.com/pgodw/omnitalk/netlog"
-	"github.com/pgodw/omnitalk/pkg/cnid"
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/cnid"
 )
 
 // CNID constants and the Store interface now live in pkg/cnid. These

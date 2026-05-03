@@ -38,7 +38,7 @@ var ErrMalformed = errors.New("nbp: malformed packet")
 
 // Tuple is a single NBP tuple: an address (network/node/socket), an
 // enumerator, and an entity name (object:type@zone). Inbound packets
-// carry exactly one tuple in OmniTalk's NBP handler; LkUp-Rply may
+// carry exactly one tuple in ClassicStack's NBP handler; LkUp-Rply may
 // pack several but the registered service emits one per match.
 type Tuple struct {
 	Network    uint16

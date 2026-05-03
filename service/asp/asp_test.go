@@ -6,7 +6,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/pgodw/omnitalk/service/atp"
+	"github.com/ObsoleteMadness/ClassicStack/service/atp"
 )
 
 type stubCommandHandler struct {

@@ -14,8 +14,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/pgodw/omnitalk/pkg/binutil"
-	"github.com/pgodw/omnitalk/protocol"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/binutil"
+	"github.com/ObsoleteMadness/ClassicStack/protocol"
 )
 
 // ATP Control bit masks.

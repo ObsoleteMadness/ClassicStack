@@ -4,16 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-OmniTalk is a Go-based AppleTalk Phase 2 router and AFP file server. It bridges legacy Apple networking protocols to modern environments, supporting EtherTalk (raw Ethernet), LToUDP (multicast UDP), TashTalk (serial), and virtual LocalTalk transports.
+ClassicStack is a Go-based AppleTalk Phase 2 router and AFP file server. It bridges legacy Apple networking protocols to modern environments, supporting EtherTalk (raw Ethernet), LToUDP (multicast UDP), TashTalk (serial), and virtual LocalTalk transports.
 
-**Module:** `github.com/pgodw/omnitalk`  
+**Module:** `github.com/ObsoleteMadness/ClassicStack`  
 **Go version:** 1.23.0
 
 ## Commands
 
 ```bash
 # Build
-go build -o omnitalk ./cmd/omnitalk
+go build -o classicstack ./cmd/classicstack
 
 # Run all tests
 go test ./...
@@ -22,10 +22,10 @@ go test ./...
 go test ./service/afp/...
 
 # Run with TOML config
-./omnitalk  # auto-loads server.toml if present
+./classicstack  # auto-loads server.toml if present
 
 # Run with flags (see README.md for full list)
-./omnitalk -ethertalk eth0 -zone "MyZone"
+./classicstack -ethertalk eth0 -zone "MyZone"
 ```
 
 ## Architecture
@@ -33,10 +33,10 @@ go test ./service/afp/...
 ### Core Data Flow
 
 ```
-cmd/omnitalk/main.go  →  Ports  →  Router  →  Services
+cmd/classicstack/main.go  →  Ports  →  Router  →  Services
 ```
 
-1. **Entry point** (`cmd/omnitalk/`) parses CLI flags and `server.toml`, constructs ports, wires them to the router, and starts services.
+1. **Entry point** (`cmd/classicstack/`) parses CLI flags and `server.toml`, constructs ports, wires them to the router, and starts services.
 2. **Router** (`router/`) receives DDP datagrams from all ports, maintains the `RoutingTable` and `ZoneInformationTable`, and dispatches to services by socket number or forwards to other ports.
 3. **Ports** (`port/`) abstract network interfaces. All implement `port.Port` (Unicast/Broadcast/Multicast). Implementations: `ethertalk`, `localtalk/ltoudp`, `localtalk/tashtalk`, `localtalk/virtual`.
 4. **Services** (`service/`) plug into the router by registering socket numbers. Each implements `service.Service`.

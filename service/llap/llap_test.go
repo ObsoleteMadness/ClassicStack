@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgodw/omnitalk/protocol/ddp"
+	"github.com/ObsoleteMadness/ClassicStack/protocol/ddp"
 
-	"github.com/pgodw/omnitalk/netlog"
-	"github.com/pgodw/omnitalk/port/localtalk"
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/port/localtalk"
 )
 
 func TestDirectedTransmitLogsRetryAndBackoff(t *testing.T) {

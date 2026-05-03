@@ -1,6 +1,6 @@
 package ethertalk
 
-import "github.com/pgodw/omnitalk/port/rawlink"
+import "github.com/ObsoleteMadness/ClassicStack/port/rawlink"
 
 // NewTapPort creates an EtherTalk port over a TAP-style raw link backend.
 // TAP support depends on rawlink.OpenTAP for the current platform.

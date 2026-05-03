@@ -1,6 +1,6 @@
 package zip
 
-import "github.com/pgodw/omnitalk/internal/testutil"
+import "github.com/ObsoleteMadness/ClassicStack/internal/testutil"
 
 // Package-local aliases that let existing tests keep using the lowercase
 // names. The real mocks live in internal/testutil so any future package

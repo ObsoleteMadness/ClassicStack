@@ -3,8 +3,9 @@
 package afp
 
 import (
-	"github.com/pgodw/omnitalk/netlog"
 	"time"
+
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
 )
 
 func (s *Service) handleGetSrvrInfo(req *FPGetSrvrInfoReq) (*FPGetSrvrInfoRes, error) {

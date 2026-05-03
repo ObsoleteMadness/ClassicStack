@@ -1,7 +1,7 @@
 //go:build afp || all
 
 /*
-Package asp implements the AppleTalk Session Protocol (ASP) as a omnitalk
+Package asp implements the AppleTalk Session Protocol (ASP) as a classicstack
 service. The ATP transaction layer is provided by go/service/atp; this file
 is concerned only with ASP semantics — session lifecycle, command/write
 dispatch, tickle keep-alives, attentions — and delegates all retry, XO
@@ -18,14 +18,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pgodw/omnitalk/protocol/ddp"
+	"github.com/ObsoleteMadness/ClassicStack/protocol/ddp"
 
-	"github.com/pgodw/omnitalk/netlog"
-	"github.com/pgodw/omnitalk/port"
-	"github.com/pgodw/omnitalk/service"
-	"github.com/pgodw/omnitalk/service/afp"
-	"github.com/pgodw/omnitalk/service/atp"
-	"github.com/pgodw/omnitalk/service/zip"
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/port"
+	"github.com/ObsoleteMadness/ClassicStack/service"
+	"github.com/ObsoleteMadness/ClassicStack/service/afp"
+	"github.com/ObsoleteMadness/ClassicStack/service/atp"
+	"github.com/ObsoleteMadness/ClassicStack/service/zip"
 )
 
 // ServerSocket is the well-known AppleTalk socket for the AFP/ASP server.

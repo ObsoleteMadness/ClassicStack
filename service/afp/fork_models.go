@@ -6,7 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/pgodw/omnitalk/pkg/binutil"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/binutil"
 )
 
 // Fork type constants for FPOpenFork.

@@ -1,6 +1,6 @@
 package port
 
-import "github.com/pgodw/omnitalk/protocol/ddp"
+import "github.com/ObsoleteMadness/ClassicStack/protocol/ddp"
 
 type RouterHooks interface {
 	Inbound(datagram ddp.Datagram, rx Port)

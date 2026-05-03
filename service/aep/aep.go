@@ -1,5 +1,5 @@
 /*
-Package aep implements the AppleTalk Echo Protocol (AEP) as a omnitalk service.
+Package aep implements the AppleTalk Echo Protocol (AEP) as a classicstack service.
 
 AEP uses DDP type 4 on socket 4. An echo request (command byte 1) is reflected
 back to the sender as an echo reply (command byte 2).
@@ -12,11 +12,11 @@ import (
 	"context"
 	"sync"
 
-	"github.com/pgodw/omnitalk/protocol/aep"
-	"github.com/pgodw/omnitalk/protocol/ddp"
+	"github.com/ObsoleteMadness/ClassicStack/protocol/aep"
+	"github.com/ObsoleteMadness/ClassicStack/protocol/ddp"
 
-	"github.com/pgodw/omnitalk/port"
-	"github.com/pgodw/omnitalk/service"
+	"github.com/ObsoleteMadness/ClassicStack/port"
+	"github.com/ObsoleteMadness/ClassicStack/service"
 )
 
 // Socket is the well-known AEP socket number, re-exported from protocol/aep

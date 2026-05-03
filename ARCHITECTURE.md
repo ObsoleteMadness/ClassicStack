@@ -1,6 +1,6 @@
-# OmniTalk Architecture
+# ClassicStack Architecture
 
-OmniTalk is a Go AppleTalk Phase 2 router and AFP file server. It bridges
+ClassicStack is a Go AppleTalk Phase 2 router and AFP file server. It bridges
 legacy Apple networking protocols to modern environments — EtherTalk
 (raw Ethernet), LToUDP (multicast UDP), TashTalk (serial), and
 virtual LocalTalk transports — and serves AFP volumes over both the
@@ -13,7 +13,7 @@ import.
 ## Module map
 
 ```
-cmd/omnitalk/   wiring only — flag/INI parsing, service registration
+cmd/classicstack/   wiring only — flag/INI parsing, service registration
 config/         single typed config tree; INI loader, validation
 protocol/       wire format only (codec + constants, zero I/O)
   ddp/            DDP datagram + MacRoman codec
@@ -59,11 +59,11 @@ cmd  →  service  →  (protocol | port | pkg)
   not about higher protocols.
 - `service/*` owns sockets, sessions, and state machines. It composes
   `protocol` codecs over `port` transports.
-- `pkg/*` is reusable outside OmniTalk. It must not import anything
+- `pkg/*` is reusable outside ClassicStack. It must not import anything
   under `service/`, `port/`, `cmd/`, or `router/`.
-- `internal/*` is private to OmniTalk. Mocks and shared test harness
+- `internal/*` is private to ClassicStack. Mocks and shared test harness
   live here.
-- `cmd/omnitalk/` does no business logic. It parses configuration
+- `cmd/classicstack/` does no business logic. It parses configuration
   and wires services together.
 
 ## Core interfaces
@@ -86,7 +86,7 @@ Single typed tree in `config/`. Two loaders feed it:
 
 1. TOML — `config.Load(path)` parses `server.toml` via `knadh/koanf`
    with the `pelletier/go-toml` v2 parser.
-2. Flags — `cmd/omnitalk/main.go` overlays CLI flags on top of the
+2. Flags — `cmd/classicstack/main.go` overlays CLI flags on top of the
    file defaults.
 
 `config.Root.Validate()` runs once before services start. Services
@@ -95,14 +95,14 @@ are immutable: ports do not mutate themselves after `Start()`.
 
 ## Logging and telemetry
 
-OmniTalk has two logging packages with distinct jobs:
+ClassicStack has two logging packages with distinct jobs:
 
 - **`netlog/`** is the call-site API. Services and ports use
   `netlog.Debug`, `netlog.Info`, `netlog.Warn`. The facade keeps call
   sites short (no per-package `*slog.Logger` plumbing) while still
-  routing through whatever structured handler `cmd/omnitalk` installs.
+  routing through whatever structured handler `cmd/classicstack` installs.
 - **`pkg/logging/`** is the slog factory used once at startup.
-  `cmd/omnitalk` calls `logging.New("OmniTalk", ...)` to build a
+  `cmd/classicstack` calls `logging.New("ClassicStack", ...)` to build a
   `*slog.Logger` with the configured handler (console, JSON, or both)
   and installs it via `netlog.SetLogger`. Use this directly only when
   you need a `*slog.Logger` value — e.g. attaching structured fields
@@ -114,14 +114,14 @@ format, and the slog handler stamps every record with a `source`
 attribute that JSON consumers can filter on.
 
 Stdlib `log.Printf` and `log.Fatal` are not used inside library code.
-`cmd/omnitalk/main.go` uses `log.Fatal*` only for unrecoverable startup
+`cmd/classicstack/main.go` uses `log.Fatal*` only for unrecoverable startup
 errors before any logger is wired.
 
 Telemetry is `pkg/telemetry`, separate from logs. Default backend is
 `expvar` (stdlib, zero deps). Initial counters:
-- `omnitalk_router_frames_in_total`
-- `omnitalk_afp_commands_total`
-- `omnitalk_aarp_probe_retries_total`
+- `classicstack_router_frames_in_total`
+- `classicstack_afp_commands_total`
+- `classicstack_aarp_probe_retries_total`
 
 A future `//go:build otel` file will swap in an OpenTelemetry backend
 without touching call sites.
@@ -150,7 +150,7 @@ proceeds one type per commit with golden hex round-trip tests.
 
 ## Timer and retry patterns
 
-OmniTalk does not use exponential backoff. The protocols predate it.
+ClassicStack does not use exponential backoff. The protocols predate it.
 Three canonical shapes:
 
 1. **Reliable-delivery retransmits** (ATP-style). Per-transaction

@@ -1,7 +1,7 @@
 // Package hwaddr provides unified hardware-address types covering Ethernet
 // (EUI-48), LocalTalk (8-bit LLAP node ID), and AppleTalk (24-bit DDP
 // address), plus parsing, formatting, generation, and conversion between
-// them. It replaces ad-hoc helpers previously scattered across cmd/omnitalk,
+// them. It replaces ad-hoc helpers previously scattered across cmd/classicstack,
 // port/ethertalk, port/localtalk, and service/macip.
 package hwaddr
 
@@ -31,7 +31,7 @@ type AppleTalk struct {
 // synthesising Ethernet addresses from AppleTalk addresses.
 var AppleOUI = [3]byte{0x00, 0x00, 0x07}
 
-// MacIPOUI is the locally administered prefix historically used by OmniTalk's
+// MacIPOUI is the locally administered prefix historically used by ClassicStack's
 // MacIP gateway to fabricate per-node MACs for DHCP. Bit 1 of the first octet
 // is set, marking the address as locally administered.
 var MacIPOUI = [3]byte{0x02, 0x00, 0x00}
@@ -188,7 +188,7 @@ func AppleTalkFromEthernet(oui [3]byte, e Ethernet) (AppleTalk, bool) {
 // Layout: 0x02 (locally administered) | netHi | netLo | node | 'M' | 'I'.
 // The suffix "MI" distinguishes these addresses from generic AARP-style
 // syntheses and preserves wire-level compatibility with existing DHCP
-// leases issued against OmniTalk MacIP.
+// leases issued against ClassicStack MacIP.
 func MacIPEthernetFromAppleTalk(a AppleTalk) Ethernet {
 	return Ethernet{0x02, byte(a.Network >> 8), byte(a.Network), a.Node, 'M', 'I'}
 }

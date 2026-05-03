@@ -4,20 +4,20 @@ import (
 	"context"
 	"errors"
 
-	"github.com/pgodw/omnitalk/protocol/ddp"
+	"github.com/ObsoleteMadness/ClassicStack/protocol/ddp"
 
-	"github.com/pgodw/omnitalk/netlog"
-	"github.com/pgodw/omnitalk/pkg/telemetry"
-	"github.com/pgodw/omnitalk/port"
-	"github.com/pgodw/omnitalk/port/localtalk"
-	"github.com/pgodw/omnitalk/service"
-	"github.com/pgodw/omnitalk/service/aep"
-	"github.com/pgodw/omnitalk/service/llap"
-	"github.com/pgodw/omnitalk/service/rtmp"
-	"github.com/pgodw/omnitalk/service/zip"
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/telemetry"
+	"github.com/ObsoleteMadness/ClassicStack/port"
+	"github.com/ObsoleteMadness/ClassicStack/port/localtalk"
+	"github.com/ObsoleteMadness/ClassicStack/service"
+	"github.com/ObsoleteMadness/ClassicStack/service/aep"
+	"github.com/ObsoleteMadness/ClassicStack/service/llap"
+	"github.com/ObsoleteMadness/ClassicStack/service/rtmp"
+	"github.com/ObsoleteMadness/ClassicStack/service/zip"
 )
 
-var framesInTotal = telemetry.NewCounter("omnitalk_router_frames_in_total")
+var framesInTotal = telemetry.NewCounter("classicstack_router_frames_in_total")
 
 type Router struct {
 	shortStr             string

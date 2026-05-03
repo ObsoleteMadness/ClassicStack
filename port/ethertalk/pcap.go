@@ -3,9 +3,9 @@ package ethertalk
 import (
 	"net"
 
-	"github.com/pgodw/omnitalk/netlog"
-	"github.com/pgodw/omnitalk/port"
-	"github.com/pgodw/omnitalk/port/rawlink"
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/port"
+	"github.com/ObsoleteMadness/ClassicStack/port/rawlink"
 )
 
 // etherTalkBPFFilter selects EtherTalk Phase 2 frames carried as

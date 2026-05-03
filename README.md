@@ -1,10 +1,10 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/ObsoleteMadness/OmniTalk/main/icon256.png" alt="OmniTalk" width="256" height="256"/>
+<img src="https://raw.githubusercontent.com/ObsoleteMadness/ClassicStack/main/icon256.png" alt="ClassicStack" width="256" height="256"/>
 
-# OmniTalk
+# ClassicStack
 
-### OmniTalk is a all-in-one AppleTalk Phase 2 router, MacIP Router and AFP file server for bridging classic Apple networking into modern environments. 🍏💾
+### ClassicStack is a all-in-one AppleTalk Phase 2 router, MacIP Router and AFP file server for bridging classic Apple networking into modern environments. 🍏💾
 
 </div>
 
@@ -30,23 +30,23 @@ core interfaces, logging/telemetry, and the AFP design — see
 ## Quick start
 
 - Copy server.toml.example to server.toml and edit values.
-- Run OmniTalk with no flags to auto-load server.toml.
+- Run ClassicStack with no flags to auto-load server.toml.
 - Or pass a config file explicitly with -config.
 
 Examples:
 
 ~~~bash
-./omnitalk -config server.toml
+./classicstack -config server.toml
 ~~~
 
 ~~~powershell
-.\omnitalk.exe -config server.toml
+.\classicstack.exe -config server.toml
 ~~~
 
 Config-loading rule:
 
 - -config cannot be combined with other flags.
-- If no flags are supplied, OmniTalk auto-loads server.toml if present.
+- If no flags are supplied, ClassicStack auto-loads server.toml if present.
 
 ---
 
@@ -65,13 +65,13 @@ Requirements:
 Build from repository root:
 
 ~~~bash
-go build ./cmd/omnitalk
+go build ./cmd/classicstack
 ~~~
 
 Build with explicit binary name:
 
 ~~~bash
-go build -o omnitalk ./cmd/omnitalk
+go build -o classicstack ./cmd/classicstack
 ~~~
 
 Build with explicit semantic version metadata:
@@ -79,7 +79,7 @@ Build with explicit semantic version metadata:
 ~~~bash
 go build -trimpath \
 	-ldflags "-X main.BuildVersion=1.2.3 -X main.BuildCommit=$(git rev-parse --short HEAD) -X main.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-	-o omnitalk ./cmd/omnitalk
+	-o classicstack ./cmd/classicstack
 ~~~
 
 Build using the shared local/CI scripts:
@@ -97,7 +97,7 @@ bash scripts/ci/test.sh
 Print runtime/build version info:
 
 ~~~bash
-./omnitalk -version
+./classicstack -version
 ~~~
 
 Run tests:
@@ -114,8 +114,8 @@ go test ./...
 - GitHub Actions calls the same scripts under `scripts/ci/` that you can run locally.
 - Release assets are produced for Linux, macOS, and Windows.
 - Release packages include the repository `dist/` content.
-- Windows release binaries include icon and file version metadata from `icons/omnitalk.ico`.
-- macOS release bundles include app icon metadata from `icons/omnitalk.icns`.
+- Windows release binaries include icon and file version metadata from `icons/classicstack.ico`.
+- macOS release bundles include app icon metadata from `icons/classicstack.icns`.
 - Go build/test already ignores non-Go folders; additionally `scripts/ci/test.sh` and `scripts/ci/test.ps1` explicitly exclude `dist`, `icon`, and `icons` from the package list.
 
 ## Status and provenance
@@ -140,7 +140,7 @@ Route AppleTalk between EtherTalk and LocalTalk ports, with RTMP/ZIP/NBP service
 Use the built-in pcap listing mode:
 
 ~~~powershell
-.\omnitalk.exe -list-pcap-devices
+.\classicstack.exe -list-pcap-devices
 ~~~
 
 This prints available interface names and pcap device IDs. Use the device string in [EtherTalk] device, for example:
@@ -248,14 +248,14 @@ Why `wifi` mode exists:
 
 - Many Wi-Fi adapters and AP paths reject or rewrite frames when the source MAC does not match the host adapter MAC.
 - On Windows, the miniport/NDIS path commonly drops transmit frames when source hardware address does not match the host adapter MAC.
-- In `wifi` mode OmniTalk rewrites outbound EtherTalk frame source MAC to the host adapter MAC and updates AARP hardware fields accordingly.
-- For inbound traffic, OmniTalk reverses destination rewrite using a short-lived peer-to-virtual mapping so the EtherTalk port still sees the expected virtual MAC identity.
+- In `wifi` mode ClassicStack rewrites outbound EtherTalk frame source MAC to the host adapter MAC and updates AARP hardware fields accordingly.
+- For inbound traffic, ClassicStack reverses destination rewrite using a short-lived peer-to-virtual mapping so the EtherTalk port still sees the expected virtual MAC identity.
 - This is effectively an L2 NAT-style shim for MAC identities (not MacIP IP-layer NAT).
 
 Recommended settings:
 
 - On Wi-Fi, set `bridge_mode=wifi` (or leave `auto` and verify it detected Wi-Fi correctly).
-- Set `bridge_host_mac` to your actual Wi-Fi adapter MAC when needed; if blank, OmniTalk falls back to `hw_address`.
+- Set `bridge_host_mac` to your actual Wi-Fi adapter MAC when needed; if blank, ClassicStack falls back to `hw_address`.
 - On wired Ethernet, prefer `bridge_mode=ethernet` or `auto`.
 
 ##### Wi-Fi troubleshooting
@@ -264,7 +264,7 @@ Common symptoms:
 
 - You see AppleTalk traffic in one direction only.
 - AARP appears unanswered even when peers are present.
-- OmniTalk works on wired Ethernet but fails on the same host over Wi-Fi.
+- ClassicStack works on wired Ethernet but fails on the same host over Wi-Fi.
 
 Checks and fixes:
 
@@ -315,7 +315,7 @@ lease_file = "leases.txt"
 
 ## AFP
 
-OmniTalk includes an AFP file server focused on AFP 2.0-level behavior, with selective AFP 2.1/2.2 calls, exposed over both classic AppleTalk transport and modern TCP transport:
+ClassicStack includes an AFP file server focused on AFP 2.0-level behavior, with selective AFP 2.1/2.2 calls, exposed over both classic AppleTalk transport and modern TCP transport:
 
 - DDP stack: DDP -> ATP -> ASP -> AFP
 - TCP stack: TCP -> DSI -> AFP
@@ -466,8 +466,8 @@ Volume naming:
 #### Netatalk compatibility
 
 - Compatible formats: Netatalk-style extension map syntax and AppleDouble modern/legacy sidecar layouts.
-- Known differences: CNID database implementation is OmniTalk-specific (sqlite or memory), not a drop-in Netatalk CNID store.
-- OmniTalk does not currently provide a Netatalk-style extended-attribute metadata backend.
+- Known differences: CNID database implementation is ClassicStack-specific (sqlite or memory), not a drop-in Netatalk CNID store.
+- ClassicStack does not currently provide a Netatalk-style extended-attribute metadata backend.
 - AFP feature coverage is practical but incomplete (for example catalog search is currently implemented as name-based search and backend-dependent).
 
 ### [Logging]
@@ -493,7 +493,7 @@ Use server.toml for repeatable deployments; use flags for quick experiments.
 
 ## Rough project layout
 
-- cmd/omnitalk: entrypoint, flag handling, TOML config loading, runtime wiring.
+- cmd/classicstack: entrypoint, flag handling, TOML config loading, runtime wiring.
 - router: datagram dispatch, routing table, zone information table.
 - port: transport implementations (EtherTalk, LocalTalk variants, rawlink, NAT helpers).
 - service: protocol/application services (AEP, RTMP, ZIP, ASP/ATP/DSI, AFP, MacIP, LLAP).

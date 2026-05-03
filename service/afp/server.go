@@ -17,9 +17,9 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/pgodw/omnitalk/port"
-	"github.com/pgodw/omnitalk/protocol/ddp"
-	"github.com/pgodw/omnitalk/service"
+	"github.com/ObsoleteMadness/ClassicStack/port"
+	"github.com/ObsoleteMadness/ClassicStack/protocol/ddp"
+	"github.com/ObsoleteMadness/ClassicStack/service"
 )
 
 // Service implements AppleTalk Filing Protocol.
@@ -109,7 +109,6 @@ func NewService(serverName string, configs []VolumeConfig, fs FileSystem, transp
 	return s
 }
 
-
 // Start initializes all underlying transports and resolves the read-size cap
 // from whichever transport advertises the smallest non-zero quantum.
 func (s *Service) Start(ctx context.Context, router service.Router) error {
@@ -182,5 +181,3 @@ func (s *Service) Inbound(d ddp.Datagram, p port.Port) {
 func (s *Service) GetStatus() []byte {
 	return BuildServerInfo(s.ServerName)
 }
-
-

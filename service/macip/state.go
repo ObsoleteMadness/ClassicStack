@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/pgodw/omnitalk/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
 )
 
 type savedLease struct {

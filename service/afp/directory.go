@@ -3,12 +3,13 @@
 package afp
 
 import (
-	"github.com/pgodw/omnitalk/netlog"
 	"bytes"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
 )
 
 func (s *Service) handleOpenDir(req *FPOpenDirReq) (*FPOpenDirRes, int32) {

@@ -5,7 +5,7 @@ package afp
 import (
 	"runtime/debug"
 
-	"github.com/pgodw/omnitalk/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
 )
 
 // Request is the decoded form of an inbound AFP command.

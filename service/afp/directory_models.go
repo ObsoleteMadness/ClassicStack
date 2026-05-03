@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pgodw/omnitalk/pkg/binutil"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/binutil"
 )
 
 func formatDirBitmap(bitmap uint16) string {

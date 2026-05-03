@@ -1,5 +1,5 @@
 package ethertalk
 
-import "github.com/pgodw/omnitalk/pkg/telemetry"
+import "github.com/ObsoleteMadness/ClassicStack/pkg/telemetry"
 
-var aarpProbeRetriesTotal = telemetry.NewCounter("omnitalk_aarp_probe_retries_total")
+var aarpProbeRetriesTotal = telemetry.NewCounter("classicstack_aarp_probe_retries_total")

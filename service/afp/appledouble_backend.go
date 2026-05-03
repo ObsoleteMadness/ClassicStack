@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/pgodw/omnitalk/pkg/appledouble"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/appledouble"
 )
 
 const defaultAppleDoubleMode = AppleDoubleModeModern

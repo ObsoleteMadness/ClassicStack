@@ -17,11 +17,11 @@ import (
 )
 
 // requireLiveTests skips tests that reach the public Macintosh Garden site
-// unless OMNITALK_LIVE_TESTS=1 is set. CI runners do not run these.
+// unless CLASSICSTACK_LIVE_TESTS=1 is set. CI runners do not run these.
 func requireLiveTests(t *testing.T) {
 	t.Helper()
-	if os.Getenv("OMNITALK_LIVE_TESTS") != "1" {
-		t.Skip("skipping live macintoshgarden.org test; set OMNITALK_LIVE_TESTS=1 to enable")
+	if os.Getenv("CLASSICSTACK_LIVE_TESTS") != "1" {
+		t.Skip("skipping live macintoshgarden.org test; set CLASSICSTACK_LIVE_TESTS=1 to enable")
 	}
 }
 

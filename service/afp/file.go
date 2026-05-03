@@ -3,11 +3,12 @@
 package afp
 
 import (
-	"github.com/pgodw/omnitalk/netlog"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
 )
 
 func (s *Service) handleSetFileParms(req *FPSetFileParmsReq) (*FPSetFileParmsRes, int32) {

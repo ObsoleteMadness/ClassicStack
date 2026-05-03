@@ -8,12 +8,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pgodw/omnitalk/protocol/ddp"
+	"github.com/ObsoleteMadness/ClassicStack/protocol/ddp"
 
-	"github.com/pgodw/omnitalk/netlog"
-	"github.com/pgodw/omnitalk/port"
-	"github.com/pgodw/omnitalk/port/localtalk"
-	"github.com/pgodw/omnitalk/service"
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/port"
+	"github.com/ObsoleteMadness/ClassicStack/port/localtalk"
+	"github.com/ObsoleteMadness/ClassicStack/service"
 )
 
 const (

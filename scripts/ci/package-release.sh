@@ -13,15 +13,15 @@ fi
 
 if [[ "$build_variant" == "all" ]]; then
   variant_slug=""
-  exe_name="omnitalk"
+  exe_name="classicstack"
 else
   variant_slug="-${build_variant}"
-  exe_name="omnitalk-${build_variant}"
+  exe_name="classicstack-${build_variant}"
 fi
 
 if [[ "$target_os" == "linux" ]]; then
-  stage="release/omnitalk${variant_slug}-${release_tag}-linux-amd64"
-  archive_name="omnitalk${variant_slug}-${release_tag}-linux-amd64.tar.gz"
+  stage="release/classicstack${variant_slug}-${release_tag}-linux-amd64"
+  archive_name="classicstack${variant_slug}-${release_tag}-linux-amd64.tar.gz"
 
   mkdir -p "$stage"
   cp "out/${exe_name}" "$stage/${exe_name}"
@@ -33,26 +33,26 @@ if [[ "$target_os" == "linux" ]]; then
 fi
 
 if [[ "$target_os" == "macos" ]]; then
-  stage="release/omnitalk${variant_slug}-${release_tag}-macos-amd64"
-  archive_name="omnitalk${variant_slug}-${release_tag}-macos-amd64.zip"
+  stage="release/classicstack${variant_slug}-${release_tag}-macos-amd64"
+  archive_name="classicstack${variant_slug}-${release_tag}-macos-amd64.zip"
   if [[ "$build_variant" == "all" ]]; then
-    bundle_name="OmniTalk.app"
+    bundle_name="ClassicStack.app"
   else
-    bundle_name="OmniTalk-${build_variant}.app"
+    bundle_name="ClassicStack-${build_variant}.app"
   fi
   app_root="$stage/${bundle_name}/Contents"
 
   mkdir -p "$app_root/MacOS" "$app_root/Resources"
-  cp "out/${exe_name}" "$app_root/MacOS/omnitalk"
-  chmod +x "$app_root/MacOS/omnitalk"
-  cp icons/omnitalk.icns "$app_root/Resources/omnitalk.icns"
+  cp "out/${exe_name}" "$app_root/MacOS/classicstack"
+  chmod +x "$app_root/MacOS/classicstack"
+  cp icons/classicstack.icns "$app_root/Resources/classicstack.icns"
 
   if [[ "$build_variant" == "all" ]]; then
-    display_name="OmniTalk"
-    bundle_id="com.obsoletemadness.omnitalk"
+    display_name="ClassicStack"
+    bundle_id="com.obsoletemadness.classicstack"
   else
-    display_name="OmniTalk (${build_variant})"
-    bundle_id="com.obsoletemadness.omnitalk.${build_variant}"
+    display_name="ClassicStack (${build_variant})"
+    bundle_id="com.obsoletemadness.classicstack.${build_variant}"
   fi
 
   cat > "$app_root/Info.plist" <<EOF
@@ -61,8 +61,8 @@ if [[ "$target_os" == "macos" ]]; then
 <plist version="1.0">
 <dict>
   <key>CFBundleDisplayName</key><string>${display_name}</string>
-  <key>CFBundleExecutable</key><string>omnitalk</string>
-  <key>CFBundleIconFile</key><string>omnitalk.icns</string>
+  <key>CFBundleExecutable</key><string>classicstack</string>
+  <key>CFBundleIconFile</key><string>classicstack.icns</string>
   <key>CFBundleIdentifier</key><string>${bundle_id}</string>
   <key>CFBundleName</key><string>${display_name}</string>
   <key>CFBundlePackageType</key><string>APPL</string>

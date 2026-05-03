@@ -5,7 +5,7 @@ package afp
 import (
 	"bytes"
 
-	"github.com/pgodw/omnitalk/pkg/binutil"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/binutil"
 )
 
 // BuildServerInfo constructs the payload for an AFP FPGetSrvrInfo or ASP GetStatus reply.

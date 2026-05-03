@@ -3,10 +3,10 @@ package rtmp
 import (
 	"encoding/binary"
 
-	"github.com/pgodw/omnitalk/protocol/ddp"
-	prtmp "github.com/pgodw/omnitalk/protocol/rtmp"
+	"github.com/ObsoleteMadness/ClassicStack/protocol/ddp"
+	prtmp "github.com/ObsoleteMadness/ClassicStack/protocol/rtmp"
 
-	"github.com/pgodw/omnitalk/service"
+	"github.com/ObsoleteMadness/ClassicStack/service"
 )
 
 // Wire constants re-exported from protocol/rtmp.

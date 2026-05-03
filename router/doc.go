@@ -1,4 +1,4 @@
-// Package router implements the OmniTalk AppleTalk Phase 2 router core.
+// Package router implements the ClassicStack AppleTalk Phase 2 router core.
 //
 // The router maintains the routing table (RTMP) and zone information
 // table (ZIP), receives DDP datagrams from every registered Port, and
