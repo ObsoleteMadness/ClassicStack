@@ -19,8 +19,8 @@ func TestHandleGetFileDirParms_RejectsZeroBitmaps(t *testing.T) {
 	if errCode != ErrBitmapErr {
 		t.Fatalf("errCode=%d, want %d", errCode, ErrBitmapErr)
 	}
-	if res == nil {
-		t.Fatalf("expected non-nil response")
+	if res != nil {
+		t.Fatalf("expected nil response on error, got %+v", res)
 	}
 }
 
@@ -41,8 +41,8 @@ func TestHandleGetFileDirParms_RejectsUnsupportedBitmapBits(t *testing.T) {
 	if errCode != ErrBitmapErr {
 		t.Fatalf("errCode=%d, want %d", errCode, ErrBitmapErr)
 	}
-	if res == nil {
-		t.Fatalf("expected non-nil response")
+	if res != nil {
+		t.Fatalf("expected nil response on error, got %+v", res)
 	}
 }
 
@@ -61,7 +61,7 @@ func TestHandleGetFileDirParms_RejectsInvalidPathTypeWhenPathPresent(t *testing.
 	if errCode != ErrParamErr {
 		t.Fatalf("errCode=%d, want %d", errCode, ErrParamErr)
 	}
-	if res == nil {
-		t.Fatalf("expected non-nil response")
+	if res != nil {
+		t.Fatalf("expected nil response on error, got %+v", res)
 	}
 }

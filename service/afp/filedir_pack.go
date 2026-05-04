@@ -233,11 +233,7 @@ func (s *Service) packFileInfo(buf *bytes.Buffer, volumeID uint16, bitmap uint16
 		fixedSize := calcFileParamsSize(bitmap)
 
 		if bitmap&FileBitmapAttributes != 0 {
-			attr := uint16(0)
-			if s.volumeIsReadOnly(volumeID) {
-				attr |= FileAttrWriteInhibit
-			}
-			binutil.WriteU16(buf, attr)
+			binutil.WriteU16(buf, 0)
 		}
 		if bitmap&FileBitmapParentDID != 0 {
 			pdir := s.getPathDID(volumeID, parentPath)

@@ -24,9 +24,6 @@ func (s *Service) handleSetFileParms(req *FPSetFileParmsReq) (*FPSetFileParmsRes
 }
 
 func (s *Service) handleCreateFile(req *FPCreateFileReq) (*FPCreateFileRes, int32) {
-	if s.fs == nil {
-		return &FPCreateFileRes{}, ErrAccessDenied
-	}
 	if s.volumeIsReadOnly(req.VolumeID) {
 		return &FPCreateFileRes{}, ErrVolLocked
 	}
@@ -41,6 +38,7 @@ func (s *Service) handleCreateFile(req *FPCreateFileReq) (*FPCreateFileRes, int3
 	if req.HasFlag(FPCreateFileFlagHardCreate) {
 		f, err := backend.CreateFile(targetPath)
 		if err != nil {
+			netlog.Debug("[AFP] FPCreateFile hard create %q failed: %v", targetPath, err)
 			return &FPCreateFileRes{}, ErrAccessDenied
 		}
 		f.Close()
@@ -50,6 +48,7 @@ func (s *Service) handleCreateFile(req *FPCreateFileReq) (*FPCreateFileRes, int3
 			if os.IsExist(err) {
 				return &FPCreateFileRes{}, ErrObjectExists
 			}
+			netlog.Debug("[AFP] FPCreateFile %q failed: %v", targetPath, err)
 			return &FPCreateFileRes{}, ErrAccessDenied
 		}
 		f.Close()
