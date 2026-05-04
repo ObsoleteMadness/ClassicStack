@@ -8,6 +8,7 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/protocol/ddp"
 
+	"github.com/ObsoleteMadness/ClassicStack/capture"
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
 	"github.com/ObsoleteMadness/ClassicStack/port"
 )
@@ -51,6 +52,28 @@ type Port struct {
 	stop            chan struct{}
 	sendFrameFunc   func(frame []byte) error
 	linkManager     LinkManager
+	captureSink     capture.Sink
+}
+
+// SetCaptureSink installs (or clears, if nil) a pcap-style capture
+// sink. Both inbound and outbound LLAP frames are forwarded to s. Safe
+// to call before Start; not designed for live swapping.
+func (p *Port) SetCaptureSink(s capture.Sink) {
+	p.mu.Lock()
+	p.captureSink = s
+	p.mu.Unlock()
+}
+
+func (p *Port) capture(frame []byte) {
+	p.mu.Lock()
+	s := p.captureSink
+	p.mu.Unlock()
+	if s == nil {
+		return
+	}
+	buf := make([]byte, len(frame))
+	copy(buf, frame)
+	capture.Write(s, time.Now(), buf)
 }
 
 func New(seedNetwork uint16, seedZoneName []byte, respondToEnq bool, desiredNode uint8) *Port {
@@ -114,6 +137,7 @@ func (p *Port) SendRawLLAPFrame(frame LLAPFrame) error {
 	}
 	b := frame.Bytes()
 	netlog.LogLocaltalkFrameOutbound(b, p)
+	p.capture(b)
 	return p.sendFrameFunc(b)
 }
 
@@ -296,7 +320,9 @@ func (p *Port) InboundFrame(frame []byte) {
 	if err != nil {
 		return
 	}
-	netlog.LogLocaltalkFrameInbound(parsed.Bytes(), p)
+	parsedBytes := parsed.Bytes()
+	netlog.LogLocaltalkFrameInbound(parsedBytes, p)
+	p.capture(parsedBytes)
 	if p.linkManager != nil {
 		p.linkManager.InboundFrame(p, parsed)
 		return

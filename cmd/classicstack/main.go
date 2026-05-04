@@ -74,6 +74,10 @@ func main() {
 	parsePackets := flag.Bool("parse-packets", false, "Decode and log every inbound DDP packet (ATP/ASP/AFP layers)")
 	parseOutput := flag.String("parse-output", "", "File path to write parsed packet log (appended; empty = stdout only)")
 
+	captureLocalTalk := flag.String("capture-localtalk", "", "Write LocalTalk frames (LToUDP/TashTalk/Virtual) to a pcap file at this path (empty disables)")
+	captureEtherTalk := flag.String("capture-ethertalk", "", "Write EtherTalk frames to a pcap file at this path (empty disables)")
+	captureSnaplen := flag.Uint("capture-snaplen", 65535, "Per-frame snap length for pcap captures")
+
 	// AFP file sharing flags. Schemas live in service/afp; cmd-side
 	// wiring is split between afp_enabled.go and afp_disabled.go.
 	afpServerName := flag.String("afp-name", "Go File Server", "AFP server name advertised to clients")
@@ -164,6 +168,9 @@ func main() {
 			MacIPNAT:                *macipNAT,
 			MacIPDHCPRelay:          *macipDHCP,
 			MacIPLeaseFile:          *macipStateFile,
+			CaptureLocalTalk:        *captureLocalTalk,
+			CaptureEtherTalk:        *captureEtherTalk,
+			CaptureSnaplen:          *captureSnaplen,
 		})
 	}
 
@@ -280,6 +287,16 @@ func main() {
 	if len(ports) == 0 {
 		log.Fatal("no ports configured")
 	}
+
+	if err := cfg.Capture.Validate(); err != nil {
+		log.Fatalf("capture config: %v", err)
+	}
+	captureSinks := attachCaptureSinks(ports, cfg.Capture)
+	defer func() {
+		for _, s := range captureSinks {
+			_ = s.Close()
+		}
+	}()
 
 	// Build the service list explicitly so we can share the NBP service reference
 	// with the MacIP gateway.

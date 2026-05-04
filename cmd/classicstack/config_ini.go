@@ -6,6 +6,7 @@ import (
 
 	"github.com/knadh/koanf/v2"
 
+	"github.com/ObsoleteMadness/ClassicStack/capture"
 	"github.com/ObsoleteMadness/ClassicStack/config"
 	"github.com/ObsoleteMadness/ClassicStack/port/ethertalk"
 	"github.com/ObsoleteMadness/ClassicStack/port/localtalk"
@@ -26,6 +27,7 @@ type appConfig struct {
 	LToUDP    localtalk.LToUDPConfig
 	TashTalk  localtalk.TashTalkConfig
 	EtherTalk ethertalk.Config
+	Capture   capture.Config
 
 	MacIPEnabled    bool
 	MacIPNAT        bool
@@ -45,6 +47,7 @@ func defaultAppConfig() appConfig {
 		LToUDP:    localtalk.DefaultLToUDPConfig(),
 		TashTalk:  localtalk.DefaultTashTalkConfig(),
 		EtherTalk: ethertalk.DefaultConfig(),
+		Capture:   capture.DefaultConfig(),
 
 		MacIPSubnet: "192.168.100.0/24",
 	}
@@ -77,6 +80,9 @@ func resolveAppConfig(src config.Source) (appConfig, error) {
 		return cfg, err
 	}
 	if err := loadSection(k, "EtherTalk", &cfg.EtherTalk); err != nil {
+		return cfg, err
+	}
+	if err := loadSection(k, "Capture", &cfg.Capture); err != nil {
 		return cfg, err
 	}
 	cfg.EtherTalk.Backend = strings.ToLower(strings.TrimSpace(cfg.EtherTalk.Backend))
