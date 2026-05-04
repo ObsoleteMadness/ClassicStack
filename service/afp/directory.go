@@ -323,9 +323,6 @@ func (s *Service) handleSetDirParms(req *FPSetDirParmsReq) (*FPSetDirParmsRes, i
 }
 
 func (s *Service) handleCreateDir(req *FPCreateDirReq) (*FPCreateDirRes, int32) {
-	if s.fs == nil {
-		return &FPCreateDirRes{}, ErrAccessDenied
-	}
 	if s.volumeIsReadOnly(req.VolumeID) {
 		return &FPCreateDirRes{}, ErrVolLocked
 	}

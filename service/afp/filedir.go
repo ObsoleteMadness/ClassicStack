@@ -12,18 +12,18 @@ import (
 
 func (s *Service) handleGetFileDirParms(req *FPGetFileDirParmsReq) (*FPGetFileDirParmsRes, int32) {
 	if req.FileBitmap == 0 && req.DirBitmap == 0 {
-		return &FPGetFileDirParmsRes{}, ErrBitmapErr
+		return nil, ErrBitmapErr
 	}
 	if req.FileBitmap&^enumerateFileBitmapMask != 0 || req.DirBitmap&^enumerateDirBitmapMask != 0 {
-		return &FPGetFileDirParmsRes{}, ErrBitmapErr
+		return nil, ErrBitmapErr
 	}
 	if req.Path != "" && req.PathType != PathTypeShortNames && req.PathType != PathTypeLongNames {
-		return &FPGetFileDirParmsRes{}, ErrParamErr
+		return nil, ErrParamErr
 	}
 
 	parentPath, ok := s.resolveDIDPath(req.VolumeID, req.DirID)
 	if !ok && req.DirID != 0 {
-		return emptyGetFileDirParmsRes(req), ErrObjectNotFound
+		return nil, ErrObjectNotFound
 	} else if !ok && req.DirID == 0 {
 		parentPath, _ = s.resolveDIDPath(req.VolumeID, CNIDRoot)
 	}
@@ -32,10 +32,7 @@ func (s *Service) handleGetFileDirParms(req *FPGetFileDirParmsReq) (*FPGetFileDi
 	if req.Path != "" {
 		resolvedPath, errCode := s.resolvePath(parentPath, req.Path, req.PathType)
 		if errCode != NoErr {
-			if errCode == ErrObjectNotFound {
-				return emptyGetFileDirParmsRes(req), ErrObjectNotFound
-			}
-			return &FPGetFileDirParmsRes{}, errCode
+			return nil, errCode
 		}
 		targetPath = resolvedPath
 	}
@@ -48,12 +45,12 @@ func (s *Service) handleGetFileDirParms(req *FPGetFileDirParmsReq) (*FPGetFileDi
 	} else {
 		backend := s.fsForPath(targetPath)
 		if backend == nil {
-			return emptyGetFileDirParmsRes(req), ErrObjectNotFound
+			return nil, ErrObjectNotFound
 		}
 		info, err = backend.Stat(targetPath)
 	}
 	if err != nil {
-		return emptyGetFileDirParmsRes(req), ErrObjectNotFound
+		return nil, ErrObjectNotFound
 	}
 	targetPath = infoPath
 
@@ -74,21 +71,6 @@ func (s *Service) handleGetFileDirParms(req *FPGetFileDirParmsReq) (*FPGetFileDi
 	}
 
 	return res, NoErr
-}
-
-func emptyGetFileDirParmsRes(req *FPGetFileDirParmsReq) *FPGetFileDirParmsRes {
-	// Preserve a valid reply layout (bitmaps + File/DirFlag + pad) even on
-	// ObjectNotFound so clients can parse the envelope deterministically.
-	isFile := true
-	if req.FileBitmap == 0 && req.DirBitmap != 0 {
-		isFile = false
-	}
-	return &FPGetFileDirParmsRes{
-		FileBitmap: req.FileBitmap,
-		DirBitmap:  req.DirBitmap,
-		IsFile:     isFile,
-		Data:       nil,
-	}
 }
 
 func (s *Service) handleRename(req *FPRenameReq) (*FPRenameRes, int32) {
@@ -195,9 +177,6 @@ func (s *Service) handleSetFileDirParms(req *FPSetFileDirParmsReq) (*FPSetFileDi
 }
 
 func (s *Service) handleDelete(req *FPDeleteReq) (*FPDeleteRes, int32) {
-	if s.fs == nil {
-		return &FPDeleteRes{}, ErrAccessDenied
-	}
 	if s.volumeIsReadOnly(req.VolumeID) {
 		return &FPDeleteRes{}, ErrVolLocked
 	}

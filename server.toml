@@ -51,6 +51,7 @@ read_only = true
 [AFP.Volumes.TestVolume]
 name = "Test Volume"          # Volume name. Max 31 characters.
 path = 'C:\Mac\Test'
+read_only = false
 appledouble_mode = "modern"   # per-volume override; "modern" (._ sidecars) or "legacy" (.appledouble folder)
 rebuild_desktop_db = false
 
