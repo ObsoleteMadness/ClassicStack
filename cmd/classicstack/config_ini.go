@@ -38,6 +38,32 @@ type appConfig struct {
 	MacIPDHCPRelay  bool
 	MacIPLeaseFile  string
 	MacIPZone       string
+
+	IPXEnabled         bool
+	IPXInterface       string
+	IPXFraming         string
+	IPXInternalNetwork string
+
+	NetBEUIEnabled   bool
+	NetBEUIInterface string
+
+	NetBIOSEnabled    bool
+	NetBIOSTransports []string
+	NetBIOSScopeID    string
+	NetBIOSServerName string
+	NetBIOSWorkgroup  string
+
+	SMBEnabled       bool
+	SMBNBTBinding    string
+	SMBDirectBinding string
+	SMBGuestOk       bool
+	SMBServerName    string
+	SMBWorkgroup     string
+	SMBShareFlags    []string // raw "Name:Path" entries from -smb-share (flag mode only)
+
+	ShortnameEnabled bool
+	ShortnameBackend string
+	ShortnameDBPath  string
 }
 
 func defaultAppConfig() appConfig {
@@ -50,6 +76,11 @@ func defaultAppConfig() appConfig {
 		Capture:   capture.DefaultConfig(),
 
 		MacIPSubnet: "192.168.100.0/24",
+
+		IPXFraming:        "ethernet_ii",
+		NetBIOSTransports: []string{"tcp"},
+		SMBNBTBinding:     ":139",
+		ShortnameBackend:  "memory",
 	}
 }
 
@@ -112,6 +143,33 @@ func resolveAppConfig(src config.Source) (appConfig, error) {
 	cfg.ParsePackets = boolWithDefault(k, "Logging.parse_packets", cfg.ParsePackets)
 	cfg.LogTraffic = boolWithDefault(k, "Logging.log_traffic", cfg.LogTraffic)
 	cfg.ParseOutput = stringWithDefault(k, "Logging.parse_output", cfg.ParseOutput)
+
+	cfg.IPXEnabled = boolWithDefault(k, "IPX.enabled", cfg.IPXEnabled)
+	cfg.IPXInterface = stringWithDefault(k, "IPX.interface", cfg.IPXInterface)
+	cfg.IPXFraming = stringWithDefault(k, "IPX.framing", cfg.IPXFraming)
+	cfg.IPXInternalNetwork = stringWithDefault(k, "IPX.internal_network", cfg.IPXInternalNetwork)
+
+	cfg.NetBEUIEnabled = boolWithDefault(k, "NetBEUI.enabled", cfg.NetBEUIEnabled)
+	cfg.NetBEUIInterface = stringWithDefault(k, "NetBEUI.interface", cfg.NetBEUIInterface)
+
+	cfg.NetBIOSEnabled = boolWithDefault(k, "NetBIOS.enabled", cfg.NetBIOSEnabled)
+	if k.Exists("NetBIOS.transports") {
+		cfg.NetBIOSTransports = k.Strings("NetBIOS.transports")
+	}
+	cfg.NetBIOSScopeID = stringWithDefault(k, "NetBIOS.scope_id", cfg.NetBIOSScopeID)
+	cfg.NetBIOSServerName = stringWithDefault(k, "NetBIOS.server_name", cfg.NetBIOSServerName)
+	cfg.NetBIOSWorkgroup = stringWithDefault(k, "NetBIOS.workgroup", cfg.NetBIOSWorkgroup)
+
+	cfg.SMBEnabled = boolWithDefault(k, "SMB.enabled", cfg.SMBEnabled)
+	cfg.SMBNBTBinding = stringWithDefault(k, "SMB.nbt_binding", cfg.SMBNBTBinding)
+	cfg.SMBDirectBinding = stringWithDefault(k, "SMB.direct_binding", cfg.SMBDirectBinding)
+	cfg.SMBGuestOk = boolWithDefault(k, "SMB.guest_ok", cfg.SMBGuestOk)
+	cfg.SMBServerName = stringWithDefault(k, "SMB.server_name", cfg.SMBServerName)
+	cfg.SMBWorkgroup = stringWithDefault(k, "SMB.workgroup", cfg.SMBWorkgroup)
+
+	cfg.ShortnameEnabled = boolWithDefault(k, "Shortname.enabled", cfg.ShortnameEnabled)
+	cfg.ShortnameBackend = stringWithDefault(k, "Shortname.backend", cfg.ShortnameBackend)
+	cfg.ShortnameDBPath = stringWithDefault(k, "Shortname.db_path", cfg.ShortnameDBPath)
 
 	return cfg, nil
 }

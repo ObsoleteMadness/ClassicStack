@@ -1,6 +1,8 @@
 package main
 
 import (
+	"strings"
+
 	"github.com/ObsoleteMadness/ClassicStack/capture"
 	"github.com/ObsoleteMadness/ClassicStack/port/ethertalk"
 	"github.com/ObsoleteMadness/ClassicStack/port/localtalk"
@@ -48,6 +50,32 @@ type flagInputs struct {
 	CaptureLocalTalk string
 	CaptureEtherTalk string
 	CaptureSnaplen   uint
+
+	IPXEnabled         bool
+	IPXInterface       string
+	IPXFraming         string
+	IPXInternalNetwork string
+
+	NetBEUIEnabled   bool
+	NetBEUIInterface string
+
+	NetBIOSEnabled    bool
+	NetBIOSTransports string // raw csv from flag; resolveAppConfig parses
+	NetBIOSScopeID    string
+	NetBIOSServerName string
+	NetBIOSWorkgroup  string
+
+	SMBEnabled       bool
+	SMBNBTBinding    string
+	SMBDirectBinding string
+	SMBGuestOk       bool
+	SMBServerName    string
+	SMBWorkgroup     string
+	SMBShareValues   []string // raw "Name:Path" entries from -smb-share
+
+	ShortnameEnabled bool
+	ShortnameBackend string
+	ShortnameDBPath  string
 }
 
 // flagsToConfig builds an appConfig from CLI flag values. It is the
@@ -103,5 +131,53 @@ func flagsToConfig(in flagInputs) appConfig {
 		Snaplen:   uint32(in.CaptureSnaplen),
 	}
 
+	cfg.IPXEnabled = in.IPXEnabled
+	cfg.IPXInterface = in.IPXInterface
+	if in.IPXFraming != "" {
+		cfg.IPXFraming = in.IPXFraming
+	}
+	cfg.IPXInternalNetwork = in.IPXInternalNetwork
+
+	cfg.NetBEUIEnabled = in.NetBEUIEnabled
+	cfg.NetBEUIInterface = in.NetBEUIInterface
+
+	cfg.NetBIOSEnabled = in.NetBIOSEnabled
+	if in.NetBIOSTransports != "" {
+		parts := splitCSV(in.NetBIOSTransports)
+		if len(parts) > 0 {
+			cfg.NetBIOSTransports = parts
+		}
+	}
+	cfg.NetBIOSScopeID = in.NetBIOSScopeID
+	cfg.NetBIOSServerName = in.NetBIOSServerName
+	cfg.NetBIOSWorkgroup = in.NetBIOSWorkgroup
+
+	cfg.SMBEnabled = in.SMBEnabled
+	if in.SMBNBTBinding != "" {
+		cfg.SMBNBTBinding = in.SMBNBTBinding
+	}
+	cfg.SMBDirectBinding = in.SMBDirectBinding
+	cfg.SMBGuestOk = in.SMBGuestOk
+	cfg.SMBServerName = in.SMBServerName
+	cfg.SMBWorkgroup = in.SMBWorkgroup
+	cfg.SMBShareFlags = in.SMBShareValues
+
+	cfg.ShortnameEnabled = in.ShortnameEnabled
+	if in.ShortnameBackend != "" {
+		cfg.ShortnameBackend = in.ShortnameBackend
+	}
+	cfg.ShortnameDBPath = in.ShortnameDBPath
+
 	return cfg
+}
+
+func splitCSV(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		p := strings.TrimSpace(part)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

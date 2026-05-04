@@ -76,3 +76,45 @@ log_traffic = false
 localtalk = ""                 # e.g. "captures/classicstack-localtalk.pcap"
 ethertalk = ""                 # e.g. "captures/classicstack-ethertalk.pcap"
 snaplen = 65535                # per-frame snap length
+
+# [IPX]
+# enabled = false
+# interface = ""
+# framing = "ethernet_ii"        # ethernet_ii|raw_802_3|llc|snap
+# internal_network = ""
+
+# [NetBEUI]
+# enabled = false
+# interface = ""
+
+# [NetBIOS]
+# enabled = false
+# transports = ["netbeui", "ipx", "tcp"]
+# scope_id = ""
+# server_name = "ClassicStack"
+# workgroup = "WORKGROUP"
+
+# [SMB]
+# enabled = false
+# nbt_binding = ":139"
+# direct_binding = ""             # ":445" enables direct SMB; SMB1 conventionally NBT-only
+# guest_ok = false
+# server_name = "CLASSICSTACK"
+# workgroup = "WORKGROUP"
+
+# Each SMB share gets a [SMB.Volumes.<key>] section, mirroring
+# [AFP.Volumes.<key>]. fs_type selects a pkg/vfs backend.
+# [SMB.Volumes.Public]
+# name = "Public"
+# path = 'C:\Public'
+# fs_type = "local_fs"
+# read_only = false
+
+# [Shortname]
+# enabled = false
+# backend = "memory"             # memory|sqlite
+# db_path = "shortname.db"
+
+# [VFSBus]
+# subscriber_buffer = 256
+# drop_warn_interval = "30s"

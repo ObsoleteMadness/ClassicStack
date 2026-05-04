@@ -91,6 +91,39 @@ func main() {
 	var afpVolumes volumeFlags
 	flag.Var(&afpVolumes, "afp-volume", `AFP volume to share, format: "Name:Path" (repeatable, e.g. -afp-volume "Mac Share:c:\mac")`)
 
+	// IPX flags. Real packet handling lands behind //go:build ipx; the
+	// disabled stub logs a warning if -ipx-enabled is set without the tag.
+	ipxEnable := flag.Bool("ipx-enabled", false, "Enable IPX router (requires -tags ipx)")
+	ipxIface := flag.String("ipx-interface", "", "Rawlink/pcap interface for IPX (default: reuse -ethertalk-device)")
+	ipxFraming := flag.String("ipx-framing", "ethernet_ii", "IPX framing: ethernet_ii, raw_802_3, llc, snap")
+	ipxInternal := flag.String("ipx-internal-network", "", "IPX internal network number (8-hex-digit, e.g. DEADBEEF)")
+
+	// NetBEUI flags.
+	netbeuiEnable := flag.Bool("netbeui-enabled", false, "Enable NetBEUI port (requires -tags netbeui)")
+	netbeuiIface := flag.String("netbeui-interface", "", "Rawlink/pcap interface for NetBEUI (default: reuse -ethertalk-device)")
+
+	// NetBIOS flags.
+	netbiosEnable := flag.Bool("netbios-enabled", false, "Enable NetBIOS service (requires -tags netbios)")
+	netbiosTransports := flag.String("netbios-transports", "tcp", "Comma-separated NetBIOS transports: any of tcp, netbeui, ipx")
+	netbiosScopeID := flag.String("netbios-scope-id", "", "NetBIOS scope ID (RFC 1001/1002)")
+	netbiosServerName := flag.String("netbios-server-name", "CLASSICSTACK", "NetBIOS server name")
+	netbiosWorkgroup := flag.String("netbios-workgroup", "WORKGROUP", "NetBIOS workgroup name")
+
+	// SMB flags.
+	smbEnable := flag.Bool("smb-enabled", false, "Enable SMB 1.0 server (requires -tags smb)")
+	smbNBT := flag.String("smb-nbt-binding", ":139", "SMB NBT (NetBIOS over TCP) listen address")
+	smbDirect := flag.String("smb-direct-binding", "", "SMB direct (TCP/445) listen address; empty disables direct SMB")
+	smbGuest := flag.Bool("smb-guest-ok", false, "Accept unauthenticated SMB sessions")
+	smbServerName := flag.String("smb-server-name", "", "SMB server name (default: NetBIOS server name)")
+	smbWorkgroup := flag.String("smb-workgroup", "", "SMB workgroup (default: NetBIOS workgroup)")
+	var smbShares volumeFlags
+	flag.Var(&smbShares, "smb-share", `SMB share, format: "Name:Path" (repeatable)`)
+
+	// Shortname flags.
+	shortEnable := flag.Bool("shortname-enabled", false, "Enable shared 8.3 shortname mapper")
+	shortBackend := flag.String("shortname-backend", "memory", "Shortname store backend: memory or sqlite")
+	shortDB := flag.String("shortname-db", "", "Shortname store DB path (sqlite backend)")
+
 	flag.Parse()
 
 	if *showVersion {
@@ -171,6 +204,32 @@ func main() {
 			CaptureLocalTalk:        *captureLocalTalk,
 			CaptureEtherTalk:        *captureEtherTalk,
 			CaptureSnaplen:          *captureSnaplen,
+
+			IPXEnabled:         *ipxEnable,
+			IPXInterface:       *ipxIface,
+			IPXFraming:         *ipxFraming,
+			IPXInternalNetwork: *ipxInternal,
+
+			NetBEUIEnabled:   *netbeuiEnable,
+			NetBEUIInterface: *netbeuiIface,
+
+			NetBIOSEnabled:    *netbiosEnable,
+			NetBIOSTransports: *netbiosTransports,
+			NetBIOSScopeID:    *netbiosScopeID,
+			NetBIOSServerName: *netbiosServerName,
+			NetBIOSWorkgroup:  *netbiosWorkgroup,
+
+			SMBEnabled:       *smbEnable,
+			SMBNBTBinding:    *smbNBT,
+			SMBDirectBinding: *smbDirect,
+			SMBGuestOk:       *smbGuest,
+			SMBServerName:    *smbServerName,
+			SMBWorkgroup:     *smbWorkgroup,
+			SMBShareValues:   []string(smbShares),
+
+			ShortnameEnabled: *shortEnable,
+			ShortnameBackend: *shortBackend,
+			ShortnameDBPath:  *shortDB,
 		})
 	}
 
@@ -360,6 +419,67 @@ func main() {
 	}
 	services = append(services, afpHook.Services()...)
 
+	ipxHook, err := wireIPX(IPXConfig{
+		Enabled:         cfg.IPXEnabled,
+		Rawlink:         nil, // rawlink wiring lands with the real port build-out
+		Interface:       cfg.IPXInterface,
+		Framing:         cfg.IPXFraming,
+		InternalNetwork: cfg.IPXInternalNetwork,
+	})
+	if err != nil {
+		log.Fatalf("IPX wiring failed: %v", err)
+	}
+	nbeuiHook, err := wireNetBEUI(NetBEUIConfig{
+		Enabled:   cfg.NetBEUIEnabled,
+		Rawlink:   nil,
+		Interface: cfg.NetBEUIInterface,
+	})
+	if err != nil {
+		log.Fatalf("NetBEUI wiring failed: %v", err)
+	}
+	nbHook, err := wireNetBIOS(NetBIOSConfig{
+		Enabled:    cfg.NetBIOSEnabled,
+		Transports: cfg.NetBIOSTransports,
+		ScopeID:    cfg.NetBIOSScopeID,
+		ServerName: cfg.NetBIOSServerName,
+		Workgroup:  cfg.NetBIOSWorkgroup,
+		IPX:        ipxHook,
+		NetBEUI:    nbeuiHook,
+	})
+	if err != nil {
+		log.Fatalf("NetBIOS wiring failed: %v", err)
+	}
+	shortHook, err := wireShortname(ShortnameConfig{
+		Enabled: cfg.ShortnameEnabled,
+		Backend: cfg.ShortnameBackend,
+		DBPath:  cfg.ShortnameDBPath,
+	})
+	if err != nil {
+		log.Fatalf("Shortname wiring failed: %v", err)
+	}
+	smbShareConfigs := loadSMBShares(configSource, fromConfigFile, cfg.SMBShareFlags)
+	smbHook, err := wireSMB(SMBConfig{
+		Enabled:       cfg.SMBEnabled,
+		NBTBinding:    cfg.SMBNBTBinding,
+		DirectBinding: cfg.SMBDirectBinding,
+		GuestOk:       cfg.SMBGuestOk,
+		Workgroup:     cfg.SMBWorkgroup,
+		ServerName:    cfg.SMBServerName,
+		Shares:        smbShareConfigs,
+		NetBIOS:       nbHook,
+		Shortname:     shortHook,
+	})
+	if err != nil {
+		log.Fatalf("SMB wiring failed: %v", err)
+	}
+
+	// SMB rides on NetBIOS and is not a DDP service either, so it
+	// lives outside the AppleTalk service set. Its lifecycle is
+	// driven directly below alongside IPX/NetBEUI/NetBIOS. The
+	// shortname mapper is consumed via wireSMB; no lifecycle of
+	// its own.
+	_ = shortHook
+
 	r := router.New("router", ports, services)
 
 	if cfg.ParsePackets {
@@ -384,8 +504,55 @@ func main() {
 	}
 	netlog.Info("[MAIN] router away!")
 
+	// IPX, NetBEUI, and NetBIOS each own their own router/port and are
+	// not members of the AppleTalk service set, so their lifecycles are
+	// driven independently from main.go in start order: transports
+	// (IPX, NetBEUI) first, then the layers that consume them.
+	if ipxHook != nil {
+		if err := ipxHook.Start(ctx); err != nil {
+			netlog.Warn("[MAIN][IPX] start failed: %v", err)
+		}
+	}
+	if nbeuiHook != nil {
+		if err := nbeuiHook.Start(ctx); err != nil {
+			netlog.Warn("[MAIN][NetBEUI] start failed: %v", err)
+		}
+	}
+	if nbHook != nil {
+		if err := nbHook.Start(ctx); err != nil {
+			netlog.Warn("[MAIN][NetBIOS] start failed: %v", err)
+		}
+	}
+	if smbHook != nil {
+		if err := smbHook.Start(ctx); err != nil {
+			netlog.Warn("[MAIN][SMB] start failed: %v", err)
+		}
+	}
+
 	<-ctx.Done()
 
+	// Stop in reverse start order so consumers tear down before the
+	// transports they sit on.
+	if smbHook != nil {
+		if err := smbHook.Stop(); err != nil {
+			netlog.Warn("[MAIN][SMB] stop warning: %v", err)
+		}
+	}
+	if nbHook != nil {
+		if err := nbHook.Stop(); err != nil {
+			netlog.Warn("[MAIN][NetBIOS] stop warning: %v", err)
+		}
+	}
+	if nbeuiHook != nil {
+		if err := nbeuiHook.Stop(); err != nil {
+			netlog.Warn("[MAIN][NetBEUI] stop warning: %v", err)
+		}
+	}
+	if ipxHook != nil {
+		if err := ipxHook.Stop(); err != nil {
+			netlog.Warn("[MAIN][IPX] stop warning: %v", err)
+		}
+	}
 	if err := r.Stop(); err != nil {
 		netlog.Warn("[MAIN] stop warning: %v", err)
 	}
