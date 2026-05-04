@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/ObsoleteMadness/ClassicStack/capture"
 	"github.com/ObsoleteMadness/ClassicStack/port/ethertalk"
 	"github.com/ObsoleteMadness/ClassicStack/port/localtalk"
 )
@@ -43,6 +44,10 @@ type flagInputs struct {
 	MacIPNAT        bool
 	MacIPDHCPRelay  bool
 	MacIPLeaseFile  string
+
+	CaptureLocalTalk string
+	CaptureEtherTalk string
+	CaptureSnaplen   uint
 }
 
 // flagsToConfig builds an appConfig from CLI flag values. It is the
@@ -91,6 +96,12 @@ func flagsToConfig(in flagInputs) appConfig {
 	cfg.MacIPNAT = in.MacIPNAT
 	cfg.MacIPDHCPRelay = in.MacIPDHCPRelay
 	cfg.MacIPLeaseFile = in.MacIPLeaseFile
+
+	cfg.Capture = capture.Config{
+		LocalTalk: in.CaptureLocalTalk,
+		EtherTalk: in.CaptureEtherTalk,
+		Snaplen:   uint32(in.CaptureSnaplen),
+	}
 
 	return cfg
 }

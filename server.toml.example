@@ -68,3 +68,11 @@ rebuild_desktop_db = false
 level = "debug"
 parse_packets = true
 log_traffic = false
+
+[Capture]
+# Write a pcap-format capture of in-flight frames for offline analysis in
+# Wireshark. Empty path disables that transport. LocalTalk captures use
+# DLT_LTALK (114); EtherTalk captures use DLT_EN10MB (1).
+localtalk = ""                 # e.g. "captures/classicstack-localtalk.pcap"
+ethertalk = ""                 # e.g. "captures/classicstack-ethertalk.pcap"
+snaplen = 65535                # per-frame snap length

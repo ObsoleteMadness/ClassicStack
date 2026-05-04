@@ -40,3 +40,6 @@ go.work.sum
 
 ._htmlcache/
 .macgarden/
+
+.captures/
+captures/

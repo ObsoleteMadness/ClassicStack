@@ -2,7 +2,10 @@ package ethertalk
 
 import (
 	"net"
+	"sync"
+	"time"
 
+	"github.com/ObsoleteMadness/ClassicStack/capture"
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
 	"github.com/ObsoleteMadness/ClassicStack/port"
 	"github.com/ObsoleteMadness/ClassicStack/port/rawlink"
@@ -33,6 +36,29 @@ type PcapPort struct {
 	writerQueue    chan []byte
 	writerStop     chan struct{}
 	writerDone     chan struct{}
+	captureMu      sync.Mutex
+	captureSink    capture.Sink
+}
+
+// SetCaptureSink installs (or clears, if nil) a pcap-style capture
+// sink. Inbound and outbound Ethernet frames are forwarded post-adapter
+// so the file is consistent across bridge/WiFi shims.
+func (p *PcapPort) SetCaptureSink(s capture.Sink) {
+	p.captureMu.Lock()
+	p.captureSink = s
+	p.captureMu.Unlock()
+}
+
+func (p *PcapPort) capture(frame []byte) {
+	p.captureMu.Lock()
+	s := p.captureSink
+	p.captureMu.Unlock()
+	if s == nil {
+		return
+	}
+	buf := make([]byte, len(frame))
+	copy(buf, frame)
+	capture.Write(s, time.Now(), buf)
 }
 
 func NewPcapPort(opts Options) (*PcapPort, error) {
@@ -187,6 +213,7 @@ func (p *PcapPort) readRun() {
 				netlog.Warn("failed to normalize inbound frame on %s: %v", p.interfaceName, err)
 				continue
 			}
+			p.capture(normalized)
 			p.InboundFrame(normalized)
 		}
 	}
@@ -212,6 +239,7 @@ func (p *PcapPort) writeRun() {
 				netlog.Warn("failed to prepare outbound frame on %s: %v", p.interfaceName, err)
 				continue
 			}
+			p.capture(prepared)
 			if err := p.link.WriteFrame(prepared); err != nil {
 				netlog.Warn("couldn't send packet: %v", err)
 			}
