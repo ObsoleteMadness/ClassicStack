@@ -8,6 +8,8 @@ import (
 	"maps"
 	"slices"
 	"sync"
+
+	"github.com/ObsoleteMadness/ClassicStack/pkg/vfs"
 )
 
 // FileSystemFactory constructs a FileSystem from a normalized
@@ -80,11 +82,9 @@ type FileSystemCapabilities struct {
 	ReadOnlyState bool
 }
 
-type File interface {
-	ReadAt(p []byte, off int64) (n int, err error)
-	WriteAt(p []byte, off int64) (n int, err error)
-	Truncate(size int64) error
-	Close() error
-	Stat() (fs.FileInfo, error)
-	Sync() error
-}
+// File is AFP's per-handle file contract. It is a type alias for the
+// shared pkg/vfs.File so that backends registered with pkg/vfs can be
+// used here without an extra adapter, and so AFP-side code that
+// cares about handle methods compiles against the same interface a
+// generic VFS backend implements.
+type File = vfs.File
