@@ -6,6 +6,7 @@ import (
 	"context"
 
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	netbiosproto "github.com/ObsoleteMadness/ClassicStack/protocol/netbios"
 	"github.com/ObsoleteMadness/ClassicStack/service/netbios"
 	"github.com/ObsoleteMadness/ClassicStack/service/netbios/over_ipx"
 	"github.com/ObsoleteMadness/ClassicStack/service/netbios/over_netbeui"
@@ -48,10 +49,11 @@ func selectNetBIOSTransports(cfg NetBIOSConfig) []netbios.Transport {
 				netlog.Warn("[MAIN][NetBIOS] transport %q skipped: NetBEUI port not available", name)
 			}
 		case "ipx":
-			if cfg.IPX != nil && cfg.IPX.Router() != nil {
-				out = append(out, over_ipx.NewTransport(cfg.IPX.Router()))
+			if cfg.IPX != nil && cfg.IPX.Router() != nil && cfg.IPX.SAP() != nil {
+				nbName := netbiosproto.NewName(cfg.ServerName, netbiosproto.NameTypeFileServer)
+				out = append(out, over_ipx.NewTransport(cfg.IPX.Router(), cfg.IPX.SAP(), nbName))
 			} else {
-				netlog.Warn("[MAIN][NetBIOS] transport %q skipped: IPX router not available", name)
+				netlog.Warn("[MAIN][NetBIOS] transport %q skipped: IPX router/SAP not available", name)
 			}
 		default:
 			netlog.Warn("[MAIN][NetBIOS] unknown transport %q, ignoring", name)

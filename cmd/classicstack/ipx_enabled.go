@@ -24,6 +24,7 @@ type ipxHookEnabled struct {
 }
 
 func (h *ipxHookEnabled) Router() routeripx.Router { return h.router }
+func (h *ipxHookEnabled) SAP() *ipxsvc.SAPService  { return h.sap }
 
 func (h *ipxHookEnabled) Start(ctx context.Context) error {
 	if h.port != nil {
