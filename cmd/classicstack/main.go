@@ -419,9 +419,11 @@ func main() {
 	}
 	services = append(services, afpHook.Services()...)
 
+	// IPX and NetBEUI each open their own pcap rawlink in wireIPX /
+	// wireNetBEUI. They don't share with EtherTalk; the kernel filter
+	// per handle keeps the cross-protocol traffic isolated.
 	ipxHook, err := wireIPX(IPXConfig{
 		Enabled:         cfg.IPXEnabled,
-		Rawlink:         nil, // rawlink wiring lands with the real port build-out
 		Interface:       cfg.IPXInterface,
 		Framing:         cfg.IPXFraming,
 		InternalNetwork: cfg.IPXInternalNetwork,
@@ -431,7 +433,6 @@ func main() {
 	}
 	nbeuiHook, err := wireNetBEUI(NetBEUIConfig{
 		Enabled:   cfg.NetBEUIEnabled,
-		Rawlink:   nil,
 		Interface: cfg.NetBEUIInterface,
 	})
 	if err != nil {

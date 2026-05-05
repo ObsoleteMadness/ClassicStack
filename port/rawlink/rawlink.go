@@ -67,21 +67,3 @@ type FilterableLink interface {
 	SetFilter(expr string) error
 }
 
-// MultiplexableLink is an optional extension of RawLink for implementations
-// that support pub/sub frame distribution to multiple consumers.
-type MultiplexableLink interface {
-	// RegisterConsumer registers a consumer for frames matching the filter.
-	// Returns a cancel function to unregister the consumer.
-	RegisterConsumer(filter FrameFilter, consumer FrameConsumer) (cancel func())
-}
-
-// RegisterConsumer is a convenience helper that registers a consumer if the link
-// implements MultiplexableLink. If it does not, it returns a no-op cancel function.
-// This serves as a stub for the consumer API until the rawlink multiplexer
-// is fully implemented.
-func RegisterConsumer(rl RawLink, filter FrameFilter, consumer FrameConsumer) (cancel func()) {
-	if ml, ok := rl.(MultiplexableLink); ok {
-		return ml.RegisterConsumer(filter, consumer)
-	}
-	return func() {}
-}
