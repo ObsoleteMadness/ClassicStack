@@ -1,11 +1,59 @@
 package netbios
 
-import "errors"
+import (
+	"errors"
+	"strings"
+)
 
 var ErrNotImplemented = errors.New("not implemented")
 
-// Name represents a 16-byte padded NetBIOS name.
-type Name [16]byte
+// NameLength is the wire length of a NetBIOS name. The 16th byte is
+// the *type* code (workstation, server, group, etc.) — not part of
+// the human-visible name.
+const NameLength = 16
+
+// Standard NetBIOS name type bytes. The 16th byte of every name on
+// the wire selects the resource type; clients form a "name + type"
+// composite when claiming or resolving.
+const (
+	NameTypeWorkstation uint8 = 0x00
+	NameTypeFileServer  uint8 = 0x20 // SMB / file-server
+	NameTypeGroup       uint8 = 0x1E
+)
+
+// Name represents a 16-byte padded NetBIOS name. Bytes 0..14 carry
+// the human-visible name (uppercase, space-padded); byte 15 is the
+// type code (NameTypeWorkstation, NameTypeFileServer, ...).
+type Name [NameLength]byte
+
+// NewName builds a NetBIOS name from a human-facing string and a
+// type byte. The name is uppercased, truncated to 15 bytes, and
+// space-padded; the type goes in byte 15.
+func NewName(name string, typ uint8) Name {
+	var n Name
+	upper := strings.ToUpper(strings.TrimSpace(name))
+	if len(upper) > NameLength-1 {
+		upper = upper[:NameLength-1]
+	}
+	for i := range NameLength - 1 {
+		if i < len(upper) {
+			n[i] = upper[i]
+		} else {
+			n[i] = ' '
+		}
+	}
+	n[NameLength-1] = typ
+	return n
+}
+
+// String renders the human-visible portion of the name with trailing
+// spaces trimmed. The type byte is not included.
+func (n Name) String() string {
+	return strings.TrimRight(string(n[:NameLength-1]), " ")
+}
+
+// Type returns the type byte (byte 15).
+func (n Name) Type() uint8 { return n[NameLength-1] }
 
 // Datagram represents a NetBIOS datagram.
 type Datagram struct {
