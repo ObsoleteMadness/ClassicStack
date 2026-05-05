@@ -12,6 +12,10 @@ import (
 // active. In TOML mode it reads [SMB.Volumes.<key>] sections; in flag
 // mode it parses "Name:Path" entries from -smb-share. The two sources
 // are not merged — flag-mode is mutually exclusive with -config.
+//
+// The legacy [SMB.Shares.<key>] table key is also accepted for now,
+// with a one-time deprecation warning. Future commits may drop the
+// alias.
 func loadSMBShares(src config.Source, fromConfigFile bool, flagShares []string) []smb.ShareConfig {
 	if fromConfigFile {
 		return loadSMBSharesFromConfig(src)
@@ -20,17 +24,26 @@ func loadSMBShares(src config.Source, fromConfigFile bool, flagShares []string) 
 }
 
 func loadSMBSharesFromConfig(src config.Source) []smb.ShareConfig {
-	if src.K == nil || !src.K.Exists("SMB.Volumes") {
+	if src.K == nil {
 		return nil
 	}
-	raw := src.K.StringMap("SMB.Volumes")
-	if len(raw) == 0 {
+	prefix := ""
+	switch {
+	case src.K.Exists("SMB.Volumes"):
+		prefix = "SMB.Volumes"
+	case src.K.Exists("SMB.Shares"):
+		prefix = "SMB.Shares"
+		netlog.Warn("[MAIN][SMB] [SMB.Shares.*] is deprecated; rename to [SMB.Volumes.*]")
+	default:
 		return nil
 	}
-	keys := src.K.MapKeys("SMB.Volumes")
+	keys := src.K.MapKeys(prefix)
+	if len(keys) == 0 {
+		return nil
+	}
 	out := make([]smb.ShareConfig, 0, len(keys))
 	for _, key := range keys {
-		base := "SMB.Volumes." + key
+		base := prefix + "." + key
 		share := smb.ShareConfig{
 			Name:     stringWithDefault(src.K, base+".name", key),
 			Path:     stringWithDefault(src.K, base+".path", ""),
@@ -38,7 +51,7 @@ func loadSMBSharesFromConfig(src config.Source) []smb.ShareConfig {
 			ReadOnly: boolWithDefault(src.K, base+".read_only", false),
 		}
 		if strings.TrimSpace(share.Path) == "" {
-			netlog.Warn("[MAIN][SMB] [SMB.Volumes.%s] missing path; skipping", key)
+			netlog.Warn("[MAIN][SMB] [%s.%s] missing path; skipping", prefix, key)
 			continue
 		}
 		out = append(out, share)

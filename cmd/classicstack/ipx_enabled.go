@@ -38,7 +38,7 @@ func (h *ipxHookEnabled) Start(ctx context.Context) error {
 	if err := h.sap.Start(ctx); err != nil {
 		return err
 	}
-	netlog.Info("[MAIN][IPX] router up; RIP+SAP registered (stub)")
+	netlog.Info("[MAIN][IPX] router up; RIP+SAP active")
 	return nil
 }
 

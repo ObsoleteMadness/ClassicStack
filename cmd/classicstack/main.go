@@ -421,19 +421,32 @@ func main() {
 
 	// IPX and NetBEUI each open their own pcap rawlink in wireIPX /
 	// wireNetBEUI. They don't share with EtherTalk; the kernel filter
-	// per handle keeps the cross-protocol traffic isolated.
+	// per handle keeps the cross-protocol traffic isolated. When no
+	// interface is configured for them explicitly, fall back to
+	// EtherTalk's — the typical deployment runs every protocol on
+	// the same physical NIC.
+	ipxResolvedIface := cfg.IPXInterface
+	if cfg.IPXEnabled && strings.TrimSpace(ipxResolvedIface) == "" && cfg.EtherTalk.Device != "" {
+		ipxResolvedIface = cfg.EtherTalk.Device
+		netlog.Info("[MAIN][IPX] no -ipx-interface set; reusing EtherTalk interface %s", ipxResolvedIface)
+	}
 	ipxHook, err := wireIPX(IPXConfig{
 		Enabled:         cfg.IPXEnabled,
-		Interface:       cfg.IPXInterface,
+		Interface:       ipxResolvedIface,
 		Framing:         cfg.IPXFraming,
 		InternalNetwork: cfg.IPXInternalNetwork,
 	})
 	if err != nil {
 		log.Fatalf("IPX wiring failed: %v", err)
 	}
+	netbeuiResolvedIface := cfg.NetBEUIInterface
+	if cfg.NetBEUIEnabled && strings.TrimSpace(netbeuiResolvedIface) == "" && cfg.EtherTalk.Device != "" {
+		netbeuiResolvedIface = cfg.EtherTalk.Device
+		netlog.Info("[MAIN][NetBEUI] no -netbeui-interface set; reusing EtherTalk interface %s", netbeuiResolvedIface)
+	}
 	nbeuiHook, err := wireNetBEUI(NetBEUIConfig{
 		Enabled:   cfg.NetBEUIEnabled,
-		Interface: cfg.NetBEUIInterface,
+		Interface: netbeuiResolvedIface,
 	})
 	if err != nil {
 		log.Fatalf("NetBEUI wiring failed: %v", err)

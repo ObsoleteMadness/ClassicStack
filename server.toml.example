@@ -79,13 +79,13 @@ snaplen = 65535                # per-frame snap length
 
 # [IPX]
 # enabled = false
-# interface = ""
+# interface = ""                # blank: reuse [EtherTalk] device
 # framing = "ethernet_ii"        # ethernet_ii|raw_802_3|llc|snap
-# internal_network = ""
+# internal_network = ""          # 8 hex digits; blank: 00000001
 
 # [NetBEUI]
 # enabled = false
-# interface = ""
+# interface = ""                # blank: reuse [EtherTalk] device
 
 # [NetBIOS]
 # enabled = false
