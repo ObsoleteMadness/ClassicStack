@@ -212,6 +212,7 @@ func (s *Service) handleClose(req []byte, conn *connState) []byte {
 		if handle != nil && handle.file != nil {
 			handle.file.Close()
 		}
+		s.releaseLocksForFIDLocked(conn, fid)
 		delete(conn.fids, fid)
 	}
 	conn.mu.Unlock()

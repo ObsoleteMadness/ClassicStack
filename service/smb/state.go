@@ -19,6 +19,7 @@ type connState struct {
 	tids          map[uint16]treeSlot
 	fids          map[uint16]*fileHandle
 	searches      map[uint16]*searchHandle
+	lockTables    map[string]*lockTable
 	nextTID       uint16
 	nextFID       uint16
 	nextSID       uint16
@@ -94,9 +95,10 @@ func (s *Service) ensureConn(connID connKey) *connState {
 		return conn
 	}
 	conn := &connState{
-		tids:     map[uint16]treeSlot{},
-		fids:     map[uint16]*fileHandle{},
-		searches: map[uint16]*searchHandle{},
+		tids:       map[uint16]treeSlot{},
+		fids:       map[uint16]*fileHandle{},
+		searches:   map[uint16]*searchHandle{},
+		lockTables: map[string]*lockTable{},
 	}
 	s.conns[connID] = conn
 	return conn
@@ -123,6 +125,7 @@ func (s *Service) closeConnFiles(conn *connState) {
 	conn.fids = map[uint16]*fileHandle{}
 	conn.searches = map[uint16]*searchHandle{}
 	conn.tids = map[uint16]treeSlot{}
+	conn.lockTables = map[string]*lockTable{}
 	conn.mu.Unlock()
 	for _, h := range files {
 		_ = h.file.Close()
