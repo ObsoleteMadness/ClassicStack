@@ -75,6 +75,7 @@ log_traffic = false
 # DLT_LTALK (114); EtherTalk captures use DLT_EN10MB (1).
 localtalk = ""                 # e.g. "captures/classicstack-localtalk.pcap"
 ethertalk = ""                 # e.g. "captures/classicstack-ethertalk.pcap"
+ipx = ""                       # e.g. "captures/classicstack-ipx.pcap"
 snaplen = 65535                # per-frame snap length
 
 # [IPX]
@@ -91,8 +92,6 @@ snaplen = 65535                # per-frame snap length
 # enabled = false
 # transports = ["netbeui", "ipx", "tcp"]
 # scope_id = ""
-# server_name = "ClassicStack"
-# workgroup = "WORKGROUP"
 
 # [SMB]
 # enabled = false

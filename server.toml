@@ -76,4 +76,45 @@ log_traffic = false
 # DLT_LTALK (114); EtherTalk captures use DLT_EN10MB (1).
 localtalk = "./captures/afp-localtalk.pcap"                 # e.g. "captures/classicstack-localtalk.pcap"
 ethertalk = "./captures/afp-ethertalk.pcap"                 # e.g. "captures/classicstack-ethertalk.pcap"
+ipx = "./captures/ipx.pcap"                                 # IPX rawlink capture (same DLT_EN10MB link type)
 snaplen = 65535                # per-frame snap length
+
+[IPX]
+enabled = true
+interface = "\\Device\\NPF_{B7D4E073-2185-4912-BBE8-3948C6636D02}"
+framing = "ethernet_ii"        # ethernet_ii|raw_802_3|llc|snap
+# internal_network = ""
+
+# [NetBEUI]
+# enabled = false
+# interface = ""
+
+[NetBIOS]
+enabled = true
+# transports = ["netbeui", "ipx", "tcp"]
+transports = ["ipx"]
+# scope_id = ""
+
+[SMB]
+enabled = true
+# nbt_binding = ":139"
+# direct_binding = ":445"
+# guest_ok = true
+server_name = "ClassicStack"
+workgroup = "WORKGROUP"
+
+
+[SMB.Volumes.Public]
+name = "Public"
+path = "C:\\Mac"
+fs_type = "local_fs"
+read_only = false
+
+# [Shortname]
+# enabled = false
+# backend = "memory"             # memory|sqlite
+# db_path = "shortname.db"
+
+# [VFSBus]
+# subscriber_buffer = 256
+# drop_warn_interval = "30s"
