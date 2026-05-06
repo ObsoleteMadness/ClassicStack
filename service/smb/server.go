@@ -14,6 +14,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
 	"sync"
 	"time"
@@ -1077,6 +1078,11 @@ func (s *Service) HandleSessionContext(packet *netbiosproto.SessionPacket, ctx n
 			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
 		respPayload = s.handleCheckDirectory(packet.Payload, conn)
 
+	case CommandSearch:
+		netlog.Debug("[SMB][Session] search src=%x.%x:%02x%02x",
+			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
+		respPayload = s.handleSearch(packet.Payload, conn)
+
 	default:
 		netlog.Debug("[SMB][Session] unsupported command=0x%02x src=%x.%x:%02x%02x",
 			cmd, ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
@@ -1421,6 +1427,200 @@ func (s *Service) handleCheckDirectory(req []byte, conn *connState) []byte {
 	}
 
 	return buildSimpleSuccessResponse(req)
+}
+
+// handleSearch (0x81) performs directory enumeration with pattern matching.
+// Returns entries in DOS 8.3 format suitable for Win9x/DOS clients.
+func (s *Service) handleSearch(req []byte, conn *connState) []byte {
+	if len(req) < smbHeaderLen+11 {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	tid := binary.LittleEndian.Uint16(req[smbOffTID : smbOffTID+2])
+
+	conn.mu.Lock()
+	slot, ok := conn.tids[tid]
+	conn.mu.Unlock()
+	if !ok {
+		return buildSMBErrorResponse(req, smbStatusBadTID)
+	}
+
+	s.mu.Lock()
+	fs, ok := s.shareFSes[slot.shareIdx]
+	s.mu.Unlock()
+	if !ok || fs == nil {
+		return buildSMBErrorResponse(req, smbStatusBadTID)
+	}
+
+	// Parse request parameters
+	wct := int(req[smbHeaderLen])
+	if wct < 2 {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	attrs := binary.LittleEndian.Uint16(req[smbHeaderLen+1 : smbHeaderLen+3])
+	pattern, ok := parseSMBPath(req)
+	if !ok || pattern == "" {
+		pattern = "*"
+	}
+
+	// For now, do a simple search - don't handle resume keys yet
+	// Get the directory part of the pattern
+	lastSlash := strings.LastIndex(pattern, "\\")
+	var dirPath, filePattern string
+	if lastSlash >= 0 {
+		dirPath = pattern[:lastSlash]
+		filePattern = pattern[lastSlash+1:]
+	} else {
+		dirPath = ""
+		filePattern = pattern
+	}
+
+	// Read directory
+	entries, err := fs.ReadDir(dirPath)
+	if err != nil {
+		return buildSearchEmptyResponse(req)
+	}
+
+	// Filter and match entries
+	var results []searchResultEntry
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		// Filter by attributes
+		if !matchesSearchAttrs(info, attrs) {
+			continue
+		}
+
+		// Match filename pattern (simple: check if matches *.* or specific name)
+		if !matchesPattern(entry.Name(), filePattern) {
+			continue
+		}
+
+		results = append(results, searchResultEntry{
+			name:       entry.Name(),
+			size:       info.Size(),
+			modTime:    info.ModTime(),
+			isDir:      info.IsDir(),
+			attributes: getSearchAttrs(info),
+		})
+
+		if len(results) >= 10 {
+			break
+		}
+	}
+
+	return buildSearchResponse(req, results)
+}
+
+type searchResultEntry struct {
+	name       string
+	size       int64
+	modTime    time.Time
+	isDir      bool
+	attributes uint16
+}
+
+func matchesSearchAttrs(info fs.FileInfo, searchAttrs uint16) bool {
+	// searchAttrs indicates which types of files to include
+	// If bit not set, the file type should not be included
+	if info.IsDir() {
+		return (searchAttrs & SearchAttributeDirectory) != 0
+	}
+
+	// Regular files always match unless only searching for specific types
+	// that don't apply to normal files
+	return true
+}
+
+func matchesPattern(name string, pattern string) bool {
+	if pattern == "*" || pattern == "*.*" {
+		return true
+	}
+	// Simple pattern matching: just check for exact match or wildcard suffix
+	if strings.HasSuffix(pattern, "*") {
+		prefix := strings.TrimSuffix(pattern, "*")
+		return strings.HasPrefix(strings.ToLower(name), strings.ToLower(prefix))
+	}
+	return strings.ToLower(name) == strings.ToLower(pattern)
+}
+
+func getSearchAttrs(info fs.FileInfo) uint16 {
+	var attrs uint16
+	if info.IsDir() {
+		attrs |= SearchAttributeDirectory
+	}
+	// TODO: check file mode/permissions for read-only, hidden, system, archive
+	attrs |= SearchAttributeArchive
+	return attrs
+}
+
+func buildSearchEmptyResponse(req []byte) []byte {
+	if len(req) < smbHeaderLen || string(req[0:4]) != "\xffSMB" {
+		return nil
+	}
+
+	out := make([]byte, smbHeaderLen+1+2+2)
+	copy(out[:smbHeaderLen], req[:smbHeaderLen])
+	binary.LittleEndian.PutUint32(out[smbOffStatus:smbOffStatus+4], smbStatusSuccess)
+	out[smbOffFlags] |= 0x80
+	out[smbHeaderLen] = 1 // WCT
+	w := out[smbHeaderLen+1:]
+	binary.LittleEndian.PutUint16(w[0:2], 0) // EntryCount = 0
+	binary.LittleEndian.PutUint16(w[2:4], 0) // ByteCount = 0
+	return out
+}
+
+func buildSearchResponse(req []byte, entries []searchResultEntry) []byte {
+	if len(req) < smbHeaderLen || string(req[0:4]) != "\xffSMB" {
+		return nil
+	}
+
+	if len(entries) == 0 {
+		return buildSearchEmptyResponse(req)
+	}
+
+	// Calculate data size
+	var dataBuf bytes.Buffer
+	for _, entry := range entries {
+		// ResumeKey (21 bytes)
+		dataBuf.Write(make([]byte, 21)) // Placeholder resume key
+
+		// Attributes (2 bytes)
+		var attrsBytes [2]byte
+		binary.LittleEndian.PutUint16(attrsBytes[:], entry.attributes)
+		dataBuf.Write(attrsBytes[:])
+
+		// LastWriteTime (4 bytes, DOS format)
+		timeVal := uint32(0) // TODO: convert time.Time to DOS format
+		var timeBytes [4]byte
+		binary.LittleEndian.PutUint32(timeBytes[:], timeVal)
+		dataBuf.Write(timeBytes[:])
+
+		// FileSize (4 bytes)
+		var sizeBytes [4]byte
+		binary.LittleEndian.PutUint32(sizeBytes[:], uint32(entry.size))
+		dataBuf.Write(sizeBytes[:])
+
+		// Filename (NUL-terminated)
+		dataBuf.WriteString(entry.name)
+		dataBuf.WriteByte(0)
+	}
+
+	dataBytes := dataBuf.Bytes()
+	out := make([]byte, smbHeaderLen+1+2+2+len(dataBytes))
+	copy(out[:smbHeaderLen], req[:smbHeaderLen])
+	binary.LittleEndian.PutUint32(out[smbOffStatus:smbOffStatus+4], smbStatusSuccess)
+	out[smbOffFlags] |= 0x80
+	out[smbHeaderLen] = 1 // WCT
+	w := out[smbHeaderLen+1:]
+	binary.LittleEndian.PutUint16(w[0:2], uint16(len(entries)))
+	binary.LittleEndian.PutUint16(w[2:4], uint16(len(dataBytes)))
+	copy(w[4:], dataBytes)
+	return out
 }
 
 func parseTreeConnectShareName(req []byte) (string, bool) {
