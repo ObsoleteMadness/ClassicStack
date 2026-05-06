@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ObsoleteMadness/ClassicStack/capture"
 	portipx "github.com/ObsoleteMadness/ClassicStack/port/ipx"
 	ipxproto "github.com/ObsoleteMadness/ClassicStack/protocol/ipx"
 	routeripx "github.com/ObsoleteMadness/ClassicStack/router/ipx"
@@ -34,6 +35,7 @@ func (p *recordingPort) SetDeliveryCallback(cb portipx.DeliveryCallback) {
 	p.cb = cb
 	p.mu.Unlock()
 }
+func (p *recordingPort) SetCaptureSink(_ capture.Sink) {}
 
 func setupRIPRouter(t *testing.T) (routeripx.Router, *recordingPort) {
 	t.Helper()

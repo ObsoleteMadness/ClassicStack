@@ -18,7 +18,7 @@ import (
 type LinkType = layers.LinkType
 
 const (
-	LinkTypeLocalTalk LinkType = layers.LinkTypeLTalk   // DLT_LTALK = 114
+	LinkTypeLocalTalk LinkType = layers.LinkTypeLTalk    // DLT_LTALK = 114
 	LinkTypeEthernet  LinkType = layers.LinkTypeEthernet // DLT_EN10MB = 1
 )
 

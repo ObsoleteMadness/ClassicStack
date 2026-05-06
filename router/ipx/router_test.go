@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/ObsoleteMadness/ClassicStack/capture"
 	"github.com/ObsoleteMadness/ClassicStack/port/ipx"
 	protocol "github.com/ObsoleteMadness/ClassicStack/protocol/ipx"
 )
@@ -26,9 +27,9 @@ func (f *fakeHandler) HandleDatagram(d *protocol.Datagram) {
 // fakePort captures Send calls and exposes a SetDeliveryCallback hook
 // the test can drive directly.
 type fakePort struct {
-	mu     sync.Mutex
-	sent   []*protocol.Datagram
-	cb     ipx.DeliveryCallback
+	mu   sync.Mutex
+	sent []*protocol.Datagram
+	cb   ipx.DeliveryCallback
 }
 
 func (p *fakePort) Start() error { return nil }
@@ -44,6 +45,7 @@ func (p *fakePort) SetDeliveryCallback(cb ipx.DeliveryCallback) {
 	p.cb = cb
 	p.mu.Unlock()
 }
+func (p *fakePort) SetCaptureSink(_ capture.Sink) {}
 
 func ours() ([4]byte, [6]byte) {
 	return [4]byte{0xCA, 0xFE, 0xF0, 0x0D}, [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x42}

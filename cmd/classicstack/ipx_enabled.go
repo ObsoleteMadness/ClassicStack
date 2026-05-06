@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/ObsoleteMadness/ClassicStack/capture"
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
 	"github.com/ObsoleteMadness/ClassicStack/pkg/hwaddr"
 	"github.com/ObsoleteMadness/ClassicStack/port/ipx"
@@ -21,6 +22,7 @@ type ipxHookEnabled struct {
 	port   ipx.Port
 	rip    *ipxsvc.RIPService
 	sap    *ipxsvc.SAPService
+	sink   *capture.PcapSink
 }
 
 func (h *ipxHookEnabled) Router() routeripx.Router { return h.router }
@@ -52,6 +54,10 @@ func (h *ipxHookEnabled) Stop() error {
 	if h.port != nil {
 		_ = h.port.Stop()
 	}
+	if h.sink != nil {
+		_ = h.sink.Close()
+		h.sink = nil
+	}
 	return nil
 }
 
@@ -82,6 +88,15 @@ func wireIPX(cfg IPXConfig) (IPXHook, error) {
 	if link != nil {
 		framing := parseIPXFraming(cfg.Framing)
 		hook.port = ipx.NewPortWithFraming(link, framing)
+		if strings.TrimSpace(cfg.CapturePath) != "" {
+			sink, err := capture.NewPcapSink(cfg.CapturePath, capture.LinkTypeEthernet, cfg.CaptureSnaplen)
+			if err != nil {
+				return nil, fmt.Errorf("opening IPX capture sink %q: %w", cfg.CapturePath, err)
+			}
+			hook.sink = sink
+			hook.port.SetCaptureSink(sink)
+			netlog.Info("[CAPTURE] IPX frames -> %s", cfg.CapturePath)
+		}
 		router.AddPort(hook.port)
 
 		node, ok := resolveIPXNodeFromInterface(cfg.Interface)

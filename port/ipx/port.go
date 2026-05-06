@@ -10,7 +10,9 @@ package ipx
 import (
 	"errors"
 	"sync"
+	"time"
 
+	"github.com/ObsoleteMadness/ClassicStack/capture"
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
 	"github.com/ObsoleteMadness/ClassicStack/port/rawlink"
 	protocol "github.com/ObsoleteMadness/ClassicStack/protocol/ipx"
@@ -70,6 +72,8 @@ type Port interface {
 	// SetDeliveryCallback installs the inbound delivery callback. May
 	// be called before or after Start.
 	SetDeliveryCallback(cb DeliveryCallback)
+	// SetCaptureSink installs an optional raw-frame capture sink.
+	SetCaptureSink(sink capture.Sink)
 }
 
 // portImpl is the rawlink-backed IPX port.
@@ -79,6 +83,7 @@ type portImpl struct {
 
 	mu sync.RWMutex
 	cb DeliveryCallback
+	cs capture.Sink
 
 	stopOnce   sync.Once
 	readerStop chan struct{}
@@ -148,12 +153,22 @@ func (p *portImpl) sendEthernetII(d *protocol.Datagram, payload []byte) error {
 	frame[12] = 0x81
 	frame[13] = 0x37
 	copy(frame[14:], payload)
+	p.mu.RLock()
+	sink := p.cs
+	p.mu.RUnlock()
+	capture.Write(sink, time.Now(), frame)
 	return p.link.WriteFrame(frame)
 }
 
 func (p *portImpl) SetDeliveryCallback(cb DeliveryCallback) {
 	p.mu.Lock()
 	p.cb = cb
+	p.mu.Unlock()
+}
+
+func (p *portImpl) SetCaptureSink(sink capture.Sink) {
+	p.mu.Lock()
+	p.cs = sink
 	p.mu.Unlock()
 }
 
@@ -175,6 +190,10 @@ func (p *portImpl) readLoop() {
 			netlog.Warn("[IPX] read error: %v", err)
 			continue
 		}
+		p.mu.RLock()
+		sink := p.cs
+		p.mu.RUnlock()
+		capture.Write(sink, time.Now(), frame)
 		p.handleFrame(frame)
 	}
 }

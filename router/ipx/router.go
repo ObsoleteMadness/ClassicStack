@@ -14,6 +14,7 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
 	"github.com/ObsoleteMadness/ClassicStack/port/ipx"
 	protocol "github.com/ObsoleteMadness/ClassicStack/protocol/ipx"
 )
@@ -23,14 +24,13 @@ import (
 var BroadcastNode = [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
 
 // DefaultNetwork is the fall-back IPX network number when the
-// operator has not configured one. It is deliberately distinct from
-// the all-zeros placeholder ("local segment, unknown") so a single-
-// segment ClassicStack deployment works out of the box without forcing
-// the operator to think about IPX network numbers.
-//
-// Multi-segment deployments must configure an explicit number per
-// segment; the default is only safe on an isolated network.
-var DefaultNetwork = [4]byte{0x00, 0x00, 0x00, 0x01}
+// operator has not configured one. The all-zeros value ("local
+// segment, unknown") matches the network number that Win98/NWLink
+// uses before a NetWare server assigns a real network number, so
+// ClassicStack and its clients appear on the same segment and can
+// reach each other without routing. Operators running alongside a
+// real NetWare server should configure an explicit network number.
+var DefaultNetwork = [4]byte{0x00, 0x00, 0x00, 0x00}
 
 // ErrNotImplemented is returned by stub call sites that have not yet
 // been filled in.
@@ -71,11 +71,11 @@ type Router interface {
 }
 
 type routerImpl struct {
-	mu       sync.RWMutex
-	network  [4]byte
-	node     [6]byte
-	sockets  map[[2]byte]SocketHandler
-	ports    []ipx.Port
+	mu      sync.RWMutex
+	network [4]byte
+	node    [6]byte
+	sockets map[[2]byte]SocketHandler
+	ports   []ipx.Port
 }
 
 // NewRouter returns a router with the default network number and a
@@ -114,6 +114,7 @@ func (r *routerImpl) RegisterSocket(socket [2]byte, handler SocketHandler) error
 		return errors.New("ipx: socket already registered")
 	}
 	r.sockets[socket] = handler
+	netlog.Debug("[IPX][Router] registered socket=%02x%02x", socket[0], socket[1])
 	return nil
 }
 
@@ -142,6 +143,12 @@ func (r *routerImpl) Send(d *protocol.Datagram) error {
 		d.SrcNode = r.node
 	}
 	r.mu.RUnlock()
+	netlog.Debug("[IPX][Router] tx type=0x%02x src=%x.%x:%02x%02x dst=%x.%x:%02x%02x payload=%d",
+		d.Type,
+		d.SrcNet, d.SrcNode, d.SrcSock[0], d.SrcSock[1],
+		d.DstNet, d.DstNode, d.DstSock[0], d.DstSock[1],
+		len(d.Payload),
+	)
 	return port.Send(d)
 }
 
@@ -150,13 +157,33 @@ func (r *routerImpl) Send(d *protocol.Datagram) error {
 // wire; the kernel filter only narrows by framing, not by destination)
 // before dispatching to the registered socket handler.
 func (r *routerImpl) Inbound(d *protocol.Datagram) {
-	if !r.acceptsDest(d.DstNet, d.DstNode) {
+	accepted, reason := r.acceptsDest(d.DstNet, d.DstNode)
+	if !accepted {
+		r.mu.RLock()
+		ours := r.network
+		myNode := r.node
+		r.mu.RUnlock()
+		netlog.Debug("[IPX][Router] drop inbound (dest mismatch: %s) type=0x%02x src=%x.%x:%02x%02x dst=%x.%x:%02x%02x local=%x.%x payload=%d",
+			reason,
+			d.Type,
+			d.SrcNet, d.SrcNode, d.SrcSock[0], d.SrcSock[1],
+			d.DstNet, d.DstNode, d.DstSock[0], d.DstSock[1],
+			ours, myNode,
+			len(d.Payload),
+		)
 		return
 	}
+	netlog.Debug("[IPX][Router] rx type=0x%02x src=%x.%x:%02x%02x dst=%x.%x:%02x%02x payload=%d",
+		d.Type,
+		d.SrcNet, d.SrcNode, d.SrcSock[0], d.SrcSock[1],
+		d.DstNet, d.DstNode, d.DstSock[0], d.DstSock[1],
+		len(d.Payload),
+	)
 	r.mu.RLock()
 	handler, ok := r.sockets[d.DstSock]
 	r.mu.RUnlock()
 	if !ok {
+		netlog.Debug("[IPX][Router] no handler for socket=%02x%02x", d.DstSock[0], d.DstSock[1])
 		return
 	}
 	handler.HandleDatagram(d)
@@ -166,19 +193,22 @@ func (r *routerImpl) Inbound(d *protocol.Datagram) {
 // identity or is a broadcast address. Network 0 ("local segment,
 // unknown") is also accepted because some clients send name-claim
 // broadcasts that way before learning the network number.
-func (r *routerImpl) acceptsDest(network [4]byte, node [6]byte) bool {
+func (r *routerImpl) acceptsDest(network [4]byte, node [6]byte) (bool, string) {
 	r.mu.RLock()
 	ours := r.network
 	myNode := r.node
 	r.mu.RUnlock()
 
 	if !isZero4(network) && network != ours {
-		return false
+		return false, "network"
 	}
 	if node == BroadcastNode {
-		return true
+		return true, ""
 	}
-	return node == myNode
+	if node != myNode {
+		return false, "node"
+	}
+	return true, ""
 }
 
 func isZero4(b [4]byte) bool { return b == [4]byte{} }

@@ -29,4 +29,6 @@ type IPXConfig struct {
 	Interface       string
 	Framing         string
 	InternalNetwork string
+	CapturePath     string
+	CaptureSnaplen  uint32
 }
