@@ -14,6 +14,7 @@ type NetBEUIHook interface {
 	Start(ctx context.Context) error
 	Stop() error
 	Port() netbeui.Port
+	MAC() [6]byte
 }
 
 // NetBEUIConfig collects the values wireNetBEUI needs.

@@ -12,6 +12,7 @@ package netbios
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	protocol "github.com/ObsoleteMadness/ClassicStack/protocol/netbios"
@@ -26,6 +27,51 @@ var ErrNotImplemented = errors.New("netbios: not implemented")
 type CommandHandler interface {
 	HandleSession(packet *protocol.SessionPacket) error
 	HandleDatagram(d *protocol.Datagram) error
+}
+
+// DatagramEndpoint identifies a transport-level remote endpoint for
+// a NetBIOS datagram.
+type DatagramEndpoint struct {
+	Network [4]byte
+	Node    [6]byte
+	Socket  [2]byte
+}
+
+// DatagramContext carries transport metadata for an inbound NetBIOS
+// datagram when the underlying transport can provide it.
+type DatagramContext struct {
+	Local  DatagramEndpoint
+	Remote DatagramEndpoint
+}
+
+// SessionContext carries transport metadata for an inbound NetBIOS
+// session message when the underlying transport can provide it.
+type SessionContext struct {
+	Local         DatagramEndpoint
+	Remote        DatagramEndpoint
+	SourceConnID  uint16
+	DestConnID    uint16
+	Sequence      uint16
+	ConnectionCtl uint8
+}
+
+// ContextualDatagramHandler is an optional extension implemented by
+// handlers that need transport metadata for reply routing.
+type ContextualDatagramHandler interface {
+	HandleDatagramContext(d *protocol.Datagram, ctx DatagramContext) error
+}
+
+// ContextualSessionHandler is an optional extension implemented by
+// handlers that need transport metadata and/or need to return a
+// session-layer response packet.
+type ContextualSessionHandler interface {
+	HandleSessionContext(packet *protocol.SessionPacket, ctx SessionContext) (*protocol.SessionPacket, error)
+}
+
+// DirectedDatagramTransport is implemented by transports that can
+// route a NetBIOS datagram back to a specific remote endpoint.
+type DirectedDatagramTransport interface {
+	SendDirectedDatagram(d *protocol.Datagram, remote DatagramEndpoint) error
 }
 
 // Transport is the per-link NetBIOS transport contract. A NetBIOS
@@ -122,6 +168,56 @@ func (s *Service) Stop() error {
 	s.mu.Unlock()
 	for _, t := range transports {
 		_ = t.Stop()
+	}
+	return nil
+}
+
+// SendDatagram broadcasts a NetBIOS datagram through every active
+// transport. If one or more transports fail, the first error is
+// returned after attempting all sends.
+func (s *Service) SendDatagram(d *protocol.Datagram) error {
+	s.mu.Lock()
+	transports := append([]Transport(nil), s.transports...)
+	s.mu.Unlock()
+
+	var firstErr error
+	for _, t := range transports {
+		if err := t.SendDatagram(d); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr != nil {
+		return fmt.Errorf("netbios: send datagram: %w", firstErr)
+	}
+	return nil
+}
+
+// SendDirectedDatagram sends a NetBIOS datagram back to a specific
+// remote endpoint through each transport that supports directed
+// delivery. ErrNotImplemented is returned when no configured
+// transport exposes directed routing.
+func (s *Service) SendDirectedDatagram(d *protocol.Datagram, remote DatagramEndpoint) error {
+	s.mu.Lock()
+	transports := append([]Transport(nil), s.transports...)
+	s.mu.Unlock()
+
+	var firstErr error
+	attempted := false
+	for _, t := range transports {
+		dt, ok := t.(DirectedDatagramTransport)
+		if !ok {
+			continue
+		}
+		attempted = true
+		if err := dt.SendDirectedDatagram(d, remote); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr != nil {
+		return fmt.Errorf("netbios: send directed datagram: %w", firstErr)
+	}
+	if !attempted {
+		return ErrNotImplemented
 	}
 	return nil
 }

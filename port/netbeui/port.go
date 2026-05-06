@@ -7,7 +7,10 @@
 // The port handles only link-level framing: it strips the 3-byte LLC
 // header from inbound frames before handing the NBF body to
 // protocol/netbeui.Decode, and prepends the same header to outbound
-// bytes. NBF protocol semantics live above.
+// bytes. Source and destination MAC addresses are extracted from the
+// Ethernet header and passed to the delivery callback so the NBF
+// transport layer can issue directed replies. NBF protocol semantics
+// live above.
 package netbeui
 
 import (
@@ -40,8 +43,11 @@ const NetBEUIBPFFilter = "ether[12:2] <= 0x05dc and " +
 var ErrNoSourceMAC = errors.New("netbeui: source MAC not configured")
 
 // DeliveryCallback is invoked for each successfully decoded inbound
-// NBF frame.
-type DeliveryCallback func(frame *netbeui.Frame)
+// NBF frame. srcMAC and dstMAC are the Ethernet-level addresses
+// extracted from the raw frame before the LLC header is stripped.
+// The transport layer needs srcMAC for directed replies (e.g.
+// NAME_RECOGNIZED → SESSION_INITIALIZE).
+type DeliveryCallback func(srcMAC, dstMAC [6]byte, frame *netbeui.Frame)
 
 // Port is the NetBEUI port surface.
 type Port interface {
@@ -53,6 +59,9 @@ type Port interface {
 	// Send transmits an NBF frame to dstMAC. The source MAC must
 	// already have been configured via SetSourceMAC.
 	Send(dstMAC [6]byte, frame *netbeui.Frame) error
+	// SendBroadcast transmits an NBF frame to the NetBIOS multicast
+	// address (03:00:00:00:00:01).
+	SendBroadcast(frame *netbeui.Frame) error
 	SetSourceMAC(mac [6]byte)
 	SetDeliveryCallback(cb DeliveryCallback)
 }
@@ -139,6 +148,10 @@ func (p *portImpl) Send(dstMAC [6]byte, frame *netbeui.Frame) error {
 	return p.link.WriteFrame(out)
 }
 
+func (p *portImpl) SendBroadcast(frame *netbeui.Frame) error {
+	return p.Send(netbeui.NetBIOSMulticastMAC, frame)
+}
+
 // readLoop is the single inbound reader. The kernel BPF filter has
 // already discarded everything that isn't an LLC UI frame with
 // DSAP/SSAP both 0xF0; the only thing left for software to do is
@@ -163,8 +176,8 @@ func (p *portImpl) readLoop() {
 	}
 }
 
-func (p *portImpl) handleFrame(frame []byte) {
-	if len(frame) < llcOffset {
+func (p *portImpl) handleFrame(raw []byte) {
+	if len(raw) < llcOffset {
 		return
 	}
 	p.mu.RLock()
@@ -173,9 +186,14 @@ func (p *portImpl) handleFrame(frame []byte) {
 	if cb == nil {
 		return
 	}
-	body, err := netbeui.Decode(frame[llcOffset:])
+	// Extract Ethernet MACs before stripping the link header.
+	var dstMAC, srcMAC [6]byte
+	copy(dstMAC[:], raw[0:6])
+	copy(srcMAC[:], raw[6:12])
+
+	body, err := netbeui.Decode(raw[llcOffset:])
 	if err != nil {
 		return
 	}
-	cb(body)
+	cb(srcMAC, dstMAC, body)
 }

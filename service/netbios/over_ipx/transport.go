@@ -27,8 +27,9 @@ import (
 
 // Sockets is the ordered list of IPX socket numbers NetBIOS-over-IPX
 // claims. Exposed for documentation and tests.
-var Sockets = [3][2]byte{
+var Sockets = [4][2]byte{
 	{0x04, 0x55}, // session + most name-service traffic
+	{0x05, 0x51}, // NMPI name-query
 	{0x05, 0x53}, // datagram
 	{0x05, 0x54}, // name service (alternative)
 }
@@ -37,9 +38,11 @@ var Sockets = [3][2]byte{
 // package. The wire bytes are identical to Sockets[*] but the names
 // document intent at call sites.
 var (
-	NBIPXSessionSocket  = [2]byte{0x04, 0x55}
-	NBIPXDatagramSocket = [2]byte{0x05, 0x53}
-	NBIPXNameSocket     = [2]byte{0x05, 0x54}
+	NBIPXSessionSocket   = [2]byte{0x04, 0x55}
+	NBIPXServerSocket    = [2]byte{0x05, 0x50}
+	NBIPXNameQuerySocket = [2]byte{0x05, 0x51}
+	NBIPXDatagramSocket  = [2]byte{0x05, 0x53}
+	NBIPXNameSocket      = [2]byte{0x05, 0x54}
 )
 
 // Default name-claim retry parameters. NWLink and Win9x clients use
@@ -72,12 +75,12 @@ type transport struct {
 	claimInterval time.Duration
 	sleep         func(d time.Duration) <-chan time.Time
 
-	mu          sync.RWMutex
-	handler     netbios.CommandHandler
-	objection   chan struct{}
-	sapCancel   func()
-	stopOnce    sync.Once
-	stopped     chan struct{}
+	mu        sync.RWMutex
+	handler   netbios.CommandHandler
+	objection chan struct{}
+	sapCancel func()
+	stopOnce  sync.Once
+	stopped   chan struct{}
 }
 
 // NewTransport returns a netbios.Transport that registers on the
@@ -139,6 +142,9 @@ func (t *transport) claimAndAdvertise(ctx context.Context) {
 		if err := t.broadcastFindName(); err != nil {
 			netlog.Warn("[NetBIOS][IPX] FindName broadcast %d: %v", i+1, err)
 		}
+		if err := t.broadcastNMPIClaim(); err != nil {
+			netlog.Warn("[NetBIOS][IPX] NMPI ClaimName broadcast %d: %v", i+1, err)
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -166,7 +172,11 @@ func (t *transport) claimAndAdvertise(ctx context.Context) {
 // broadcastFindName emits one type-20 IPX broadcast carrying our name
 // to socket 0x0455 on every node of the segment.
 func (t *transport) broadcastFindName() error {
-	body := protocol.EncodeNameService(&protocol.NBIPXNameServicePacket{Name: t.name})
+	body := protocol.EncodeNameService(&protocol.NBIPXNameServicePacket{
+		NameTypeFlag:   0x00,
+		DataStreamType: protocol.NBIPXFindName,
+		Name:           t.name,
+	})
 	out := &ipxproto.Datagram{
 		Type:    protocol.IPXTypeNetBIOS,
 		DstNet:  t.router.Network(),
@@ -175,6 +185,26 @@ func (t *transport) broadcastFindName() error {
 		SrcSock: NBIPXSessionSocket,
 		Payload: body,
 	}
+	return t.router.Send(out)
+}
+
+func (t *transport) broadcastNMPIClaim() error {
+	body := protocol.EncodeNMPIPacket(&protocol.NMPIPacket{
+		Opcode:        protocol.NMPIOpNameClaim,
+		NameType:      protocol.NMPINameTypeMachine,
+		MessageID:     0,
+		RequestedName: t.name,
+		SourceName:    t.name,
+	})
+	out := &ipxproto.Datagram{
+		Type:    protocol.IPXTypeNetBIOS,
+		DstNet:  t.router.Network(),
+		DstNode: ipx.BroadcastNode,
+		DstSock: NBIPXNameQuerySocket,
+		SrcSock: NBIPXServerSocket,
+		Payload: body,
+	}
+	netlog.Debug("[NetBIOS][IPX] tx NMPI claim name=%q", t.name.String())
 	return t.router.Send(out)
 }
 
@@ -194,8 +224,54 @@ func (t *transport) Stop() error {
 	return nil
 }
 
-func (t *transport) SendName(_ protocol.Name) error              { return netbios.ErrNotImplemented }
-func (t *transport) SendDatagram(_ *protocol.Datagram) error     { return netbios.ErrNotImplemented }
+func (t *transport) SendName(_ protocol.Name) error { return netbios.ErrNotImplemented }
+
+func (t *transport) SendDatagram(dg *protocol.Datagram) error {
+	if dg == nil {
+		return nil
+	}
+	netlog.Debug("[NetBIOS][IPX] tx mailslot send src=%q dst=%q payload=%d",
+		dg.Source.String(), dg.Destination.String(), len(dg.Payload))
+	return t.sendNMPIDatagram(dg, netbios.DatagramEndpoint{
+		Network: t.router.Network(),
+		Node:    ipx.BroadcastNode,
+		Socket:  NBIPXDatagramSocket,
+	})
+}
+
+func (t *transport) SendDirectedDatagram(dg *protocol.Datagram, remote netbios.DatagramEndpoint) error {
+	if dg == nil {
+		return nil
+	}
+	if remote.Socket == ([2]byte{}) {
+		remote.Socket = NBIPXDatagramSocket
+	}
+	netlog.Debug("[NetBIOS][IPX] tx directed mailslot send src=%q dst=%q ipx=%x.%x:%02x%02x payload=%d",
+		dg.Source.String(), dg.Destination.String(),
+		remote.Network, remote.Node, remote.Socket[0], remote.Socket[1], len(dg.Payload))
+	return t.sendNMPIDatagram(dg, remote)
+}
+
+func (t *transport) sendNMPIDatagram(dg *protocol.Datagram, remote netbios.DatagramEndpoint) error {
+	payload := protocol.EncodeNMPIPacket(&protocol.NMPIPacket{
+		Opcode:        protocol.NMPIOpMailslotSend,
+		NameType:      nmpiNameType(dg.Destination),
+		MessageID:     0,
+		RequestedName: dg.Destination,
+		SourceName:    dg.Source,
+		Payload:       dg.Payload,
+	})
+	out := &ipxproto.Datagram{
+		Type:    protocol.IPXTypeNetBIOS,
+		DstNet:  remote.Network,
+		DstNode: remote.Node,
+		DstSock: remote.Socket,
+		SrcSock: NBIPXDatagramSocket,
+		Payload: payload,
+	}
+	return t.router.Send(out)
+}
+
 func (t *transport) SendSession(_ *protocol.SessionPacket) error { return netbios.ErrNotImplemented }
 
 func (t *transport) SetCommandHandler(h netbios.CommandHandler) {
@@ -213,13 +289,266 @@ func (t *transport) SetCommandHandler(h netbios.CommandHandler) {
 //     the session machine when that lands in Phase 5C; for now we
 //     log and drop.
 func (t *transport) HandleDatagram(d *ipxproto.Datagram) {
+	if d == nil {
+		return
+	}
+	if d.SrcNet == t.router.Network() && d.SrcNode == t.router.Node() {
+		netlog.Debug("[NetBIOS][IPX] drop self-looped datagram type=0x%02x srcSock=%02x%02x dstSock=%02x%02x",
+			d.Type, d.SrcSock[0], d.SrcSock[1], d.DstSock[0], d.DstSock[1])
+		return
+	}
+	netlog.Debug("[NetBIOS][IPX] rx ipx type=0x%02x srcSock=%02x%02x dstSock=%02x%02x payload=%d",
+		d.Type, d.SrcSock[0], d.SrcSock[1], d.DstSock[0], d.DstSock[1], len(d.Payload))
 	switch d.Type {
 	case protocol.IPXTypeNetBIOS:
+		if t.handleNMPIPayload(d) {
+			return
+		}
 		t.handleNameService(d)
 	case protocol.IPXTypePEP:
-		// Session traffic — Phase 5C wires this into the session
-		// machine. Until then, drop.
+		t.handlePEP(d)
 	}
+}
+
+func (t *transport) handleNMPIPayload(d *ipxproto.Datagram) bool {
+	if d == nil || len(d.Payload) < 2 {
+		return false
+	}
+	if d.DstSock != NBIPXNameQuerySocket && d.DstSock != NBIPXDatagramSocket {
+		return false
+	}
+	p, err := protocol.DecodeNMPIPacket(d.Payload)
+	if err != nil {
+		return false
+	}
+	netlog.Debug("[NetBIOS][IPX] rx NMPI opcode=0x%02x nameType=0x%02x src=%q dst=%q payload=%d",
+		p.Opcode, p.NameType, p.SourceName.String(), p.RequestedName.String(), len(p.Payload))
+	t.handleNMPI(d, p)
+	return true
+}
+
+func (t *transport) handlePEP(d *ipxproto.Datagram) {
+	if d == nil || len(d.Payload) < 2 {
+		return
+	}
+	if t.handleNMPIPayload(d) {
+		return
+	}
+	if d.DstSock == NBIPXDatagramSocket {
+		if d.Payload[1] != protocol.NBIPXDirectedDatagram {
+			return
+		}
+		dg, err := protocol.DecodeDatagram(d.Payload[2:])
+		if err != nil {
+			return
+		}
+		netlog.Debug("[NetBIOS][IPX] rx directed datagram src=%q dst=%q payload=%d",
+			dg.Source.String(), dg.Destination.String(), len(dg.Payload))
+		t.mu.RLock()
+		h := t.handler
+		t.mu.RUnlock()
+		if h != nil {
+			if ch, ok := h.(netbios.ContextualDatagramHandler); ok {
+				_ = ch.HandleDatagramContext(dg, netbios.DatagramContext{
+					Local: netbios.DatagramEndpoint{
+						Network: d.DstNet,
+						Node:    d.DstNode,
+						Socket:  d.DstSock,
+					},
+					Remote: netbios.DatagramEndpoint{
+						Network: d.SrcNet,
+						Node:    d.SrcNode,
+						Socket:  d.SrcSock,
+					},
+				})
+				return
+			}
+			_ = h.HandleDatagram(dg)
+		}
+		return
+	}
+
+	if d.DstSock != NBIPXSessionSocket {
+		return
+	}
+	hdr, err := protocol.DecodeSessionHeader(d.Payload)
+	if err != nil {
+		return
+	}
+	if len(d.Payload) < protocol.NBIPXSessionHeaderLen+int(hdr.DataLen) {
+		return
+	}
+	body := append([]byte(nil), d.Payload[protocol.NBIPXSessionHeaderLen:protocol.NBIPXSessionHeaderLen+int(hdr.DataLen)]...)
+
+	if hdr.DataStreamType == protocol.NBIPXSessionInit {
+		_ = t.sendPEPSessionControl(d, hdr, protocol.NBIPXSessionConfirm)
+		return
+	}
+	if hdr.DataStreamType == protocol.NBIPXSessionEnd {
+		_ = t.sendPEPSessionControl(d, hdr, protocol.NBIPXSessionEndAck)
+		return
+	}
+	if hdr.DataStreamType != protocol.NBIPXDataOnlyLast && hdr.DataStreamType != protocol.NBIPXDataFirstMiddle {
+		return
+	}
+
+	netlog.Debug("[NetBIOS][IPX] rx session data srcConn=%04x dstConn=%04x seq=%d bytes=%d",
+		hdr.SourceConnID, hdr.DestConnID, hdr.SendSeq, len(body))
+	t.mu.RLock()
+	h := t.handler
+	t.mu.RUnlock()
+	if h == nil {
+		return
+	}
+	sp := &protocol.SessionPacket{Type: protocol.SessionMessage, Payload: body}
+	if sh, ok := h.(netbios.ContextualSessionHandler); ok {
+		resp, err := sh.HandleSessionContext(sp, netbios.SessionContext{
+			Local: netbios.DatagramEndpoint{
+				Network: d.DstNet,
+				Node:    d.DstNode,
+				Socket:  d.DstSock,
+			},
+			Remote: netbios.DatagramEndpoint{
+				Network: d.SrcNet,
+				Node:    d.SrcNode,
+				Socket:  d.SrcSock,
+			},
+			SourceConnID:  hdr.SourceConnID,
+			DestConnID:    hdr.DestConnID,
+			Sequence:      hdr.SendSeq,
+			ConnectionCtl: hdr.ConnCtrlByte,
+		})
+		if err == nil && resp != nil && len(resp.Payload) > 0 {
+			_ = t.sendPEPSessionData(d, hdr, resp.Payload)
+		}
+		return
+	}
+	_ = h.HandleSession(sp)
+}
+func (t *transport) sendPEPSessionControl(in *ipxproto.Datagram, inHdr *protocol.NBIPXSessionHeader, streamType uint8) error {
+	if in == nil || inHdr == nil {
+		return nil
+	}
+	h := &protocol.NBIPXSessionHeader{
+		ConnCtrlFlag:   protocol.NBIPXConnFlagSYS,
+		DataStreamType: streamType,
+		SourceConnID:   inHdr.DestConnID,
+		DestConnID:     inHdr.SourceConnID,
+		SendSeq:        inHdr.SendSeq,
+		TotalDataLen:   0,
+		Offset:         0,
+		DataLen:        0,
+		ConnCtrlByte:   inHdr.ConnCtrlByte,
+	}
+	body := protocol.EncodeSessionHeader(h)
+	out := &ipxproto.Datagram{
+		Type:    protocol.IPXTypePEP,
+		DstNet:  in.SrcNet,
+		DstNode: in.SrcNode,
+		DstSock: in.SrcSock,
+		SrcSock: in.DstSock,
+		Payload: body,
+	}
+	return t.router.Send(out)
+}
+
+func (t *transport) sendPEPSessionData(in *ipxproto.Datagram, inHdr *protocol.NBIPXSessionHeader, payload []byte) error {
+	if in == nil || inHdr == nil {
+		return nil
+	}
+	h := &protocol.NBIPXSessionHeader{
+		ConnCtrlFlag:   protocol.NBIPXConnFlagEOM,
+		DataStreamType: protocol.NBIPXDataOnlyLast,
+		SourceConnID:   inHdr.DestConnID,
+		DestConnID:     inHdr.SourceConnID,
+		SendSeq:        inHdr.SendSeq,
+		TotalDataLen:   uint16(len(payload)),
+		Offset:         0,
+		DataLen:        uint16(len(payload)),
+		ConnCtrlByte:   inHdr.ConnCtrlByte,
+	}
+	body := append(protocol.EncodeSessionHeader(h), payload...)
+	out := &ipxproto.Datagram{
+		Type:    protocol.IPXTypePEP,
+		DstNet:  in.SrcNet,
+		DstNode: in.SrcNode,
+		DstSock: in.SrcSock,
+		SrcSock: in.DstSock,
+		Payload: body,
+	}
+	return t.router.Send(out)
+}
+
+func (t *transport) handleNMPI(d *ipxproto.Datagram, p *protocol.NMPIPacket) {
+	if p == nil {
+		return
+	}
+	if p.Opcode == protocol.NMPIOpMailslotSend {
+		netlog.Debug("[NetBIOS][IPX] request mailslot send src=%q dst=%q payload=%d",
+			p.SourceName.String(), p.RequestedName.String(), len(p.Payload))
+		t.mu.RLock()
+		h := t.handler
+		t.mu.RUnlock()
+		if h != nil {
+			dg := &protocol.Datagram{
+				Destination: p.RequestedName,
+				Source:      p.SourceName,
+				Payload:     append([]byte(nil), p.Payload...),
+			}
+			if ch, ok := h.(netbios.ContextualDatagramHandler); ok {
+				_ = ch.HandleDatagramContext(dg, netbios.DatagramContext{
+					Local: netbios.DatagramEndpoint{
+						Network: d.DstNet,
+						Node:    d.DstNode,
+						Socket:  d.DstSock,
+					},
+					Remote: netbios.DatagramEndpoint{
+						Network: d.SrcNet,
+						Node:    d.SrcNode,
+						Socket:  d.SrcSock,
+					},
+				})
+				return
+			}
+			_ = h.HandleDatagram(dg)
+		}
+		return
+	}
+	if p.Opcode != protocol.NMPIOpNameQuery {
+		return
+	}
+	netlog.Debug("[NetBIOS][IPX] request name query msg=0x%04x src=%q dst=%q",
+		p.MessageID, p.SourceName.String(), p.RequestedName.String())
+	if p.RequestedName != t.name {
+		return
+	}
+	resp := protocol.EncodeNMPIPacket(&protocol.NMPIPacket{
+		Opcode:        protocol.NMPIOpNameFound,
+		NameType:      p.NameType,
+		MessageID:     p.MessageID,
+		RequestedName: p.RequestedName,
+		SourceName:    t.name,
+	})
+	out := &ipxproto.Datagram{
+		Type:    protocol.IPXTypePEP,
+		DstNet:  d.SrcNet,
+		DstNode: d.SrcNode,
+		DstSock: d.SrcSock,
+		SrcSock: d.DstSock,
+		Payload: resp,
+	}
+	netlog.Debug("[NetBIOS][IPX] response name found msg=0x%04x src=%q dst=%q",
+		p.MessageID, t.name.String(), p.SourceName.String())
+	if err := t.router.Send(out); err != nil {
+		netlog.Warn("[NetBIOS][IPX] NMPI NameFound send failed: %v", err)
+	}
+}
+
+func nmpiNameType(name protocol.Name) uint8 {
+	if name.Type() == protocol.NameTypeGroup {
+		return protocol.NMPINameTypeWorkgroup
+	}
+	return protocol.NMPINameTypeMachine
 }
 
 // handleNameService examines an inbound type-20 packet during a
@@ -231,13 +560,6 @@ func (t *transport) handleNameService(d *ipxproto.Datagram) {
 		return
 	}
 	if pkt.Name != t.name {
-		return
-	}
-	// Ignore our own broadcast looping back. The router's accept
-	// filter already rejects packets whose destination isn't us or
-	// a broadcast, but pcap can deliver our own broadcasts back to
-	// us depending on the OS / driver, so we filter by source node.
-	if d.SrcNet == t.router.Network() && d.SrcNode == t.router.Node() {
 		return
 	}
 	// Real conflict. Signal the claim goroutine.

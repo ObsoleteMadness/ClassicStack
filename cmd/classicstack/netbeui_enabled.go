@@ -8,12 +8,14 @@ import (
 	"strings"
 
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/hwaddr"
 	"github.com/ObsoleteMadness/ClassicStack/port/netbeui"
 	"github.com/ObsoleteMadness/ClassicStack/port/rawlink"
 )
 
 type netbeuiHookEnabled struct {
 	port netbeui.Port
+	mac  [6]byte
 }
 
 func (h *netbeuiHookEnabled) Start(_ context.Context) error {
@@ -32,6 +34,7 @@ func (h *netbeuiHookEnabled) Stop() error {
 	return nil
 }
 func (h *netbeuiHookEnabled) Port() netbeui.Port { return h.port }
+func (h *netbeuiHookEnabled) MAC() [6]byte       { return h.mac }
 
 func wireNetBEUI(cfg NetBEUIConfig) (NetBEUIHook, error) {
 	if !cfg.Enabled {
@@ -50,5 +53,13 @@ func wireNetBEUI(cfg NetBEUIConfig) (NetBEUIHook, error) {
 		return &netbeuiHookEnabled{}, nil
 	}
 	netlog.Info("[MAIN][NetBEUI] pcap interface=%s", cfg.Interface)
-	return &netbeuiHookEnabled{port: netbeui.NewPort(link)}, nil
+	p := netbeui.NewPort(link)
+	var mac [6]byte
+	if macStr, ok := rawlink.DetectHostMACForPcapInterface(cfg.Interface); ok {
+		if parsed, err := hwaddr.ParseEthernet(macStr); err == nil {
+			mac = [6]byte(parsed)
+			p.SetSourceMAC(mac)
+		}
+	}
+	return &netbeuiHookEnabled{port: p, mac: mac}, nil
 }

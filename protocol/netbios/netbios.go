@@ -6,6 +6,7 @@ import (
 )
 
 var ErrNotImplemented = errors.New("not implemented")
+var ErrShortDatagram = errors.New("netbios: datagram too short")
 
 // NameLength is the wire length of a NetBIOS name. The 16th byte is
 // the *type* code (workstation, server, group, etc.) — not part of
@@ -62,8 +63,25 @@ type Datagram struct {
 	Payload     []byte
 }
 
-func (d *Datagram) Encode() ([]byte, error)      { return nil, ErrNotImplemented }
-func DecodeDatagram(b []byte) (*Datagram, error) { return nil, ErrNotImplemented }
+func (d *Datagram) Encode() ([]byte, error) {
+	out := make([]byte, NameLength+NameLength+len(d.Payload))
+	copy(out[0:NameLength], d.Destination[:])
+	copy(out[NameLength:2*NameLength], d.Source[:])
+	copy(out[2*NameLength:], d.Payload)
+	return out, nil
+}
+
+func DecodeDatagram(b []byte) (*Datagram, error) {
+	if len(b) < 2*NameLength {
+		return nil, ErrShortDatagram
+	}
+	var d Datagram
+	copy(d.Destination[:], b[0:NameLength])
+	copy(d.Source[:], b[NameLength:2*NameLength])
+	d.Payload = make([]byte, len(b)-2*NameLength)
+	copy(d.Payload, b[2*NameLength:])
+	return &d, nil
+}
 
 type SessionPacketType uint8
 

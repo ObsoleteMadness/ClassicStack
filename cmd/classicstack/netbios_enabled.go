@@ -44,7 +44,7 @@ func selectNetBIOSTransports(cfg NetBIOSConfig) []netbios.Transport {
 			out = append(out, over_tcp.NewTransport())
 		case "netbeui":
 			if cfg.NetBEUI != nil && cfg.NetBEUI.Port() != nil {
-				out = append(out, over_netbeui.NewTransport(cfg.NetBEUI.Port()))
+				out = append(out, over_netbeui.NewTransport(cfg.NetBEUI.Port(), cfg.NetBEUI.MAC()))
 			} else {
 				netlog.Warn("[MAIN][NetBIOS] transport %q skipped: NetBEUI port not available", name)
 			}

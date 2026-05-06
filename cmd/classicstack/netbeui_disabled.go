@@ -14,6 +14,7 @@ type netbeuiHookDisabled struct{}
 func (netbeuiHookDisabled) Start(_ context.Context) error { return nil }
 func (netbeuiHookDisabled) Stop() error                   { return nil }
 func (netbeuiHookDisabled) Port() netbeui.Port            { return nil }
+func (netbeuiHookDisabled) MAC() [6]byte                  { return [6]byte{} }
 
 func wireNetBEUI(cfg NetBEUIConfig) (NetBEUIHook, error) {
 	if cfg.Enabled {
