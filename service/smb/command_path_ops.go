@@ -1,6 +1,7 @@
 package smb
 
 import (
+	"bytes"
 	"encoding/binary"
 	"strings"
 
@@ -46,6 +47,65 @@ func (s *Service) handleDelete(req []byte, conn *connState) []byte {
 		return buildSMBErrorResponse(req, smbStatusAccessDenied)
 	}
 	return buildSimpleSuccessResponse(req)
+}
+
+func (s *Service) handleRename(req []byte, conn *connState) []byte {
+	if len(req) < smbHeaderLen+3 {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	_, slot, fsys, ok := s.resolveRequestTree(req, conn)
+	if !ok {
+		return buildSMBErrorResponse(req, smbStatusBadTID)
+	}
+	if s.shares[slot.shareIdx].ReadOnly {
+		return buildSMBErrorResponse(req, smbStatusAccessDenied)
+	}
+
+	oldPath, newPath, ok := parseRenamePaths(req)
+	if !ok {
+		return buildSMBErrorResponse(req, smbStatusNameNotFound)
+	}
+	if strings.Contains(oldPath, "*") || strings.Contains(oldPath, "?") || strings.Contains(newPath, "*") || strings.Contains(newPath, "?") {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	if _, err := fsys.Stat(oldPath); err != nil {
+		return buildSMBErrorResponse(req, smbStatusNameNotFound)
+	}
+	if err := fsys.Rename(oldPath, newPath); err != nil {
+		return buildSMBErrorResponse(req, smbStatusAccessDenied)
+	}
+	return buildSimpleSuccessResponse(req)
+}
+
+func parseRenamePaths(req []byte) (oldPath, newPath string, ok bool) {
+	bytesArea, ok := smbBytesArea(req)
+	if !ok || len(bytesArea) == 0 {
+		return "", "", false
+	}
+
+	parts := make([]string, 0, 2)
+	buf := bytesArea
+	for len(buf) > 0 && len(parts) < 2 {
+		if buf[0] == 0x04 {
+			buf = buf[1:]
+		}
+		nul := bytes.IndexByte(buf, 0)
+		if nul < 0 {
+			break
+		}
+		part := strings.TrimLeft(strings.TrimSpace(string(buf[:nul])), "\\")
+		if part != "" {
+			parts = append(parts, part)
+		}
+		buf = buf[nul+1:]
+	}
+
+	if len(parts) < 2 {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
 }
 
 func (s *Service) resolveRequestTree(req []byte, conn *connState) (tid uint16, slot treeSlot, fsys vfs.FileSystem, ok bool) {

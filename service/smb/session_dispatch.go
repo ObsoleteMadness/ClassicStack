@@ -159,6 +159,11 @@ func (s *Service) HandleSessionContext(packet *netbiosproto.SessionPacket, ctx n
 			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
 		respPayload = s.handleDelete(packet.Payload, conn)
 
+	case CommandRename:
+		netlog.Debug("[SMB][Session] rename src=%x.%x:%02x%02x",
+			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
+		respPayload = s.handleRename(packet.Payload, conn)
+
 	default:
 		netlog.Debug("[SMB][Session] unsupported command=0x%02x src=%x.%x:%02x%02x",
 			cmd, ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
