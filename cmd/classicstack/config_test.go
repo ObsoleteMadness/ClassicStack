@@ -104,3 +104,53 @@ log_traffic = true
 		t.Fatalf("unexpected MacIP config: %#v", cfg)
 	}
 }
+
+func TestLoadConfig_NetBIOSIdentityInheritedFromSMB(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "server.toml")
+	content := `[NetBIOS]
+enabled = true
+server_name = "LEGACYNB"
+workgroup = "LEGACYWG"
+
+[SMB]
+enabled = true
+server_name = "MACHINE1"
+workgroup = "GROUP1"
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := loadConfigFromFile(cfgPath)
+	if err != nil {
+		t.Fatalf("loadConfigFromFile error: %v", err)
+	}
+
+	if cfg.SMBServerName != "MACHINE1" || cfg.SMBWorkgroup != "GROUP1" {
+		t.Fatalf("unexpected SMB identity: server=%q workgroup=%q", cfg.SMBServerName, cfg.SMBWorkgroup)
+	}
+	if cfg.NetBIOSServerName != cfg.SMBServerName || cfg.NetBIOSWorkgroup != cfg.SMBWorkgroup {
+		t.Fatalf("NetBIOS identity not inherited from SMB: netbios=(%q,%q) smb=(%q,%q)",
+			cfg.NetBIOSServerName, cfg.NetBIOSWorkgroup, cfg.SMBServerName, cfg.SMBWorkgroup)
+	}
+}
+
+func TestFlagsToConfig_NetBIOSIdentityInheritedFromSMB(t *testing.T) {
+	cfg := flagsToConfig(flagInputs{
+		NetBIOSEnabled:    true,
+		NetBIOSServerName: "LEGACYNB",
+		NetBIOSWorkgroup:  "LEGACYWG",
+		SMBEnabled:        true,
+		SMBServerName:     "MACHINE2",
+		SMBWorkgroup:      "GROUP2",
+	})
+
+	if cfg.SMBServerName != "MACHINE2" || cfg.SMBWorkgroup != "GROUP2" {
+		t.Fatalf("unexpected SMB identity: server=%q workgroup=%q", cfg.SMBServerName, cfg.SMBWorkgroup)
+	}
+	if cfg.NetBIOSServerName != cfg.SMBServerName || cfg.NetBIOSWorkgroup != cfg.SMBWorkgroup {
+		t.Fatalf("NetBIOS identity not inherited from SMB: netbios=(%q,%q) smb=(%q,%q)",
+			cfg.NetBIOSServerName, cfg.NetBIOSWorkgroup, cfg.SMBServerName, cfg.SMBWorkgroup)
+	}
+}

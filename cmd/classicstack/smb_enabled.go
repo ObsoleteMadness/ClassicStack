@@ -8,15 +8,36 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
 	"github.com/ObsoleteMadness/ClassicStack/service/netbios"
 	"github.com/ObsoleteMadness/ClassicStack/service/smb"
+	"github.com/ObsoleteMadness/ClassicStack/service/smb/over_ipx_direct"
 )
 
 type smbHookEnabled struct {
-	svc *smb.Service
+	svc       *smb.Service
+	ipxDirect *over_ipx_direct.Transport
 }
 
-func (h *smbHookEnabled) Start(ctx context.Context) error { return h.svc.Start(ctx) }
-func (h *smbHookEnabled) Stop() error                     { return h.svc.Stop() }
-func (h *smbHookEnabled) Service() *smb.Service           { return h.svc }
+func (h *smbHookEnabled) Start(ctx context.Context) error {
+	if h.ipxDirect != nil {
+		if err := h.ipxDirect.Start(ctx); err != nil {
+			return err
+		}
+	}
+	return h.svc.Start(ctx)
+}
+
+func (h *smbHookEnabled) Stop() error {
+	if err := h.svc.Stop(); err != nil {
+		return err
+	}
+	if h.ipxDirect != nil {
+		if err := h.ipxDirect.Stop(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h *smbHookEnabled) Service() *smb.Service { return h.svc }
 
 func wireSMB(cfg SMBConfig) (SMBHook, error) {
 	if !cfg.Enabled {
@@ -45,10 +66,17 @@ func wireSMB(cfg SMBConfig) (SMBHook, error) {
 	if cfg.NetBIOS != nil {
 		if nbSvc := cfg.NetBIOS.Service(); nbSvc != nil {
 			nbSvc.SetCommandHandler(svc)
+			svc.SetDatagramSender(nbSvc)
 		}
+	}
+
+	var ipxDirect *over_ipx_direct.Transport
+	if cfg.IPX != nil && cfg.IPX.Router() != nil {
+		ipxDirect = over_ipx_direct.New(cfg.IPX.Router(), svc)
+		netlog.Info("[MAIN][SMB] direct IPX transport enabled on socket 0550")
 	}
 
 	netlog.Info("[MAIN][SMB] server=%q workgroup=%q shares=%d guest=%t (stub)",
 		cfg.ServerName, cfg.Workgroup, len(cfg.Shares), cfg.GuestOk)
-	return &smbHookEnabled{svc: svc}, nil
+	return &smbHookEnabled{svc: svc, ipxDirect: ipxDirect}, nil
 }

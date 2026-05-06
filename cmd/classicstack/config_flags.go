@@ -158,8 +158,12 @@ func flagsToConfig(in flagInputs) appConfig {
 	}
 	cfg.SMBDirectBinding = in.SMBDirectBinding
 	cfg.SMBGuestOk = in.SMBGuestOk
-	cfg.SMBServerName = in.SMBServerName
-	cfg.SMBWorkgroup = in.SMBWorkgroup
+	if strings.TrimSpace(in.SMBServerName) != "" {
+		cfg.SMBServerName = in.SMBServerName
+	}
+	if strings.TrimSpace(in.SMBWorkgroup) != "" {
+		cfg.SMBWorkgroup = in.SMBWorkgroup
+	}
 	cfg.SMBShareFlags = in.SMBShareValues
 
 	cfg.ShortnameEnabled = in.ShortnameEnabled
@@ -167,6 +171,8 @@ func flagsToConfig(in flagInputs) appConfig {
 		cfg.ShortnameBackend = in.ShortnameBackend
 	}
 	cfg.ShortnameDBPath = in.ShortnameDBPath
+
+	normalizeSMBIdentity(&cfg)
 
 	return cfg
 }

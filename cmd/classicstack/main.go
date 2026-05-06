@@ -106,16 +106,16 @@ func main() {
 	netbiosEnable := flag.Bool("netbios-enabled", false, "Enable NetBIOS service (requires -tags netbios)")
 	netbiosTransports := flag.String("netbios-transports", "tcp", "Comma-separated NetBIOS transports: any of tcp, netbeui, ipx")
 	netbiosScopeID := flag.String("netbios-scope-id", "", "NetBIOS scope ID (RFC 1001/1002)")
-	netbiosServerName := flag.String("netbios-server-name", "CLASSICSTACK", "NetBIOS server name")
-	netbiosWorkgroup := flag.String("netbios-workgroup", "WORKGROUP", "NetBIOS workgroup name")
+	netbiosServerName := flag.String("netbios-server-name", "", "Deprecated: NetBIOS identity derives from SMB server/workgroup")
+	netbiosWorkgroup := flag.String("netbios-workgroup", "", "Deprecated: NetBIOS identity derives from SMB server/workgroup")
 
 	// SMB flags.
 	smbEnable := flag.Bool("smb-enabled", false, "Enable SMB 1.0 server (requires -tags smb)")
 	smbNBT := flag.String("smb-nbt-binding", ":139", "SMB NBT (NetBIOS over TCP) listen address")
 	smbDirect := flag.String("smb-direct-binding", "", "SMB direct (TCP/445) listen address; empty disables direct SMB")
 	smbGuest := flag.Bool("smb-guest-ok", false, "Accept unauthenticated SMB sessions")
-	smbServerName := flag.String("smb-server-name", "", "SMB server name (default: NetBIOS server name)")
-	smbWorkgroup := flag.String("smb-workgroup", "", "SMB workgroup (default: NetBIOS workgroup)")
+	smbServerName := flag.String("smb-server-name", "CLASSICSTACK", "SMB/NetBIOS computer name")
+	smbWorkgroup := flag.String("smb-workgroup", "WORKGROUP", "SMB/NetBIOS workgroup name")
 	var smbShares volumeFlags
 	flag.Var(&smbShares, "smb-share", `SMB share, format: "Name:Path" (repeatable)`)
 
@@ -435,6 +435,8 @@ func main() {
 		Interface:       ipxResolvedIface,
 		Framing:         cfg.IPXFraming,
 		InternalNetwork: cfg.IPXInternalNetwork,
+		CapturePath:     cfg.Capture.IPX,
+		CaptureSnaplen:  cfg.Capture.Snaplen,
 	})
 	if err != nil {
 		log.Fatalf("IPX wiring failed: %v", err)
@@ -481,6 +483,7 @@ func main() {
 		ServerName:    cfg.SMBServerName,
 		Shares:        smbShareConfigs,
 		NetBIOS:       nbHook,
+		IPX:           ipxHook,
 		Shortname:     shortHook,
 	})
 	if err != nil {

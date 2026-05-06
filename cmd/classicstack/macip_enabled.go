@@ -18,10 +18,12 @@ type macipHook struct {
 	svc *macip.Service
 }
 
-func (h *macipHook) Service() service.Service                      { return h.svc }
-func (h *macipHook) PinLeaseToSession(net uint16, node, sess uint8) { h.svc.PinLeaseToSession(net, node, sess) }
-func (h *macipHook) UnpinLeaseFromSession(sess uint8)               { h.svc.UnpinLeaseFromSession(sess) }
-func (h *macipHook) MarkSessionActivity(sess uint8)                 { h.svc.MarkSessionActivity(sess) }
+func (h *macipHook) Service() service.Service { return h.svc }
+func (h *macipHook) PinLeaseToSession(net uint16, node, sess uint8) {
+	h.svc.PinLeaseToSession(net, node, sess)
+}
+func (h *macipHook) UnpinLeaseFromSession(sess uint8) { h.svc.UnpinLeaseFromSession(sess) }
+func (h *macipHook) MarkSessionActivity(sess uint8)   { h.svc.MarkSessionActivity(sess) }
 
 func wireMacIP(cfg MacIPConfig) (MacIPHook, error) {
 	if !cfg.Enabled {

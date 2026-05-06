@@ -66,6 +66,11 @@ type appConfig struct {
 	ShortnameDBPath  string
 }
 
+const (
+	defaultSMBServerName = "CLASSICSTACK"
+	defaultSMBWorkgroup  = "WORKGROUP"
+)
+
 func defaultAppConfig() appConfig {
 	return appConfig{
 		LogLevel: "info",
@@ -80,6 +85,8 @@ func defaultAppConfig() appConfig {
 		IPXFraming:        "ethernet_ii",
 		NetBIOSTransports: []string{"tcp"},
 		SMBNBTBinding:     ":139",
+		SMBServerName:     defaultSMBServerName,
+		SMBWorkgroup:      defaultSMBWorkgroup,
 		ShortnameBackend:  "memory",
 	}
 }
@@ -171,7 +178,29 @@ func resolveAppConfig(src config.Source) (appConfig, error) {
 	cfg.ShortnameBackend = stringWithDefault(k, "Shortname.backend", cfg.ShortnameBackend)
 	cfg.ShortnameDBPath = stringWithDefault(k, "Shortname.db_path", cfg.ShortnameDBPath)
 
+	normalizeSMBIdentity(&cfg)
+
 	return cfg, nil
+}
+
+// normalizeSMBIdentity makes SMB identity canonical and keeps NetBIOS
+// aligned with it while NetBIOS is enabled.
+func normalizeSMBIdentity(cfg *appConfig) {
+	cfg.SMBServerName = strings.TrimSpace(cfg.SMBServerName)
+	if cfg.SMBServerName == "" {
+		cfg.SMBServerName = defaultSMBServerName
+	}
+	cfg.SMBWorkgroup = strings.TrimSpace(cfg.SMBWorkgroup)
+	if cfg.SMBWorkgroup == "" {
+		cfg.SMBWorkgroup = defaultSMBWorkgroup
+	}
+
+	cfg.NetBIOSServerName = strings.TrimSpace(cfg.NetBIOSServerName)
+	cfg.NetBIOSWorkgroup = strings.TrimSpace(cfg.NetBIOSWorkgroup)
+	if cfg.NetBIOSEnabled {
+		cfg.NetBIOSServerName = cfg.SMBServerName
+		cfg.NetBIOSWorkgroup = cfg.SMBWorkgroup
+	}
 }
 
 // validatable is the shape that every package's Config struct exposes:

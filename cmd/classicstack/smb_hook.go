@@ -25,5 +25,6 @@ type SMBConfig struct {
 	ServerName    string
 	Shares        []smb.ShareConfig
 	NetBIOS       NetBIOSHook
+	IPX           IPXHook
 	Shortname     ShortnameHook
 }
