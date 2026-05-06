@@ -1098,6 +1098,11 @@ func (s *Service) HandleSessionContext(packet *netbiosproto.SessionPacket, ctx n
 			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
 		respPayload = s.handleWriteAndX(packet.Payload, conn)
 
+	case CommandClose:
+		netlog.Debug("[SMB][Session] close src=%x.%x:%02x%02x",
+			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
+		respPayload = s.handleClose(packet.Payload, conn)
+
 	default:
 		netlog.Debug("[SMB][Session] unsupported command=0x%02x src=%x.%x:%02x%02x",
 			cmd, ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
@@ -1712,6 +1717,36 @@ func (s *Service) handleWriteAndX(req []byte, conn *connState) []byte {
 	}
 
 	return buildWriteAndXResponse(req, uint16(n))
+}
+
+// handleClose (0x04) closes an open file and releases the file handle.
+func (s *Service) handleClose(req []byte, conn *connState) []byte {
+	if len(req) < smbHeaderLen+7 {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	// Parse request
+	wct := int(req[smbHeaderLen])
+	if wct < 3 {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	w := req[smbHeaderLen+1:]
+	fid := binary.LittleEndian.Uint16(w[0:2])
+	// lastWriteTime := binary.LittleEndian.Uint32(w[2:6]) // unused
+
+	// Look up and close file handle
+	conn.mu.Lock()
+	handle, ok := conn.fids[fid]
+	if ok {
+		if handle != nil && handle.file != nil {
+			handle.file.Close()
+		}
+		delete(conn.fids, fid)
+	}
+	conn.mu.Unlock()
+
+	return buildSimpleSuccessResponse(req)
 }
 
 func buildWriteAndXResponse(req []byte, count uint16) []byte {
