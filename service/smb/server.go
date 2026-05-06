@@ -1083,6 +1083,11 @@ func (s *Service) HandleSessionContext(packet *netbiosproto.SessionPacket, ctx n
 			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
 		respPayload = s.handleSearch(packet.Payload, conn)
 
+	case CommandOpenAndX:
+		netlog.Debug("[SMB][Session] open-andx src=%x.%x:%02x%02x",
+			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
+		respPayload = s.handleOpenAndX(packet.Payload, conn)
+
 	default:
 		netlog.Debug("[SMB][Session] unsupported command=0x%02x src=%x.%x:%02x%02x",
 			cmd, ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
@@ -1514,6 +1519,163 @@ func (s *Service) handleSearch(req []byte, conn *connState) []byte {
 	}
 
 	return buildSearchResponse(req, results)
+}
+
+// handleOpenAndX (0x2D) opens or creates a file, returning a file handle.
+func (s *Service) handleOpenAndX(req []byte, conn *connState) []byte {
+	if len(req) < smbHeaderLen+15 {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	tid := binary.LittleEndian.Uint16(req[smbOffTID : smbOffTID+2])
+
+	conn.mu.Lock()
+	slot, ok := conn.tids[tid]
+	conn.mu.Unlock()
+	if !ok {
+		return buildSMBErrorResponse(req, smbStatusBadTID)
+	}
+
+	s.mu.Lock()
+	fs, ok := s.shareFSes[slot.shareIdx]
+	s.mu.Unlock()
+	if !ok || fs == nil {
+		return buildSMBErrorResponse(req, smbStatusBadTID)
+	}
+
+	// Parse request
+	wct := int(req[smbHeaderLen])
+	if wct < 15 {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	w := req[smbHeaderLen+1:]
+	desiredAccess := binary.LittleEndian.Uint16(w[0:2])
+	searchAttrs := binary.LittleEndian.Uint16(w[2:4])
+	fileAttrs := binary.LittleEndian.Uint16(w[4:6])
+	createTime := binary.LittleEndian.Uint32(w[6:10])
+	openFunction := binary.LittleEndian.Uint16(w[10:12])
+
+	_ = desiredAccess
+	_ = searchAttrs
+	_ = createTime
+
+	path, ok := parseSMBPath(req)
+	if !ok || path == "" {
+		return buildSMBErrorResponse(req, 0xC000007F) // STATUS_OBJECT_NAME_NOT_FOUND
+	}
+
+	// Determine open mode
+	var file vfs.File
+	var err error
+
+	// OPEN_FUNCTION: bits 0-3: action, bits 4-7: mode
+	mode := openFunction >> 4
+	_ = openFunction & 0x0F // action (unused for now)
+
+	// Try to open existing file / create new
+	if mode == 1 {
+		// OPEN_IF_EXISTS
+		file, err = fs.OpenFile(path, 0) // Read mode
+	} else if mode == 2 {
+		// OPEN_EXCLUSIVE
+		file, err = fs.CreateFile(path)
+	} else {
+		// Default: try to open, create if not found
+		file, err = fs.OpenFile(path, 0)
+		if err != nil {
+			file, err = fs.CreateFile(path)
+		}
+	}
+
+	if err != nil {
+		return buildSMBErrorResponse(req, 0xC000007F) // STATUS_OBJECT_NAME_NOT_FOUND
+	}
+
+	// Get file info
+	info, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	// Allocate FID
+	conn.mu.Lock()
+	conn.nextFID++
+	fid := conn.nextFID
+	if fid == 0 {
+		conn.nextFID++
+		fid = conn.nextFID
+	}
+	conn.fids[fid] = &fileHandle{
+		file:     file,
+		path:     path,
+		tid:      tid,
+		writable: (fileAttrs & FileAttributeReadOnly) == 0,
+	}
+	conn.mu.Unlock()
+
+	return buildOpenAndXResponse(req, fid, info, fileAttrs)
+}
+
+func buildOpenAndXResponse(req []byte, fid uint16, info fs.FileInfo, fileAttrs uint16) []byte {
+	if len(req) < smbHeaderLen || string(req[0:4]) != "\xffSMB" {
+		return nil
+	}
+
+	out := make([]byte, smbHeaderLen+1+(30)+2)
+	copy(out[:smbHeaderLen], req[:smbHeaderLen])
+	binary.LittleEndian.PutUint32(out[smbOffStatus:smbOffStatus+4], smbStatusSuccess)
+	out[smbOffFlags] |= 0x80
+	out[smbHeaderLen] = 15 // WCT
+	w := out[smbHeaderLen+1:]
+
+	attrs := uint16(0)
+	if info.IsDir() {
+		attrs |= FileAttributeDirectory
+	} else {
+		attrs |= FileAttributeArchive
+	}
+
+	// AndXCommand, AndXReserved, AndXOffset
+	w[0] = 0xFF
+	w[1] = 0x00
+	binary.LittleEndian.PutUint16(w[2:4], 0)
+
+	// FID
+	binary.LittleEndian.PutUint16(w[4:6], fid)
+
+	// FileAttributes
+	binary.LittleEndian.PutUint16(w[6:8], attrs)
+
+	// LastWriteTime (DOS format, for now 0)
+	binary.LittleEndian.PutUint32(w[8:12], 0)
+
+	// FileSize
+	binary.LittleEndian.PutUint32(w[12:16], uint32(info.Size()))
+
+	// GrantedAccess
+	binary.LittleEndian.PutUint16(w[16:18], 0x0001) // Read access
+
+	// FileType
+	binary.LittleEndian.PutUint16(w[18:20], 0) // DISK_FILE
+
+	// DeviceState
+	binary.LittleEndian.PutUint16(w[20:22], 0)
+
+	// ActionOpened
+	binary.LittleEndian.PutUint16(w[22:24], 0x0001) // FILE_OPENED
+
+	// Reserved
+	binary.LittleEndian.PutUint32(w[24:28], 0)
+
+	// Reserved
+	binary.LittleEndian.PutUint16(w[28:30], 0)
+
+	// ByteCount = 0
+	binary.LittleEndian.PutUint16(w[30:32], 0)
+
+	return out
 }
 
 type searchResultEntry struct {
