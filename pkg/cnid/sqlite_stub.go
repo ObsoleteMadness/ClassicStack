@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+
+	"github.com/ObsoleteMadness/ClassicStack/pkg/vfs"
 )
 
 // SQLiteFilename is the standard CNID database filename dropped at the
@@ -34,13 +36,17 @@ func SQLitePath(volumeRootPath string) string {
 // method is invoked.
 type SQLiteStore struct{}
 
-func (*SQLiteStore) RootID() uint32                                  { return Root }
-func (*SQLiteStore) Path(_ uint32) (string, bool)                    { return "", false }
-func (*SQLiteStore) CNID(_ string) (uint32, bool)                    { return 0, false }
-func (*SQLiteStore) Ensure(_ string) uint32                          { return 0 }
-func (*SQLiteStore) EnsureReserved(_ string, cnid uint32) uint32     { return cnid }
-func (*SQLiteStore) Rebind(_ string, _ string)                       {}
-func (*SQLiteStore) Remove(_ string)                                 {}
+func (*SQLiteStore) RootID() uint32                              { return Root }
+func (*SQLiteStore) Path(_ uint32) (string, bool)                { return "", false }
+func (*SQLiteStore) CNID(_ string) (uint32, bool)                { return 0, false }
+func (*SQLiteStore) Ensure(_ string) uint32                      { return 0 }
+func (*SQLiteStore) EnsureReserved(_ string, cnid uint32) uint32 { return cnid }
+func (*SQLiteStore) Rebind(_ string, _ string)                   {}
+func (*SQLiteStore) Remove(_ string)                             {}
+func (*SQLiteStore) Get(short string) (string, bool)                  { return "", false }
+func (*SQLiteStore) LookupShort(dir, long string) (string, bool)      { return "", false }
+func (*SQLiteStore) Put(dir, long, short string) error                { return nil }
+func (*SQLiteStore) OnVFSEvent(ev vfs.Event)                          {}
 
 // OpenSQLiteDB always returns ErrSQLiteDisabled in stub builds.
 func OpenSQLiteDB(_ string) (*sql.DB, error) { return nil, ErrSQLiteDisabled }

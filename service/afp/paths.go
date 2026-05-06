@@ -7,7 +7,19 @@ import (
 	"strings"
 
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/shortname"
 )
+
+func (s *Service) volIDForPath(path string) (uint16, bool) {
+	clean := filepath.Clean(path)
+	for _, vol := range s.Volumes {
+		rel, err := filepath.Rel(vol.Config.Path, clean)
+		if err == nil && !strings.HasPrefix(rel, "..") {
+			return vol.ID, true
+		}
+	}
+	return 0, false
+}
 
 // CNID-backed path/DID resolution and AFP path-string parsing. The
 // helpers here translate between AFP pathnames (null-separated, with
@@ -59,7 +71,7 @@ func (s *Service) removeDIDSubtree(volumeID uint16, path string) {
 }
 
 func (s *Service) resolvePath(parentPath, name string, pathType uint8) (string, int32) {
-	if pathType == 1 {
+	if pathType == 1 && !s.options.UseShortnames {
 		// Short names are not supported.
 		return "", ErrObjectNotFound
 	}
@@ -90,6 +102,21 @@ func (s *Service) resolvePath(parentPath, name string, pathType uint8) (string, 
 			// If we see an empty string here, it corresponds to ascending.
 			currentPath = filepath.Dir(currentPath)
 		} else {
+			if pathType == 1 && s.options.UseShortnames {
+				// Convert shortname to longname if possible
+				volID, ok := s.volIDForPath(currentPath)
+				if !ok {
+					return "", ErrObjectNotFound
+				}
+				store, _ := s.cnidStore(volID)
+				mapper := shortname.NewMapper(store)
+				if long, ok := mapper.ShortToLong(el); ok {
+					el = long
+				}
+				// If not found, `el` remains the short name string directly,
+				// which is perfectly valid as per AFP spec (short name = long name if new).
+			}
+
 			hostEl := s.afpPathElementToHost(el)
 			if hostEl == ".." {
 				return "", ErrAccessDenied

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/pkg/binutil"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/shortname"
 )
 
 // toAFPTime converts a Go time.Time to AFP's seconds-since-1904 epoch.
@@ -181,9 +182,16 @@ func (s *Service) packFileInfo(buf *bytes.Buffer, volumeID uint16, bitmap uint16
 			s.writeAFPName(&varBuf, name, volumeID)
 		}
 		if bitmap&DirBitmapShortName != 0 {
+			short := name
+			if s.options.UseShortnames {
+				if store, ok := s.cnidStore(volumeID); ok {
+					mapper := shortname.NewMapper(store)
+					short = mapper.Bind(parentPath, name)
+				}
+			}
 			offset := uint16(fixedSize + varBuf.Len())
 			binutil.WriteU16(buf, offset)
-			s.writeAFPName(&varBuf, name, volumeID)
+			s.writeAFPName(&varBuf, short, volumeID)
 		}
 		if bitmap&DirBitmapDirID != 0 {
 			did := s.getPathDID(volumeID, fullPath)
@@ -257,9 +265,16 @@ func (s *Service) packFileInfo(buf *bytes.Buffer, volumeID uint16, bitmap uint16
 			s.writeAFPName(&varBuf, name, volumeID)
 		}
 		if bitmap&FileBitmapShortName != 0 {
+			short := name
+			if s.options.UseShortnames {
+				if store, ok := s.cnidStore(volumeID); ok {
+					mapper := shortname.NewMapper(store)
+					short = mapper.Bind(parentPath, name)
+				}
+			}
 			offset := uint16(fixedSize + varBuf.Len())
 			binutil.WriteU16(buf, offset)
-			s.writeAFPName(&varBuf, name, volumeID)
+			s.writeAFPName(&varBuf, short, volumeID)
 		}
 		if bitmap&FileBitmapFileNum != 0 {
 			did := s.getPathDID(volumeID, fullPath)

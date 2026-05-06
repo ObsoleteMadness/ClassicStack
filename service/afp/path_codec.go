@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ObsoleteMadness/ClassicStack/pkg/encoding"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/shortname"
 )
 
 // AFPOptions controls AFP filename/path translation behavior.
@@ -32,6 +33,10 @@ type Options struct {
 	ForkMetadataBackend ForkMetadataBackend
 	// PersistentVolumeIDs assigns stable volume IDs derived from volume names.
 	PersistentVolumeIDs bool
+	// UseShortnames enables the 8.3 shortname mapping service for AFP clients.
+	UseShortnames bool
+	// ShortnameMapper is the shortname service instance.
+	ShortnameMapper shortname.Mapper
 }
 
 func DefaultOptions() Options {

@@ -6,8 +6,10 @@ import (
 	"bytes"
 	"io/fs"
 	"path/filepath"
+	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/vfs"
 )
 
 func (s *Service) handleGetFileDirParms(req *FPGetFileDirParmsReq) (*FPGetFileDirParmsRes, int32) {
@@ -105,6 +107,13 @@ func (s *Service) handleRename(req *FPRenameReq) (*FPRenameRes, int32) {
 	}
 	s.moveAppleDoubleSidecar(oldPath, newPath)
 	s.rebindDIDSubtree(req.VolumeID, oldPath, newPath)
+	vfs.DefaultBus.Publish(vfs.Event{
+		Op:       vfs.OpRename,
+		HostPath: newPath,
+		OldPath:  oldPath,
+		Origin:   "afp",
+		Time:     time.Now(),
+	})
 	return &FPRenameRes{}, NoErr
 }
 
@@ -197,6 +206,12 @@ func (s *Service) handleDelete(req *FPDeleteReq) (*FPDeleteRes, int32) {
 	}
 	s.deleteAppleDoubleSidecar(targetPath)
 	s.removeDIDSubtree(req.VolumeID, targetPath)
+	vfs.DefaultBus.Publish(vfs.Event{
+		Op:       vfs.OpDelete,
+		HostPath: targetPath,
+		Origin:   "afp",
+		Time:     time.Now(),
+	})
 	return &FPDeleteRes{}, NoErr
 }
 
@@ -256,6 +271,13 @@ func (s *Service) handleMoveAndRename(req *FPMoveAndRenameReq) (*FPMoveAndRename
 	}
 	s.moveAppleDoubleSidecar(srcPath, dstPath)
 	s.rebindDIDSubtree(req.VolumeID, srcPath, dstPath)
+	vfs.DefaultBus.Publish(vfs.Event{
+		Op:       vfs.OpRename,
+		HostPath: dstPath,
+		OldPath:  srcPath,
+		Origin:   "afp",
+		Time:     time.Now(),
+	})
 	return &FPMoveAndRenameRes{}, NoErr
 }
 
