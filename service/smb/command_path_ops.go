@@ -12,6 +12,7 @@ const (
 	smbStatusAccessDenied    = 0xC0000022
 	smbStatusNameNotFound    = 0xC000007F
 	smbStatusFileIsDirectory = 0xC00000BA
+	smbStatusNotADirectory   = 0xC0000103
 )
 
 func (s *Service) handleDelete(req []byte, conn *connState) []byte {
@@ -74,6 +75,41 @@ func (s *Service) handleRename(req []byte, conn *connState) []byte {
 		return buildSMBErrorResponse(req, smbStatusNameNotFound)
 	}
 	if err := fsys.Rename(oldPath, newPath); err != nil {
+		return buildSMBErrorResponse(req, smbStatusAccessDenied)
+	}
+	return buildSimpleSuccessResponse(req)
+}
+
+func (s *Service) handleDeleteDirectory(req []byte, conn *connState) []byte {
+	if len(req) < smbHeaderLen+3 {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	_, slot, fsys, ok := s.resolveRequestTree(req, conn)
+	if !ok {
+		return buildSMBErrorResponse(req, smbStatusBadTID)
+	}
+	if s.shares[slot.shareIdx].ReadOnly {
+		return buildSMBErrorResponse(req, smbStatusAccessDenied)
+	}
+
+	path, ok := parseSMBPath(req)
+	if !ok || path == "" {
+		return buildSMBErrorResponse(req, smbStatusNameNotFound)
+	}
+	if strings.Contains(path, "*") || strings.Contains(path, "?") {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	info, err := fsys.Stat(path)
+	if err != nil {
+		return buildSMBErrorResponse(req, smbStatusNameNotFound)
+	}
+	if !info.IsDir() {
+		return buildSMBErrorResponse(req, smbStatusNotADirectory)
+	}
+
+	if err := fsys.Remove(path); err != nil {
 		return buildSMBErrorResponse(req, smbStatusAccessDenied)
 	}
 	return buildSimpleSuccessResponse(req)
