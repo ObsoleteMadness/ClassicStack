@@ -20,6 +20,11 @@ func (s *Service) HandleSessionContext(packet *netbiosproto.SessionPacket, ctx n
 	if packet == nil || len(packet.Payload) < smbHeaderLen || string(packet.Payload[0:4]) != "\xffSMB" {
 		return nil, nil
 	}
+	// Never treat SMB responses as requests. Some transports can surface
+	// locally transmitted frames back to the receive path.
+	if packet.Payload[smbOffFlags]&0x80 != 0 {
+		return nil, nil
+	}
 
 	connID := connKeyFromSession(ctx)
 	conn := s.ensureConn(connID)

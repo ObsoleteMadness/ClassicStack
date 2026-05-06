@@ -43,11 +43,15 @@ func (t *Transport) HandleDatagram(d *ipxproto.Datagram) {
 	if len(d.Payload) < 4 || string(d.Payload[:4]) != "\xffSMB" {
 		return
 	}
+	// Ignore SMB responses on ingress; only requests should be dispatched.
+	if len(d.Payload) > 9 && (d.Payload[9]&0x80) != 0 {
+		return
+	}
 	resp, err := t.handler.HandleSessionContext(&netbiosproto.SessionPacket{
 		Type:    netbiosproto.SessionMessage,
 		Payload: append([]byte(nil), d.Payload...),
 	}, netbios.SessionContext{
-		Local: netbios.DatagramEndpoint{Network: d.DstNet, Node: d.DstNode, Socket: d.DstSock},
+		Local:  netbios.DatagramEndpoint{Network: d.DstNet, Node: d.DstNode, Socket: d.DstSock},
 		Remote: netbios.DatagramEndpoint{Network: d.SrcNet, Node: d.SrcNode, Socket: d.SrcSock},
 	})
 	if err != nil || resp == nil || len(resp.Payload) == 0 {

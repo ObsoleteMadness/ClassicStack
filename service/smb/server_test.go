@@ -1287,3 +1287,20 @@ func TestHandleSessionContextTreeDisconnectReturnsSuccess(t *testing.T) {
 		t.Fatalf("ByteCount: expected 0")
 	}
 }
+
+func TestHandleSessionContextIgnoresSMBResponses(t *testing.T) {
+	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, nil)
+	payload := makeNegotiatePayload()
+	payload[smbOffFlags] |= 0x80 // mark packet as SMB response
+
+	resp, err := svc.HandleSessionContext(&netbiosproto.SessionPacket{
+		Type:    netbiosproto.SessionMessage,
+		Payload: payload,
+	}, netbios.SessionContext{})
+	if err != nil {
+		t.Fatalf("HandleSessionContext: %v", err)
+	}
+	if resp != nil {
+		t.Fatalf("expected no response for inbound SMB response packet")
+	}
+}
