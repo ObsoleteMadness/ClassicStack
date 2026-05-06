@@ -1093,6 +1093,11 @@ func (s *Service) HandleSessionContext(packet *netbiosproto.SessionPacket, ctx n
 			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
 		respPayload = s.handleReadAndX(packet.Payload, conn)
 
+	case CommandWriteAndX:
+		netlog.Debug("[SMB][Session] write-andx src=%x.%x:%02x%02x",
+			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
+		respPayload = s.handleWriteAndX(packet.Payload, conn)
+
 	default:
 		netlog.Debug("[SMB][Session] unsupported command=0x%02x src=%x.%x:%02x%02x",
 			cmd, ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
@@ -1663,6 +1668,82 @@ func (s *Service) handleReadAndX(req []byte, conn *connState) []byte {
 
 	data = data[:n]
 	return buildReadAndXResponse(req, data)
+}
+
+// handleWriteAndX (0x2F) writes data to an open file.
+func (s *Service) handleWriteAndX(req []byte, conn *connState) []byte {
+	if len(req) < smbHeaderLen+13 {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	// Parse request
+	wct := int(req[smbHeaderLen])
+	if wct < 6 {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	w := req[smbHeaderLen+1:]
+	fid := binary.LittleEndian.Uint16(w[2:4])
+	offset := binary.LittleEndian.Uint32(w[4:8])
+	_ = binary.LittleEndian.Uint16(w[12:14]) // writeMode (unused)
+
+	// Get data from bytes area
+	bytesArea, ok := smbBytesArea(req)
+	if !ok {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	// Look up file handle
+	conn.mu.Lock()
+	handle, ok := conn.fids[fid]
+	conn.mu.Unlock()
+	if !ok || handle == nil || handle.file == nil {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	if !handle.writable {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	// Write to file
+	n, err := handle.file.WriteAt(bytesArea, int64(offset))
+	if err != nil {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	return buildWriteAndXResponse(req, uint16(n))
+}
+
+func buildWriteAndXResponse(req []byte, count uint16) []byte {
+	if len(req) < smbHeaderLen || string(req[0:4]) != "\xffSMB" {
+		return nil
+	}
+
+	out := make([]byte, smbHeaderLen+1+(6*2)+2)
+	copy(out[:smbHeaderLen], req[:smbHeaderLen])
+	binary.LittleEndian.PutUint32(out[smbOffStatus:smbOffStatus+4], smbStatusSuccess)
+	out[smbOffFlags] |= 0x80
+	out[smbHeaderLen] = 6 // WCT
+	w := out[smbHeaderLen+1:]
+
+	// AndXCommand, AndXReserved, AndXOffset
+	w[0] = 0xFF
+	w[1] = 0x00
+	binary.LittleEndian.PutUint16(w[2:4], 0)
+
+	// Count (bytes written)
+	binary.LittleEndian.PutUint16(w[4:6], count)
+
+	// Remaining (bytes left in transaction)
+	binary.LittleEndian.PutUint16(w[6:8], 0)
+
+	// Reserved
+	binary.LittleEndian.PutUint32(w[8:12], 0)
+
+	// ByteCount = 0
+	binary.LittleEndian.PutUint16(w[12:14], 0)
+
+	return out
 }
 
 func buildReadAndXResponse(req []byte, data []byte) []byte {
