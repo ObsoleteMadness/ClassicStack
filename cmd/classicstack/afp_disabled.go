@@ -9,8 +9,8 @@ import (
 
 type afpHookDisabled struct{}
 
-func (afpHookDisabled) Services() []service.Service     { return nil }
-func (afpHookDisabled) AttachMacIP(_ AFPSessionHooks)   {}
+func (afpHookDisabled) Services() []service.Service   { return nil }
+func (afpHookDisabled) AttachMacIP(_ AFPSessionHooks) {}
 
 // wireAFP is the no-op stub used when the binary is built without the
 // afp tag. It logs a warning if the operator asked for AFP and returns

@@ -1,0 +1,35 @@
+# Normalize line endings on commit. Files in the repo are stored with LF;
+# Windows checkouts get CRLF for shell scripts marked otherwise, but Go
+# tooling expects LF so we pin text files to LF on checkout too.
+* text=auto eol=lf
+
+# Explicitly mark common text types so detection cannot get it wrong.
+*.go        text eol=lf
+*.md        text eol=lf
+*.toml      text eol=lf
+*.json      text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.sh        text eol=lf
+*.txt       text eol=lf
+*.conf      text eol=lf
+*.example   text eol=lf
+
+# Windows-only files keep CRLF.
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+*.ps1       text eol=crlf
+
+# Binary assets — never touch line endings.
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.icns      binary
+*.pdf       binary
+*.doc       binary
+*.docx      binary
+*.db        binary
+*.pcap      binary
+*.bin       binary

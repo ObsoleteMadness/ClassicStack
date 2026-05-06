@@ -34,7 +34,7 @@ const (
 	// EntryIDIconBW is the entry ID for a classic 32x32 1-bit
 	// Macintosh icon (netatalk adouble.h AD_ICON). The payload is
 	// 128 bytes of bitmap with no mask.
-	EntryIDIconBW    uint32 = 5
+	EntryIDIconBW     uint32 = 5
 	EntryIDFinderInfo uint32 = 9
 )
 

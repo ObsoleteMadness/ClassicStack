@@ -30,15 +30,15 @@ type AFPSessionHooks interface {
 // TOML config file is in use. When -config is given, flagInputs is
 // ignored and AFP reads its section from the config.Source instead.
 type AFPFlagInputs struct {
-	ServerName         string
-	Zone               string
-	Protocols          string
-	TCPAddr            string
-	ExtensionMap       string
-	DecomposedNames    bool
-	CNIDBackend        string
-	AppleDoubleMode    string
-	VolumeFlagValues   []string // raw "Name:Path" flag entries
+	ServerName       string
+	Zone             string
+	Protocols        string
+	TCPAddr          string
+	ExtensionMap     string
+	DecomposedNames  bool
+	CNIDBackend      string
+	AppleDoubleMode  string
+	VolumeFlagValues []string // raw "Name:Path" flag entries
 }
 
 // AFPWiring is the input bundle for wireAFP.
