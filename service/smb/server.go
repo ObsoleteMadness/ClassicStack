@@ -1067,6 +1067,11 @@ func (s *Service) HandleSessionContext(packet *netbiosproto.SessionPacket, ctx n
 			}
 		}
 
+	case CommandQueryInformationDisk:
+		netlog.Debug("[SMB][Session] query-information-disk src=%x.%x:%02x%02x",
+			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
+		respPayload = s.handleQueryInformationDisk(packet.Payload, conn)
+
 	default:
 		netlog.Debug("[SMB][Session] unsupported command=0x%02x src=%x.%x:%02x%02x",
 			cmd, ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
@@ -1319,6 +1324,37 @@ func (s *Service) handleTreeConnectAndX(req []byte, conn *connState) []byte {
 	return buildTreeConnectResponseWithTID(req, tid)
 }
 
+// handleQueryInformationDisk (0x80) reports disk geometry and free space
+// for the share associated with the request's TID.
+func (s *Service) handleQueryInformationDisk(req []byte, conn *connState) []byte {
+	if len(req) < smbHeaderLen {
+		return buildSMBErrorResponse(req, smbStatusBadTID)
+	}
+
+	tid := binary.LittleEndian.Uint16(req[smbOffTID : smbOffTID+2])
+
+	conn.mu.Lock()
+	slot, ok := conn.tids[tid]
+	conn.mu.Unlock()
+	if !ok {
+		return buildSMBErrorResponse(req, smbStatusBadTID)
+	}
+
+	s.mu.Lock()
+	fs, ok := s.shareFSes[slot.shareIdx]
+	s.mu.Unlock()
+	if !ok || fs == nil {
+		return buildSMBErrorResponse(req, smbStatusBadTID)
+	}
+
+	totalBytes, freeBytes, err := fs.DiskUsage("")
+	if err != nil {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	return buildQueryInformationDiskResponse(req, totalBytes, freeBytes)
+}
+
 func buildTreeConnectResponseWithTID(req []byte, tid uint16) []byte {
 	if len(req) < smbHeaderLen {
 		return nil
@@ -1412,6 +1448,35 @@ func buildSimpleSuccessResponse(req []byte) []byte {
 	out[smbOffFlags] |= 0x80
 	out[smbHeaderLen] = 0
 	binary.LittleEndian.PutUint16(out[smbHeaderLen+1:smbHeaderLen+3], 0)
+	return out
+}
+
+// buildQueryInformationDiskResponse constructs an SMB_COM_QUERY_INFORMATION_DISK
+// response. Uses 512-byte blocks with 8-block allocation units (4KB clusters).
+func buildQueryInformationDiskResponse(req []byte, totalBytes, freeBytes uint64) []byte {
+	if len(req) < smbHeaderLen || string(req[0:4]) != "\xffSMB" {
+		return nil
+	}
+
+	const blockSize = 512
+	const blocksPerUnit = 8
+	const allocationUnitSize = blockSize * blocksPerUnit
+
+	totalUnits := uint16(totalBytes / allocationUnitSize)
+	freeUnits := uint16(freeBytes / allocationUnitSize)
+
+	out := make([]byte, smbHeaderLen+1+(5*2)+2)
+	copy(out[:smbHeaderLen], req[:smbHeaderLen])
+	binary.LittleEndian.PutUint32(out[smbOffStatus:smbOffStatus+4], smbStatusSuccess)
+	out[smbOffFlags] |= 0x80
+	out[smbHeaderLen] = 5 // WCT
+	w := out[smbHeaderLen+1:]
+	binary.LittleEndian.PutUint16(w[0:2], totalUnits)
+	binary.LittleEndian.PutUint16(w[2:4], blocksPerUnit)
+	binary.LittleEndian.PutUint16(w[4:6], blockSize)
+	binary.LittleEndian.PutUint16(w[6:8], freeUnits)
+	binary.LittleEndian.PutUint16(w[8:10], 0) // Reserved
+	binary.LittleEndian.PutUint16(w[10:12], 0) // ByteCount
 	return out
 }
 
