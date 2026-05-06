@@ -1072,6 +1072,11 @@ func (s *Service) HandleSessionContext(packet *netbiosproto.SessionPacket, ctx n
 			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
 		respPayload = s.handleQueryInformationDisk(packet.Payload, conn)
 
+	case CommandCheckDirectory:
+		netlog.Debug("[SMB][Session] check-directory src=%x.%x:%02x%02x",
+			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
+		respPayload = s.handleCheckDirectory(packet.Payload, conn)
+
 	default:
 		netlog.Debug("[SMB][Session] unsupported command=0x%02x src=%x.%x:%02x%02x",
 			cmd, ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
@@ -1379,6 +1384,45 @@ func buildTreeConnectResponseWithTID(req []byte, tid uint16) []byte {
 	return out
 }
 
+// handleCheckDirectory (0x10) verifies a path is a directory.
+func (s *Service) handleCheckDirectory(req []byte, conn *connState) []byte {
+	if len(req) < smbHeaderLen {
+		return buildSMBErrorResponse(req, smbStatusBadTID)
+	}
+
+	tid := binary.LittleEndian.Uint16(req[smbOffTID : smbOffTID+2])
+
+	conn.mu.Lock()
+	slot, ok := conn.tids[tid]
+	conn.mu.Unlock()
+	if !ok {
+		return buildSMBErrorResponse(req, smbStatusBadTID)
+	}
+
+	s.mu.Lock()
+	fs, ok := s.shareFSes[slot.shareIdx]
+	s.mu.Unlock()
+	if !ok || fs == nil {
+		return buildSMBErrorResponse(req, smbStatusBadTID)
+	}
+
+	path, ok := parseSMBPath(req)
+	if !ok || path == "" {
+		return buildSMBErrorResponse(req, 0xC000007F) // STATUS_OBJECT_NAME_NOT_FOUND
+	}
+
+	info, err := fs.Stat(path)
+	if err != nil {
+		return buildSMBErrorResponse(req, 0xC000007F) // STATUS_OBJECT_NAME_NOT_FOUND
+	}
+
+	if !info.IsDir() {
+		return buildSMBErrorResponse(req, 0xC0000103) // STATUS_NOT_A_DIRECTORY
+	}
+
+	return buildSimpleSuccessResponse(req)
+}
+
 func parseTreeConnectShareName(req []byte) (string, bool) {
 	bytesArea, ok := smbBytesArea(req)
 	if !ok || len(bytesArea) == 0 {
@@ -1398,6 +1442,31 @@ func parseTreeConnectShareName(req []byte) (string, bool) {
 			}
 		}
 	}
+	return "", false
+}
+
+// parseSMBPath extracts a path from the bytes area of an SMB request.
+func parseSMBPath(req []byte) (string, bool) {
+	bytesArea, ok := smbBytesArea(req)
+	if !ok || len(bytesArea) == 0 {
+		return "", false
+	}
+
+	// Skip the path format indicator (typically buffer format code 0x04)
+	rest := bytesArea
+	if len(rest) > 0 && rest[0] == 0x04 {
+		rest = rest[1:]
+	}
+
+	// Find the first NUL-terminated string
+	if nulIdx := bytes.IndexByte(rest, 0); nulIdx >= 0 {
+		pathStr := string(rest[:nulIdx])
+		path := strings.TrimSpace(pathStr)
+		// Strip leading separators and normalize
+		path = strings.TrimLeft(path, "\\")
+		return path, path != ""
+	}
+
 	return "", false
 }
 
