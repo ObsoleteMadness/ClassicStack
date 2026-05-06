@@ -1103,6 +1103,11 @@ func (s *Service) HandleSessionContext(packet *netbiosproto.SessionPacket, ctx n
 			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
 		respPayload = s.handleClose(packet.Payload, conn)
 
+	case CommandFlush:
+		netlog.Debug("[SMB][Session] flush src=%x.%x:%02x%02x",
+			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
+		respPayload = s.handleFlush(packet.Payload, conn)
+
 	default:
 		netlog.Debug("[SMB][Session] unsupported command=0x%02x src=%x.%x:%02x%02x",
 			cmd, ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
@@ -1745,6 +1750,37 @@ func (s *Service) handleClose(req []byte, conn *connState) []byte {
 		delete(conn.fids, fid)
 	}
 	conn.mu.Unlock()
+
+	return buildSimpleSuccessResponse(req)
+}
+
+// handleFlush (0x05) flushes (syncs) writes to an open file.
+func (s *Service) handleFlush(req []byte, conn *connState) []byte {
+	if len(req) < smbHeaderLen+5 {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	// Parse request
+	wct := int(req[smbHeaderLen])
+	if wct < 1 {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	w := req[smbHeaderLen+1:]
+	fid := binary.LittleEndian.Uint16(w[0:2])
+
+	// Look up file handle
+	conn.mu.Lock()
+	handle, ok := conn.fids[fid]
+	conn.mu.Unlock()
+	if !ok || handle == nil || handle.file == nil {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	// Sync the file
+	if err := handle.file.Sync(); err != nil {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
 
 	return buildSimpleSuccessResponse(req)
 }
