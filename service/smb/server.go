@@ -1088,6 +1088,11 @@ func (s *Service) HandleSessionContext(packet *netbiosproto.SessionPacket, ctx n
 			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
 		respPayload = s.handleOpenAndX(packet.Payload, conn)
 
+	case CommandReadAndX:
+		netlog.Debug("[SMB][Session] read-andx src=%x.%x:%02x%02x",
+			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
+		respPayload = s.handleReadAndX(packet.Payload, conn)
+
 	default:
 		netlog.Debug("[SMB][Session] unsupported command=0x%02x src=%x.%x:%02x%02x",
 			cmd, ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
@@ -1616,6 +1621,102 @@ func (s *Service) handleOpenAndX(req []byte, conn *connState) []byte {
 	conn.mu.Unlock()
 
 	return buildOpenAndXResponse(req, fid, info, fileAttrs)
+}
+
+// handleReadAndX (0x2E) reads data from an open file.
+func (s *Service) handleReadAndX(req []byte, conn *connState) []byte {
+	if len(req) < smbHeaderLen+11 {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	// Parse request
+	wct := int(req[smbHeaderLen])
+	if wct < 5 {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	w := req[smbHeaderLen+1:]
+	fid := binary.LittleEndian.Uint16(w[2:4])
+	offset := binary.LittleEndian.Uint32(w[4:8])
+	maxCount := binary.LittleEndian.Uint16(w[8:10])
+	_ = binary.LittleEndian.Uint16(w[10:12]) // minCount (unused)
+
+	// Look up file handle
+	conn.mu.Lock()
+	handle, ok := conn.fids[fid]
+	conn.mu.Unlock()
+	if !ok || handle == nil || handle.file == nil {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	// Clamp read size
+	if maxCount > 4096 {
+		maxCount = 4096
+	}
+
+	// Read from file
+	data := make([]byte, maxCount)
+	n, err := handle.file.ReadAt(data, int64(offset))
+	if err != nil && err.Error() != "EOF" {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	data = data[:n]
+	return buildReadAndXResponse(req, data)
+}
+
+func buildReadAndXResponse(req []byte, data []byte) []byte {
+	if len(req) < smbHeaderLen || string(req[0:4]) != "\xffSMB" {
+		return nil
+	}
+
+	out := make([]byte, smbHeaderLen+1+(12*2)+2+len(data))
+	copy(out[:smbHeaderLen], req[:smbHeaderLen])
+	binary.LittleEndian.PutUint32(out[smbOffStatus:smbOffStatus+4], smbStatusSuccess)
+	out[smbOffFlags] |= 0x80
+	out[smbHeaderLen] = 12 // WCT
+	w := out[smbHeaderLen+1:]
+
+	// AndXCommand, AndXReserved, AndXOffset
+	w[0] = 0xFF
+	w[1] = 0x00
+	binary.LittleEndian.PutUint16(w[2:4], 0)
+
+	// Remaining (words available for next command)
+	binary.LittleEndian.PutUint16(w[4:6], 0)
+
+	// DataCompactionMode
+	binary.LittleEndian.PutUint16(w[6:8], 0)
+
+	// Reserved
+	binary.LittleEndian.PutUint16(w[8:10], 0)
+
+	// DataLength
+	binary.LittleEndian.PutUint16(w[10:12], uint16(len(data)))
+
+	// DataOffset relative to SMB header
+	dataOffset := smbHeaderLen + 1 + (12 * 2) + 2
+	binary.LittleEndian.PutUint16(w[12:14], uint16(dataOffset))
+
+	// Reserved
+	binary.LittleEndian.PutUint16(w[14:16], 0)
+
+	// Reserved
+	binary.LittleEndian.PutUint16(w[16:18], 0)
+
+	// Reserved
+	binary.LittleEndian.PutUint16(w[18:20], 0)
+
+	// Reserved
+	binary.LittleEndian.PutUint16(w[20:22], 0)
+
+	// ByteCount
+	binary.LittleEndian.PutUint16(w[22:24], uint16(len(data)))
+
+	// Data
+	copy(w[24:], data)
+
+	return out
 }
 
 func buildOpenAndXResponse(req []byte, fid uint16, info fs.FileInfo, fileAttrs uint16) []byte {
