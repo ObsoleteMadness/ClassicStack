@@ -141,7 +141,10 @@ func buildTreeConnectResponse(req []byte) []byte {
 }
 
 // buildEchoResponse constructs an SMB_COM_ECHO response that mirrors
-// the request body and sets SequenceNumber to 1.
+// the request body and sets SequenceNumber to 1. We always send exactly
+// one response regardless of EchoCount, since the architecture only
+// supports one response per request. Clients that want multiple echoes
+// should send multiple ECHO requests.
 func buildEchoResponse(req []byte) []byte {
 	if len(req) < smbHeaderLen+5 || string(req[0:4]) != "\xffSMB" {
 		return nil
@@ -163,7 +166,7 @@ func buildEchoResponse(req []byte) []byte {
 	binary.LittleEndian.PutUint32(out[smbOffStatus:smbOffStatus+4], smbStatusSuccess)
 	out[smbOffFlags] |= 0x80
 	out[smbHeaderLen] = 1 // WCT
-	binary.LittleEndian.PutUint16(out[smbHeaderLen+1:smbHeaderLen+3], 1)
+	binary.LittleEndian.PutUint16(out[smbHeaderLen+1:smbHeaderLen+3], 1) // SequenceNumber = 1
 	binary.LittleEndian.PutUint16(out[smbHeaderLen+3:smbHeaderLen+5], uint16(len(data)))
 	copy(out[smbHeaderLen+5:], data)
 	return out
