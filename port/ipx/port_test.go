@@ -190,6 +190,39 @@ func TestIPXLLCDecoded(t *testing.T) {
 	}
 }
 
+func TestIPXDedupsImmediateDuplicateInboundFrame(t *testing.T) {
+	link := newFakeRawLink()
+	p := NewPort(link)
+	defer p.Stop()
+
+	delivered := make(chan *protocol.Datagram, 2)
+	p.SetDeliveryCallback(func(d *protocol.Datagram) { delivered <- d })
+
+	if err := p.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	frame := buildEthernetIIIPX(makeIPXBytes(t, []byte("dup")))
+	link.Push(frame)
+	link.Push(frame)
+
+	select {
+	case got := <-delivered:
+		if string(got.Payload) != "dup" {
+			t.Fatalf("payload: got %q want %q", got.Payload, "dup")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no delivery for first frame")
+	}
+
+	select {
+	case <-delivered:
+		t.Fatal("unexpected second delivery for duplicate frame")
+	case <-time.After(100 * time.Millisecond):
+		// pass
+	}
+}
+
 func TestIPXSendEthernetII(t *testing.T) {
 	link := newFakeRawLink()
 	p := NewPort(link)

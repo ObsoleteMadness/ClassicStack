@@ -9,6 +9,7 @@ package ipx
 
 import (
 	"errors"
+	"hash/fnv"
 	"sync"
 	"time"
 
@@ -85,10 +86,16 @@ type portImpl struct {
 	cb DeliveryCallback
 	cs capture.Sink
 
+	dedupMu      sync.Mutex
+	recentFrames map[uint64]time.Time
+
 	stopOnce   sync.Once
 	readerStop chan struct{}
 	readerDone chan struct{}
 }
+
+const inboundFrameDedupWindow = 25 * time.Millisecond
+const inboundFrameDedupTTL = 100 * time.Millisecond
 
 // NewPort opens an IPX port on link using the default Ethernet II
 // framing for outbound transmit. Inbound frames are accepted in all
@@ -103,6 +110,7 @@ func NewPortWithFraming(link rawlink.RawLink, framing Framing) Port {
 	return &portImpl{
 		link:       link,
 		framing:    framing,
+		recentFrames: make(map[uint64]time.Time),
 		readerStop: make(chan struct{}),
 		readerDone: make(chan struct{}),
 	}
@@ -190,12 +198,36 @@ func (p *portImpl) readLoop() {
 			netlog.Warn("[IPX] read error: %v", err)
 			continue
 		}
+		if p.isDuplicateFrame(frame) {
+			continue
+		}
 		p.mu.RLock()
 		sink := p.cs
 		p.mu.RUnlock()
 		capture.Write(sink, time.Now(), frame)
 		p.handleFrame(frame)
 	}
+}
+
+func (p *portImpl) isDuplicateFrame(frame []byte) bool {
+	h := fnv.New64a()
+	_, _ = h.Write(frame)
+	key := h.Sum64()
+	now := time.Now()
+
+	p.dedupMu.Lock()
+	defer p.dedupMu.Unlock()
+
+	if seenAt, ok := p.recentFrames[key]; ok && now.Sub(seenAt) <= inboundFrameDedupWindow {
+		return true
+	}
+	p.recentFrames[key] = now
+	for k, ts := range p.recentFrames {
+		if now.Sub(ts) > inboundFrameDedupTTL {
+			delete(p.recentFrames, k)
+		}
+	}
+	return false
 }
 
 // handleFrame inspects the Ethernet header and routes the surviving
