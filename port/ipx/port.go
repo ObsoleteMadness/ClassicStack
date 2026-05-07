@@ -164,6 +164,10 @@ func (p *portImpl) sendEthernetII(d *protocol.Datagram, payload []byte) error {
 	p.mu.RLock()
 	sink := p.cs
 	p.mu.RUnlock()
+	// Pre-register the outbound frame so any loopback copy the kernel
+	// surfaces back through readLoop is suppressed by isDuplicateFrame —
+	// otherwise our own frames are captured (and decoded) twice.
+	p.markFrameSeen(frame)
 	capture.Write(sink, time.Now(), frame)
 	return p.link.WriteFrame(frame)
 }
@@ -210,9 +214,7 @@ func (p *portImpl) readLoop() {
 }
 
 func (p *portImpl) isDuplicateFrame(frame []byte) bool {
-	h := fnv.New64a()
-	_, _ = h.Write(frame)
-	key := h.Sum64()
+	key := frameHash(frame)
 	now := time.Now()
 
 	p.dedupMu.Lock()
@@ -228,6 +230,21 @@ func (p *portImpl) isDuplicateFrame(frame []byte) bool {
 		}
 	}
 	return false
+}
+
+func (p *portImpl) markFrameSeen(frame []byte) {
+	key := frameHash(frame)
+	now := time.Now()
+
+	p.dedupMu.Lock()
+	defer p.dedupMu.Unlock()
+	p.recentFrames[key] = now
+}
+
+func frameHash(frame []byte) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write(frame)
+	return h.Sum64()
 }
 
 // handleFrame inspects the Ethernet header and routes the surviving
