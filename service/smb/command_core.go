@@ -3,6 +3,7 @@ package smb
 import (
 	"bytes"
 	"encoding/binary"
+	"strings"
 	"time"
 )
 
@@ -190,11 +191,25 @@ func isValidEchoTID(req []byte, conn *connState) bool {
 
 func (s *Service) handleTreeConnectAndX(req []byte, conn *connState) []byte {
 	if conn == nil {
-		return buildTreeConnectResponse(req)
+		return buildSMBErrorResponse(req, smbStatusBadNetworkName)
 	}
 	shareName, ok := parseTreeConnectShareName(req)
 	if !ok {
-		return buildTreeConnectResponse(req)
+		return buildSMBErrorResponse(req, smbStatusBadNetworkName)
+	}
+
+	// IPC$ is a virtual share that is always available for LANMAN/named-pipe use.
+	if strings.EqualFold(shareName, ipcShareName) {
+		conn.mu.Lock()
+		conn.nextTID++
+		tid := conn.nextTID
+		if tid == 0 {
+			conn.nextTID++
+			tid = conn.nextTID
+		}
+		conn.tids[tid] = treeSlot{shareIdx: ipcShareIdx}
+		conn.mu.Unlock()
+		return buildTreeConnectResponseForIPC(req, tid)
 	}
 
 	normalized := normalizeBrowserName(shareName)
@@ -202,7 +217,7 @@ func (s *Service) handleTreeConnectAndX(req []byte, conn *connState) []byte {
 	shareIdx, found := s.shareNameToIndex[normalized]
 	s.mu.Unlock()
 	if !found {
-		return buildTreeConnectResponse(req)
+		return buildSMBErrorResponse(req, smbStatusBadNetworkName)
 	}
 
 	conn.mu.Lock()
@@ -216,6 +231,32 @@ func (s *Service) handleTreeConnectAndX(req []byte, conn *connState) []byte {
 	conn.mu.Unlock()
 
 	return buildTreeConnectResponseWithTID(req, tid)
+}
+
+// buildTreeConnectResponseForIPC constructs an SMB_COM_TREE_CONNECT_ANDX
+// success response for IPC$ connections. The service string is "IPC".
+func buildTreeConnectResponseForIPC(req []byte, tid uint16) []byte {
+	if len(req) < smbHeaderLen {
+		return nil
+	}
+	service := []byte("IPC\x00")
+	nativeFS := []byte("\x00")
+	byteCount := len(service) + len(nativeFS)
+	out := make([]byte, smbHeaderLen+1+6+2+byteCount)
+	copy(out[:smbHeaderLen], req[:smbHeaderLen])
+	binary.LittleEndian.PutUint32(out[smbOffStatus:smbOffStatus+4], smbStatusSuccess)
+	out[smbOffFlags] |= 0x80
+	binary.LittleEndian.PutUint16(out[smbOffTID:smbOffTID+2], tid)
+	out[smbHeaderLen] = 3 // WCT
+	w := out[smbHeaderLen+1:]
+	w[0] = 0xFF                               // AndXCommand = no chaining
+	w[1] = 0x00                               // AndXReserved
+	binary.LittleEndian.PutUint16(w[2:4], 0)  // AndXOffset
+	binary.LittleEndian.PutUint16(w[4:6], 0)  // OptionalSupport
+	binary.LittleEndian.PutUint16(w[6:8], uint16(byteCount))
+	copy(w[8:], service)
+	copy(w[8+len(service):], nativeFS)
+	return out
 }
 
 // handleQueryInformationDisk (0x80) reports disk geometry and free space

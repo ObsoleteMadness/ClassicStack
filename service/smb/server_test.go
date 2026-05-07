@@ -3,6 +3,7 @@ package smb
 import (
 	"context"
 	"encoding/binary"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -818,9 +819,26 @@ func makeSessionSetupPayload() []byte {
 }
 
 func makeTreeConnectPayload() []byte {
-	out := make([]byte, smbHeaderLen+1+2)
+	return makeTreeConnectSharePayload("\\\\SERVER\\IPC$")
+}
+
+// makeTreeConnectSharePayload builds a minimal SMB_COM_TREE_CONNECT_ANDX
+// request whose bytes-area contains the given UNC share path followed by
+// the service identifier "?????".
+func makeTreeConnectSharePayload(uncPath string) []byte {
+	path := append([]byte(uncPath), 0)
+	service := []byte("?????\x00")
+	byteCount := len(path) + len(service)
+	// WCT=4: AndXCommand+AndXReserved+AndXOffset+Flags+PasswordLength (8 bytes)
+	out := make([]byte, smbHeaderLen+1+8+2+byteCount)
 	copy(out[0:4], []byte{0xff, 'S', 'M', 'B'})
 	out[4] = CommandTreeConnectAndX
+	out[smbHeaderLen] = 4 // WCT
+	w := out[smbHeaderLen+1:]
+	w[0] = 0xFF // AndXCommand = no chaining
+	binary.LittleEndian.PutUint16(w[8:10], uint16(byteCount))
+	copy(w[10:], path)
+	copy(w[10+len(path):], service)
 	return out
 }
 
@@ -998,11 +1016,42 @@ func TestHandleSessionContextTreeConnectReturnsIPC(t *testing.T) {
 		t.Fatalf("cmd: got %#x want %#x", resp.Payload[4], CommandTreeConnectAndX)
 	}
 	if binary.LittleEndian.Uint32(resp.Payload[smbOffStatus:smbOffStatus+4]) != smbStatusSuccess {
-		t.Fatalf("status: not success")
+		t.Fatalf("status: not success (got %#x)", binary.LittleEndian.Uint32(resp.Payload[smbOffStatus:smbOffStatus+4]))
 	}
 	tid := binary.LittleEndian.Uint16(resp.Payload[smbOffTID : smbOffTID+2])
 	if tid == 0 {
 		t.Fatal("TID should be non-zero after tree connect")
+	}
+	// Service string should be "IPC" for IPC$ connections.
+	wct := int(resp.Payload[smbHeaderLen])
+	bytesOff := smbHeaderLen + 1 + wct*2
+	if bytesOff+2 < len(resp.Payload) {
+		bc := int(binary.LittleEndian.Uint16(resp.Payload[bytesOff : bytesOff+2]))
+		if bytesOff+2+bc <= len(resp.Payload) {
+			service := string(resp.Payload[bytesOff+2 : bytesOff+2+bc])
+			if !strings.HasPrefix(service, "IPC") {
+				t.Fatalf("service: got %q, want prefix \"IPC\"", service)
+			}
+		}
+	}
+}
+
+func TestHandleSessionContextTreeConnectUnknownShareReturnsError(t *testing.T) {
+	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, nil)
+	packet := &netbiosproto.SessionPacket{
+		Type:    netbiosproto.SessionMessage,
+		Payload: makeTreeConnectSharePayload("\\\\SERVER\\NOEXIST"),
+	}
+	resp, err := svc.HandleSessionContext(packet, netbios.SessionContext{})
+	if err != nil {
+		t.Fatalf("HandleSessionContext: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if binary.LittleEndian.Uint32(resp.Payload[smbOffStatus:smbOffStatus+4]) != smbStatusBadNetworkName {
+		t.Fatalf("status: got %#x, want STATUS_BAD_NETWORK_NAME (%#x)",
+			binary.LittleEndian.Uint32(resp.Payload[smbOffStatus:smbOffStatus+4]), smbStatusBadNetworkName)
 	}
 }
 
