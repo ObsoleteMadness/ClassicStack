@@ -16,7 +16,9 @@ package netbeui
 import (
 	"errors"
 	"sync"
+	"time"
 
+	"github.com/ObsoleteMadness/ClassicStack/capture"
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
 	"github.com/ObsoleteMadness/ClassicStack/port/rawlink"
 	"github.com/ObsoleteMadness/ClassicStack/protocol/netbeui"
@@ -64,6 +66,8 @@ type Port interface {
 	SendBroadcast(frame *netbeui.Frame) error
 	SetSourceMAC(mac [6]byte)
 	SetDeliveryCallback(cb DeliveryCallback)
+	// SetCaptureSink installs an optional raw-frame capture sink.
+	SetCaptureSink(sink capture.Sink)
 }
 
 type portImpl struct {
@@ -73,6 +77,7 @@ type portImpl struct {
 	src    [6]byte
 	hasSrc bool
 	cb     DeliveryCallback
+	cs     capture.Sink
 
 	stopOnce   sync.Once
 	readerStop chan struct{}
@@ -121,6 +126,12 @@ func (p *portImpl) SetDeliveryCallback(cb DeliveryCallback) {
 	p.mu.Unlock()
 }
 
+func (p *portImpl) SetCaptureSink(sink capture.Sink) {
+	p.mu.Lock()
+	p.cs = sink
+	p.mu.Unlock()
+}
+
 func (p *portImpl) Send(dstMAC [6]byte, frame *netbeui.Frame) error {
 	p.mu.RLock()
 	src := p.src
@@ -145,6 +156,10 @@ func (p *portImpl) Send(dstMAC [6]byte, frame *netbeui.Frame) error {
 	out[13] = byte(llcLen)
 	copy(out[14:14+len(llcHeader)], llcHeader[:])
 	copy(out[14+len(llcHeader):], body)
+	p.mu.RLock()
+	sink := p.cs
+	p.mu.RUnlock()
+	capture.Write(sink, time.Now(), out)
 	return p.link.WriteFrame(out)
 }
 
@@ -172,6 +187,10 @@ func (p *portImpl) readLoop() {
 			netlog.Warn("[NetBEUI] read error: %v", err)
 			continue
 		}
+		p.mu.RLock()
+		sink := p.cs
+		p.mu.RUnlock()
+		capture.Write(sink, time.Now(), frame)
 		p.handleFrame(frame)
 	}
 }

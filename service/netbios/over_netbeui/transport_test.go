@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ObsoleteMadness/ClassicStack/capture"
 	netbeuiport "github.com/ObsoleteMadness/ClassicStack/port/netbeui"
 	nbfproto "github.com/ObsoleteMadness/ClassicStack/protocol/netbeui"
 	protocol "github.com/ObsoleteMadness/ClassicStack/protocol/netbios"
@@ -63,6 +64,8 @@ func (m *mockPort) SetDeliveryCallback(cb netbeuiport.DeliveryCallback) {
 	m.cb = cb
 	m.mu.Unlock()
 }
+
+func (m *mockPort) SetCaptureSink(_ capture.Sink) {}
 
 func (m *mockPort) deliverFrame(srcMAC, dstMAC [6]byte, frame *nbfproto.Frame) {
 	m.mu.Lock()

@@ -85,14 +85,14 @@ interface = "\\Device\\NPF_{B7D4E073-2185-4912-BBE8-3948C6636D02}"
 framing = "ethernet_ii"        # ethernet_ii|raw_802_3|llc|snap
 # internal_network = ""
 
-# [NetBEUI]
-# enabled = false
-# interface = ""
+[NetBEUI]
+enabled = true
+interface = "\\Device\\NPF_{B7D4E073-2185-4912-BBE8-3948C6636D02}"
 
 [NetBIOS]
 enabled = true
 # transports = ["netbeui", "ipx", "tcp"]
-transports = ["ipx"]
+transports = ["ipx", "netbeui"]
 # scope_id = ""
 
 [SMB]

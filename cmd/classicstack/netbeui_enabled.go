@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/ObsoleteMadness/ClassicStack/capture"
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
 	"github.com/ObsoleteMadness/ClassicStack/pkg/hwaddr"
 	"github.com/ObsoleteMadness/ClassicStack/port/netbeui"
@@ -16,6 +17,7 @@ import (
 type netbeuiHookEnabled struct {
 	port netbeui.Port
 	mac  [6]byte
+	sink *capture.PcapSink
 }
 
 func (h *netbeuiHookEnabled) Start(_ context.Context) error {
@@ -24,12 +26,16 @@ func (h *netbeuiHookEnabled) Start(_ context.Context) error {
 			return err
 		}
 	}
-	netlog.Info("[MAIN][NetBEUI] port up (stub)")
+	netlog.Info("[MAIN][NetBEUI] port up")
 	return nil
 }
 func (h *netbeuiHookEnabled) Stop() error {
 	if h.port != nil {
-		return h.port.Stop()
+		_ = h.port.Stop()
+	}
+	if h.sink != nil {
+		_ = h.sink.Close()
+		h.sink = nil
 	}
 	return nil
 }
@@ -61,5 +67,18 @@ func wireNetBEUI(cfg NetBEUIConfig) (NetBEUIHook, error) {
 			p.SetSourceMAC(mac)
 		}
 	}
-	return &netbeuiHookEnabled{port: p, mac: mac}, nil
+
+	hook := &netbeuiHookEnabled{port: p, mac: mac}
+
+	if strings.TrimSpace(cfg.CapturePath) != "" {
+		sink, err := capture.NewPcapSink(cfg.CapturePath, capture.LinkTypeEthernet, cfg.CaptureSnaplen)
+		if err != nil {
+			return nil, fmt.Errorf("opening NetBEUI capture sink %q: %w", cfg.CapturePath, err)
+		}
+		hook.sink = sink
+		p.SetCaptureSink(sink)
+		netlog.Info("[CAPTURE] NetBEUI frames -> %s", cfg.CapturePath)
+	}
+
+	return hook, nil
 }

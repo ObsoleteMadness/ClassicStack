@@ -447,8 +447,10 @@ func main() {
 		netlog.Info("[MAIN][NetBEUI] no -netbeui-interface set; reusing EtherTalk interface %s", netbeuiResolvedIface)
 	}
 	nbeuiHook, err := wireNetBEUI(NetBEUIConfig{
-		Enabled:   cfg.NetBEUIEnabled,
-		Interface: netbeuiResolvedIface,
+		Enabled:        cfg.NetBEUIEnabled,
+		Interface:      netbeuiResolvedIface,
+		CapturePath:    cfg.Capture.NetBEUI,
+		CaptureSnaplen: cfg.Capture.Snaplen,
 	})
 	if err != nil {
 		log.Fatalf("NetBEUI wiring failed: %v", err)
