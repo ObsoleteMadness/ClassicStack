@@ -301,6 +301,96 @@ func buildNetServerEnum2Response(req []byte, entries []netServerInfo1) []byte {
 	return out
 }
 
+// shareInfo1Entry holds the data for one SHARE_INFO_1 record.
+type shareInfo1Entry struct {
+	Name    string
+	Type    uint16
+	Comment string
+}
+
+// netShareEnumEntries returns all configured disk shares plus the IPC$ share.
+func (s *Service) netShareEnumEntries() []shareInfo1Entry {
+	const stypeDisktree = uint16(0x0000)
+	const stypeIPC = uint16(0x0003)
+	entries := make([]shareInfo1Entry, 0, len(s.shares)+1)
+	for _, sc := range s.shares {
+		name := sc.Name
+		if len(name) > 12 {
+			name = name[:12]
+		}
+		entries = append(entries, shareInfo1Entry{Name: name, Type: stypeDisktree})
+	}
+	entries = append(entries, shareInfo1Entry{Name: ipcShareName, Type: stypeIPC})
+	return entries
+}
+
+// buildNetShareEnumResponse builds an SMB_COM_TRANSACTION response containing
+// a RAP NetShareEnum reply (info level 1). Each entry is a SHARE_INFO_1
+// record: Name(13)+Pad(1)+Type(2)+RemarkOff(4) = 20 bytes.
+func buildNetShareEnumResponse(req []byte, entries []shareInfo1Entry) []byte {
+	if len(req) < smbHeaderLen {
+		return nil
+	}
+	const entrySize = 20 // Name(13)+Pad(1)+Type(2)+RemarkOff(4)
+
+	// Build remark-offset table; each name is stored as a NUL-terminated
+	// string in the "heap" area that follows the fixed-size records.
+	remarkBase := len(entries) * entrySize
+	remarkOff := remarkBase
+	remarkData := make([]byte, 0)
+	remarkOffsets := make([]int, len(entries))
+	for i, e := range entries {
+		remarkOffsets[i] = remarkOff
+		remarkData = append(remarkData, []byte(e.Comment)...)
+		remarkData = append(remarkData, 0)
+		remarkOff += len(e.Comment) + 1
+	}
+
+	paramLen := 8 // Status(2)+Converter(2)+EntriesReturned(2)+EntriesAvailable(2)
+	dataLen := len(entries)*entrySize + len(remarkData)
+
+	paramOffset := smbHeaderLen + 1 + 20 + 2 // = 55
+	dataOffset := paramOffset + paramLen      // = 63
+	totalLen := dataOffset + dataLen
+
+	out := make([]byte, totalLen)
+	copy(out[:smbHeaderLen], req[:smbHeaderLen])
+	binary.LittleEndian.PutUint32(out[smbOffStatus:smbOffStatus+4], smbStatusSuccess)
+	out[smbOffFlags] |= 0x80
+
+	out[smbHeaderLen] = 10 // WCT
+	w := out[smbHeaderLen+1:]
+	binary.LittleEndian.PutUint16(w[0:2], uint16(paramLen))
+	binary.LittleEndian.PutUint16(w[2:4], uint16(dataLen))
+	binary.LittleEndian.PutUint16(w[6:8], uint16(paramLen))           // ParameterCount
+	binary.LittleEndian.PutUint16(w[8:10], uint16(paramOffset))       // ParameterOffset
+	binary.LittleEndian.PutUint16(w[12:14], uint16(dataLen))          // DataCount
+	binary.LittleEndian.PutUint16(w[14:16], uint16(dataOffset))       // DataOffset
+	binary.LittleEndian.PutUint16(w[20:22], uint16(paramLen+dataLen)) // ByteCount
+
+	p := out[paramOffset:]
+	// p[0:2] Status=0, p[2:4] Converter=0 (already zero)
+	binary.LittleEndian.PutUint16(p[4:6], uint16(len(entries)))
+	binary.LittleEndian.PutUint16(p[6:8], uint16(len(entries)))
+
+	d := out[dataOffset:]
+	for i, e := range entries {
+		base := i * entrySize
+		name := e.Name
+		if len(name) > 12 {
+			name = name[:12]
+		}
+		copy(d[base:base+12], []byte(name)) // shi1_netname (12 chars + NUL)
+		// d[base+12] = NUL already zero
+		// d[base+13] = pad already zero
+		binary.LittleEndian.PutUint16(d[base+14:base+16], e.Type)
+		binary.LittleEndian.PutUint32(d[base+16:base+20], uint32(remarkOffsets[i]))
+	}
+	copy(d[remarkBase:], remarkData)
+
+	return out
+}
+
 func buildSMBTransactionEmptySuccess(req []byte) []byte {
 	if len(req) < smbHeaderLen || string(req[0:4]) != "\xffSMB" {
 		return nil

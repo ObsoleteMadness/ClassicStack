@@ -103,6 +103,8 @@ const (
 	smbOffTID    = 24
 	smbOffUID    = 28
 
+	// rapNetShareEnum is the RAP function code for NetShareEnum.
+	rapNetShareEnum = uint16(0x0000)
 	// rapNetServerEnum2 is the RAP function code for NetServerEnum2.
 	rapNetServerEnum2 = uint16(0x0068)
 

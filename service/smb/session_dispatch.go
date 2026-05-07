@@ -96,7 +96,12 @@ func (s *Service) HandleSessionContext(packet *netbiosproto.SessionPacket, ctx n
 			respPayload = buildSMBErrorResponse(packet.Payload, smbStatusNotSupported)
 		} else {
 			fc, ok := parseLANMANFunctionCode(packet.Payload)
-			if ok && fc == rapNetServerEnum2 {
+			if ok && fc == rapNetShareEnum {
+				netlog.Debug("[SMB][Session] NetShareEnum src=%x.%x:%02x%02x",
+					ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
+				shares := s.netShareEnumEntries()
+				respPayload = buildNetShareEnumResponse(packet.Payload, shares)
+			} else if ok && fc == rapNetServerEnum2 {
 				serverType, _ := parseNetServerEnum2ServerType(packet.Payload)
 				reqDomain, _ := parseNetServerEnum2Domain(packet.Payload)
 				netlog.Debug("[SMB][Session] NetServerEnum2 src=%x.%x:%02x%02x serverType=%#x domain=%q",

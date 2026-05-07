@@ -1310,6 +1310,105 @@ func makeNetServerEnum2PayloadWithDomain(serverType uint32, domain string) []byt
 	return out
 }
 
+func makeNetShareEnumPayload() []byte {
+	// bytes area: \PIPE\LANMAN\0 (13 bytes) + FunctionCode 0x0000 (2 bytes)
+	bytesArea := append([]byte("\\PIPE\\LANMAN\x00"), 0x00, 0x00)
+	out := make([]byte, 69+len(bytesArea))
+	copy(out[0:4], []byte{0xff, 'S', 'M', 'B'})
+	out[4] = CommandTransaction
+	out[32] = 17
+	binary.LittleEndian.PutUint16(out[67:69], uint16(len(bytesArea)))
+	copy(out[69:], bytesArea)
+	return out
+}
+
+func TestHandleSessionContextNetShareEnumReturnsIPCWhenNoShares(t *testing.T) {
+	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, nil)
+	packet := &netbiosproto.SessionPacket{
+		Type:    netbiosproto.SessionMessage,
+		Payload: makeNetShareEnumPayload(),
+	}
+	resp, err := svc.HandleSessionContext(packet, netbios.SessionContext{})
+	if err != nil {
+		t.Fatalf("HandleSessionContext: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Payload[4] != CommandTransaction {
+		t.Fatalf("cmd: got %#x want %#x", resp.Payload[4], CommandTransaction)
+	}
+	if binary.LittleEndian.Uint32(resp.Payload[smbOffStatus:smbOffStatus+4]) != smbStatusSuccess {
+		t.Fatalf("status: not success")
+	}
+	paramOffset := int(binary.LittleEndian.Uint16(resp.Payload[smbHeaderLen+1+8 : smbHeaderLen+1+10]))
+	paramCount := int(binary.LittleEndian.Uint16(resp.Payload[smbHeaderLen+1+6 : smbHeaderLen+1+8]))
+	if paramOffset+paramCount > len(resp.Payload) {
+		t.Fatalf("param block out of bounds")
+	}
+	p := resp.Payload[paramOffset : paramOffset+paramCount]
+	if status := binary.LittleEndian.Uint16(p[0:2]); status != 0 {
+		t.Fatalf("RAP status: got %d want 0", status)
+	}
+	// IPC$ is always present even without configured shares
+	entriesReturned := binary.LittleEndian.Uint16(p[4:6])
+	if entriesReturned < 1 {
+		t.Fatalf("expected at least IPC$ entry, got %d entries", entriesReturned)
+	}
+}
+
+func TestHandleSessionContextNetShareEnumReturnsConfiguredShares(t *testing.T) {
+	shares := []ShareConfig{
+		{Name: "DOCS", Path: "/docs"},
+		{Name: "MEDIA", Path: "/media"},
+	}
+	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, shares)
+	packet := &netbiosproto.SessionPacket{
+		Type:    netbiosproto.SessionMessage,
+		Payload: makeNetShareEnumPayload(),
+	}
+	resp, err := svc.HandleSessionContext(packet, netbios.SessionContext{})
+	if err != nil {
+		t.Fatalf("HandleSessionContext: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	paramOffset := int(binary.LittleEndian.Uint16(resp.Payload[smbHeaderLen+1+8 : smbHeaderLen+1+10]))
+	paramCount := int(binary.LittleEndian.Uint16(resp.Payload[smbHeaderLen+1+6 : smbHeaderLen+1+8]))
+	if paramOffset+paramCount > len(resp.Payload) {
+		t.Fatalf("param block out of bounds")
+	}
+	p := resp.Payload[paramOffset : paramOffset+paramCount]
+	// shares + IPC$
+	got := int(binary.LittleEndian.Uint16(p[4:6]))
+	want := len(shares) + 1 // +1 for IPC$
+	if got != want {
+		t.Fatalf("EntriesReturned: got %d want %d", got, want)
+	}
+
+	// Verify share names in the data block
+	dataOffset := int(binary.LittleEndian.Uint16(resp.Payload[smbHeaderLen+1+14 : smbHeaderLen+1+16]))
+	dataCount := int(binary.LittleEndian.Uint16(resp.Payload[smbHeaderLen+1+12 : smbHeaderLen+1+14]))
+	if dataOffset+dataCount > len(resp.Payload) {
+		t.Fatalf("data block out of bounds")
+	}
+	d := resp.Payload[dataOffset : dataOffset+dataCount]
+	for i, sc := range shares {
+		base := i * 20
+		name := strings.TrimRight(string(d[base:base+12]), "\x00")
+		if !strings.EqualFold(name, sc.Name) {
+			t.Errorf("entry[%d] name: got %q want %q", i, name, sc.Name)
+		}
+	}
+	// Last entry should be IPC$
+	ipcBase := len(shares) * 20
+	ipcName := strings.TrimRight(string(d[ipcBase:ipcBase+12]), "\x00")
+	if !strings.EqualFold(ipcName, "IPC$") {
+		t.Errorf("last entry: got %q want IPC$", ipcName)
+	}
+}
+
 func TestHandleSessionContextTreeDisconnectReturnsSuccess(t *testing.T) {
 	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, nil)
 	packet := &netbiosproto.SessionPacket{
