@@ -73,9 +73,25 @@ const (
 	browserTransactionByteOffset = smbHeaderLen + 1 + browserTransactionWordsLen
 	browserTransactionDataOffset = 86
 
-	smbStatusSuccess      = 0x00000000
-	smbStatusBadTID       = 0x00050002
-	smbStatusNotSupported = 0xC00000BB
+	smbStatusSuccess        = 0x00000000
+	smbStatusBadTID         = 0x00050002
+	smbStatusNotSupported   = 0xC00000BB
+	smbStatusBadNetworkName = 0xC00000CC // STATUS_BAD_NETWORK_NAME
+
+	// NT SMB capability bits advertised in the NEGOTIATE response.
+	capNTSMBs   = uint32(0x00000010) // CAP_NT_SMBS
+	capStatus32 = uint32(0x00000040) // CAP_STATUS32
+
+	// windowsFiletimeOffset is the difference in 100-nanosecond intervals
+	// between the Windows FILETIME epoch (1 Jan 1601) and the Unix epoch
+	// (1 Jan 1970).
+	windowsFiletimeOffset = uint64(116444736000000000)
+
+	// ipcShareName is the virtual IPC$ share that is always available.
+	ipcShareName = "IPC$"
+	// ipcShareIdx is the sentinel shareIdx stored in treeSlot for IPC$ connections.
+	// It is never a valid index into the shares slice.
+	ipcShareIdx = -1
 
 	// RAP-level (16-bit) error codes returned in the param Status field.
 	rapStatusErrInvalidFunction = uint16(1)  // ERROR_INVALID_FUNCTION

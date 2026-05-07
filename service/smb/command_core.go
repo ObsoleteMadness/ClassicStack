@@ -3,6 +3,7 @@ package smb
 import (
 	"bytes"
 	"encoding/binary"
+	"time"
 )
 
 func buildSMBErrorResponse(req []byte, status uint32) []byte {
@@ -77,11 +78,12 @@ func buildNegotiateResponse(req []byte, workgroup string) []byte {
 	binary.LittleEndian.PutUint16(w[5:7], 1)                  // MaxNumberVcs
 	binary.LittleEndian.PutUint32(w[7:11], 0x4000)            // MaxBufferSize
 	binary.LittleEndian.PutUint32(w[11:15], 0)                // MaxRawSize
-	binary.LittleEndian.PutUint32(w[15:19], 0)                // SessionKey
-	binary.LittleEndian.PutUint32(w[19:23], 0)                // Capabilities
-	binary.LittleEndian.PutUint32(w[23:27], 0)                // SystemTimeLow
-	binary.LittleEndian.PutUint32(w[27:31], 0)                // SystemTimeHigh
-	binary.LittleEndian.PutUint16(w[31:33], 0)                // ServerTimeZone
+	binary.LittleEndian.PutUint32(w[15:19], 0)                         // SessionKey
+	binary.LittleEndian.PutUint32(w[19:23], capNTSMBs|capStatus32)     // Capabilities
+	ft := uint64(time.Now().UTC().UnixNano()/100) + windowsFiletimeOffset
+	binary.LittleEndian.PutUint32(w[23:27], uint32(ft))                // SystemTimeLow
+	binary.LittleEndian.PutUint32(w[27:31], uint32(ft>>32))            // SystemTimeHigh
+	binary.LittleEndian.PutUint16(w[31:33], 0)                         // ServerTimeZone
 	w[33] = 0                                                 // EncryptionKeyLength = 0 (no challenge)
 	binary.LittleEndian.PutUint16(w[34:36], uint16(len(domainBytes)))
 	copy(w[36:], domainBytes)
