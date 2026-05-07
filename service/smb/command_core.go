@@ -140,11 +140,8 @@ func buildTreeConnectResponse(req []byte) []byte {
 	return out
 }
 
-// buildEchoResponse constructs an SMB_COM_ECHO response that mirrors
-// the request body and sets SequenceNumber to 1. We always send exactly
-// one response regardless of EchoCount, since the architecture only
-// supports one response per request. Clients that want multiple echoes
-// should send multiple ECHO requests.
+// buildEchoResponse constructs a base SMB_COM_ECHO response that mirrors
+// the request body and sets SequenceNumber to 1.
 func buildEchoResponse(req []byte) []byte {
 	if len(req) < smbHeaderLen+5 || string(req[0:4]) != "\xffSMB" {
 		return nil
