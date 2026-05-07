@@ -35,6 +35,7 @@ type fileHandle struct {
 	path     string
 	tid      uint16
 	writable bool
+	offset   int64
 }
 
 type searchHandle struct {

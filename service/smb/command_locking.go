@@ -15,35 +15,118 @@ type lockRange struct {
 	length int64
 }
 
+type lockingAndXCommand struct {
+	andxCommand byte
+	andxOffset  uint16
+	fid         uint16
+	unlocks     []lockRange
+	locks       []lockRange
+}
+
 func (s *Service) handleLockingAndX(req []byte, conn *connState) []byte {
 	if len(req) < smbHeaderLen+17 {
 		return buildSMBErrorResponse(req, smbStatusNotSupported)
 	}
 
-	wct := int(req[smbHeaderLen])
-	if wct < 8 {
-		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	cmd := req[4]
+	cmdOffset := smbHeaderLen
+	for {
+		switch cmd {
+		case CommandLockingAndX:
+			lockingCmd, ok := parseLockingAndXAt(req, cmdOffset)
+			if !ok {
+				return buildSMBErrorResponse(req, smbStatusNotSupported)
+			}
+			status := s.applyLockingAndX(conn, lockingCmd.fid, lockingCmd.unlocks, lockingCmd.locks)
+			if status != smbStatusSuccess {
+				return buildSMBErrorResponse(req, status)
+			}
+			if lockingCmd.andxCommand == CommandNoAndXCommand {
+				return buildLockingAndXResponse(req)
+			}
+			cmd = lockingCmd.andxCommand
+			cmdOffset = int(lockingCmd.andxOffset)
+			if cmdOffset <= smbHeaderLen || cmdOffset >= len(req) {
+				return buildSMBErrorResponse(req, smbStatusNotSupported)
+			}
+
+		case CommandClose:
+			fid, ok := parseCloseAt(req, cmdOffset)
+			if !ok {
+				return buildSMBErrorResponse(req, smbStatusNotSupported)
+			}
+			s.closeFID(conn, fid)
+			return buildLockingAndXResponse(req)
+
+		default:
+			return buildSMBErrorResponse(req, smbStatusNotSupported)
+		}
 	}
-	w := req[smbHeaderLen+1:]
-	fid := binary.LittleEndian.Uint16(w[4:6])
+}
+
+func parseLockingAndXAt(req []byte, cmdOffset int) (lockingAndXCommand, bool) {
+	if cmdOffset < smbHeaderLen || cmdOffset+1 > len(req) {
+		return lockingAndXCommand{}, false
+	}
+
+	wct := int(req[cmdOffset])
+	if wct < 8 {
+		return lockingAndXCommand{}, false
+	}
+
+	wordsOffset := cmdOffset + 1
+	wordsLen := wct * 2
+	if wordsOffset+wordsLen > len(req) {
+		return lockingAndXCommand{}, false
+	}
+	w := req[wordsOffset : wordsOffset+wordsLen]
+	byteCountOffset := wordsOffset + wordsLen
+	if byteCountOffset+2 > len(req) {
+		return lockingAndXCommand{}, false
+	}
+	byteCount := int(binary.LittleEndian.Uint16(req[byteCountOffset : byteCountOffset+2]))
+	if byteCountOffset+2+byteCount > len(req) {
+		return lockingAndXCommand{}, false
+	}
+	bytesArea := req[byteCountOffset+2 : byteCountOffset+2+byteCount]
 	numberOfUnlocks := int(binary.LittleEndian.Uint16(w[12:14]))
 	numberOfLocks := int(binary.LittleEndian.Uint16(w[14:16]))
-
-	bytesArea, ok := smbBytesArea(req)
+	unlocks, locks, ok := parseLockRanges(bytesArea, numberOfUnlocks, numberOfLocks)
 	if !ok {
-		return buildSMBErrorResponse(req, smbStatusNotSupported)
+		return lockingAndXCommand{}, false
 	}
 
-	unlockRanges, lockRanges, ok := parseLockRanges(bytesArea, numberOfUnlocks, numberOfLocks)
-	if !ok {
-		return buildSMBErrorResponse(req, smbStatusNotSupported)
-	}
+	return lockingAndXCommand{
+		andxCommand: w[0],
+		andxOffset:  binary.LittleEndian.Uint16(w[2:4]),
+		fid:         binary.LittleEndian.Uint16(w[4:6]),
+		unlocks:     unlocks,
+		locks:       locks,
+	}, true
+}
 
+func parseCloseAt(req []byte, cmdOffset int) (uint16, bool) {
+	if cmdOffset < smbHeaderLen || cmdOffset+1 > len(req) {
+		return 0, false
+	}
+	wct := int(req[cmdOffset])
+	if wct < 3 {
+		return 0, false
+	}
+	wordsOffset := cmdOffset + 1
+	wordsLen := wct * 2
+	if wordsOffset+wordsLen > len(req) {
+		return 0, false
+	}
+	return binary.LittleEndian.Uint16(req[wordsOffset : wordsOffset+2]), true
+}
+
+func (s *Service) applyLockingAndX(conn *connState, fid uint16, unlockRanges, lockRanges []lockRange) uint32 {
 	conn.mu.Lock()
 	handle, ok := conn.fids[fid]
 	if !ok || handle == nil {
 		conn.mu.Unlock()
-		return buildSMBErrorResponse(req, smbStatusNotSupported)
+		return smbStatusNotSupported
 	}
 
 	lockKey := lockKeyForHandle(handle)
@@ -52,18 +135,15 @@ func (s *Service) handleLockingAndX(req []byte, conn *connState) []byte {
 		table = &lockTable{}
 		conn.lockTables[lockKey] = table
 	}
-
-	if !unlockRangesFromTable(table, fid, unlockRanges) {
-		conn.mu.Unlock()
-		return buildSMBErrorResponse(req, smbStatusLockNotGranted)
-	}
-	if !lockRangesInTable(table, fid, lockRanges) {
-		conn.mu.Unlock()
-		return buildSMBErrorResponse(req, smbStatusLockNotGranted)
-	}
 	conn.mu.Unlock()
 
-	return buildLockingAndXResponse(req)
+	if !unlockRangesFromTable(table, fid, unlockRanges) {
+		return smbStatusLockNotGranted
+	}
+	if !lockRangesInTable(table, fid, lockRanges) {
+		return smbStatusLockNotGranted
+	}
+	return smbStatusSuccess
 }
 
 func parseLockRanges(bytesArea []byte, numberOfUnlocks, numberOfLocks int) (unlocks []lockRange, locks []lockRange, ok bool) {

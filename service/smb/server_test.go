@@ -1,8 +1,12 @@
 package smb
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -1049,9 +1053,9 @@ func TestHandleSessionContextTreeConnectUnknownShareReturnsError(t *testing.T) {
 	if resp == nil {
 		t.Fatal("expected response")
 	}
-	if binary.LittleEndian.Uint32(resp.Payload[smbOffStatus:smbOffStatus+4]) != smbStatusBadNetworkName {
-		t.Fatalf("status: got %#x, want STATUS_BAD_NETWORK_NAME (%#x)",
-			binary.LittleEndian.Uint32(resp.Payload[smbOffStatus:smbOffStatus+4]), smbStatusBadNetworkName)
+	if binary.LittleEndian.Uint32(resp.Payload[smbOffStatus:smbOffStatus+4]) != smbStatusErrInvNetName {
+		t.Fatalf("status: got %#x, want ERRDOS/ERRinvnetname (%#x)",
+			binary.LittleEndian.Uint32(resp.Payload[smbOffStatus:smbOffStatus+4]), smbStatusErrInvNetName)
 	}
 }
 
@@ -1451,4 +1455,940 @@ func TestHandleSessionContextIgnoresSMBResponses(t *testing.T) {
 	if resp != nil {
 		t.Fatalf("expected no response for inbound SMB response packet")
 	}
+}
+
+type diskUsagePathProbeFS struct {
+	diskUsagePath string
+}
+
+func (f *diskUsagePathProbeFS) ReadDir(string) ([]fs.DirEntry, error) {
+	return nil, fs.ErrNotExist
+}
+
+func (f *diskUsagePathProbeFS) Stat(string) (fs.FileInfo, error) {
+	return nil, fs.ErrNotExist
+}
+
+func (f *diskUsagePathProbeFS) DiskUsage(path string) (uint64, uint64, error) {
+	f.diskUsagePath = path
+	return 1024 * 1024, 512 * 1024, nil
+}
+
+func (f *diskUsagePathProbeFS) CreateDir(string) error {
+	return fs.ErrPermission
+}
+
+func (f *diskUsagePathProbeFS) CreateFile(string) (vfs.File, error) {
+	return nil, fs.ErrPermission
+}
+
+func (f *diskUsagePathProbeFS) OpenFile(string, int) (vfs.File, error) {
+	return nil, fs.ErrPermission
+}
+
+func (f *diskUsagePathProbeFS) Remove(string) error {
+	return fs.ErrPermission
+}
+
+func (f *diskUsagePathProbeFS) Rename(string, string) error {
+	return fs.ErrPermission
+}
+
+func (f *diskUsagePathProbeFS) Capabilities() vfs.Capabilities {
+	return vfs.Capabilities{}
+}
+
+func TestBuildSMBErrorResponseUsesDOSStatusWithoutNTStatusFlag(t *testing.T) {
+	req := make([]byte, smbHeaderLen)
+	copy(req[0:4], []byte{0xff, 'S', 'M', 'B'})
+	req[4] = CommandQueryInformationDisk
+
+	resp := buildSMBErrorResponse(req, smbStatusNotSupported)
+	if resp == nil {
+		t.Fatal("expected error response")
+	}
+
+	got := binary.LittleEndian.Uint32(resp[smbOffStatus : smbOffStatus+4])
+	if got != smbStatusErrBadFunc {
+		t.Fatalf("status mismatch: got %#x want %#x", got, uint32(smbStatusErrBadFunc))
+	}
+}
+
+func TestBuildSMBErrorResponseKeepsNTStatusWhenRequested(t *testing.T) {
+	req := make([]byte, smbHeaderLen)
+	copy(req[0:4], []byte{0xff, 'S', 'M', 'B'})
+	req[4] = CommandQueryInformationDisk
+	binary.LittleEndian.PutUint16(req[smbOffFlags2:smbOffFlags2+2], smbFlags2NTStatus)
+
+	resp := buildSMBErrorResponse(req, smbStatusNotSupported)
+	if resp == nil {
+		t.Fatal("expected error response")
+	}
+
+	got := binary.LittleEndian.Uint32(resp[smbOffStatus : smbOffStatus+4])
+	if got != smbStatusNotSupported {
+		t.Fatalf("status mismatch: got %#x want %#x", got, uint32(smbStatusNotSupported))
+	}
+}
+
+func TestHandleQueryInformationDiskUsesShareRootPath(t *testing.T) {
+	probe := &diskUsagePathProbeFS{}
+	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, []ShareConfig{{Name: "PUBLIC", Path: `C:\\PUBLIC`}})
+	svc.shareFSes = map[int]vfs.FileSystem{0: probe}
+
+	conn := &connState{tids: map[uint16]treeSlot{7: {shareIdx: 0}}}
+	req := make([]byte, smbHeaderLen)
+	copy(req[0:4], []byte{0xff, 'S', 'M', 'B'})
+	req[4] = CommandQueryInformationDisk
+	binary.LittleEndian.PutUint16(req[smbOffTID:smbOffTID+2], 7)
+
+	resp := svc.handleQueryInformationDisk(req, conn)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if got := binary.LittleEndian.Uint32(resp[smbOffStatus : smbOffStatus+4]); got != smbStatusSuccess {
+		t.Fatalf("status mismatch: got %#x want %#x", got, uint32(smbStatusSuccess))
+	}
+	if probe.diskUsagePath != `C:\\PUBLIC` {
+		t.Fatalf("DiskUsage path mismatch: got %q want %q", probe.diskUsagePath, `C:\\PUBLIC`)
+	}
+}
+
+func TestHandleQueryInformationMissingFileReturnsBadFile(t *testing.T) {
+	probe := &diskUsagePathProbeFS{}
+	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, []ShareConfig{{Name: "PUBLIC", Path: `C:\\PUBLIC`}})
+	svc.shareFSes = map[int]vfs.FileSystem{0: probe}
+
+	conn := &connState{tids: map[uint16]treeSlot{9: {shareIdx: 0}}}
+	req := makeQueryInformationPayload(9, "\\DESKTOP.INI")
+
+	resp := svc.handleQueryInformation(req, conn)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if got := binary.LittleEndian.Uint32(resp[smbOffStatus : smbOffStatus+4]); got != smbStatusErrBadFile {
+		t.Fatalf("status mismatch: got %#x want %#x", got, uint32(smbStatusErrBadFile))
+	}
+}
+
+func TestHandleQueryInformationExactLongDirectoryNameSucceeds(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmp, "Volume 68k"), 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	fsys, err := vfs.New(vfs.LocalFSName, vfs.Params{Name: "PUBLIC", Path: tmp})
+	if err != nil {
+		t.Fatalf("vfs.New: %v", err)
+	}
+	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, []ShareConfig{{Name: "PUBLIC", Path: tmp}})
+	svc.shareFSes = map[int]vfs.FileSystem{0: fsys}
+
+	conn := &connState{tids: map[uint16]treeSlot{15: {shareIdx: 0}}}
+	req := makeQueryInformationPayload(15, "\\Volume 68k")
+	resp := svc.handleQueryInformation(req, conn)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if got := binary.LittleEndian.Uint32(resp[smbOffStatus : smbOffStatus+4]); got != smbStatusSuccess {
+		t.Fatalf("status mismatch: got %#x want %#x", got, uint32(smbStatusSuccess))
+	}
+}
+
+func TestHandleQueryInformationEmptyPathReturnsShareRoot(t *testing.T) {
+	tmp := t.TempDir()
+	fsys, err := vfs.New(vfs.LocalFSName, vfs.Params{Name: "PUBLIC", Path: tmp})
+	if err != nil {
+		t.Fatalf("vfs.New: %v", err)
+	}
+	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, []ShareConfig{{Name: "PUBLIC", Path: tmp}})
+	svc.shareFSes = map[int]vfs.FileSystem{0: fsys}
+
+	conn := &connState{tids: map[uint16]treeSlot{16: {shareIdx: 0}}}
+	req := makeQueryInformationPayload(16, "")
+	resp := svc.handleQueryInformation(req, conn)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if got := binary.LittleEndian.Uint32(resp[smbOffStatus : smbOffStatus+4]); got != smbStatusSuccess {
+		t.Fatalf("status mismatch: got %#x want %#x", got, uint32(smbStatusSuccess))
+	}
+}
+
+func TestHandleQueryInformationFallsBackToDOSLikeName(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmp, "Volume 68k"), 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	fsys, err := vfs.New(vfs.LocalFSName, vfs.Params{Name: "PUBLIC", Path: tmp})
+	if err != nil {
+		t.Fatalf("vfs.New: %v", err)
+	}
+	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, []ShareConfig{{Name: "PUBLIC", Path: tmp}})
+	svc.shareFSes = map[int]vfs.FileSystem{0: fsys}
+
+	conn := &connState{tids: map[uint16]treeSlot{17: {shareIdx: 0}}}
+	req := makeQueryInformationPayload(17, "\\VOLUME68K")
+	resp := svc.handleQueryInformation(req, conn)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if got := binary.LittleEndian.Uint32(resp[smbOffStatus : smbOffStatus+4]); got != smbStatusSuccess {
+		t.Fatalf("status mismatch: got %#x want %#x", got, uint32(smbStatusSuccess))
+	}
+}
+
+func TestHandleTransaction2FindFirst2WildcardDoesNotReturnBadFunc(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "ONE.TXT"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	fsys, err := vfs.New(vfs.LocalFSName, vfs.Params{Name: "PUBLIC", Path: tmp})
+	if err != nil {
+		t.Fatalf("vfs.New: %v", err)
+	}
+	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, []ShareConfig{{Name: "PUBLIC", Path: tmp}})
+	svc.shareFSes = map[int]vfs.FileSystem{0: fsys}
+
+	conn := &connState{tids: map[uint16]treeSlot{11: {shareIdx: 0}}}
+	req := makeTrans2FindFirst2Payload(11, "\\*")
+
+	resp := svc.handleTransaction2(req, conn)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if got := binary.LittleEndian.Uint32(resp[smbOffStatus : smbOffStatus+4]); got != smbStatusSuccess {
+		t.Fatalf("status mismatch: got %#x want %#x", got, uint32(smbStatusSuccess))
+	}
+	if resp[4] != CommandTransaction2 {
+		t.Fatalf("command mismatch: got %#x want %#x", resp[4], CommandTransaction2)
+	}
+	// Ensure returned payload includes at least one directory info record.
+	if len(resp) <= smbHeaderLen+1+20+2+10 {
+		t.Fatalf("expected transaction2 data payload")
+	}
+}
+
+func TestHandleTransaction2FindFirst2ExactPatternDoesNotMatchSidecar(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "NICOLE CAMERA.JPG"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "._NICOLE CAMERA.JPG"), []byte("y"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	fsys, err := vfs.New(vfs.LocalFSName, vfs.Params{Name: "PUBLIC", Path: tmp})
+	if err != nil {
+		t.Fatalf("vfs.New: %v", err)
+	}
+	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, []ShareConfig{{Name: "PUBLIC", Path: tmp}})
+	svc.shareFSes = map[int]vfs.FileSystem{0: fsys}
+
+	conn := &connState{tids: map[uint16]treeSlot{19: {shareIdx: 0}}, searches: map[uint16]*searchHandle{}}
+	resp := svc.handleTransaction2(makeTrans2FindFirst2PayloadWithCount(19, "\\NICOLE CAMERA.JPG", 10), conn)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if got := binary.LittleEndian.Uint32(resp[smbOffStatus : smbOffStatus+4]); got != smbStatusSuccess {
+		t.Fatalf("status mismatch: got %#x want %#x", got, uint32(smbStatusSuccess))
+	}
+	param := readTrans2ParamBlock(t, resp)
+	if got := binary.LittleEndian.Uint16(param[2:4]); got != 1 {
+		t.Fatalf("returned count mismatch: got %d want 1", got)
+	}
+	data := readTrans2DataBlock(t, resp)
+	if !bytes.Contains(bytes.ToUpper(data), []byte("NICOLE CAMERA.JPG")) {
+		t.Fatalf("expected primary file in response")
+	}
+	if bytes.Contains(bytes.ToUpper(data), []byte("._NICOLE CAMERA.JPG")) {
+		t.Fatalf("unexpected sidecar match in exact-pattern response")
+	}
+	}
+
+func TestHandleTransaction2FindNext2ReturnsSecondPage(t *testing.T) {
+	tmp := t.TempDir()
+	for i := 0; i < 12; i++ {
+		name := filepath.Join(tmp, "FILE"+string(rune('A'+i))+".TXT")
+		if err := os.WriteFile(name, []byte("x"), 0o644); err != nil {
+			t.Fatalf("WriteFile(%s): %v", name, err)
+		}
+	}
+
+	fsys, err := vfs.New(vfs.LocalFSName, vfs.Params{Name: "PUBLIC", Path: tmp})
+	if err != nil {
+		t.Fatalf("vfs.New: %v", err)
+	}
+	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, []ShareConfig{{Name: "PUBLIC", Path: tmp}})
+	svc.shareFSes = map[int]vfs.FileSystem{0: fsys}
+
+	conn := &connState{tids: map[uint16]treeSlot{12: {shareIdx: 0}}, searches: map[uint16]*searchHandle{}}
+	firstReq := makeTrans2FindFirst2PayloadWithCount(12, "\\*", 6)
+	firstResp := svc.handleTransaction2(firstReq, conn)
+	if firstResp == nil {
+		t.Fatal("expected first response")
+	}
+	if got := binary.LittleEndian.Uint32(firstResp[smbOffStatus : smbOffStatus+4]); got != smbStatusSuccess {
+		t.Fatalf("first status mismatch: got %#x want %#x", got, uint32(smbStatusSuccess))
+	}
+	firstParam := readTrans2ParamBlock(t, firstResp)
+	if got := binary.LittleEndian.Uint16(firstParam[2:4]); got == 0 {
+		t.Fatalf("expected first page entries")
+	}
+	sid := binary.LittleEndian.Uint16(firstParam[0:2])
+
+	nextReq := makeTrans2FindNext2Payload(12, sid, 6)
+	nextResp := svc.handleTransaction2(nextReq, conn)
+	if nextResp == nil {
+		t.Fatal("expected next response")
+	}
+	if got := binary.LittleEndian.Uint32(nextResp[smbOffStatus : smbOffStatus+4]); got != smbStatusSuccess {
+		t.Fatalf("next status mismatch: got %#x want %#x", got, uint32(smbStatusSuccess))
+	}
+	nextParam := readTrans2ParamBlock(t, nextResp)
+	if got := binary.LittleEndian.Uint16(nextParam[2:4]); got == 0 {
+		t.Fatalf("expected second page entries")
+	}
+}
+
+func TestHandleTransaction2FindNext2ResumeNameAdvancesPosition(t *testing.T) {
+	tmp := t.TempDir()
+	for _, n := range []string{"A.TXT", "B.TXT", "C.TXT", "D.TXT"} {
+		if err := os.WriteFile(filepath.Join(tmp, n), []byte("x"), 0o644); err != nil {
+			t.Fatalf("WriteFile(%s): %v", n, err)
+		}
+	}
+
+	fsys, err := vfs.New(vfs.LocalFSName, vfs.Params{Name: "PUBLIC", Path: tmp})
+	if err != nil {
+		t.Fatalf("vfs.New: %v", err)
+	}
+	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, []ShareConfig{{Name: "PUBLIC", Path: tmp}})
+	svc.shareFSes = map[int]vfs.FileSystem{0: fsys}
+
+	conn := &connState{tids: map[uint16]treeSlot{13: {shareIdx: 0}}, searches: map[uint16]*searchHandle{}}
+	firstReq := makeTrans2FindFirst2PayloadWithCount(13, "\\*", 2)
+	firstResp := svc.handleTransaction2(firstReq, conn)
+	if firstResp == nil {
+		t.Fatal("expected first response")
+	}
+	firstParam := readTrans2ParamBlock(t, firstResp)
+	sid := binary.LittleEndian.Uint16(firstParam[0:2])
+
+	nextReq := makeTrans2FindNext2PayloadWithResume(13, sid, 1, "B.TXT", 0)
+	nextResp := svc.handleTransaction2(nextReq, conn)
+	if nextResp == nil {
+		t.Fatal("expected next response")
+	}
+	if got := binary.LittleEndian.Uint32(nextResp[smbOffStatus : smbOffStatus+4]); got != smbStatusSuccess {
+		t.Fatalf("next status mismatch: got %#x want %#x", got, uint32(smbStatusSuccess))
+	}
+	nextParam := readTrans2ParamBlock(t, nextResp)
+	if got := binary.LittleEndian.Uint16(nextParam[2:4]); got == 0 {
+		t.Fatalf("expected resumed entry")
+	}
+}
+
+func TestHandleTransaction2FindNext2ReturnsNoMoreFiles(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "ONLY.TXT"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	fsys, err := vfs.New(vfs.LocalFSName, vfs.Params{Name: "PUBLIC", Path: tmp})
+	if err != nil {
+		t.Fatalf("vfs.New: %v", err)
+	}
+	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, []ShareConfig{{Name: "PUBLIC", Path: tmp}})
+	svc.shareFSes = map[int]vfs.FileSystem{0: fsys}
+
+	conn := &connState{tids: map[uint16]treeSlot{14: {shareIdx: 0}}, searches: map[uint16]*searchHandle{}}
+	firstReq := makeTrans2FindFirst2PayloadWithCount(14, "\\*", 1)
+	firstResp := svc.handleTransaction2(firstReq, conn)
+	if firstResp == nil {
+		t.Fatal("expected first response")
+	}
+	firstParam := readTrans2ParamBlock(t, firstResp)
+	sid := binary.LittleEndian.Uint16(firstParam[0:2])
+
+	nextReq := makeTrans2FindNext2Payload(14, sid, 1)
+	nextResp := svc.handleTransaction2(nextReq, conn)
+	if nextResp == nil {
+		t.Fatal("expected next response")
+	}
+	if got := binary.LittleEndian.Uint32(nextResp[smbOffStatus : smbOffStatus+4]); got != smbStatusErrNoFiles {
+		t.Fatalf("status mismatch: got %#x want %#x", got, uint32(smbStatusErrNoFiles))
+	}
+}
+
+func TestHandleFindClose2ReturnsSuccess(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "ONE.TXT"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	fsys, err := vfs.New(vfs.LocalFSName, vfs.Params{Name: "PUBLIC", Path: tmp})
+	if err != nil {
+		t.Fatalf("vfs.New: %v", err)
+	}
+	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, []ShareConfig{{Name: "PUBLIC", Path: tmp}})
+	svc.shareFSes = map[int]vfs.FileSystem{0: fsys}
+
+	conn := &connState{tids: map[uint16]treeSlot{18: {shareIdx: 0}}, searches: map[uint16]*searchHandle{}}
+	firstResp := svc.handleTransaction2(makeTrans2FindFirst2PayloadWithCount(18, "\\*", 1), conn)
+	if firstResp == nil {
+		t.Fatal("expected search response")
+	}
+	param := readTrans2ParamBlock(t, firstResp)
+	sid := binary.LittleEndian.Uint16(param[0:2])
+
+	resp := svc.handleFindClose2(makeFindClose2Payload(18, sid), conn)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if got := binary.LittleEndian.Uint32(resp[smbOffStatus : smbOffStatus+4]); got != smbStatusSuccess {
+		t.Fatalf("status mismatch: got %#x want %#x", got, uint32(smbStatusSuccess))
+	}
+	conn.mu.Lock()
+	_, exists := conn.searches[sid]
+	conn.mu.Unlock()
+	if exists {
+		t.Fatalf("search handle %d was not removed", sid)
+	}
+}
+
+func TestHandleLockingAndXProcessesChainedSubcommands(t *testing.T) {
+	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, nil)
+	conn := &connState{
+		fids:       map[uint16]*fileHandle{11: {path: "HELLO.TXT"}},
+		lockTables: map[string]*lockTable{},
+	}
+
+	lockReq := makeLockingAndXPayload(11, nil, []lockRange{{pid: 6245, start: 2147483559, length: 20}})
+	lockResp := svc.handleLockingAndX(lockReq, conn)
+	if lockResp == nil {
+		t.Fatal("expected initial lock response")
+	}
+	if got := binary.LittleEndian.Uint32(lockResp[smbOffStatus : smbOffStatus+4]); got != smbStatusSuccess {
+		t.Fatalf("initial lock status mismatch: got %#x want %#x", got, uint32(smbStatusSuccess))
+	}
+
+	rotateReq := makeChainedLockingAndXPayload(
+		11,
+		[]lockRange{{pid: 6245, start: 2147483559, length: 20}},
+		nil,
+		nil,
+		[]lockRange{{pid: 6245, start: 2147483579, length: 20}},
+	)
+	rotateResp := svc.handleLockingAndX(rotateReq, conn)
+	if rotateResp == nil {
+		t.Fatal("expected rotated lock response")
+	}
+	if got := binary.LittleEndian.Uint32(rotateResp[smbOffStatus : smbOffStatus+4]); got != smbStatusSuccess {
+		t.Fatalf("rotated lock status mismatch: got %#x want %#x", got, uint32(smbStatusSuccess))
+	}
+
+	unlockReq := makeLockingAndXPayload(11, []lockRange{{pid: 6245, start: 2147483579, length: 20}}, nil)
+	unlockResp := svc.handleLockingAndX(unlockReq, conn)
+	if unlockResp == nil {
+		t.Fatal("expected unlock response")
+	}
+	if got := binary.LittleEndian.Uint32(unlockResp[smbOffStatus : smbOffStatus+4]); got != smbStatusSuccess {
+		t.Fatalf("unlock status mismatch: got %#x want %#x", got, uint32(smbStatusSuccess))
+	}
+}
+
+func TestHandleSeekFromEndReturnsFileSize(t *testing.T) {
+	tmp := t.TempDir()
+	hostPath := filepath.Join(tmp, "HELLO.TXT")
+	if err := os.WriteFile(hostPath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	file, err := os.Open(hostPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer file.Close()
+
+	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, nil)
+	conn := &connState{fids: map[uint16]*fileHandle{15: {file: file, path: "HELLO.TXT"}}}
+
+	resp := svc.handleSeek(makeSeekPayload(15, 2, 0), conn)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if got := binary.LittleEndian.Uint32(resp[smbOffStatus : smbOffStatus+4]); got != smbStatusSuccess {
+		t.Fatalf("status mismatch: got %#x want %#x", got, uint32(smbStatusSuccess))
+	}
+	if resp[smbHeaderLen] != 2 {
+		t.Fatalf("WCT mismatch: got %d want 2", resp[smbHeaderLen])
+	}
+	if got := binary.LittleEndian.Uint32(resp[smbHeaderLen+1 : smbHeaderLen+5]); got != 5 {
+		t.Fatalf("offset mismatch: got %d want 5", got)
+	}
+
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if got := conn.fids[15].offset; got != 5 {
+		t.Fatalf("stored offset mismatch: got %d want 5", got)
+	}
+}
+
+func TestHandleOpenAndXCreatesFileUnderShareRoot(t *testing.T) {
+	tmp := t.TempDir()
+	localName := "SMB_ROOT_PATH_PROBE.TXT"
+	_ = os.Remove(localName)
+	t.Cleanup(func() {
+		_ = os.Remove(localName)
+	})
+
+	fsys, err := vfs.New(vfs.LocalFSName, vfs.Params{Name: "PUBLIC", Path: tmp})
+	if err != nil {
+		t.Fatalf("vfs.New: %v", err)
+	}
+
+	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, []ShareConfig{{Name: "PUBLIC", Path: tmp}})
+	svc.shareFSes = map[int]vfs.FileSystem{0: fsys}
+
+	conn := &connState{
+		tids: map[uint16]treeSlot{21: {shareIdx: 0}},
+		fids: map[uint16]*fileHandle{},
+	}
+
+	resp := svc.handleOpenAndX(makeOpenAndXPayload(21, localName, 0), conn)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if got := binary.LittleEndian.Uint32(resp[smbOffStatus : smbOffStatus+4]); got != smbStatusSuccess {
+		t.Fatalf("status mismatch: got %#x want %#x", got, uint32(smbStatusSuccess))
+	}
+	conn.mu.Lock()
+	for _, h := range conn.fids {
+		if h != nil && h.file != nil {
+			_ = h.file.Close()
+		}
+	}
+	conn.mu.Unlock()
+
+	if _, err := os.Stat(filepath.Join(tmp, localName)); err != nil {
+		t.Fatalf("expected file under share root: %v", err)
+	}
+}
+
+func TestHandleOpenAndXOpenOnlyMissingReturnsNameNotFound(t *testing.T) {
+	tmp := t.TempDir()
+	fsys, err := vfs.New(vfs.LocalFSName, vfs.Params{Name: "PUBLIC", Path: tmp})
+	if err != nil {
+		t.Fatalf("vfs.New: %v", err)
+	}
+
+	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, []ShareConfig{{Name: "PUBLIC", Path: tmp}})
+	svc.shareFSes = map[int]vfs.FileSystem{0: fsys}
+
+	conn := &connState{
+		tids: map[uint16]treeSlot{22: {shareIdx: 0}},
+		fids: map[uint16]*fileHandle{},
+	}
+
+	resp := svc.handleOpenAndX(makeOpenAndXPayloadWithAccess(22, "MISSING.TXT", 0x0001, 0x00C2), conn)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if got := binary.LittleEndian.Uint32(resp[smbOffStatus : smbOffStatus+4]); got != smbStatusErrBadFile {
+		t.Fatalf("status mismatch: got %#x want %#x", got, uint32(smbStatusErrBadFile))
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "MISSING.TXT")); err == nil {
+		t.Fatalf("unexpected file creation for open-only request")
+	}
+}
+
+func TestHandleOpenAndXResponseIncludesGrantedAccess(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "HELLO WORLD.TXT"), []byte("hello world"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	fsys, err := vfs.New(vfs.LocalFSName, vfs.Params{Name: "PUBLIC", Path: tmp})
+	if err != nil {
+		t.Fatalf("vfs.New: %v", err)
+	}
+
+	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, []ShareConfig{{Name: "PUBLIC", Path: tmp}})
+	svc.shareFSes = map[int]vfs.FileSystem{0: fsys}
+
+	conn := &connState{
+		tids: map[uint16]treeSlot{23: {shareIdx: 0}},
+		fids: map[uint16]*fileHandle{},
+	}
+
+	resp := svc.handleOpenAndX(makeOpenAndXPayloadWithAccess(23, "hello world.txt", 0x0001, 0x00C2), conn)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if got := binary.LittleEndian.Uint32(resp[smbOffStatus : smbOffStatus+4]); got != smbStatusSuccess {
+		t.Fatalf("status mismatch: got %#x want %#x", got, uint32(smbStatusSuccess))
+	}
+	if got := binary.LittleEndian.Uint16(resp[smbHeaderLen+1+16 : smbHeaderLen+1+18]); got != 0x00C2 {
+		t.Fatalf("granted access mismatch: got %#x want %#x", got, uint16(0x00C2))
+	}
+	if got := binary.LittleEndian.Uint16(resp[smbHeaderLen+1+22 : smbHeaderLen+1+24]); got != 0x0001 {
+		t.Fatalf("action mismatch: got %#x want %#x", got, uint16(0x0001))
+	}
+	if got := binary.LittleEndian.Uint32(resp[smbHeaderLen+1+12 : smbHeaderLen+1+16]); got == 0 {
+		t.Fatalf("expected non-zero file size in OpenAndX response")
+	}
+
+	conn.mu.Lock()
+	for _, h := range conn.fids {
+		if h != nil && h.file != nil {
+			_ = h.file.Close()
+		}
+	}
+	conn.mu.Unlock()
+}
+
+// TestHandleReadMPXReturnsUseStandard asserts we reject ReadMPX with
+// ERRSRV/ERRuseSTD so the client falls back to SMB_COM_READ. This mirrors
+// Samba's reply_readbmpx and avoids a Win98-over-IPX retransmit loop where
+// the client never advances past offset 0 of a multi-block read.
+func TestHandleReadMPXReturnsUseStandard(t *testing.T) {
+	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, nil)
+	conn := &connState{fids: map[uint16]*fileHandle{}}
+
+	resp := svc.handleReadMPX(makeReadMPXPayload(3, 0, 4), conn)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if got := binary.LittleEndian.Uint32(resp[smbOffStatus : smbOffStatus+4]); got != smbStatusUseStandard {
+		t.Fatalf("status mismatch: got %#x want %#x", got, uint32(smbStatusUseStandard))
+	}
+	if got := resp[4]; got != CommandReadMPX {
+		t.Fatalf("command mismatch: got %#x want %#x", got, byte(CommandReadMPX))
+	}
+}
+
+func TestHandleReadReturnsData(t *testing.T) {
+	tmp := t.TempDir()
+	hostPath := filepath.Join(tmp, "READ.TXT")
+	if err := os.WriteFile(hostPath, []byte("abcdef"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	file, err := os.Open(hostPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer file.Close()
+
+	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, nil)
+	conn := &connState{fids: map[uint16]*fileHandle{5: {file: file, path: hostPath}}}
+
+	resp := svc.handleRead(makeReadPayload(5, 2, 3), conn)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if got := binary.LittleEndian.Uint32(resp[smbOffStatus : smbOffStatus+4]); got != smbStatusSuccess {
+		t.Fatalf("status mismatch: got %#x want %#x", got, uint32(smbStatusSuccess))
+	}
+	if got := resp[4]; got != CommandRead {
+		t.Fatalf("command mismatch: got %#x want %#x", got, byte(CommandRead))
+	}
+	// WCT must be 5 per [MS-CIFS] 2.2.4.11.2
+	if got := resp[smbHeaderLen]; got != 5 {
+		t.Fatalf("WCT mismatch: got %d want 5", got)
+	}
+	// CountOfBytesReturned is Words[0]
+	count := int(binary.LittleEndian.Uint16(resp[smbHeaderLen+1 : smbHeaderLen+3]))
+	if count != 3 {
+		t.Fatalf("CountOfBytesReturned mismatch: got %d want 3", count)
+	}
+	// SMB_Data starts after WCT(1) + Words(5*2=10) = offset 11 from smbHeaderLen
+	// Bytes: BufferFormat(1)=0x01, CountOfBytesRead(2), data
+	bytesOff := smbHeaderLen + 1 + 10 + 2 // skip WCT, Words, ByteCount
+	if resp[bytesOff] != 0x01 {
+		t.Fatalf("BufferFormat mismatch: got %#x want 0x01", resp[bytesOff])
+	}
+	dataLen := int(binary.LittleEndian.Uint16(resp[bytesOff+1 : bytesOff+3]))
+	if dataLen != 3 {
+		t.Fatalf("CountOfBytesRead mismatch: got %d want 3", dataLen)
+	}
+	if got := string(resp[bytesOff+3 : bytesOff+3+dataLen]); got != "cde" {
+		t.Fatalf("data mismatch: got %q want %q", got, "cde")
+	}
+}
+
+
+func makeQueryInformationPayload(tid uint16, path string) []byte {
+	pathBytes := append([]byte(path), 0)
+	byteCount := 1 + len(pathBytes)
+	out := make([]byte, smbHeaderLen+1+2+byteCount)
+	copy(out[0:4], []byte{0xff, 'S', 'M', 'B'})
+	out[4] = CommandQueryInformation
+	binary.LittleEndian.PutUint16(out[smbOffTID:smbOffTID+2], tid)
+	out[smbHeaderLen] = 0 // WCT
+	binary.LittleEndian.PutUint16(out[smbHeaderLen+1:smbHeaderLen+3], uint16(byteCount))
+	out[smbHeaderLen+3] = 0x04
+	copy(out[smbHeaderLen+4:], pathBytes)
+	return out
+}
+
+func makeFindClose2Payload(tid, sid uint16) []byte {
+	out := make([]byte, smbHeaderLen+1+2+2)
+	copy(out[0:4], []byte{0xff, 'S', 'M', 'B'})
+	out[4] = CommandFindClose2
+	binary.LittleEndian.PutUint16(out[smbOffTID:smbOffTID+2], tid)
+	out[smbHeaderLen] = 1
+	binary.LittleEndian.PutUint16(out[smbHeaderLen+1:smbHeaderLen+3], sid)
+	binary.LittleEndian.PutUint16(out[smbHeaderLen+3:smbHeaderLen+5], 0)
+	return out
+}
+
+func makeSeekPayload(fid, mode uint16, offset int32) []byte {
+	out := make([]byte, smbHeaderLen+1+8+2)
+	copy(out[0:4], []byte{0xff, 'S', 'M', 'B'})
+	out[4] = CommandSeek
+	out[smbHeaderLen] = 4
+	binary.LittleEndian.PutUint16(out[smbHeaderLen+1:smbHeaderLen+3], fid)
+	binary.LittleEndian.PutUint16(out[smbHeaderLen+3:smbHeaderLen+5], mode)
+	binary.LittleEndian.PutUint32(out[smbHeaderLen+5:smbHeaderLen+9], uint32(offset))
+	binary.LittleEndian.PutUint16(out[smbHeaderLen+9:smbHeaderLen+11], 0)
+	return out
+}
+
+func makeOpenAndXPayload(tid uint16, path string, openFunction uint16) []byte {
+	return makeOpenAndXPayloadWithAccess(tid, path, openFunction, 0)
+}
+
+func makeOpenAndXPayloadWithAccess(tid uint16, path string, openFunction uint16, desiredAccess uint16) []byte {
+	pathBytes := append([]byte(path), 0)
+	byteCount := 1 + len(pathBytes)
+	wct := 15
+	wordBytes := wct * 2
+	bytesOffset := smbHeaderLen + 1 + wordBytes
+	out := make([]byte, bytesOffset+2+byteCount)
+
+	copy(out[0:4], []byte{0xff, 'S', 'M', 'B'})
+	out[4] = CommandOpenAndX
+	binary.LittleEndian.PutUint16(out[smbOffTID:smbOffTID+2], tid)
+	out[smbHeaderLen] = byte(wct)
+
+	w := out[smbHeaderLen+1 : smbHeaderLen+1+wordBytes]
+	binary.LittleEndian.PutUint16(w[0:2], desiredAccess)
+	binary.LittleEndian.PutUint16(w[2:4], 0)  // searchAttrs
+	binary.LittleEndian.PutUint16(w[4:6], 0)  // fileAttrs
+	binary.LittleEndian.PutUint32(w[6:10], 0) // createTime
+	binary.LittleEndian.PutUint16(w[10:12], openFunction)
+	binary.LittleEndian.PutUint32(w[12:16], 0) // allocSize
+	binary.LittleEndian.PutUint32(w[16:20], 0) // timeout
+	binary.LittleEndian.PutUint16(w[20:22], 0) // reserved
+
+	binary.LittleEndian.PutUint16(out[bytesOffset:bytesOffset+2], uint16(byteCount))
+	out[bytesOffset+2] = 0x04
+	copy(out[bytesOffset+3:], pathBytes)
+	return out
+}
+
+func makeReadMPXPayload(fid uint16, offset uint32, count uint16) []byte {
+	out := make([]byte, smbHeaderLen+1+(8*2)+2)
+	copy(out[0:4], []byte{0xff, 'S', 'M', 'B'})
+	out[4] = CommandReadMPX
+	out[smbHeaderLen] = 8
+	w := out[smbHeaderLen+1 : smbHeaderLen+1+(8*2)]
+	binary.LittleEndian.PutUint16(w[0:2], fid)
+	binary.LittleEndian.PutUint32(w[2:6], offset)
+	binary.LittleEndian.PutUint16(w[6:8], count)
+	binary.LittleEndian.PutUint16(w[8:10], count)
+	binary.LittleEndian.PutUint32(w[10:14], 0)
+	binary.LittleEndian.PutUint16(w[14:16], 0)
+	binary.LittleEndian.PutUint16(out[smbHeaderLen+1+(8*2):smbHeaderLen+1+(8*2)+2], 0)
+	return out
+}
+
+func makeReadPayload(fid, offset, count uint16) []byte {
+	out := make([]byte, smbHeaderLen+1+(5*2)+2)
+	copy(out[0:4], []byte{0xff, 'S', 'M', 'B'})
+	out[4] = CommandRead
+	out[smbHeaderLen] = 5
+	w := out[smbHeaderLen+1 : smbHeaderLen+1+(5*2)]
+	binary.LittleEndian.PutUint16(w[0:2], fid)
+	binary.LittleEndian.PutUint16(w[2:4], count)
+	binary.LittleEndian.PutUint32(w[4:8], uint32(offset))
+	binary.LittleEndian.PutUint16(w[8:10], 0)
+	binary.LittleEndian.PutUint16(out[smbHeaderLen+1+(5*2):smbHeaderLen+1+(5*2)+2], 0)
+	return out
+}
+
+func makeLockingAndXPayload(fid uint16, unlocks, locks []lockRange) []byte {
+	cmd := marshalLockingAndXCommand(CommandNoAndXCommand, 0, fid, unlocks, locks)
+	out := make([]byte, smbHeaderLen+len(cmd))
+	copy(out[0:4], []byte{0xff, 'S', 'M', 'B'})
+	out[4] = CommandLockingAndX
+	copy(out[smbHeaderLen:], cmd)
+	return out
+}
+
+func makeChainedLockingAndXPayload(fid uint16, firstUnlocks, firstLocks, secondUnlocks, secondLocks []lockRange) []byte {
+	first := marshalLockingAndXCommand(CommandLockingAndX, uint16(smbHeaderLen), fid, firstUnlocks, firstLocks)
+	secondOffset := uint16(smbHeaderLen + len(first))
+	first = marshalLockingAndXCommand(CommandLockingAndX, secondOffset, fid, firstUnlocks, firstLocks)
+	second := marshalLockingAndXCommand(CommandNoAndXCommand, 0, fid, secondUnlocks, secondLocks)
+	out := make([]byte, smbHeaderLen+len(first)+len(second))
+	copy(out[0:4], []byte{0xff, 'S', 'M', 'B'})
+	out[4] = CommandLockingAndX
+	copy(out[smbHeaderLen:], first)
+	copy(out[smbHeaderLen+len(first):], second)
+	return out
+}
+
+func marshalLockingAndXCommand(andxCommand byte, andxOffset, fid uint16, unlocks, locks []lockRange) []byte {
+	byteCount := 10 * (len(unlocks) + len(locks))
+	out := make([]byte, 1+16+2+byteCount)
+	out[0] = 8
+	w := out[1:17]
+	w[0] = andxCommand
+	w[1] = 0
+	binary.LittleEndian.PutUint16(w[2:4], andxOffset)
+	binary.LittleEndian.PutUint16(w[4:6], fid)
+	w[6] = 0
+	w[7] = 0
+	binary.LittleEndian.PutUint32(w[8:12], 0)
+	binary.LittleEndian.PutUint16(w[12:14], uint16(len(unlocks)))
+	binary.LittleEndian.PutUint16(w[14:16], uint16(len(locks)))
+	binary.LittleEndian.PutUint16(out[17:19], uint16(byteCount))
+	off := 19
+	for _, r := range unlocks {
+		marshalLockRange(out[off:off+10], r)
+		off += 10
+	}
+	for _, r := range locks {
+		marshalLockRange(out[off:off+10], r)
+		off += 10
+	}
+	return out
+}
+
+func marshalLockRange(dst []byte, r lockRange) {
+	binary.LittleEndian.PutUint16(dst[0:2], r.pid)
+	binary.LittleEndian.PutUint32(dst[2:6], uint32(r.start))
+	binary.LittleEndian.PutUint32(dst[6:10], uint32(r.length))
+}
+
+func makeTrans2FindFirst2Payload(tid uint16, pattern string) []byte {
+	return makeTrans2FindFirst2PayloadWithCount(tid, pattern, 1)
+}
+
+func makeTrans2FindFirst2PayloadWithCount(tid uint16, pattern string, count uint16) []byte {
+	params := make([]byte, 12)
+	binary.LittleEndian.PutUint16(params[0:2], 0x0016) // SearchAttributes
+	binary.LittleEndian.PutUint16(params[2:4], count)  // SearchCount
+	binary.LittleEndian.PutUint16(params[4:6], 0x0000) // Flags
+	binary.LittleEndian.PutUint16(params[6:8], 0x0104) // SMB_FIND_FILE_BOTH_DIRECTORY_INFO
+	binary.LittleEndian.PutUint32(params[8:12], 0x00000000)
+	params = append(params, []byte(pattern)...)
+	params = append(params, 0x00)
+
+	const setupCount = 1
+	const wct = 14 + setupCount
+	wordBytes := wct * 2
+	bytesOffset := smbHeaderLen + 1 + wordBytes
+	paramOffset := bytesOffset + 2
+	byteCount := len(params)
+	out := make([]byte, paramOffset+byteCount)
+
+	copy(out[0:4], []byte{0xff, 'S', 'M', 'B'})
+	out[4] = CommandTransaction2
+	binary.LittleEndian.PutUint16(out[smbOffTID:smbOffTID+2], tid)
+	out[smbHeaderLen] = wct
+
+	w := out[smbHeaderLen+1 : smbHeaderLen+1+wordBytes]
+	binary.LittleEndian.PutUint16(w[0:2], uint16(len(params))) // TotalParameterCount
+	binary.LittleEndian.PutUint16(w[2:4], 0)                   // TotalDataCount
+	binary.LittleEndian.PutUint16(w[4:6], 10)                  // MaxParameterCount
+	binary.LittleEndian.PutUint16(w[6:8], 4096)                // MaxDataCount
+	w[8] = 0                                                   // MaxSetupCount
+	binary.LittleEndian.PutUint16(w[10:12], 0)                 // Flags
+	binary.LittleEndian.PutUint32(w[12:16], 0)                 // Timeout
+	binary.LittleEndian.PutUint16(w[18:20], uint16(len(params)))
+	binary.LittleEndian.PutUint16(w[20:22], uint16(paramOffset))
+	binary.LittleEndian.PutUint16(w[22:24], 0) // DataCount
+	binary.LittleEndian.PutUint16(w[24:26], 0) // DataOffset
+	w[26] = setupCount
+	binary.LittleEndian.PutUint16(w[28:30], trans2SubcommandFindFirst2)
+
+	binary.LittleEndian.PutUint16(out[bytesOffset:bytesOffset+2], uint16(byteCount))
+	copy(out[paramOffset:], params)
+	return out
+}
+
+func makeTrans2FindNext2Payload(tid, sid, count uint16) []byte {
+	return makeTrans2FindNext2PayloadWithResume(tid, sid, count, "", 0)
+}
+
+func makeTrans2FindNext2PayloadWithResume(tid, sid, count uint16, resumeName string, flags uint16) []byte {
+	params := make([]byte, 12)
+	binary.LittleEndian.PutUint16(params[0:2], sid)
+	binary.LittleEndian.PutUint16(params[2:4], count)
+	binary.LittleEndian.PutUint16(params[4:6], 0x0104) // SMB_FIND_FILE_BOTH_DIRECTORY_INFO
+	binary.LittleEndian.PutUint32(params[6:10], 0x00000000)
+	binary.LittleEndian.PutUint16(params[10:12], flags)
+	if resumeName != "" {
+		params = append(params, []byte(resumeName)...)
+		params = append(params, 0)
+	}
+
+	const setupCount = 1
+	const wct = 14 + setupCount
+	wordBytes := wct * 2
+	bytesOffset := smbHeaderLen + 1 + wordBytes
+	paramOffset := bytesOffset + 2
+	byteCount := len(params)
+	out := make([]byte, paramOffset+byteCount)
+
+	copy(out[0:4], []byte{0xff, 'S', 'M', 'B'})
+	out[4] = CommandTransaction2
+	binary.LittleEndian.PutUint16(out[smbOffTID:smbOffTID+2], tid)
+	out[smbHeaderLen] = wct
+
+	w := out[smbHeaderLen+1 : smbHeaderLen+1+wordBytes]
+	binary.LittleEndian.PutUint16(w[0:2], uint16(len(params)))
+	binary.LittleEndian.PutUint16(w[2:4], 0)
+	binary.LittleEndian.PutUint16(w[4:6], 10)
+	binary.LittleEndian.PutUint16(w[6:8], 4096)
+	w[8] = 0
+	binary.LittleEndian.PutUint16(w[10:12], 0)
+	binary.LittleEndian.PutUint32(w[12:16], 0)
+	binary.LittleEndian.PutUint16(w[18:20], uint16(len(params)))
+	binary.LittleEndian.PutUint16(w[20:22], uint16(paramOffset))
+	binary.LittleEndian.PutUint16(w[22:24], 0)
+	binary.LittleEndian.PutUint16(w[24:26], 0)
+	w[26] = setupCount
+	binary.LittleEndian.PutUint16(w[28:30], trans2SubcommandFindNext2)
+
+	binary.LittleEndian.PutUint16(out[bytesOffset:bytesOffset+2], uint16(byteCount))
+	copy(out[paramOffset:], params)
+	return out
+}
+
+func readTrans2ParamBlock(t *testing.T, resp []byte) []byte {
+	t.Helper()
+	if len(resp) < smbHeaderLen+1+20 {
+		t.Fatalf("response too short")
+	}
+	paramCount := int(binary.LittleEndian.Uint16(resp[smbHeaderLen+1+6 : smbHeaderLen+1+8]))
+	paramOffset := int(binary.LittleEndian.Uint16(resp[smbHeaderLen+1+8 : smbHeaderLen+1+10]))
+	if paramOffset < 0 || paramCount < 0 || paramOffset+paramCount > len(resp) {
+		t.Fatalf("param block out of bounds")
+	}
+	return resp[paramOffset : paramOffset+paramCount]
+}
+
+func readTrans2DataBlock(t *testing.T, resp []byte) []byte {
+	t.Helper()
+	if len(resp) < smbHeaderLen+1+20 {
+		t.Fatalf("response too short")
+	}
+	dataCount := int(binary.LittleEndian.Uint16(resp[smbHeaderLen+1+12 : smbHeaderLen+1+14]))
+	dataOffset := int(binary.LittleEndian.Uint16(resp[smbHeaderLen+1+14 : smbHeaderLen+1+16]))
+	if dataOffset < 0 || dataCount < 0 || dataOffset+dataCount > len(resp) {
+		t.Fatalf("data block out of bounds")
+	}
+	return resp[dataOffset : dataOffset+dataCount]
 }

@@ -350,7 +350,7 @@ func buildNetShareEnumResponse(req []byte, entries []shareInfo1Entry) []byte {
 	dataLen := len(entries)*entrySize + len(remarkData)
 
 	paramOffset := smbHeaderLen + 1 + 20 + 2 // = 55
-	dataOffset := paramOffset + paramLen      // = 63
+	dataOffset := paramOffset + paramLen     // = 63
 	totalLen := dataOffset + dataLen
 
 	out := make([]byte, totalLen)

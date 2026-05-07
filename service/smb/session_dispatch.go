@@ -124,6 +124,31 @@ func (s *Service) HandleSessionContext(packet *netbiosproto.SessionPacket, ctx n
 			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
 		respPayload = s.handleQueryInformationDisk(packet.Payload, conn)
 
+	case CommandQueryInformation:
+		netlog.Debug("[SMB][Session] query-information src=%x.%x:%02x%02x",
+			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
+		respPayload = s.handleQueryInformation(packet.Payload, conn)
+
+	case CommandRead:
+		netlog.Debug("[SMB][Session] read src=%x.%x:%02x%02x",
+			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
+		respPayload = s.handleRead(packet.Payload, conn)
+
+	case CommandSeek:
+		netlog.Debug("[SMB][Session] seek src=%x.%x:%02x%02x",
+			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
+		respPayload = s.handleSeek(packet.Payload, conn)
+
+	case CommandTransaction2:
+		netlog.Debug("[SMB][Session] transaction2 src=%x.%x:%02x%02x",
+			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
+		respPayload = s.handleTransaction2(packet.Payload, conn)
+
+	case CommandFindClose2:
+		netlog.Debug("[SMB][Session] find-close2 src=%x.%x:%02x%02x",
+			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
+		respPayload = s.handleFindClose2(packet.Payload, conn)
+
 	case CommandCheckDirectory:
 		netlog.Debug("[SMB][Session] check-directory src=%x.%x:%02x%02x",
 			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
@@ -143,6 +168,11 @@ func (s *Service) HandleSessionContext(packet *netbiosproto.SessionPacket, ctx n
 		netlog.Debug("[SMB][Session] read-andx src=%x.%x:%02x%02x",
 			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
 		respPayload = s.handleReadAndX(packet.Payload, conn)
+
+	case CommandReadMPX:
+		netlog.Debug("[SMB][Session] read-mpx src=%x.%x:%02x%02x",
+			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
+		respPayload = s.handleReadMPX(packet.Payload, conn)
 
 	case CommandWriteAndX:
 		netlog.Debug("[SMB][Session] write-andx src=%x.%x:%02x%02x",

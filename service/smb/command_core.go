@@ -13,11 +13,44 @@ func buildSMBErrorResponse(req []byte, status uint32) []byte {
 	}
 	out := make([]byte, smbHeaderLen+3)
 	copy(out[:smbHeaderLen], req[:smbHeaderLen])
-	binary.LittleEndian.PutUint32(out[5:9], status)
+	binary.LittleEndian.PutUint32(out[smbOffStatus:smbOffStatus+4], toWireErrorStatus(req, status))
 	out[9] = req[9] | 0x80
 	out[32] = 0
 	binary.LittleEndian.PutUint16(out[33:35], 0)
 	return out
+}
+
+func toWireErrorStatus(req []byte, status uint32) uint32 {
+	if len(req) >= smbHeaderLen {
+		flags2 := binary.LittleEndian.Uint16(req[smbOffFlags2 : smbOffFlags2+2])
+		if flags2&smbFlags2NTStatus != 0 {
+			return status
+		}
+	}
+
+	switch status {
+	case smbStatusSuccess, smbStatusBadTID,
+		smbStatusErrBadFunc, smbStatusErrBadFile, smbStatusErrBadPath,
+		smbStatusErrNoAccess, smbStatusErrNoFiles, smbStatusErrInvNetName, smbStatusErrSrvError:
+		return status
+	case smbStatusNoMoreFiles:
+		return smbStatusErrNoFiles
+	case smbStatusNotSupported:
+		return smbStatusErrBadFunc
+	case smbStatusBadNetworkName:
+		return smbStatusErrInvNetName
+	case smbStatusAccessDenied:
+		return smbStatusErrNoAccess
+	case smbStatusNameNotFound:
+		return smbStatusErrBadFile
+	case smbStatusFileIsDirectory, smbStatusNotADirectory:
+		return smbStatusErrBadPath
+	default:
+		if status&0xFF000000 == 0 {
+			return status
+		}
+		return smbStatusErrSrvError
+	}
 }
 
 // findNegotiateDialect scans the dialect list in a SMB_COM_NEGOTIATE
@@ -73,19 +106,23 @@ func buildNegotiateResponse(req []byte, workgroup string) []byte {
 	out[smbOffFlags] |= 0x80
 	out[smbHeaderLen] = 17 // WCT
 	w := out[smbHeaderLen+1:]
-	binary.LittleEndian.PutUint16(w[0:2], uint16(dialectIdx)) // DialectIndex
-	w[2] = 0x01                                               // SecurityMode: user-level, no encryption
-	binary.LittleEndian.PutUint16(w[3:5], 50)                 // MaxMpxCount
-	binary.LittleEndian.PutUint16(w[5:7], 1)                  // MaxNumberVcs
-	binary.LittleEndian.PutUint32(w[7:11], 0x4000)            // MaxBufferSize
-	binary.LittleEndian.PutUint32(w[11:15], 0)                // MaxRawSize
-	binary.LittleEndian.PutUint32(w[15:19], 0)                         // SessionKey
-	binary.LittleEndian.PutUint32(w[19:23], capNTSMBs|capStatus32)     // Capabilities
+	binary.LittleEndian.PutUint16(w[0:2], uint16(dialectIdx))      // DialectIndex
+	w[2] = 0x01                                                    // SecurityMode: user-level, no encryption
+	binary.LittleEndian.PutUint16(w[3:5], 50)                      // MaxMpxCount
+	binary.LittleEndian.PutUint16(w[5:7], 1)                       // MaxNumberVcs
+	binary.LittleEndian.PutUint32(w[7:11], 0x4000)                 // MaxBufferSize
+	binary.LittleEndian.PutUint32(w[11:15], 0)                     // MaxRawSize
+	binary.LittleEndian.PutUint32(w[15:19], 0)                     // SessionKey
+	// CAP_MPX_MODE is intentionally not advertised. We reject SMB_COM_READ_MPX /
+	// SMB_COM_WRITE_MPX with STATUS_SMB_USE_STANDARD so clients fall back to
+	// SMB_COM_READ / SMB_COM_WRITE — the same approach Samba's reply_readbmpx
+	// takes (source3/smbd/reply.c).
+	binary.LittleEndian.PutUint32(w[19:23], capNTSMBs|capStatus32) // Capabilities
 	ft := uint64(time.Now().UTC().UnixNano()/100) + windowsFiletimeOffset
-	binary.LittleEndian.PutUint32(w[23:27], uint32(ft))                // SystemTimeLow
-	binary.LittleEndian.PutUint32(w[27:31], uint32(ft>>32))            // SystemTimeHigh
-	binary.LittleEndian.PutUint16(w[31:33], 0)                         // ServerTimeZone
-	w[33] = 0                                                 // EncryptionKeyLength = 0 (no challenge)
+	binary.LittleEndian.PutUint32(w[23:27], uint32(ft))     // SystemTimeLow
+	binary.LittleEndian.PutUint32(w[27:31], uint32(ft>>32)) // SystemTimeHigh
+	binary.LittleEndian.PutUint16(w[31:33], 0)              // ServerTimeZone
+	w[33] = 0                                               // EncryptionKeyLength = 0 (no challenge)
 	binary.LittleEndian.PutUint16(w[34:36], uint16(len(domainBytes)))
 	copy(w[36:], domainBytes)
 	return out
@@ -249,10 +286,10 @@ func buildTreeConnectResponseForIPC(req []byte, tid uint16) []byte {
 	binary.LittleEndian.PutUint16(out[smbOffTID:smbOffTID+2], tid)
 	out[smbHeaderLen] = 3 // WCT
 	w := out[smbHeaderLen+1:]
-	w[0] = 0xFF                               // AndXCommand = no chaining
-	w[1] = 0x00                               // AndXReserved
-	binary.LittleEndian.PutUint16(w[2:4], 0)  // AndXOffset
-	binary.LittleEndian.PutUint16(w[4:6], 0)  // OptionalSupport
+	w[0] = 0xFF                              // AndXCommand = no chaining
+	w[1] = 0x00                              // AndXReserved
+	binary.LittleEndian.PutUint16(w[2:4], 0) // AndXOffset
+	binary.LittleEndian.PutUint16(w[4:6], 0) // OptionalSupport
 	binary.LittleEndian.PutUint16(w[6:8], uint16(byteCount))
 	copy(w[8:], service)
 	copy(w[8+len(service):], nativeFS)
@@ -284,6 +321,15 @@ func buildTreeConnectResponseWithTID(req []byte, tid uint16) []byte {
 	copy(w[8:], service)
 	copy(w[8+len(service):], nativeFS)
 	return out
+}
+
+func (s *Service) shareRootPath(shareIdx int) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if shareIdx >= 0 && shareIdx < len(s.shares) {
+		return strings.TrimSpace(s.shares[shareIdx].Path)
+	}
+	return ""
 }
 
 // handleCheckDirectory (0x10) verifies a path is a directory.

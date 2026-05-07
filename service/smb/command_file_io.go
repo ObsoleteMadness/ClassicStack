@@ -1,11 +1,31 @@
 package smb
 
 import (
+	"errors"
 	"encoding/binary"
+	"io"
 	"io/fs"
+	"strings"
 
 	"github.com/ObsoleteMadness/ClassicStack/pkg/vfs"
 )
+
+func (s *Service) closeFID(conn *connState, fid uint16) {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	s.closeFIDLocked(conn, fid)
+}
+
+func (s *Service) closeFIDLocked(conn *connState, fid uint16) {
+	handle, ok := conn.fids[fid]
+	if ok {
+		if handle != nil && handle.file != nil {
+			handle.file.Close()
+		}
+		s.releaseLocksForFIDLocked(conn, fid)
+		delete(conn.fids, fid)
+	}
+}
 
 func (s *Service) handleOpenAndX(req []byte, conn *connState) []byte {
 	if len(req) < smbHeaderLen+15 {
@@ -27,6 +47,7 @@ func (s *Service) handleOpenAndX(req []byte, conn *connState) []byte {
 	if !ok || fs == nil {
 		return buildSMBErrorResponse(req, smbStatusBadTID)
 	}
+	rootPath := s.shareRootPath(slot.shareIdx)
 
 	// Parse request
 	wct := int(req[smbHeaderLen])
@@ -41,7 +62,6 @@ func (s *Service) handleOpenAndX(req []byte, conn *connState) []byte {
 	createTime := binary.LittleEndian.Uint32(w[6:10])
 	openFunction := binary.LittleEndian.Uint16(w[10:12])
 
-	_ = desiredAccess
 	_ = searchAttrs
 	_ = createTime
 
@@ -50,26 +70,30 @@ func (s *Service) handleOpenAndX(req []byte, conn *connState) []byte {
 		return buildSMBErrorResponse(req, 0xC000007F) // STATUS_OBJECT_NAME_NOT_FOUND
 	}
 
+	requestedPath := strings.TrimSpace(path)
+	createPath := smbJoinPath(rootPath, requestedPath)
+	openPath := createPath
+	if resolved, err := resolveExistingPath(fs, rootPath, requestedPath); err == nil {
+		openPath = resolved
+	}
+
 	// Determine open mode
 	var file vfs.File
 	var err error
+	created := false
 
-	// OPEN_FUNCTION: bits 0-3: action, bits 4-7: mode
-	mode := openFunction >> 4
-	_ = openFunction & 0x0F // action (unused for now)
+	// OPEN_FUNCTION: low nibble controls open/create behavior.
+	// 0x0001 means open-if-exists and fail if missing.
+	openOnly := (openFunction & 0x000F) == 0x0001
 
 	// Try to open existing file / create new
-	if mode == 1 {
-		// OPEN_IF_EXISTS
-		file, err = fs.OpenFile(path, 0) // Read mode
-	} else if mode == 2 {
-		// OPEN_EXCLUSIVE
-		file, err = fs.CreateFile(path)
-	} else {
-		// Default: try to open, create if not found
-		file, err = fs.OpenFile(path, 0)
-		if err != nil {
-			file, err = fs.CreateFile(path)
+	activePath := openPath
+	file, err = fs.OpenFile(openPath, 0)
+	if err != nil && !openOnly {
+		activePath = createPath
+		file, err = fs.CreateFile(createPath)
+		if err == nil {
+			created = true
 		}
 	}
 
@@ -94,16 +118,48 @@ func (s *Service) handleOpenAndX(req []byte, conn *connState) []byte {
 	}
 	conn.fids[fid] = &fileHandle{
 		file:     file,
-		path:     path,
+		path:     activePath,
 		tid:      tid,
 		writable: (fileAttrs & FileAttributeReadOnly) == 0,
 	}
 	conn.mu.Unlock()
 
-	return buildOpenAndXResponse(req, fid, info, fileAttrs)
+	grantedAccess := desiredAccess
+	if grantedAccess == 0 {
+		grantedAccess = 0x0002 // sensible default: read/write
+	}
+	action := uint16(0x0001) // existed and opened
+	if created {
+		action = 0x0002 // created
+	}
+
+	return buildOpenAndXResponse(req, fid, info, fileAttrs, grantedAccess, action)
 }
 
 // handleReadAndX (0x2E) reads data from an open file.
+func (s *Service) handleRead(req []byte, conn *connState) []byte {
+	if len(req) < smbHeaderLen+11 {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	wct := int(req[smbHeaderLen])
+	if wct < 5 {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	w := req[smbHeaderLen+1:]
+	fid := binary.LittleEndian.Uint16(w[0:2])
+	maxCount := binary.LittleEndian.Uint16(w[2:4])
+	offset := binary.LittleEndian.Uint32(w[4:8])
+
+	data, ok := readBytesFromHandle(conn, fid, int64(offset), maxCount)
+	if !ok {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	return buildReadResponse(req, data)
+}
+
 func (s *Service) handleReadAndX(req []byte, conn *connState) []byte {
 	if len(req) < smbHeaderLen+11 {
 		return buildSMBErrorResponse(req, smbStatusNotSupported)
@@ -121,28 +177,42 @@ func (s *Service) handleReadAndX(req []byte, conn *connState) []byte {
 	maxCount := binary.LittleEndian.Uint16(w[8:10])
 	_ = binary.LittleEndian.Uint16(w[10:12]) // minCount (unused)
 
+	data, ok := readBytesFromHandle(conn, fid, int64(offset), maxCount)
+	if !ok {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	return buildReadAndXResponse(req, data)
+}
+
+// handleReadMPX rejects SMB_COM_READ_MPX with STATUS_SMB_USE_STANDARD,
+// prompting the client to fall back to SMB_COM_READ. We do not advertise
+// CAP_MPX_MODE in the NEGOTIATE response, but Win9x over Direct IPX may
+// still attempt ReadMPX as the only large-block read on connectionless
+// transports. Mirror Samba's reply_readbmpx (source3/smbd/reply.c), which
+// also unconditionally returns ERRSRV/ERRuseSTD.
+func (s *Service) handleReadMPX(req []byte, conn *connState) []byte {
+	_ = conn
+	return buildSMBErrorResponse(req, smbStatusUseStandard)
+}
+
+func readBytesFromHandle(conn *connState, fid uint16, offset int64, maxCount uint16) ([]byte, bool) {
 	// Look up file handle
 	conn.mu.Lock()
 	handle, ok := conn.fids[fid]
 	conn.mu.Unlock()
 	if !ok || handle == nil || handle.file == nil {
-		return buildSMBErrorResponse(req, smbStatusNotSupported)
-	}
-
-	// Clamp read size
-	if maxCount > 4096 {
-		maxCount = 4096
+		return nil, false
 	}
 
 	// Read from file
 	data := make([]byte, maxCount)
-	n, err := handle.file.ReadAt(data, int64(offset))
-	if err != nil && err.Error() != "EOF" {
-		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	n, err := handle.file.ReadAt(data, offset)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, false
 	}
 
-	data = data[:n]
-	return buildReadAndXResponse(req, data)
+	return data[:n], true
 }
 
 // handleWriteAndX (0x2F) writes data to an open file.
@@ -207,14 +277,7 @@ func (s *Service) handleClose(req []byte, conn *connState) []byte {
 
 	// Look up and close file handle
 	conn.mu.Lock()
-	handle, ok := conn.fids[fid]
-	if ok {
-		if handle != nil && handle.file != nil {
-			handle.file.Close()
-		}
-		s.releaseLocksForFIDLocked(conn, fid)
-		delete(conn.fids, fid)
-	}
+	s.closeFIDLocked(conn, fid)
 	conn.mu.Unlock()
 
 	return buildSimpleSuccessResponse(req)
@@ -249,6 +312,76 @@ func (s *Service) handleFlush(req []byte, conn *connState) []byte {
 	}
 
 	return buildSimpleSuccessResponse(req)
+}
+
+func (s *Service) handleSeek(req []byte, conn *connState) []byte {
+	if len(req) < smbHeaderLen+9 {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	wct := int(req[smbHeaderLen])
+	if wct < 4 {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	w := req[smbHeaderLen+1:]
+	fid := binary.LittleEndian.Uint16(w[0:2])
+	mode := binary.LittleEndian.Uint16(w[2:4])
+	delta := int64(int32(binary.LittleEndian.Uint32(w[4:8])))
+
+	conn.mu.Lock()
+	handle, ok := conn.fids[fid]
+	if !ok || handle == nil || handle.file == nil {
+		conn.mu.Unlock()
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+	current := handle.offset
+	file := handle.file
+	conn.mu.Unlock()
+
+	var base int64
+	switch mode {
+	case 0:
+		base = 0
+	case 1:
+		base = current
+	case 2:
+		info, err := file.Stat()
+		if err != nil {
+			return buildSMBErrorResponse(req, smbStatusNotSupported)
+		}
+		base = info.Size()
+	default:
+		return buildSMBErrorResponse(req, smbStatusErrBadFunc)
+	}
+
+	pos := base + delta
+	if pos < 0 {
+		return buildSMBErrorResponse(req, smbStatusErrBadFunc)
+	}
+
+	conn.mu.Lock()
+	if handle := conn.fids[fid]; handle != nil {
+		handle.offset = pos
+	}
+	conn.mu.Unlock()
+
+	return buildSeekResponse(req, uint32(pos))
+}
+
+func buildSeekResponse(req []byte, offset uint32) []byte {
+	if len(req) < smbHeaderLen || string(req[0:4]) != "\xffSMB" {
+		return nil
+	}
+
+	out := make([]byte, smbHeaderLen+1+4+2)
+	copy(out[:smbHeaderLen], req[:smbHeaderLen])
+	binary.LittleEndian.PutUint32(out[smbOffStatus:smbOffStatus+4], smbStatusSuccess)
+	out[smbOffFlags] |= 0x80
+	out[smbHeaderLen] = 2
+	binary.LittleEndian.PutUint32(out[smbHeaderLen+1:smbHeaderLen+5], offset)
+	binary.LittleEndian.PutUint16(out[smbHeaderLen+5:smbHeaderLen+7], 0)
+	return out
 }
 
 func buildWriteAndXResponse(req []byte, count uint16) []byte {
@@ -288,7 +421,8 @@ func buildReadAndXResponse(req []byte, data []byte) []byte {
 		return nil
 	}
 
-	out := make([]byte, smbHeaderLen+1+(12*2)+2+len(data))
+	padLen := readDataPadLength(smbHeaderLen + 1 + (12 * 2) + 2)
+	out := make([]byte, smbHeaderLen+1+(12*2)+2+padLen+len(data))
 	copy(out[:smbHeaderLen], req[:smbHeaderLen])
 	binary.LittleEndian.PutUint32(out[smbOffStatus:smbOffStatus+4], smbStatusSuccess)
 	out[smbOffFlags] |= 0x80
@@ -313,7 +447,7 @@ func buildReadAndXResponse(req []byte, data []byte) []byte {
 	binary.LittleEndian.PutUint16(w[10:12], uint16(len(data)))
 
 	// DataOffset relative to SMB header
-	dataOffset := smbHeaderLen + 1 + (12 * 2) + 2
+	dataOffset := smbHeaderLen + 1 + (12 * 2) + 2 + padLen
 	binary.LittleEndian.PutUint16(w[12:14], uint16(dataOffset))
 
 	// Reserved
@@ -329,15 +463,58 @@ func buildReadAndXResponse(req []byte, data []byte) []byte {
 	binary.LittleEndian.PutUint16(w[20:22], 0)
 
 	// ByteCount
-	binary.LittleEndian.PutUint16(w[22:24], uint16(len(data)))
+	binary.LittleEndian.PutUint16(w[22:24], uint16(len(data)+padLen))
 
 	// Data
-	copy(w[24:], data)
+	copy(w[24+padLen:], data)
 
 	return out
 }
 
-func buildOpenAndXResponse(req []byte, fid uint16, info fs.FileInfo, fileAttrs uint16) []byte {
+func buildReadResponse(req []byte, data []byte) []byte {
+	if len(req) < smbHeaderLen || string(req[0:4]) != "\xffSMB" {
+		return nil
+	}
+
+	// SMB_COM_READ (0x0A) response per [MS-CIFS] 2.2.4.11.2:
+	//   WCT = 5
+	//   Words: CountOfBytesReturned(2), Reserved[4](8 bytes = 4 x uint16)
+	//   SMB_Data: ByteCount(2), BufferFormat(1)=0x01, CountOfBytesRead(2), Bytes[]
+	const wct = 5
+	// SMB_Data starts at: smbHeaderLen + 1(WCT) + wct*2(Words) + 2(ByteCount)
+	// Bytes field: 1(BufferFormat) + 2(CountOfBytesRead) + len(data)
+	bcc := uint16(3 + len(data))
+	out := make([]byte, smbHeaderLen+1+(wct*2)+2+3+len(data))
+	copy(out[:smbHeaderLen], req[:smbHeaderLen])
+	binary.LittleEndian.PutUint32(out[smbOffStatus:smbOffStatus+4], smbStatusSuccess)
+	out[smbOffFlags] |= 0x80
+	out[smbHeaderLen] = wct
+	w := out[smbHeaderLen+1:]
+
+	// CountOfBytesReturned
+	binary.LittleEndian.PutUint16(w[0:2], uint16(len(data)))
+	// Reserved[4] = 8 bytes of zeros (already zero from make)
+
+	// ByteCount
+	binary.LittleEndian.PutUint16(w[wct*2:wct*2+2], bcc)
+
+	// Bytes: BufferFormat = 0x01 (SMB_FORMAT_DATA)
+	bytes := w[wct*2+2:]
+	bytes[0] = 0x01
+	binary.LittleEndian.PutUint16(bytes[1:3], uint16(len(data)))
+	copy(bytes[3:], data)
+
+	return out
+}
+
+func readDataPadLength(dataStart int) int {
+	if dataStart%2 == 0 {
+		return 0
+	}
+	return 1
+}
+
+func buildOpenAndXResponse(req []byte, fid uint16, info fs.FileInfo, fileAttrs uint16, grantedAccess uint16, action uint16) []byte {
 	if len(req) < smbHeaderLen || string(req[0:4]) != "\xffSMB" {
 		return nil
 	}
@@ -374,7 +551,7 @@ func buildOpenAndXResponse(req []byte, fid uint16, info fs.FileInfo, fileAttrs u
 	binary.LittleEndian.PutUint32(w[12:16], uint32(info.Size()))
 
 	// GrantedAccess
-	binary.LittleEndian.PutUint16(w[16:18], 0x0001) // Read access
+	binary.LittleEndian.PutUint16(w[16:18], grantedAccess)
 
 	// FileType
 	binary.LittleEndian.PutUint16(w[18:20], 0) // DISK_FILE
@@ -383,7 +560,7 @@ func buildOpenAndXResponse(req []byte, fid uint16, info fs.FileInfo, fileAttrs u
 	binary.LittleEndian.PutUint16(w[20:22], 0)
 
 	// ActionOpened
-	binary.LittleEndian.PutUint16(w[22:24], 0x0001) // FILE_OPENED
+	binary.LittleEndian.PutUint16(w[22:24], action)
 
 	// Reserved
 	binary.LittleEndian.PutUint32(w[24:28], 0)

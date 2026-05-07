@@ -24,6 +24,7 @@ func (s *Service) handleDelete(req []byte, conn *connState) []byte {
 	if !ok {
 		return buildSMBErrorResponse(req, smbStatusBadTID)
 	}
+	rootPath := s.shareRootPath(slot.shareIdx)
 	if s.shares[slot.shareIdx].ReadOnly {
 		return buildSMBErrorResponse(req, smbStatusAccessDenied)
 	}
@@ -35,8 +36,12 @@ func (s *Service) handleDelete(req []byte, conn *connState) []byte {
 	if strings.Contains(path, "*") || strings.Contains(path, "?") {
 		return buildSMBErrorResponse(req, smbStatusNotSupported)
 	}
+	resolvedPath, err := resolveExistingPath(fsys, rootPath, path)
+	if err != nil {
+		return buildSMBErrorResponse(req, smbStatusNameNotFound)
+	}
 
-	info, err := fsys.Stat(path)
+	info, err := fsys.Stat(resolvedPath)
 	if err != nil {
 		return buildSMBErrorResponse(req, smbStatusNameNotFound)
 	}
@@ -44,7 +49,7 @@ func (s *Service) handleDelete(req []byte, conn *connState) []byte {
 		return buildSMBErrorResponse(req, smbStatusFileIsDirectory)
 	}
 
-	if err := fsys.Remove(path); err != nil {
+	if err := fsys.Remove(resolvedPath); err != nil {
 		return buildSMBErrorResponse(req, smbStatusAccessDenied)
 	}
 	return buildSimpleSuccessResponse(req)
@@ -59,6 +64,7 @@ func (s *Service) handleRename(req []byte, conn *connState) []byte {
 	if !ok {
 		return buildSMBErrorResponse(req, smbStatusBadTID)
 	}
+	rootPath := s.shareRootPath(slot.shareIdx)
 	if s.shares[slot.shareIdx].ReadOnly {
 		return buildSMBErrorResponse(req, smbStatusAccessDenied)
 	}
@@ -70,11 +76,16 @@ func (s *Service) handleRename(req []byte, conn *connState) []byte {
 	if strings.Contains(oldPath, "*") || strings.Contains(oldPath, "?") || strings.Contains(newPath, "*") || strings.Contains(newPath, "?") {
 		return buildSMBErrorResponse(req, smbStatusNotSupported)
 	}
-
-	if _, err := fsys.Stat(oldPath); err != nil {
+	resolvedOldPath, err := resolveExistingPath(fsys, rootPath, oldPath)
+	if err != nil {
 		return buildSMBErrorResponse(req, smbStatusNameNotFound)
 	}
-	if err := fsys.Rename(oldPath, newPath); err != nil {
+	resolvedNewPath := smbJoinPath(rootPath, newPath)
+
+	if _, err := fsys.Stat(resolvedOldPath); err != nil {
+		return buildSMBErrorResponse(req, smbStatusNameNotFound)
+	}
+	if err := fsys.Rename(resolvedOldPath, resolvedNewPath); err != nil {
 		return buildSMBErrorResponse(req, smbStatusAccessDenied)
 	}
 	return buildSimpleSuccessResponse(req)
@@ -89,6 +100,7 @@ func (s *Service) handleDeleteDirectory(req []byte, conn *connState) []byte {
 	if !ok {
 		return buildSMBErrorResponse(req, smbStatusBadTID)
 	}
+	rootPath := s.shareRootPath(slot.shareIdx)
 	if s.shares[slot.shareIdx].ReadOnly {
 		return buildSMBErrorResponse(req, smbStatusAccessDenied)
 	}
@@ -100,8 +112,12 @@ func (s *Service) handleDeleteDirectory(req []byte, conn *connState) []byte {
 	if strings.Contains(path, "*") || strings.Contains(path, "?") {
 		return buildSMBErrorResponse(req, smbStatusNotSupported)
 	}
+	resolvedPath, err := resolveExistingPath(fsys, rootPath, path)
+	if err != nil {
+		return buildSMBErrorResponse(req, smbStatusNameNotFound)
+	}
 
-	info, err := fsys.Stat(path)
+	info, err := fsys.Stat(resolvedPath)
 	if err != nil {
 		return buildSMBErrorResponse(req, smbStatusNameNotFound)
 	}
@@ -109,7 +125,7 @@ func (s *Service) handleDeleteDirectory(req []byte, conn *connState) []byte {
 		return buildSMBErrorResponse(req, smbStatusNotADirectory)
 	}
 
-	if err := fsys.Remove(path); err != nil {
+	if err := fsys.Remove(resolvedPath); err != nil {
 		return buildSMBErrorResponse(req, smbStatusAccessDenied)
 	}
 	return buildSimpleSuccessResponse(req)

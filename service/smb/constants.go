@@ -11,6 +11,8 @@ const (
 	CommandSetInformation        = 0x09
 	CommandRead                  = 0x0A
 	CommandWrite                 = 0x0B
+	CommandSeek                  = 0x12
+	CommandReadMPX               = 0x1B
 	CommandCheckDirectory        = 0x10
 	CommandWriteRaw              = 0x1D
 	CommandWriteComplete         = 0x20

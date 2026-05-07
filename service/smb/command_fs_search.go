@@ -24,12 +24,18 @@ func (s *Service) handleQueryInformationDisk(req []byte, conn *connState) []byte
 
 	s.mu.Lock()
 	fs, ok := s.shareFSes[slot.shareIdx]
+	diskPath := "."
+	if slot.shareIdx >= 0 && slot.shareIdx < len(s.shares) {
+		if p := strings.TrimSpace(s.shares[slot.shareIdx].Path); p != "" {
+			diskPath = p
+		}
+	}
 	s.mu.Unlock()
 	if !ok || fs == nil {
 		return buildSMBErrorResponse(req, smbStatusBadTID)
 	}
 
-	totalBytes, freeBytes, err := fs.DiskUsage("")
+	totalBytes, freeBytes, err := fs.DiskUsage(diskPath)
 	if err != nil {
 		return buildSMBErrorResponse(req, smbStatusNotSupported)
 	}
@@ -57,13 +63,18 @@ func (s *Service) handleCheckDirectory(req []byte, conn *connState) []byte {
 	if !ok || fs == nil {
 		return buildSMBErrorResponse(req, smbStatusBadTID)
 	}
+	rootPath := s.shareRootPath(slot.shareIdx)
 
 	path, ok := parseSMBPath(req)
 	if !ok || path == "" {
 		return buildSMBErrorResponse(req, 0xC000007F) // STATUS_OBJECT_NAME_NOT_FOUND
 	}
+	resolvedPath, err := resolveExistingPath(fs, rootPath, path)
+	if err != nil {
+		return buildSMBErrorResponse(req, 0xC000007F) // STATUS_OBJECT_NAME_NOT_FOUND
+	}
 
-	info, err := fs.Stat(path)
+	info, err := fs.Stat(resolvedPath)
 	if err != nil {
 		return buildSMBErrorResponse(req, 0xC000007F) // STATUS_OBJECT_NAME_NOT_FOUND
 	}
@@ -97,6 +108,7 @@ func (s *Service) handleSearch(req []byte, conn *connState) []byte {
 	if !ok || fs == nil {
 		return buildSMBErrorResponse(req, smbStatusBadTID)
 	}
+	rootPath := s.shareRootPath(slot.shareIdx)
 
 	// Parse request parameters
 	wct := int(req[smbHeaderLen])
@@ -123,7 +135,12 @@ func (s *Service) handleSearch(req []byte, conn *connState) []byte {
 	}
 
 	// Read directory
-	entries, err := fs.ReadDir(dirPath)
+	queryDir, err := resolveExistingPath(fs, rootPath, dirPath)
+	if err != nil {
+		return buildSearchEmptyResponse(req)
+	}
+
+	entries, err := fs.ReadDir(queryDir)
 	if err != nil {
 		return buildSearchEmptyResponse(req)
 	}

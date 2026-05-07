@@ -77,6 +77,15 @@ const (
 	smbStatusBadTID         = 0x00050002
 	smbStatusNotSupported   = 0xC00000BB
 	smbStatusBadNetworkName = 0xC00000CC // STATUS_BAD_NETWORK_NAME
+	smbStatusNoMoreFiles    = 0x80000006 // STATUS_NO_MORE_FILES
+	smbStatusErrBadFunc     = 0x00010001 // ERRDOS/ERRbadfunc
+	smbStatusErrBadFile     = 0x00020001 // ERRDOS/ERRbadfile
+	smbStatusErrBadPath     = 0x00030001 // ERRDOS/ERRbadpath
+	smbStatusErrNoAccess    = 0x00050001 // ERRDOS/ERRnoaccess
+	smbStatusErrNoFiles     = 0x00120001 // ERRDOS/ERRnofiles
+	smbStatusErrInvNetName  = 0x00430001 // ERRDOS/ERRinvnetname
+	smbStatusErrSrvError    = 0x00010002 // ERRSRV/ERRerror
+	smbStatusUseStandard    = 0x00FB0002 // ERRSRV/ERRuseSTD — fall back to SMB_COM_READ/WRITE
 
 	// NT SMB capability bits advertised in the NEGOTIATE response.
 	capNTSMBs   = uint32(0x00000010) // CAP_NT_SMBS
@@ -100,8 +109,11 @@ const (
 	// SMB1 header field byte offsets (within the 32-byte SMB1 header).
 	smbOffStatus = 5
 	smbOffFlags  = 9
+	smbOffFlags2 = 10
 	smbOffTID    = 24
 	smbOffUID    = 28
+
+	smbFlags2NTStatus = 0x4000
 
 	// rapNetShareEnum is the RAP function code for NetShareEnum.
 	rapNetShareEnum = uint16(0x0000)
