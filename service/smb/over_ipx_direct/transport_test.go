@@ -51,7 +51,7 @@ func TestDirectIPXTransportHandlesRawSMB(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	tr.HandleDatagram(&ipxproto.Datagram{
+	req := &ipxproto.Datagram{
 		Type:    netbiosproto.IPXTypePEP,
 		SrcNet:  [4]byte{0, 0, 0, 0},
 		SrcNode: [6]byte{0x52, 0x54, 0x00, 0x52, 0x0b, 0x12},
@@ -60,7 +60,8 @@ func TestDirectIPXTransportHandlesRawSMB(t *testing.T) {
 		DstNode: [6]byte{0x84, 0xa9, 0x38, 0x4a, 0xfa, 0x3b},
 		DstSock: directSMBSocket,
 		Payload: []byte{0xff, 'S', 'M', 'B', 0x72, 0x00},
-	})
+	}
+	tr.HandleDatagram(req)
 
 	if h.seen != 1 {
 		t.Fatalf("handler calls: got %d want 1", h.seen)
@@ -75,3 +76,4 @@ func TestDirectIPXTransportHandlesRawSMB(t *testing.T) {
 		t.Fatalf("response src socket: got %x want %x", p.sent[0].SrcSock, directSMBSocket)
 	}
 }
+
