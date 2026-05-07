@@ -108,11 +108,11 @@ func NewPort(link rawlink.RawLink) Port {
 // framing.
 func NewPortWithFraming(link rawlink.RawLink, framing Framing) Port {
 	return &portImpl{
-		link:       link,
-		framing:    framing,
+		link:         link,
+		framing:      framing,
 		recentFrames: make(map[uint64]time.Time),
-		readerStop: make(chan struct{}),
-		readerDone: make(chan struct{}),
+		readerStop:   make(chan struct{}),
+		readerDone:   make(chan struct{}),
 	}
 }
 

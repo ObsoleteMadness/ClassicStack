@@ -62,7 +62,7 @@ type bridgeFrameAdapter interface {
 }
 
 type ethernetBridgeAdapter struct {
-	hostMAC   []byte
+	hostMAC    []byte
 	virtualMAC []byte
 }
 

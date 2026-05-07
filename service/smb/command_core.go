@@ -162,7 +162,7 @@ func buildEchoResponse(req []byte) []byte {
 	copy(out[:smbHeaderLen], req[:smbHeaderLen])
 	binary.LittleEndian.PutUint32(out[smbOffStatus:smbOffStatus+4], smbStatusSuccess)
 	out[smbOffFlags] |= 0x80
-	out[smbHeaderLen] = 1 // WCT
+	out[smbHeaderLen] = 1                                                // WCT
 	binary.LittleEndian.PutUint16(out[smbHeaderLen+1:smbHeaderLen+3], 1) // SequenceNumber = 1
 	binary.LittleEndian.PutUint16(out[smbHeaderLen+3:smbHeaderLen+5], uint16(len(data)))
 	copy(out[smbHeaderLen+5:], data)

@@ -15,9 +15,9 @@ import (
 // timeout) on the queue. Outbound frames written via WriteFrame
 // accumulate in Sent for assertions.
 type fakeRawLink struct {
-	in  chan []byte
-	mu  sync.Mutex
-	out [][]byte
+	in     chan []byte
+	mu     sync.Mutex
+	out    [][]byte
 	closed chan struct{}
 }
 

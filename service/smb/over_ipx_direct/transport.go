@@ -13,11 +13,11 @@ import (
 var directSMBSocket = [2]byte{0x05, 0x50}
 
 const (
-	smbHeaderLen   = 32
-	smbCommandOff  = 4
-	smbStatusOff   = 5
+	smbHeaderLen    = 32
+	smbCommandOff   = 4
+	smbStatusOff    = 5
 	smbWordCountOff = smbHeaderLen
-	echoCommand    = 0x2b
+	echoCommand     = 0x2b
 )
 
 type sessionHandler interface {
@@ -114,4 +114,3 @@ func echoResponseCount(reqPayload, respPayload []byte) uint16 {
 	}
 	return c
 }
-

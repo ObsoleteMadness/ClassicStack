@@ -26,7 +26,7 @@ func (p *recordingPort) Send(d *ipxproto.Datagram) error {
 	return nil
 }
 func (p *recordingPort) SetDeliveryCallback(cb portipx.DeliveryCallback) { p.cb = cb }
-func (p *recordingPort) SetCaptureSink(_ capture.Sink)                    {}
+func (p *recordingPort) SetCaptureSink(_ capture.Sink)                   {}
 
 type fakeHandler struct {
 	seen int
@@ -175,4 +175,3 @@ func buildEchoRequestDatagram(echoCount uint16, data []byte) *ipxproto.Datagram 
 		Payload: payload,
 	}
 }
-
