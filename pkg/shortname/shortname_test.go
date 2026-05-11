@@ -3,7 +3,7 @@ package shortname
 import "testing"
 
 func TestRoundTrip(t *testing.T) {
-	m := NewMapper(nil)
+	m := NewMapper(nil, Config{})
 	short := m.LongToShort("My Long Filename.txt")
 	if short != "MYLONGF~1.TXT" {
 		// Stub algorithm: stripped spaces, uppercased, 6 chars + ~1, .TXT.
@@ -24,7 +24,7 @@ func TestRoundTrip(t *testing.T) {
 }
 
 func TestBindIsIdempotent(t *testing.T) {
-	m := NewMapper(nil)
+	m := NewMapper(nil, Config{})
 	a := m.Bind("/home", "report.docx")
 	b := m.Bind("/home", "report.docx")
 	if a != b {

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/pkg/binutil"
-	"github.com/ObsoleteMadness/ClassicStack/pkg/shortname"
 )
 
 // toAFPTime converts a Go time.Time to AFP's seconds-since-1904 epoch.
@@ -183,10 +182,9 @@ func (s *Service) packFileInfo(buf *bytes.Buffer, volumeID uint16, bitmap uint16
 		}
 		if bitmap&DirBitmapShortName != 0 {
 			short := name
-			if s.options.UseShortnames {
-				if store, ok := s.cnidStore(volumeID); ok {
-					mapper := shortname.NewMapper(store)
-					short = mapper.Bind(parentPath, name)
+			if volFS != nil {
+				if n, err := volFS.ShortName(fullPath); err == nil && n != "" {
+					short = n
 				}
 			}
 			offset := uint16(fixedSize + varBuf.Len())
@@ -266,10 +264,9 @@ func (s *Service) packFileInfo(buf *bytes.Buffer, volumeID uint16, bitmap uint16
 		}
 		if bitmap&FileBitmapShortName != 0 {
 			short := name
-			if s.options.UseShortnames {
-				if store, ok := s.cnidStore(volumeID); ok {
-					mapper := shortname.NewMapper(store)
-					short = mapper.Bind(parentPath, name)
+			if volFS != nil {
+				if n, err := volFS.ShortName(fullPath); err == nil && n != "" {
+					short = n
 				}
 			}
 			offset := uint16(fixedSize + varBuf.Len())

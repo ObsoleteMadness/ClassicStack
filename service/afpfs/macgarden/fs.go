@@ -26,6 +26,7 @@ import (
 	"unicode"
 
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/vfs"
 	"github.com/ObsoleteMadness/ClassicStack/service/afp"
 	garden "github.com/ObsoleteMadness/ClassicStack/service/macgarden"
 )
@@ -194,18 +195,20 @@ type MacGardenFileSystem struct {
 	screenshotMu    sync.RWMutex
 	screenshotCache map[string][]byte // URL -> full image bytes
 
+	mapper vfs.ShortnameMapper
+
 	stop     chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
 }
 
 func init() {
-	afp.RegisterFS(afp.FSTypeMacGarden, func(cfg afp.VolumeConfig) (afp.FileSystem, error) {
-		return NewMacGardenFileSystem(filepath.Clean(cfg.Path)), nil
+	afp.RegisterFS(afp.FSTypeMacGarden, func(cfg afp.VolumeConfig, opts afp.Options) (afp.FileSystem, error) {
+		return NewMacGardenFileSystem(filepath.Clean(cfg.Path), opts.ShortnameMapper), nil
 	})
 }
 
-func NewMacGardenFileSystem(root string) *MacGardenFileSystem {
+func NewMacGardenFileSystem(root string, mapper vfs.ShortnameMapper) *MacGardenFileSystem {
 	gc := garden.NewClient()
 	gc.Prime()
 	fsys := &MacGardenFileSystem{
@@ -224,6 +227,7 @@ func NewMacGardenFileSystem(root string) *MacGardenFileSystem {
 		catSearchCache:    make(map[string]*macGardenSearchCache),
 		screenshotCache:   make(map[string][]byte),
 		stop:              make(chan struct{}),
+		mapper:            mapper,
 	}
 	fsys.loadCategories()
 	return fsys
@@ -771,6 +775,13 @@ func (m *MacGardenFileSystem) Stat(path string) (fs.FileInfo, error) {
 
 func (m *MacGardenFileSystem) DiskUsage(_ string) (totalBytes uint64, freeBytes uint64, err error) {
 	return 0x20000000, 0x18000000, nil
+}
+
+func (m *MacGardenFileSystem) ShortName(path string) (string, error) {
+	if m.mapper == nil {
+		return filepath.Base(path), nil
+	}
+	return m.mapper.Bind(filepath.Dir(path), filepath.Base(path)), nil
 }
 
 func (m *MacGardenFileSystem) ChildCount(path string) (uint16, error) {

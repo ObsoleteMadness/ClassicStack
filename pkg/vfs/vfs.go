@@ -30,6 +30,11 @@ var ErrNotImplemented = errors.New("vfs: not implemented")
 // FileSystem factory documents the keys it consumes; the registry is
 // agnostic to the schema. Callers (AFP, SMB) translate their own
 // service-specific config types to a Params before calling NewFS.
+type ShortnameMapper interface {
+	Bind(dir, long string) string
+	ShortToLong(short string) (string, bool)
+}
+
 type Params struct {
 	// Name is the human-visible volume / share name.
 	Name string
@@ -41,6 +46,9 @@ type Params struct {
 	ReadOnly bool
 	// Extra holds backend-specific keys; backends document their schema.
 	Extra map[string]any
+	// ShortnameMapper is an optional global mapping engine used by
+	// backends (like local_fs) to produce deterministic DOS 8.3 short names.
+	ShortnameMapper ShortnameMapper
 }
 
 // File is the per-open-handle contract any backend must satisfy.
@@ -65,6 +73,7 @@ type FileSystem interface {
 	OpenFile(path string, flag int) (File, error)
 	Remove(path string) error
 	Rename(oldpath, newpath string) error
+	ShortName(path string) (string, error)
 	Capabilities() Capabilities
 }
 

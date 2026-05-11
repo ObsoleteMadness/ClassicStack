@@ -73,6 +73,10 @@ func (s *childCountSpyFS) Stat(path string) (fs.FileInfo, error) {
 }
 
 func (s *childCountSpyFS) DiskUsage(path string) (uint64, uint64, error) { return 0, 0, nil }
+
+func (s *childCountSpyFS) ShortName(path string) (string, error) {
+	return filepath.Base(path), nil
+}
 func (s *childCountSpyFS) CreateDir(path string) error                   { return fs.ErrPermission }
 func (s *childCountSpyFS) CreateFile(path string) (File, error)          { return nil, fs.ErrPermission }
 func (s *childCountSpyFS) OpenFile(path string, flag int) (File, error)  { return nil, fs.ErrPermission }
@@ -108,6 +112,10 @@ func (s *rangeSpyFS) Stat(path string) (fs.FileInfo, error) {
 }
 
 func (s *rangeSpyFS) DiskUsage(path string) (uint64, uint64, error) { return 0, 0, nil }
+
+func (s *rangeSpyFS) ShortName(path string) (string, error) {
+	return filepath.Base(path), nil
+}
 func (s *rangeSpyFS) CreateDir(path string) error                   { return fs.ErrPermission }
 func (s *rangeSpyFS) CreateFile(path string) (File, error)          { return nil, fs.ErrPermission }
 func (s *rangeSpyFS) OpenFile(path string, flag int) (File, error)  { return nil, fs.ErrPermission }
@@ -148,6 +156,10 @@ func (s *rangeEmptySpyFS) Stat(path string) (fs.FileInfo, error) {
 }
 
 func (s *rangeEmptySpyFS) DiskUsage(path string) (uint64, uint64, error) { return 0, 0, nil }
+
+func (s *rangeEmptySpyFS) ShortName(path string) (string, error) {
+	return filepath.Base(path), nil
+}
 func (s *rangeEmptySpyFS) CreateDir(path string) error                   { return fs.ErrPermission }
 func (s *rangeEmptySpyFS) CreateFile(path string) (File, error)          { return nil, fs.ErrPermission }
 func (s *rangeEmptySpyFS) OpenFile(path string, flag int) (File, error)  { return nil, fs.ErrPermission }

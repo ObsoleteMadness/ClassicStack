@@ -40,17 +40,23 @@ type Store interface {
 	LookupShort(dir, long string) (short string, ok bool)
 }
 
+// Config controls the behavior of the shortname mapper.
+type Config struct {
+	WindowsShortnames bool
+}
+
 // NewMapper returns a Mapper backed by store. When store is nil, an
 // in-memory store is used.
-func NewMapper(store Store) Mapper {
+func NewMapper(store Store, cfg Config) Mapper {
 	if store == nil {
 		store = NewMemoryStore()
 	}
-	return &mapper{store: store}
+	return &mapper{store: store, cfg: cfg}
 }
 
 type mapper struct {
 	store Store
+	cfg   Config
 }
 
 func (m *mapper) LongToShort(long string) string {
@@ -65,6 +71,15 @@ func (m *mapper) Bind(dir, long string) string {
 	if existing, ok := m.store.LookupShort(dir, long); ok {
 		return existing
 	}
+
+	if m.cfg.WindowsShortnames {
+		fullPath := filepath.Join(dir, long)
+		if short, err := getWindowsShortName(fullPath); err == nil && short != "" {
+			_ = m.store.Put(dir, long, short)
+			return short
+		}
+	}
+
 	short := derive83(long, 1)
 	_ = m.store.Put(dir, long, short)
 	return short

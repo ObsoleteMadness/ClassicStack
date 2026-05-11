@@ -109,7 +109,7 @@ func (s *Service) resolvePath(parentPath, name string, pathType uint8) (string, 
 					return "", ErrObjectNotFound
 				}
 				store, _ := s.cnidStore(volID)
-				mapper := shortname.NewMapper(store)
+				mapper := shortname.NewMapper(store, shortname.Config{})
 				if long, ok := mapper.ShortToLong(el); ok {
 					el = long
 				}

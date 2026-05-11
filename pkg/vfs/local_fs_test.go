@@ -57,7 +57,8 @@ func TestLocalFSRoundTrip(t *testing.T) {
 }
 
 func TestLocalFSCapabilities(t *testing.T) {
-	caps := NewLocalFileSystem().Capabilities()
+	fsBackend, _ := NewLocalFileSystem("", Params{})
+	caps := fsBackend.Capabilities()
 	if !caps.ChildCount || !caps.DirAttributes || !caps.ReadOnlyState {
 		t.Fatalf("expected universal caps; got %+v", caps)
 	}

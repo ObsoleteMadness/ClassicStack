@@ -47,11 +47,12 @@ func (l *LocalFileSystem) fs() vfs.FileSystem {
 }
 
 func init() {
-	RegisterFS(FSTypeLocalFS, func(cfg VolumeConfig) (FileSystem, error) {
+	RegisterFS(FSTypeLocalFS, func(cfg VolumeConfig, opts Options) (FileSystem, error) {
 		base, err := vfs.New(vfs.LocalFSName, vfs.Params{
-			Name:     cfg.Name,
-			Path:     cfg.Path,
-			ReadOnly: cfg.ReadOnly,
+			Name:            cfg.Name,
+			Path:            cfg.Path,
+			ReadOnly:        cfg.ReadOnly,
+			ShortnameMapper: opts.ShortnameMapper,
 		})
 		if err != nil {
 			return nil, err
@@ -101,6 +102,11 @@ func (l *LocalFileSystem) Remove(path string) error {
 // Rename delegates to the backing vfs.FileSystem.
 func (l *LocalFileSystem) Rename(oldpath, newpath string) error {
 	return l.fs().Rename(oldpath, newpath)
+}
+
+// ShortName delegates to the backing vfs.FileSystem.
+func (l *LocalFileSystem) ShortName(path string) (string, error) {
+	return l.fs().ShortName(path)
 }
 
 // Capabilities adds AFP-specific extensions on top of whatever the

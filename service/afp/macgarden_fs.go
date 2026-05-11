@@ -184,18 +184,20 @@ type MacGardenFileSystem struct {
 	screenshotMu    sync.RWMutex
 	screenshotCache map[string][]byte // URL -> full image bytes
 
+	mapper vfs.ShortnameMapper
+
 	stop     chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
 }
 
 func init() {
-	RegisterFS(FSTypeMacGarden, func(cfg VolumeConfig) (FileSystem, error) {
-		return NewMacGardenFileSystem(filepath.Clean(cfg.Path)), nil
+	RegisterFS(FSTypeMacGarden, func(cfg VolumeConfig, opts Options) (FileSystem, error) {
+		return NewMacGardenFileSystem(filepath.Clean(cfg.Path), opts.ShortnameMapper), nil
 	})
 }
 
-func NewMacGardenFileSystem(root string) *MacGardenFileSystem {
+func NewMacGardenFileSystem(root string, mapper vfs.ShortnameMapper) *MacGardenFileSystem {
 	fsys := &MacGardenFileSystem{
 		root:              filepath.Clean(root),
 		client:            garden.NewClient(),
@@ -212,6 +214,7 @@ func NewMacGardenFileSystem(root string) *MacGardenFileSystem {
 		catSearchCache:    make(map[string]*macGardenSearchCache),
 		screenshotCache:   make(map[string][]byte),
 		stop:              make(chan struct{}),
+		mapper:            mapper,
 	}
 	fsys.loadCategories()
 	return fsys
@@ -767,6 +770,13 @@ func (m *MacGardenFileSystem) Stat(path string) (fs.FileInfo, error) {
 
 func (m *MacGardenFileSystem) DiskUsage(_ string) (totalBytes uint64, freeBytes uint64, err error) {
 	return 0x20000000, 0x18000000, nil
+}
+
+func (m *MacGardenFileSystem) ShortName(path string) (string, error) {
+	if m.mapper == nil {
+		return filepath.Base(path), nil
+	}
+	return m.mapper.Bind(filepath.Dir(path), filepath.Base(path)), nil
 }
 
 func (m *MacGardenFileSystem) ChildCount(path string) (uint16, error) {

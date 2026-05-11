@@ -10,7 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ObsoleteMadness/ClassicStack/pkg/encoding"
-	"github.com/ObsoleteMadness/ClassicStack/pkg/shortname"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/vfs"
 )
 
 // AFPOptions controls AFP filename/path translation behavior.
@@ -36,7 +36,7 @@ type Options struct {
 	// UseShortnames enables the 8.3 shortname mapping service for AFP clients.
 	UseShortnames bool
 	// ShortnameMapper is the shortname service instance.
-	ShortnameMapper shortname.Mapper
+	ShortnameMapper vfs.ShortnameMapper
 }
 
 func DefaultOptions() Options {

@@ -3,6 +3,7 @@ package vfs
 import (
 	"io/fs"
 	"os"
+	"path/filepath"
 )
 
 // LocalFSName is the registry key for the host-filesystem backend.
@@ -16,16 +17,28 @@ const LocalFSName = "local_fs"
 //
 // LocalFileSystem holds no state, so it is safe for concurrent use
 // from any number of goroutines.
-type LocalFileSystem struct{}
+type LocalFileSystem struct {
+	name     string
+	root     string
+	readOnly bool
+	mapper   ShortnameMapper
+}
 
 // NewLocalFileSystem constructs an empty LocalFileSystem. Constructed
 // instances are equivalent because the type is stateless; the
 // constructor exists for API symmetry with future stateful backends.
-func NewLocalFileSystem() *LocalFileSystem { return &LocalFileSystem{} }
+func NewLocalFileSystem(targetPath string, p Params) (*LocalFileSystem, error) {
+	return &LocalFileSystem{
+		name:     p.Name,
+		root:     targetPath,
+		readOnly: p.ReadOnly,
+		mapper:   p.ShortnameMapper,
+	}, nil
+}
 
 func init() {
-	Register(LocalFSName, func(_ Params) (FileSystem, error) {
-		return NewLocalFileSystem(), nil
+	Register(LocalFSName, func(p Params) (FileSystem, error) {
+		return NewLocalFileSystem(p.Path, p)
 	})
 }
 
@@ -68,6 +81,14 @@ func (l *LocalFileSystem) Remove(path string) error {
 // Rename implements FileSystem.
 func (l *LocalFileSystem) Rename(oldpath, newpath string) error {
 	return os.Rename(oldpath, newpath)
+}
+
+// ShortName implements FileSystem.
+func (l *LocalFileSystem) ShortName(path string) (string, error) {
+	if l.mapper == nil {
+		return filepath.Base(path), nil
+	}
+	return l.mapper.Bind(filepath.Dir(path), filepath.Base(path)), nil
 }
 
 // Capabilities implements FileSystem. The local backend exposes

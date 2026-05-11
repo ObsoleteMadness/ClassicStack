@@ -15,7 +15,7 @@ import (
 // FileSystemFactory constructs a FileSystem from a normalized
 // VolumeConfig. Backends register themselves with RegisterFS during
 // package init().
-type FileSystemFactory func(VolumeConfig) (FileSystem, error)
+type FileSystemFactory func(VolumeConfig, Options) (FileSystem, error)
 
 var (
 	fsRegistryMu sync.RWMutex
@@ -38,14 +38,14 @@ func RegisterFS(name string, f FileSystemFactory) {
 // NewFS dispatches to the factory registered for cfg.FSType. The
 // returned error includes the list of registered names when no
 // factory matches.
-func NewFS(cfg VolumeConfig) (FileSystem, error) {
+func NewFS(cfg VolumeConfig, opts Options) (FileSystem, error) {
 	fsRegistryMu.RLock()
 	f, ok := fsRegistry[cfg.FSType]
 	fsRegistryMu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("afp: no FileSystem registered for fs_type %q (registered: %v)", cfg.FSType, registeredFSNames())
 	}
-	return f(cfg)
+	return f(cfg, opts)
 }
 
 func registeredFSNames() []string {
@@ -63,6 +63,7 @@ type FileSystem interface {
 	OpenFile(path string, flag int) (File, error)
 	Remove(path string) error
 	Rename(oldpath, newpath string) error
+	ShortName(path string) (string, error)
 	Capabilities() FileSystemCapabilities
 	CatSearch(volumeRoot string, query string, reqMatches int32, cursor [16]byte) ([]string, [16]byte, int32)
 	ChildCount(path string) (uint16, error)
