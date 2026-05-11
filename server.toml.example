@@ -1,3 +1,10 @@
+[Bridge]
+# Shared raw-link settings used by EtherTalk, MacIP, IPX, and NetBEUI.
+mode = "pcap"                  # pcap, tap, or tun
+device = '\\Device\\NPF_{1DFDAA9C-7DD4-40F8-B6D4-9298C273D654}'
+hw_address = "DE:AD:BE:EF:CA:FE" # host/bridge MAC used by raw-link consumers
+bridge_mode = "auto"           # auto, ethernet, or wifi frame adaptation mode
+
 [LToUdp]
 # LocalTalk over UDP Settings (used by Mini vMac UDP builds and SNOW emu)
 enabled = true                 # Enable LToUDP - true for on, false for off
@@ -13,14 +20,8 @@ seed_zone = "TashTalk Network" # TashTalk seed zone name
 
 [EtherTalk]
 # EtherTalk is a pcap-based network bridge
-backend = "pcap"               # supported: pcap, tap, tun. Leave blank to disable EtherTalk.
-# device = '\Device\NPF_{B7D4E073-2185-4912-BBE8-3948C6636D02}'
-# PCap device name. Blank to disable EtherTalk. Use literal strings (single quotes) on Windows
-# so the backslashes are not interpreted as TOML escapes. Linux: "/dev/eth0".
-device = '\Device\NPF_{1DFDAA9C-7DD4-40F8-B6D4-9298C273D654}'
-hw_address = "DE:AD:BE:EF:CA:FE" # EtherTalk hardware address for the router
-bridge_mode = "auto"           # auto (default), ethernet, or wifi. Use wifi for bridge-shim rewriting on Wi-Fi adapters.
 bridge_host_mac = ""           # optional host adapter MAC for Wi-Fi bridge shim. Defaults to hw_address when blank.
+filter = ""                    # optional pcap BPF filter override
 seed_network_min = 3           # EtherTalk seed network minimum
 seed_network_max = 5           # EtherTalk seed network maximum
 seed_zone = "EtherTalk Network"
@@ -36,6 +37,7 @@ lease_file = "leases.txt"      # in NAT mode, persist DHCP leases to this file
 ip_gateway = "192.168.0.1"     # upstream/default gateway on the IP-side network
 dhcp_relay = true              # convert MacTCP auto-config to DHCP requests
 nameserver = "1.1.1.1"         # DNS nameserver
+filter = ""                    # optional pcap BPF filter override
 
 [AFP]
 # Apple Filing Protocol server settings
@@ -83,10 +85,12 @@ snaplen = 65535                # per-frame snap length
 # interface = ""                # blank: reuse [EtherTalk] device
 # framing = "ethernet_ii"        # ethernet_ii|raw_802_3|llc|snap
 # internal_network = ""          # 8 hex digits; blank: 00000001
+# filter = ""                   # optional pcap BPF filter override (default: ipx)
 
 # [NetBEUI]
 # enabled = false
 # interface = ""                # blank: reuse [EtherTalk] device
+# filter = ""                   # optional pcap BPF filter override (default: llc)
 
 # [NetBIOS]
 # enabled = false

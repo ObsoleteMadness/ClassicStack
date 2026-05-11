@@ -48,11 +48,12 @@ func wireNetBEUI(cfg NetBEUIConfig) (NetBEUIHook, error) {
 	}
 	link := cfg.Rawlink
 	if link == nil && strings.TrimSpace(cfg.Interface) != "" {
-		opened, err := rawlink.OpenPcap(rawlink.DefaultNetBEUIConfig(cfg.Interface))
+		opened, err := openRawlink(cfg.BridgeMode, cfg.Interface, rawlinkProfileNetBEUI)
 		if err != nil {
 			return nil, fmt.Errorf("opening NetBEUI rawlink on %q: %w", cfg.Interface, err)
 		}
-		link = opened
+		link = applyRawlinkBridgeFrameMode(opened, cfg.BridgeMode, cfg.BridgeFrameMode, cfg.Interface, cfg.BridgeHWAddress, "NetBEUI")
+		applyRawlinkFilter(link, cfg.BridgeMode, cfg.Interface, cfg.Filter, "llc", "NetBEUI")
 	}
 	if link == nil {
 		netlog.Warn("[MAIN][NetBEUI] enabled but no -netbeui-interface configured; NetBEUI idle")
@@ -66,6 +67,9 @@ func wireNetBEUI(cfg NetBEUIConfig) (NetBEUIHook, error) {
 			mac = [6]byte(parsed)
 			p.SetSourceMAC(mac)
 		}
+	} else if parsed, err := hwaddr.ParseEthernet(strings.TrimSpace(cfg.BridgeHWAddress)); err == nil {
+		mac = [6]byte(parsed)
+		p.SetSourceMAC(mac)
 	}
 
 	hook := &netbeuiHookEnabled{port: p, mac: mac}

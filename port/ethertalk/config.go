@@ -19,7 +19,9 @@ type Config struct {
 	BridgeMode string `koanf:"bridge_mode"`
 	// BridgeHostMAC is the host adapter's own MAC, used by the Wi-Fi
 	// bridge shim. Defaults to HWAddress when blank.
-	BridgeHostMAC  string `koanf:"bridge_host_mac"`
+	BridgeHostMAC string `koanf:"bridge_host_mac"`
+	// Filter optionally overrides the pcap BPF filter expression.
+	Filter         string `koanf:"filter"`
 	SeedNetworkMin uint   `koanf:"seed_network_min"`
 	SeedNetworkMax uint   `koanf:"seed_network_max"`
 	SeedZone       string `koanf:"seed_zone"`

@@ -1,13 +1,13 @@
 package main
 
-import "github.com/ObsoleteMadness/ClassicStack/pkg/shortname"
+import "github.com/ObsoleteMadness/ClassicStack/pkg/vfs"
 
 type ShortnameHook interface {
-	Mapper() shortname.Mapper
+	Mapper() vfs.ShortnameMapper
 }
 
 type ShortnameConfig struct {
-	Enabled bool
-	Backend string
-	DBPath  string
+	WindowsShortnames bool
+	Backend           string
+	DBPath            string
 }

@@ -1,3 +1,11 @@
+[Bridge]
+mode = "pcap"
+#device = '\Device\NPF_{B7D4E073-2185-4912-BBE8-3948C6636D02}'
+device = '\Device\NPF_{7A63BBB0-EBC1-4FA7-A397-8E7F42E39A73}'
+#device = '\Device\NPF_{9354BA7F-DE41-4A33-88F4-408A0F4A3C02}'
+hw_address = "DE:AD:BE:EF:CA:FE"
+bridge_mode = "auto"
+
 [LToUdp]
 # LocalTalk over UDP Settings (used by Mini vMac UDP builds and SNOW emu)
 enabled = true                # Enable LToUDP - true for on, false for off
@@ -12,14 +20,9 @@ seed_zone = "TashTalk Network"
 
 [EtherTalk]
 # EtherTalk is a pcap-based network bridge
-backend = "pcap"              # supported: pcap, tap, tun. Leave blank to disable EtherTalk.
-device = '\Device\NPF_{B7D4E073-2185-4912-BBE8-3948C6636D02}'
-# device = '\Device\NPF_{7A63BBB0-EBC1-4FA7-A397-8E7F42E39A73}'
-hw_address = "DE:AD:BE:EF:CA:FE" # EtherTalk hardware address for the router
 seed_network_min = 3
 seed_network_max = 5
 seed_zone = "EtherTalk Network"
-bridge_mode = "auto"          # auto (default), ethernet, or wifi
 bridge_host_mac = ""          # optional host adapter MAC for Wi-Fi bridge shim
 
 [MacIP]
@@ -77,17 +80,16 @@ log_traffic = false
 localtalk = "./captures/afp-localtalk.pcap"                 # e.g. "captures/classicstack-localtalk.pcap"
 ethertalk = "./captures/afp-ethertalk.pcap"                 # e.g. "captures/classicstack-ethertalk.pcap"
 ipx = "./captures/ipx.pcap"                                 # IPX rawlink capture (same DLT_EN10MB link type)
+netbeui = "./captures/netbeui.pcap"                         # NBF over rawlink capture.
 snaplen = 65535                # per-frame snap length
 
 [IPX]
 enabled = true
-interface = "\\Device\\NPF_{B7D4E073-2185-4912-BBE8-3948C6636D02}"
 framing = "ethernet_ii"        # ethernet_ii|raw_802_3|llc|snap
 # internal_network = ""
 
 [NetBEUI]
 enabled = true
-interface = "\\Device\\NPF_{B7D4E073-2185-4912-BBE8-3948C6636D02}"
 
 [NetBIOS]
 enabled = true

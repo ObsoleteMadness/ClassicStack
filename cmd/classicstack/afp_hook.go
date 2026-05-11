@@ -49,4 +49,5 @@ type AFPWiring struct {
 	FromConfig bool
 	Flags      AFPFlagInputs
 	NBP        *zip.NameInformationService
+	Shortname  ShortnameHook
 }

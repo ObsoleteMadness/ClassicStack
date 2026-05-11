@@ -29,19 +29,20 @@ func (a macIPAFPHooks) OnActivity(sessID uint8) { a.h.MarkSessionActivity(sessID
 // MacIPConfig collects every flag value wireMacIP needs, decoupling the
 // caller (main.go, tag-neutral) from the macip package directly.
 type MacIPConfig struct {
-	Enabled          bool
-	NATGatewayIP     string
-	NATSubnet        string
-	Nameserver       string
-	Zone             string
-	IPGateway        string
-	NAT              bool
-	DHCPRelay        bool
-	StateFile        string
-	PcapDevice       string
-	BridgeHostMAC    string
-	PcapHWAddr       string
-	EtherTalkZone    string
-	EtherTalkBackend string
-	NBP              *zip.NameInformationService
+	Enabled         bool
+	BridgeMode      string
+	BridgeDevice    string
+	BridgeHWAddress string
+	BridgeFrameMode string
+	NATGatewayIP    string
+	NATSubnet       string
+	Nameserver      string
+	Zone            string
+	IPGateway       string
+	NAT             bool
+	DHCPRelay       bool
+	StateFile       string
+	Filter          string
+	EtherTalkZone   string
+	NBP             *zip.NameInformationService
 }

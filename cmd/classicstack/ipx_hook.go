@@ -26,9 +26,13 @@ type IPXHook interface {
 type IPXConfig struct {
 	Enabled         bool
 	Rawlink         rawlink.RawLink
+	BridgeMode      string
+	BridgeFrameMode string
 	Interface       string
+	BridgeHWAddress string
 	Framing         string
 	InternalNetwork string
+	Filter          string
 	CapturePath     string
 	CaptureSnaplen  uint32
 }

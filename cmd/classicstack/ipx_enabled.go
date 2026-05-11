@@ -79,11 +79,12 @@ func wireIPX(cfg IPXConfig) (IPXHook, error) {
 
 	link := cfg.Rawlink
 	if link == nil && strings.TrimSpace(cfg.Interface) != "" {
-		opened, err := rawlink.OpenPcap(rawlink.DefaultIPXConfig(cfg.Interface))
+		opened, err := openRawlink(cfg.BridgeMode, cfg.Interface, rawlinkProfileIPX)
 		if err != nil {
 			return nil, fmt.Errorf("opening IPX rawlink on %q: %w", cfg.Interface, err)
 		}
-		link = opened
+		link = applyRawlinkBridgeFrameMode(opened, cfg.BridgeMode, cfg.BridgeFrameMode, cfg.Interface, cfg.BridgeHWAddress, "IPX")
+		applyRawlinkFilter(link, cfg.BridgeMode, cfg.Interface, cfg.Filter, "ipx", "IPX")
 	}
 	if link != nil {
 		framing := parseIPXFraming(cfg.Framing)
@@ -101,7 +102,13 @@ func wireIPX(cfg IPXConfig) (IPXHook, error) {
 
 		node, ok := resolveIPXNodeFromInterface(cfg.Interface)
 		if !ok {
-			netlog.Warn("[MAIN][IPX] could not auto-detect MAC for %q; node ID left zero", cfg.Interface)
+			if parsed, err := hwaddr.ParseEthernet(strings.TrimSpace(cfg.BridgeHWAddress)); err == nil {
+				node = [6]byte(parsed)
+				ok = true
+			}
+		}
+		if !ok {
+			netlog.Warn("[MAIN][IPX] could not resolve MAC for %q; node ID left zero", cfg.Interface)
 		}
 		router.SetIdentity(network, node)
 		netlog.Info("[MAIN][IPX] iface=%s framing=%s network=%08x node=%s",

@@ -24,6 +24,7 @@ type appConfig struct {
 	ParsePackets bool
 	ParseOutput  string
 
+	Bridge    BridgeConfig
 	LToUDP    localtalk.LToUDPConfig
 	TashTalk  localtalk.TashTalkConfig
 	EtherTalk ethertalk.Config
@@ -38,14 +39,17 @@ type appConfig struct {
 	MacIPDHCPRelay  bool
 	MacIPLeaseFile  string
 	MacIPZone       string
+	MacIPFilter     string
 
 	IPXEnabled         bool
 	IPXInterface       string
 	IPXFraming         string
 	IPXInternalNetwork string
+	IPXFilter          string
 
 	NetBEUIEnabled   bool
 	NetBEUIInterface string
+	NetBEUIFilter    string
 
 	NetBIOSEnabled    bool
 	NetBIOSTransports []string
@@ -61,9 +65,9 @@ type appConfig struct {
 	SMBWorkgroup     string
 	SMBShareFlags    []string // raw "Name:Path" entries from -smb-share (flag mode only)
 
-	ShortnameEnabled bool
-	ShortnameBackend string
-	ShortnameDBPath  string
+	ShortnameWindowsShortnames bool
+	ShortnameBackend           string
+	ShortnameDBPath            string
 }
 
 const (
@@ -75,6 +79,7 @@ func defaultAppConfig() appConfig {
 	return appConfig{
 		LogLevel: "info",
 
+		Bridge:    defaultBridgeConfig(),
 		LToUDP:    localtalk.DefaultLToUDPConfig(),
 		TashTalk:  localtalk.DefaultTashTalkConfig(),
 		EtherTalk: ethertalk.DefaultConfig(),
@@ -114,6 +119,9 @@ func resolveAppConfig(src config.Source) (appConfig, error) {
 	if err := loadSection(k, "LToUdp", &cfg.LToUDP); err != nil {
 		return cfg, err
 	}
+	if err := loadSection(k, "Bridge", &cfg.Bridge); err != nil {
+		return cfg, err
+	}
 	if err := loadSection(k, "TashTalk", &cfg.TashTalk); err != nil {
 		return cfg, err
 	}
@@ -123,10 +131,10 @@ func resolveAppConfig(src config.Source) (appConfig, error) {
 	if err := loadSection(k, "Capture", &cfg.Capture); err != nil {
 		return cfg, err
 	}
-	cfg.EtherTalk.Backend = strings.ToLower(strings.TrimSpace(cfg.EtherTalk.Backend))
-	if cfg.EtherTalk.Backend == "" {
-		cfg.EtherTalk.Device = ""
+	if err := rejectLegacyBridgeKeys(k); err != nil {
+		return cfg, err
 	}
+	syncBridgeToEtherTalk(&cfg)
 
 	cfg.MacIPEnabled = boolWithDefault(k, "MacIP.enabled", cfg.MacIPEnabled)
 	mode := strings.ToLower(stringWithDefault(k, "MacIP.mode", ""))
@@ -145,6 +153,7 @@ func resolveAppConfig(src config.Source) (appConfig, error) {
 	cfg.MacIPGatewayIP = stringWithDefault(k, "MacIP.ip_gateway", cfg.MacIPGatewayIP)
 	cfg.MacIPDHCPRelay = boolWithDefault(k, "MacIP.dhcp_relay", cfg.MacIPDHCPRelay)
 	cfg.MacIPZone = stringWithDefault(k, "MacIP.zone", cfg.MacIPZone)
+	cfg.MacIPFilter = strings.TrimSpace(k.String("MacIP.filter"))
 
 	cfg.LogLevel = stringWithDefault(k, "Logging.level", cfg.LogLevel)
 	cfg.ParsePackets = boolWithDefault(k, "Logging.parse_packets", cfg.ParsePackets)
@@ -155,9 +164,11 @@ func resolveAppConfig(src config.Source) (appConfig, error) {
 	cfg.IPXInterface = stringWithDefault(k, "IPX.interface", cfg.IPXInterface)
 	cfg.IPXFraming = stringWithDefault(k, "IPX.framing", cfg.IPXFraming)
 	cfg.IPXInternalNetwork = stringWithDefault(k, "IPX.internal_network", cfg.IPXInternalNetwork)
+	cfg.IPXFilter = strings.TrimSpace(k.String("IPX.filter"))
 
 	cfg.NetBEUIEnabled = boolWithDefault(k, "NetBEUI.enabled", cfg.NetBEUIEnabled)
 	cfg.NetBEUIInterface = stringWithDefault(k, "NetBEUI.interface", cfg.NetBEUIInterface)
+	cfg.NetBEUIFilter = strings.TrimSpace(k.String("NetBEUI.filter"))
 
 	cfg.NetBIOSEnabled = boolWithDefault(k, "NetBIOS.enabled", cfg.NetBIOSEnabled)
 	if k.Exists("NetBIOS.transports") {
@@ -174,13 +185,43 @@ func resolveAppConfig(src config.Source) (appConfig, error) {
 	cfg.SMBServerName = stringWithDefault(k, "SMB.server_name", cfg.SMBServerName)
 	cfg.SMBWorkgroup = stringWithDefault(k, "SMB.workgroup", cfg.SMBWorkgroup)
 
-	cfg.ShortnameEnabled = boolWithDefault(k, "Shortname.enabled", cfg.ShortnameEnabled)
+	cfg.ShortnameWindowsShortnames = boolWithDefault(k, "Shortname.windows_shortnames", cfg.ShortnameWindowsShortnames)
 	cfg.ShortnameBackend = stringWithDefault(k, "Shortname.backend", cfg.ShortnameBackend)
 	cfg.ShortnameDBPath = stringWithDefault(k, "Shortname.db_path", cfg.ShortnameDBPath)
 
 	normalizeSMBIdentity(&cfg)
 
 	return cfg, nil
+}
+
+func rejectLegacyBridgeKeys(k *koanf.Koanf) error {
+	legacy := []string{
+		"EtherTalk.backend",
+		"EtherTalk.device",
+		"EtherTalk.hw_address",
+		"EtherTalk.bridge_mode",
+	}
+	for _, key := range legacy {
+		if k.Exists(key) {
+			return fmt.Errorf("[%s] is no longer supported in config files; use [Bridge] keys instead", key)
+		}
+	}
+	return nil
+}
+
+func syncBridgeToEtherTalk(cfg *appConfig) {
+	cfg.Bridge.Mode = strings.ToLower(strings.TrimSpace(cfg.Bridge.Mode))
+	cfg.Bridge.Device = strings.TrimSpace(cfg.Bridge.Device)
+	cfg.Bridge.HWAddress = strings.TrimSpace(cfg.Bridge.HWAddress)
+	cfg.Bridge.BridgeMode = strings.ToLower(strings.TrimSpace(cfg.Bridge.BridgeMode))
+
+	cfg.EtherTalk.Backend = cfg.Bridge.Mode
+	cfg.EtherTalk.Device = cfg.Bridge.Device
+	cfg.EtherTalk.HWAddress = cfg.Bridge.HWAddress
+	cfg.EtherTalk.BridgeMode = cfg.Bridge.BridgeMode
+	if cfg.EtherTalk.Backend == "" {
+		cfg.EtherTalk.Device = ""
+	}
 }
 
 // normalizeSMBIdentity makes SMB identity canonical and keeps NetBIOS

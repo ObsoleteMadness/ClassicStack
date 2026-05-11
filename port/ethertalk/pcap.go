@@ -2,6 +2,7 @@ package ethertalk
 
 import (
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +32,7 @@ type PcapPort struct {
 	hostMAC        []byte
 	bridgeMode     bridgeMode
 	adapter        bridgeFrameAdapter
+	filterExpr     string
 	readerStop     chan struct{}
 	readerDone     chan struct{}
 	writerQueue    chan []byte
@@ -89,6 +91,7 @@ func NewPcapPort(opts Options) (*PcapPort, error) {
 			return rawlink.OpenPcap(rawlink.DefaultEtherTalkConfig(name))
 		},
 		applyBPFFilter: true,
+		filterExpr:     strings.TrimSpace(opts.Filter),
 		medium:         rawlink.MediumEthernet,
 		hostMAC:        append([]byte(nil), hostMAC...),
 		bridgeMode:     mode,
@@ -98,6 +101,9 @@ func NewPcapPort(opts Options) (*PcapPort, error) {
 		writerQueue:    make(chan []byte, 1024),
 		writerStop:     make(chan struct{}),
 		writerDone:     make(chan struct{}),
+	}
+	if p.filterExpr == "" {
+		p.filterExpr = etherTalkBPFFilter
 	}
 	p.ConfigureTx(func(frame []byte) error {
 		p.sendFrame(frame)
@@ -168,8 +174,8 @@ func (p *PcapPort) Start(r port.RouterHooks) error {
 
 	// Apply BPF filter when the backend supports it.
 	if p.applyBPFFilter {
-		if fl, ok := link.(rawlink.FilterableLink); ok {
-			if err := fl.SetFilter(etherTalkBPFFilter); err != nil {
+		if fl, ok := link.(rawlink.FilterableLink); ok && p.filterExpr != "" {
+			if err := fl.SetFilter(p.filterExpr); err != nil {
 				netlog.Warn("could not set BPF filter on %s: %v", p.interfaceName, err)
 			}
 		}

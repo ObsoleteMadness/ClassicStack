@@ -19,9 +19,13 @@ type NetBEUIHook interface {
 
 // NetBEUIConfig collects the values wireNetBEUI needs.
 type NetBEUIConfig struct {
-	Enabled        bool
-	Rawlink        rawlink.RawLink
-	Interface      string
-	CapturePath    string
-	CaptureSnaplen uint32
+	Enabled         bool
+	Rawlink         rawlink.RawLink
+	BridgeMode      string
+	BridgeFrameMode string
+	Interface       string
+	BridgeHWAddress string
+	Filter          string
+	CapturePath     string
+	CaptureSnaplen  uint32
 }
