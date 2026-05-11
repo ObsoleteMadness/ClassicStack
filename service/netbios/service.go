@@ -100,6 +100,7 @@ type Service struct {
 	serverName string
 	scopeID    string
 	transports []Transport
+	names      map[protocol.Name]struct{}
 
 	mu      sync.Mutex
 	started bool
@@ -110,10 +111,16 @@ type Service struct {
 // over the given transports. transports may be empty for a name-only
 // service that does not accept incoming sessions.
 func NewService(serverName, scopeID string, transports []Transport) *Service {
+	defaultNames := map[protocol.Name]struct{}{}
+	if serverName != "" {
+		defaultNames[protocol.NewName(serverName, protocol.NameTypeFileServer)] = struct{}{}
+		defaultNames[protocol.NewName(serverName, protocol.NameTypeWorkstation)] = struct{}{}
+	}
 	return &Service{
 		serverName: serverName,
 		scopeID:    scopeID,
 		transports: transports,
+		names:      defaultNames,
 	}
 }
 
@@ -139,6 +146,10 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 	s.started = true
 	transports := append([]Transport(nil), s.transports...)
+	names := make([]protocol.Name, 0, len(s.names))
+	for n := range s.names {
+		names = append(names, n)
+	}
 	s.mu.Unlock()
 	for i, t := range transports {
 		if err := t.Start(ctx); err != nil {
@@ -149,6 +160,17 @@ func (s *Service) Start(ctx context.Context) error {
 			s.started = false
 			s.mu.Unlock()
 			return err
+		}
+		for _, n := range names {
+			if err := t.SendName(n); err != nil && !errors.Is(err, ErrNotImplemented) {
+				for j := range i + 1 {
+					_ = transports[j].Stop()
+				}
+				s.mu.Lock()
+				s.started = false
+				s.mu.Unlock()
+				return fmt.Errorf("netbios: register name %q: %w", n.String(), err)
+			}
 		}
 	}
 	return nil
@@ -226,11 +248,40 @@ func (s *Service) SendDirectedDatagram(d *protocol.Datagram, remote DatagramEndp
 // The current implementation is a stub.
 func (s *Service) NameService() NameService { return s }
 
-// Register implements NameService (stub).
-func (s *Service) Register(_ string) error { return ErrNotImplemented }
+// Register implements NameService by registering the given name as a
+// file-server NetBIOS name on all transports.
+func (s *Service) Register(name string) error {
+	n := protocol.NewName(name, protocol.NameTypeFileServer)
+
+	s.mu.Lock()
+	if s.names == nil {
+		s.names = map[protocol.Name]struct{}{}
+	}
+	s.names[n] = struct{}{}
+	started := s.started
+	transports := append([]Transport(nil), s.transports...)
+	s.mu.Unlock()
+
+	if !started {
+		return nil
+	}
+	for _, t := range transports {
+		if err := t.SendName(n); err != nil && !errors.Is(err, ErrNotImplemented) {
+			return fmt.Errorf("netbios: register name %q: %w", n.String(), err)
+		}
+	}
+	return nil
+}
 
 // Resolve implements NameService (stub).
 func (s *Service) Resolve(_ string) (string, error) { return "", ErrNotImplemented }
 
-// Release implements NameService (stub).
-func (s *Service) Release(_ string) error { return ErrNotImplemented }
+// Release removes the name from this service's local registration set.
+// Transport-level remove/release is not yet implemented.
+func (s *Service) Release(name string) error {
+	n := protocol.NewName(name, protocol.NameTypeFileServer)
+	s.mu.Lock()
+	delete(s.names, n)
+	s.mu.Unlock()
+	return nil
+}

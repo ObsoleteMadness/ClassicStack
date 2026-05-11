@@ -13,6 +13,8 @@ type fakeTransport struct {
 	started, stopped atomic.Bool
 	failStart        bool
 	handler          CommandHandler
+	sendNameCalls    []protocol.Name
+	sendNameErr      error
 }
 
 func (f *fakeTransport) Start(_ context.Context) error {
@@ -23,7 +25,10 @@ func (f *fakeTransport) Start(_ context.Context) error {
 	return nil
 }
 func (f *fakeTransport) Stop() error                              { f.stopped.Store(true); return nil }
-func (f *fakeTransport) SendName(_ protocol.Name) error           { return nil }
+func (f *fakeTransport) SendName(n protocol.Name) error {
+	f.sendNameCalls = append(f.sendNameCalls, n)
+	return f.sendNameErr
+}
 func (f *fakeTransport) SendDatagram(_ *protocol.Datagram) error  { return nil }
 func (f *fakeTransport) SendSession(_ *protocol.SessionPacket) error {
 	return nil
@@ -38,6 +43,12 @@ func TestServiceStartStopAcrossTransports(t *testing.T) {
 	}
 	if !a.started.Load() || !b.started.Load() {
 		t.Fatal("transports not started")
+	}
+	if got := len(a.sendNameCalls); got != 2 {
+		t.Fatalf("expected 2 SendName calls on transport A, got %d", got)
+	}
+	if got := len(b.sendNameCalls); got != 2 {
+		t.Fatalf("expected 2 SendName calls on transport B, got %d", got)
 	}
 	if err := svc.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
@@ -56,5 +67,20 @@ func TestServiceRollsBackOnFailedTransport(t *testing.T) {
 	}
 	if !good.stopped.Load() {
 		t.Fatal("first transport should have been rolled back via Stop()")
+	}
+}
+
+func TestServiceRegisterDuringRuntimeSendsName(t *testing.T) {
+	f := &fakeTransport{}
+	svc := NewService("CLASSICSTACK", "", []Transport{f})
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	before := len(f.sendNameCalls)
+	if err := svc.Register("EXTRA"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if got := len(f.sendNameCalls); got != before+1 {
+		t.Fatalf("expected one additional SendName call, got %d -> %d", before, got)
 	}
 }
