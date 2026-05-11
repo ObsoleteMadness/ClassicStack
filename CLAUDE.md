@@ -13,7 +13,7 @@ ClassicStack is a Go-based AppleTalk Phase 2 router and AFP file server. It brid
 
 ```bash
 # Build
-go build -o classicstack ./cmd/classicstack
+go build -tags all -o classicstack ./cmd/classicstack
 
 # Run all tests
 go test ./...
