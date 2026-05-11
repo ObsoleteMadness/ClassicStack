@@ -462,8 +462,13 @@ func main() {
 	// the same physical NIC.
 	ipxResolvedIface := cfg.IPXInterface
 	if cfg.IPXEnabled && strings.TrimSpace(ipxResolvedIface) == "" && cfg.EtherTalk.Device != "" {
-		ipxResolvedIface = cfg.EtherTalk.Device
-		netlog.Info("[MAIN][IPX] no -ipx-interface set; reusing EtherTalk interface %s", ipxResolvedIface)
+		if cfg.Bridge.Device != "" {
+			ipxResolvedIface = cfg.Bridge.Device
+			netlog.Info("[MAIN][IPX] no -ipx-interface set; reusing Bridge interface %s", ipxResolvedIface)
+		} else {
+			ipxResolvedIface = cfg.EtherTalk.Device
+			netlog.Info("[MAIN][IPX] no -ipx-interface set; reusing EtherTalk interface %s", ipxResolvedIface)
+		}
 	}
 	ipxHook, err := wireIPX(IPXConfig{
 		Enabled:         cfg.IPXEnabled,
@@ -482,8 +487,13 @@ func main() {
 	}
 	netbeuiResolvedIface := cfg.NetBEUIInterface
 	if cfg.NetBEUIEnabled && strings.TrimSpace(netbeuiResolvedIface) == "" && cfg.EtherTalk.Device != "" {
-		netbeuiResolvedIface = cfg.EtherTalk.Device
-		netlog.Info("[MAIN][NetBEUI] no -netbeui-interface set; reusing EtherTalk interface %s", netbeuiResolvedIface)
+		if cfg.Bridge.Device != "" {
+			netbeuiResolvedIface = cfg.Bridge.Device
+			netlog.Info("[MAIN][NetBEUI] no -netbeui-interface set; reusing Bridge interface %s", netbeuiResolvedIface)
+		} else {
+			netbeuiResolvedIface = cfg.EtherTalk.Device
+			netlog.Info("[MAIN][NetBEUI] no -netbeui-interface set; reusing EtherTalk interface %s", netbeuiResolvedIface)
+		}
 	}
 	nbeuiHook, err := wireNetBEUI(NetBEUIConfig{
 		Enabled:         cfg.NetBEUIEnabled,
