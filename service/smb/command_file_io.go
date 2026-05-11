@@ -228,15 +228,108 @@ func (s *Service) handleReadAndX(req []byte, conn *connState) []byte {
 	return buildReadAndXResponse(req, data)
 }
 
-// handleReadMPX rejects SMB_COM_READ_MPX with STATUS_SMB_USE_STANDARD,
-// prompting the client to fall back to SMB_COM_READ. We do not advertise
-// CAP_MPX_MODE in the NEGOTIATE response, but Win9x over Direct IPX may
-// still attempt ReadMPX as the only large-block read on connectionless
-// transports. Mirror Samba's reply_readbmpx (source3/smbd/reply.c), which
-// also unconditionally returns ERRSRV/ERRuseSTD.
+// handleReadMPX implements SMB_COM_READ_MPX (0x1B) per [MS-CIFS]
+// 2.2.4.23 and 3.3.5.25.
+//
+// The spec allows the server to return the requested data in one OR
+// many response messages: each carries its own Offset and DataLength,
+// and the client reassembles. The Count field in every response is the
+// total bytes the server intends to return for this request, so the
+// client knows when to stop. We return everything in a single response
+// (capped at MaxBufferSize - response-header-overhead); on Direct IPX
+// this lets a typical MPX read complete in one IPX datagram.
+//
+// Rejecting with STATUS_SMB_USE_STANDARD was the prior behavior and
+// works (Win9x falls back to SMB_COM_READ), but implementing the
+// proper response avoids the extra round-trip and mirrors the
+// WriteMPX fix where we honor the protocol per spec.
 func (s *Service) handleReadMPX(req []byte, conn *connState) []byte {
-	_ = conn
-	return buildSMBErrorResponse(req, smbStatusUseStandard)
+	if len(req) < smbHeaderLen+1 {
+		return buildSMBErrorResponse(req, smbStatusErrSrvError)
+	}
+	wct := int(req[smbHeaderLen])
+	if wct < 8 {
+		return buildSMBErrorResponse(req, smbStatusErrSrvError)
+	}
+
+	// SMB_COM_READ_MPX request words (16 bytes, WCT=8) per [MS-CIFS] 2.2.4.23.1:
+	//   FID(2) Offset(4) MaxCountOfBytesToReturn(2) MinCountOfBytesToReturn(2)
+	//   Timeout(4) Reserved(2)
+	w := req[smbHeaderLen+1:]
+	fid := binary.LittleEndian.Uint16(w[0:2])
+	offset := binary.LittleEndian.Uint32(w[2:6])
+	maxCount := binary.LittleEndian.Uint16(w[6:8])
+
+	// Cap the read at our negotiated MaxBufferSize minus the response
+	// envelope (SMB header 32 + WCT/words 17 + ByteCount 2 + small Pad).
+	// Anything bigger would overflow the client's receive buffer.
+	const responseOverhead = smbHeaderLen + 1 + 16 + 2 + 4 // generous Pad allowance
+	maxReadable := uint16(0xFFFF)
+	if int(negotiateMaxBufferSize) > responseOverhead {
+		bufCap := negotiateMaxBufferSize - responseOverhead
+		if bufCap < uint32(maxReadable) {
+			maxReadable = uint16(bufCap)
+		}
+	}
+	if maxCount > maxReadable {
+		maxCount = maxReadable
+	}
+
+	data, ok := readBytesFromHandle(conn, fid, int64(offset), maxCount)
+	if !ok {
+		return buildSMBErrorResponse(req, smbStatusInvalidHandle)
+	}
+
+	return buildReadMPXResponse(req, offset, data)
+}
+
+// buildReadMPXResponse builds the spec-defined SMB_COM_READ_MPX response
+// per [MS-CIFS] 2.2.4.23.2: WCT=8, Words = Offset(4) + Count(2) +
+// Remaining(2) + DataCompactionMode(2) + Reserved(2) + DataLength(2) +
+// DataOffset(2), followed by ByteCount + Pad + Data.
+//
+//   - Offset: file offset where this chunk's data begins.
+//   - Count: TOTAL bytes the server intends to return for the whole
+//     request. Since we serve the entire read in one response, this
+//     equals DataLength.
+//   - Remaining: -1 (0xFFFF) for regular files per spec.
+//   - DataLength: bytes carried by this response.
+//   - DataOffset: offset within the SMB message at which Data starts.
+func buildReadMPXResponse(req []byte, offset uint32, data []byte) []byte {
+	if len(req) < smbHeaderLen || string(req[0:4]) != "\xffSMB" {
+		return nil
+	}
+	dataLen := len(data)
+	// WCT=8 (16 word bytes) + ByteCount(2). DataOffset is measured from
+	// the SMB header start; the spec allows up to 3 bytes of Pad. We
+	// use 1 byte of Pad so DataOffset lands on an odd boundary —
+	// matching Samba's reply_readbmpx convention.
+	const wctBytes = 16
+	headerEnd := smbHeaderLen + 1 + wctBytes + 2 // SMB hdr + WCT + words + BCC
+	pad := 1
+	dataOffset := headerEnd + pad
+	total := dataOffset + dataLen
+
+	out := make([]byte, total)
+	copy(out[:smbHeaderLen], req[:smbHeaderLen])
+	binary.LittleEndian.PutUint32(out[smbOffStatus:smbOffStatus+4], smbStatusSuccess)
+	stampSMBResponseHeader(out)
+	out[smbHeaderLen] = 8 // WCT
+	w := out[smbHeaderLen+1:]
+
+	binary.LittleEndian.PutUint32(w[0:4], offset)            // Offset
+	binary.LittleEndian.PutUint16(w[4:6], uint16(dataLen))   // Count (total)
+	binary.LittleEndian.PutUint16(w[6:8], 0xFFFF)            // Remaining = -1 for regular files
+	binary.LittleEndian.PutUint16(w[8:10], 0)                // DataCompactionMode
+	binary.LittleEndian.PutUint16(w[10:12], 0)               // Reserved
+	binary.LittleEndian.PutUint16(w[12:14], uint16(dataLen)) // DataLength
+	binary.LittleEndian.PutUint16(w[14:16], uint16(dataOffset))
+
+	// ByteCount = Pad + DataLength
+	binary.LittleEndian.PutUint16(w[wctBytes:wctBytes+2], uint16(pad+dataLen))
+	// Pad byte left as 0, then Data
+	copy(out[dataOffset:], data)
+	return out
 }
 
 // handleWriteMPX implements SMB_COM_WRITE_MPX (0x1E) per [MS-CIFS]
@@ -347,7 +440,7 @@ func buildWriteMPXResponse(req []byte, responseMask uint32) []byte {
 	out := make([]byte, smbHeaderLen+1+4+2)
 	copy(out[:smbHeaderLen], req[:smbHeaderLen])
 	binary.LittleEndian.PutUint32(out[smbOffStatus:smbOffStatus+4], smbStatusSuccess)
-	out[smbOffFlags] |= 0x80
+	stampSMBResponseHeader(out)
 	out[smbHeaderLen] = 2 // WCT
 	binary.LittleEndian.PutUint32(out[smbHeaderLen+1:smbHeaderLen+5], responseMask)
 	binary.LittleEndian.PutUint16(out[smbHeaderLen+5:smbHeaderLen+7], 0) // ByteCount

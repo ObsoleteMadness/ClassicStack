@@ -2053,11 +2053,59 @@ func TestHandleOpenAndXResponseIncludesGrantedAccess(t *testing.T) {
 	conn.mu.Unlock()
 }
 
-// TestHandleReadMPXReturnsUseStandard asserts we reject ReadMPX with
-// ERRSRV/ERRuseSTD so the client falls back to SMB_COM_READ. This mirrors
-// Samba's reply_readbmpx and avoids a Win98-over-IPX retransmit loop where
-// the client never advances past offset 0 of a multi-block read.
-func TestHandleReadMPXReturnsUseStandard(t *testing.T) {
+// TestHandleReadMPXReturnsData asserts handleReadMPX honors the command
+// per [MS-CIFS] 2.2.4.23: returns the requested file bytes in a single
+// response with Count/DataLength set to the bytes delivered. (We used
+// to reject with ERRuseSTD, which forced an extra round-trip via
+// SMB_COM_READ; the spec-compliant path is to honor MPX directly.)
+func TestHandleReadMPXReturnsData(t *testing.T) {
+	tmp := t.TempDir()
+	hostPath := filepath.Join(tmp, "MPX.TXT")
+	if err := os.WriteFile(hostPath, []byte("abcdefghij"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	file, err := os.Open(hostPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer file.Close()
+
+	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, nil)
+	conn := &connState{fids: map[uint16]*fileHandle{5: {file: file, path: hostPath}}}
+
+	resp := svc.handleReadMPX(makeReadMPXPayload(5, 2, 4), conn)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if got := binary.LittleEndian.Uint32(resp[smbOffStatus : smbOffStatus+4]); got != smbStatusSuccess {
+		t.Fatalf("status mismatch: got %#x want %#x", got, uint32(smbStatusSuccess))
+	}
+	if got := resp[smbHeaderLen]; got != 8 {
+		t.Fatalf("WCT mismatch: got %d want 8", got)
+	}
+	w := resp[smbHeaderLen+1:]
+	if got := binary.LittleEndian.Uint32(w[0:4]); got != 2 {
+		t.Fatalf("Offset mismatch: got %d want 2", got)
+	}
+	if got := binary.LittleEndian.Uint16(w[4:6]); got != 4 {
+		t.Fatalf("Count mismatch: got %d want 4", got)
+	}
+	if got := binary.LittleEndian.Uint16(w[6:8]); got != 0xFFFF {
+		t.Fatalf("Remaining mismatch: got %#x want 0xFFFF", got)
+	}
+	if got := binary.LittleEndian.Uint16(w[12:14]); got != 4 {
+		t.Fatalf("DataLength mismatch: got %d want 4", got)
+	}
+	dataOffset := binary.LittleEndian.Uint16(w[14:16])
+	if got := string(resp[int(dataOffset) : int(dataOffset)+4]); got != "cdef" {
+		t.Fatalf("Data mismatch: got %q want %q", got, "cdef")
+	}
+}
+
+// TestHandleReadMPXInvalidFID asserts we return ERRDOS/ERRbadfid when the
+// referenced FID is not open. Win9x relies on this status to decide
+// whether to retry against a different handle or give up.
+func TestHandleReadMPXInvalidFID(t *testing.T) {
 	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, nil)
 	conn := &connState{fids: map[uint16]*fileHandle{}}
 
@@ -2065,11 +2113,8 @@ func TestHandleReadMPXReturnsUseStandard(t *testing.T) {
 	if resp == nil {
 		t.Fatal("expected response")
 	}
-	if got := binary.LittleEndian.Uint32(resp[smbOffStatus : smbOffStatus+4]); got != smbStatusUseStandard {
-		t.Fatalf("status mismatch: got %#x want %#x", got, uint32(smbStatusUseStandard))
-	}
-	if got := resp[4]; got != CommandReadMPX {
-		t.Fatalf("command mismatch: got %#x want %#x", got, byte(CommandReadMPX))
+	if got := binary.LittleEndian.Uint32(resp[smbOffStatus : smbOffStatus+4]); got != smbStatusErrBadFid {
+		t.Fatalf("status mismatch: got %#x want %#x", got, uint32(smbStatusErrBadFid))
 	}
 }
 
