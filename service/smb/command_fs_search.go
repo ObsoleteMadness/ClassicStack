@@ -3,7 +3,9 @@ package smb
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io/fs"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -163,8 +165,13 @@ func (s *Service) handleSearch(req []byte, conn *connState) []byte {
 			continue
 		}
 
+		shortName := entry.Name()
+		if n, err := fs.ShortName(filepath.Join(queryDir, entry.Name())); err == nil && n != "" {
+			shortName = n
+		}
+
 		results = append(results, searchResultEntry{
-			name:       entry.Name(),
+			name:       formatDOSName(shortName),
 			size:       info.Size(),
 			modTime:    info.ModTime(),
 			isDir:      info.IsDir(),
@@ -177,6 +184,24 @@ func (s *Service) handleSearch(req []byte, conn *connState) []byte {
 	}
 
 	return buildSearchResponse(req, results)
+}
+
+func formatDOSName(name string) string {
+	parts := strings.SplitN(name, ".", 2)
+	base := strings.ToUpper(parts[0])
+	if len(base) > 8 {
+		base = base[:8]
+	}
+	ext := ""
+	if len(parts) > 1 {
+		ext = strings.ToUpper(parts[1])
+		if len(ext) > 3 {
+			ext = ext[:3]
+		}
+	}
+	// "MYFILE.TXT" -> "MYFILE  TXT" (base padded to 8, ext to 3)
+	// If it already is an 8.3 name without dot, like "MYFILE  TXT"? We assume ShortName gives "MYFILE.TXT".
+	return fmt.Sprintf("%-8s%-3s", base, ext)
 }
 
 // handleOpenAndX (0x2D) opens or creates a file, returning a file handle.
@@ -252,14 +277,12 @@ func buildSearchResponse(req []byte, entries []searchResultEntry) []byte {
 	var dataBuf bytes.Buffer
 	for _, entry := range entries {
 		// ResumeKey (21 bytes)
-		dataBuf.Write(make([]byte, 21)) // Placeholder resume key
+		dataBuf.Write(make([]byte, 21))
 
-		// Attributes (2 bytes)
-		var attrsBytes [2]byte
-		binary.LittleEndian.PutUint16(attrsBytes[:], entry.attributes)
-		dataBuf.Write(attrsBytes[:])
+		// Attributes (1 byte)
+		dataBuf.WriteByte(byte(entry.attributes))
 
-		// LastWriteTime (4 bytes, DOS format)
+		// LastWriteTime (2 bytes) + LastWriteDate (2 bytes) -> 4 bytes DOS time
 		timeVal := uint32(0) // TODO: convert time.Time to DOS format
 		var timeBytes [4]byte
 		binary.LittleEndian.PutUint32(timeBytes[:], timeVal)
@@ -270,9 +293,10 @@ func buildSearchResponse(req []byte, entries []searchResultEntry) []byte {
 		binary.LittleEndian.PutUint32(sizeBytes[:], uint32(entry.size))
 		dataBuf.Write(sizeBytes[:])
 
-		// Filename (NUL-terminated)
-		dataBuf.WriteString(entry.name)
-		dataBuf.WriteByte(0)
+		// FileName (13 bytes null-terminated DOS name)
+		var nameBuf [13]byte
+		copy(nameBuf[:], entry.name)
+		dataBuf.Write(nameBuf[:])
 	}
 
 	dataBytes := dataBuf.Bytes()

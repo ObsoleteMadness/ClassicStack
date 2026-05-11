@@ -11,23 +11,37 @@ import (
 )
 
 const (
-	trans2SubcommandFindFirst2 = 0x0001
-	trans2SubcommandFindNext2  = 0x0002
-	findInfoLevelFileBothDir   = 0x0104
-	findBothFixedBytes         = 94
-	findFlagCloseAfterRequest  = 0x0001
-	findFlagCloseAtEOS         = 0x0002
-	findFlagContinueFromLast   = 0x0008
+	trans2SubcommandFindFirst2     = 0x0001
+	trans2SubcommandFindNext2      = 0x0002
+	trans2SubcommandQueryPathInfo  = 0x0005
+	trans2SubcommandQueryFileInfo  = 0x0007
+	findInfoLevelFileBothDir       = 0x0104
+	findBothFixedBytes             = 94
+	findFlagCloseAfterRequest      = 0x0001
+	findFlagCloseAtEOS             = 0x0002
+	findFlagContinueFromLast       = 0x0008
+
+	// Information levels for QUERY_PATH_INFO / QUERY_FILE_INFO. Numbered
+	// per [MS-CIFS] 2.2.6.6 / 2.2.6.8 and [MS-CIFS] 2.2.8.3.
+	infoLevelStandard          = 0x0001 // SMB_INFO_STANDARD
+	infoLevelQueryEaSize       = 0x0002 // SMB_INFO_QUERY_EA_SIZE
+	infoLevelQueryFileBasic    = 0x0101 // SMB_QUERY_FILE_BASIC_INFO
+	infoLevelQueryFileStandard = 0x0102 // SMB_QUERY_FILE_STANDARD_INFO
+	infoLevelQueryFileEaInfo   = 0x0103 // SMB_QUERY_FILE_EA_INFO
+	infoLevelQueryFileNameInfo = 0x0104 // SMB_QUERY_FILE_NAME_INFO  (also FILE_BOTH_DIR for FindFirst2)
+	infoLevelQueryFileAllInfo  = 0x0107 // SMB_QUERY_FILE_ALL_INFO
 )
 
 type fsReadDirStat interface {
 	ReadDir(path string) ([]fs.DirEntry, error)
 	Stat(path string) (fs.FileInfo, error)
+	ShortName(path string) (string, error)
 }
 
 type findFirst2Row struct {
-	name string
-	info fs.FileInfo
+	name      string
+	shortName string
+	info      fs.FileInfo
 }
 
 func (s *Service) handleQueryInformation(req []byte, conn *connState) []byte {
@@ -114,9 +128,180 @@ func (s *Service) handleTransaction2(req []byte, conn *connState) []byte {
 		return s.handleTransaction2FindFirst2(req, conn, fsys, rootPath, params)
 	case trans2SubcommandFindNext2:
 		return s.handleTransaction2FindNext2(req, conn, params)
+	case trans2SubcommandQueryFileInfo:
+		return s.handleTransaction2QueryFileInfo(req, conn, fsys, params)
+	case trans2SubcommandQueryPathInfo:
+		rootPath := ""
+		s.mu.Lock()
+		if slot.shareIdx >= 0 && slot.shareIdx < len(s.shares) {
+			rootPath = strings.TrimSpace(s.shares[slot.shareIdx].Path)
+		}
+		s.mu.Unlock()
+		return s.handleTransaction2QueryPathInfo(req, fsys, rootPath, params)
 	default:
 		return buildSMBErrorResponse(req, smbStatusNotSupported)
 	}
+}
+
+// handleTransaction2QueryFileInfo serves TRANS2_QUERY_FILE_INFORMATION
+// (subcommand 0x0007). Per [MS-CIFS] 2.2.6.8.1 the params block is:
+//
+//	FID(2) InformationLevel(2)
+//
+// We resolve the FID to its open file, fetch fs.FileInfo, and serialize
+// according to the requested level. Win9x typically asks for 0x0101
+// (SMB_QUERY_FILE_BASIC_INFO) right after OpenAndX as a sanity check.
+func (s *Service) handleTransaction2QueryFileInfo(req []byte, conn *connState, fsys fsReadDirStat, params []byte) []byte {
+	if len(params) < 4 {
+		return buildSMBErrorResponse(req, smbStatusErrSrvError)
+	}
+	fid := binary.LittleEndian.Uint16(params[0:2])
+	infoLevel := binary.LittleEndian.Uint16(params[2:4])
+
+	conn.mu.Lock()
+	handle, ok := conn.fids[fid]
+	conn.mu.Unlock()
+	if !ok || handle == nil || handle.file == nil {
+		return buildSMBErrorResponse(req, smbStatusInvalidHandle)
+	}
+
+	info, err := fsys.Stat(handle.path)
+	if err != nil {
+		return buildSMBErrorResponse(req, smbStatusNameNotFound)
+	}
+
+	data, ok := buildQueryInfoData(infoLevel, info)
+	if !ok {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+	return buildTransaction2QueryInfoResponse(req, data)
+}
+
+// handleTransaction2QueryPathInfo serves TRANS2_QUERY_PATH_INFORMATION
+// (subcommand 0x0005). Per [MS-CIFS] 2.2.6.6.1 the params block is:
+//
+//	InformationLevel(2) Reserved(4) FileName(SMB_STRING)
+//
+// The body is the same set of info levels as QueryFileInfo; we share
+// the serialization helper.
+func (s *Service) handleTransaction2QueryPathInfo(req []byte, fsys fsReadDirStat, rootPath string, params []byte) []byte {
+	if len(params) < 6 {
+		return buildSMBErrorResponse(req, smbStatusErrSrvError)
+	}
+	infoLevel := binary.LittleEndian.Uint16(params[0:2])
+	// Skip params[2:6] Reserved.
+	rawName := params[6:]
+	if i := bytes.IndexByte(rawName, 0); i >= 0 {
+		rawName = rawName[:i]
+	}
+	path := strings.TrimLeft(strings.TrimSpace(string(rawName)), "\\")
+
+	resolved, err := resolveExistingPath(fsys, rootPath, path)
+	if err != nil {
+		return buildSMBErrorResponse(req, smbStatusNameNotFound)
+	}
+	info, err := fsys.Stat(resolved)
+	if err != nil {
+		return buildSMBErrorResponse(req, smbStatusNameNotFound)
+	}
+
+	data, ok := buildQueryInfoData(infoLevel, info)
+	if !ok {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+	return buildTransaction2QueryInfoResponse(req, data)
+}
+
+// buildQueryInfoData serializes fs.FileInfo into the requested info-level
+// payload. Returns false if the level is unsupported.
+//
+// Layouts per [MS-CIFS] 2.2.8.3:
+//   - 0x0101 SMB_QUERY_FILE_BASIC_INFO     — 40 bytes (4 FILETIMEs + attrs + reserved)
+//   - 0x0102 SMB_QUERY_FILE_STANDARD_INFO  — 24 bytes (alloc, eof, links, delete, dir, pad)
+//   - 0x0103 SMB_QUERY_FILE_EA_INFO        — 4 bytes  (EaSize)
+//   - 0x0107 SMB_QUERY_FILE_ALL_INFO       — concatenation of the above
+func buildQueryInfoData(level uint16, info fs.FileInfo) ([]byte, bool) {
+	switch level {
+	case infoLevelQueryFileBasic:
+		buf := make([]byte, 40)
+		ft := fileTimeFromModTime(info.ModTime())
+		binary.LittleEndian.PutUint64(buf[0:8], ft)   // CreationTime
+		binary.LittleEndian.PutUint64(buf[8:16], ft)  // LastAccessTime
+		binary.LittleEndian.PutUint64(buf[16:24], ft) // LastWriteTime
+		binary.LittleEndian.PutUint64(buf[24:32], ft) // ChangeTime
+		binary.LittleEndian.PutUint32(buf[32:36], uint32(extFileAttrs(info)))
+		// buf[36:40] Reserved = 0
+		return buf, true
+	case infoLevelQueryFileStandard:
+		buf := make([]byte, 24)
+		size := uint64(0)
+		if !info.IsDir() {
+			size = uint64(info.Size())
+		}
+		binary.LittleEndian.PutUint64(buf[0:8], allocSizeFor(size, info.IsDir()))
+		binary.LittleEndian.PutUint64(buf[8:16], size)
+		binary.LittleEndian.PutUint32(buf[16:20], 1) // NumberOfLinks
+		buf[20] = 0                                  // DeletePending
+		if info.IsDir() {
+			buf[21] = 1
+		}
+		// buf[22:24] padding
+		return buf, true
+	case infoLevelQueryFileEaInfo:
+		buf := make([]byte, 4) // EaSize = 0
+		return buf, true
+	case infoLevelQueryFileAllInfo:
+		basic, _ := buildQueryInfoData(infoLevelQueryFileBasic, info)
+		std, _ := buildQueryInfoData(infoLevelQueryFileStandard, info)
+		ea, _ := buildQueryInfoData(infoLevelQueryFileEaInfo, info)
+		buf := make([]byte, 0, len(basic)+len(std)+len(ea))
+		buf = append(buf, basic...)
+		buf = append(buf, std...)
+		buf = append(buf, ea...)
+		return buf, true
+	default:
+		return nil, false
+	}
+}
+
+// buildTransaction2QueryInfoResponse builds a TRANS2 reply carrying a
+// 2-byte EaErrorOffset param and the supplied info-level data block.
+// Layout matches the existing FindFirst2 response builder; only the
+// param contents differ.
+func buildTransaction2QueryInfoResponse(req []byte, data []byte) []byte {
+	if len(req) < smbHeaderLen || string(req[0:4]) != "\xffSMB" {
+		return nil
+	}
+
+	const paramLen = 2 // EaErrorOffset only
+	dataLen := len(data)
+	paramOffset := smbHeaderLen + 1 + 20 + 2
+	dataOffset := paramOffset + paramLen
+	totalLen := dataOffset + dataLen
+
+	out := make([]byte, totalLen)
+	copy(out[:smbHeaderLen], req[:smbHeaderLen])
+	binary.LittleEndian.PutUint32(out[smbOffStatus:smbOffStatus+4], smbStatusSuccess)
+	out[smbOffFlags] |= 0x80
+
+	out[smbHeaderLen] = 10
+	w := out[smbHeaderLen+1:]
+	binary.LittleEndian.PutUint16(w[0:2], paramLen)        // TotalParamCount
+	binary.LittleEndian.PutUint16(w[2:4], uint16(dataLen)) // TotalDataCount
+	binary.LittleEndian.PutUint16(w[6:8], paramLen)        // ParamCount
+	binary.LittleEndian.PutUint16(w[8:10], uint16(paramOffset))
+	binary.LittleEndian.PutUint16(w[12:14], uint16(dataLen)) // DataCount
+	if dataLen > 0 {
+		binary.LittleEndian.PutUint16(w[14:16], uint16(dataOffset))
+	}
+	binary.LittleEndian.PutUint16(w[20:22], uint16(paramLen+dataLen)) // ByteCount
+
+	// EaErrorOffset = 0
+	binary.LittleEndian.PutUint16(out[paramOffset:paramOffset+2], 0)
+	if dataLen > 0 {
+		copy(out[dataOffset:], data)
+	}
+	return out
 }
 
 func (s *Service) handleFindClose2(req []byte, conn *connState) []byte {
@@ -211,7 +396,11 @@ func (s *Service) handleTransaction2FindFirst2(req []byte, conn *connState, fsys
 		if err != nil {
 			continue
 		}
-		matches = append(matches, findFirst2Row{name: name, info: info})
+		shortName := name
+		if s, err := fsys.ShortName(filepath.Join(rootPath, dirPath, name)); err == nil && s != "" {
+			shortName = s
+		}
+		matches = append(matches, findFirst2Row{name: name, shortName: shortName, info: info})
 	}
 
 	if len(matches) == 0 {
@@ -233,11 +422,11 @@ func (s *Service) handleTransaction2FindFirst2(req []byte, conn *connState, fsys
 	if endOfSearch {
 		storeSearchHandle(conn, sid, nil, returned, pattern, searchAttrs)
 	} else {
-		dirEntries := make([]fs.DirEntry, 0, len(matches)-returned)
+		rows := make([]findFirst2Row, 0, len(matches)-returned)
 		for _, row := range matches[returned:] {
-			dirEntries = append(dirEntries, dirEntryFromFileInfo{name: row.name, info: row.info})
+			rows = append(rows, row)
 		}
-		storeSearchHandle(conn, sid, dirEntries, 0, pattern, searchAttrs)
+		storeSearchHandle(conn, sid, rows, 0, pattern, searchAttrs)
 	}
 
 	return buildTransaction2FindFirst2Response(req, sid, returned, endOfSearch, data, lastNameOffset)
@@ -264,7 +453,7 @@ func (s *Service) handleTransaction2FindNext2(req []byte, conn *connState, param
 	resumeName := trans2ResumeNameFromFindNext2(params)
 
 	if conn == nil {
-		return buildTransaction2FindFirst2Response(req, sid, 0, true, nil, 0)
+		return buildTransaction2FindNext2Response(req, 0, true, nil, 0)
 	}
 
 	conn.mu.Lock()
@@ -276,7 +465,7 @@ func (s *Service) handleTransaction2FindNext2(req []byte, conn *connState, param
 	start := h.idx
 	if flags&findFlagContinueFromLast == 0 && resumeName != "" {
 		for i := 0; i < len(h.entries); i++ {
-			if strings.EqualFold(h.entries[i].Name(), resumeName) {
+			if strings.EqualFold(h.entries[i].name, resumeName) {
 				start = i + 1
 				break
 			}
@@ -297,10 +486,7 @@ func (s *Service) handleTransaction2FindNext2(req []byte, conn *connState, param
 	rows := make([]findFirst2Row, 0, searchCount)
 	idx := start
 	for idx < len(entries) && len(rows) < searchCount {
-		info, err := entries[idx].Info()
-		if err == nil {
-			rows = append(rows, findFirst2Row{name: entries[idx].Name(), info: info})
-		}
+		rows = append(rows, entries[idx])
 		idx++
 	}
 
@@ -315,7 +501,7 @@ func (s *Service) handleTransaction2FindNext2(req []byte, conn *connState, param
 	}
 	conn.mu.Unlock()
 
-	return buildTransaction2FindFirst2Response(req, sid, returned, endOfSearch, data, lastNameOffset)
+	return buildTransaction2FindNext2Response(req, returned, endOfSearch, data, lastNameOffset)
 }
 
 func trans2ResumeNameFromFindNext2(params []byte) string {
@@ -347,6 +533,45 @@ func parseSMBPathAllowEmpty(req []byte) (string, bool) {
 	return "", false
 }
 
+// resolveSMBLeaf resolves the parent of an SMB path strictly and reports
+// whether the requested leaf already exists in that parent (matched
+// case-insensitively). Returns the host path of the parent directory, the
+// matched leaf entry (zero value if no match), and an error only if the
+// parent path itself cannot be resolved.
+//
+// Callers performing existence-or-create operations (mkdir, create file,
+// rename target) should prefer this over resolveExistingPath: it never
+// silently substitutes a sibling whose name happens to share a prefix.
+func resolveSMBLeaf(fsys fsReadDirStat, rootPath, smbPath string) (parentHost, matchedName string, info fs.FileInfo, err error) {
+	parentSMB, leaf := splitSMBParent(smbPath)
+	if leaf == "" {
+		return "", "", nil, fs.ErrInvalid
+	}
+
+	parentHost = smbJoinPath(rootPath, parentSMB)
+	if parentSMB != "" {
+		if resolved, rerr := resolveExistingPath(fsys, rootPath, parentSMB); rerr == nil {
+			parentHost = resolved
+		}
+	}
+
+	entries, derr := fsys.ReadDir(parentHost)
+	if derr != nil {
+		return parentHost, "", nil, derr
+	}
+	for _, e := range entries {
+		if !strings.EqualFold(e.Name(), leaf) {
+			continue
+		}
+		ei, ierr := e.Info()
+		if ierr != nil {
+			return parentHost, e.Name(), nil, ierr
+		}
+		return parentHost, e.Name(), ei, nil
+	}
+	return parentHost, "", nil, nil
+}
+
 func resolveExistingPath(fsys fsReadDirStat, rootPath, smbPath string) (string, error) {
 	clean := strings.TrimLeft(strings.TrimSpace(smbPath), "\\")
 	if clean == "" {
@@ -375,7 +600,12 @@ func resolveExistingPath(fsys fsReadDirStat, rootPath, smbPath string) (string, 
 		if err != nil {
 			return "", err
 		}
-		match := findBestComponentMatch(part, entries)
+		// Use DOS-name-aware matching so legacy clients can resolve
+		// mangled forms like "VOLUME68K" to the real "Volume 68k".
+		// Callers that must reject prefix-style false positives (mkdir,
+		// create) should use resolveSMBLeaf instead, which only matches
+		// the final component case-insensitively-exactly.
+		match := findDOSLikeComponentMatch(part, entries)
 		if match == "" {
 			return "", fs.ErrNotExist
 		}
@@ -384,13 +614,33 @@ func resolveExistingPath(fsys fsReadDirStat, rootPath, smbPath string) (string, 
 	return curr, nil
 }
 
+// findBestComponentMatch returns the name of the entry matching component
+// case-insensitively, or "" if no entry matches. Matching is strict —
+// callers that need to resolve DOS-mangled names (e.g. "VOLUME68K" →
+// "Volume 68k") should use findDOSLikeComponentMatch instead. Strict
+// matching is required for create/collision checks because prefix
+// matching lets siblings like "SETUP.cab" masquerade as "setup".
 func findBestComponentMatch(component string, entries []fs.DirEntry) string {
 	for _, e := range entries {
 		if strings.EqualFold(e.Name(), component) {
 			return e.Name()
 		}
 	}
+	return ""
+}
 
+// findDOSLikeComponentMatch extends findBestComponentMatch with the
+// fallback heuristics needed to resolve a DOS-mangled name (uppercase,
+// spaces and punctuation stripped, possibly truncated) to its real
+// host-filesystem name. Returns the matched entry name or "".
+//
+// The fallback only fires when no strict match exists. If multiple
+// entries normalize-or-prefix-match the request, the result is "" —
+// ambiguity must not silently pick a sibling.
+func findDOSLikeComponentMatch(component string, entries []fs.DirEntry) string {
+	if name := findBestComponentMatch(component, entries); name != "" {
+		return name
+	}
 	normTarget := normalizePathToken(component)
 	if normTarget == "" {
 		return ""
@@ -411,13 +661,6 @@ func findBestComponentMatch(component string, entries []fs.DirEntry) string {
 	return ""
 }
 
-func nameMatchesClientPattern(name, pattern string) bool {
-	if strings.ContainsAny(pattern, "*?") {
-		return matchesPattern(name, pattern)
-	}
-	return strings.EqualFold(name, pattern)
-}
-
 func normalizePathToken(s string) string {
 	var b strings.Builder
 	for _, r := range strings.ToUpper(strings.TrimSpace(s)) {
@@ -426,6 +669,13 @@ func normalizePathToken(s string) string {
 		}
 	}
 	return b.String()
+}
+
+func nameMatchesClientPattern(name, pattern string) bool {
+	if strings.ContainsAny(pattern, "*?") {
+		return matchesPattern(name, pattern)
+	}
+	return strings.EqualFold(name, pattern)
 }
 
 func trans2PathFromParams(params []byte) string {
@@ -471,7 +721,9 @@ func allocSearchSID(conn *connState) uint16 {
 	return conn.nextSID
 }
 
-func storeSearchHandle(conn *connState, sid uint16, entries []fs.DirEntry, idx int, pattern string, attrs uint16) {
+
+
+func storeSearchHandle(conn *connState, sid uint16, entries []findFirst2Row, idx int, pattern string, attrs uint16) {
 	if conn == nil {
 		return
 	}
@@ -493,7 +745,12 @@ func buildFindFirst2BothDirData(matches []findFirst2Row, maxEntries int) ([]byte
 
 	for i := 0; i < len(matches) && returned < maxEntries; i++ {
 		row := matches[i]
-		nameBytes := []byte(row.name)
+		nameBytes := encodeOEM(row.name)
+		shortNameBytes := encodeOEM(row.shortName)
+		if len(shortNameBytes) > 24 {
+			shortNameBytes = shortNameBytes[:24]
+		}
+
 		recordLen := findBothFixedBytes + len(nameBytes)
 		pad := (4 - (recordLen % 4)) % 4
 		nextOffset := uint32(recordLen + pad)
@@ -525,6 +782,14 @@ func buildFindFirst2BothDirData(matches []findFirst2Row, maxEntries int) ([]byte
 		binary.LittleEndian.PutUint64(rec[48:56], allocSizeFor(size, row.info.IsDir()))
 		binary.LittleEndian.PutUint32(rec[56:60], uint32(extFileAttrs(row.info)))
 		binary.LittleEndian.PutUint32(rec[60:64], uint32(len(nameBytes)))
+		
+		rec[68] = byte(len(shortNameBytes))
+		if len(shortNameBytes) > 24 {
+			copy(rec[70:94], shortNameBytes[:24])
+		} else {
+			copy(rec[70:94], shortNameBytes)
+		}
+
 		copy(rec[94:94+len(nameBytes)], nameBytes)
 
 		data.Write(rec)
@@ -566,12 +831,44 @@ func fileTimeFromModTime(t time.Time) uint64 {
 	return uint64(ns/100) + windowsFiletimeOffset
 }
 
+// encodeOEM encodes s as the single-byte OEM/ASCII form used on the wire when
+// SMB_FLAGS2_UNICODE is not negotiated. Non-ASCII runes are replaced with '?'.
+// Legacy clients (Win9x, classic Mac SMB) cannot decode UTF-16, so FIND_FIRST2
+// records must use this even though the fixed-area layout is unchanged.
+func encodeOEM(s string) []byte {
+	out := make([]byte, 0, len(s))
+	for _, r := range s {
+		if r < 0x80 {
+			out = append(out, byte(r))
+		} else {
+			out = append(out, '?')
+		}
+	}
+	return out
+}
+
 func buildTransaction2FindFirst2Response(req []byte, sid uint16, searchCount int, endOfSearch bool, data []byte, lastNameOffset uint16) []byte {
+	return buildTransaction2FindResponse(req, true, sid, searchCount, endOfSearch, data, lastNameOffset)
+}
+
+func buildTransaction2FindNext2Response(req []byte, searchCount int, endOfSearch bool, data []byte, lastNameOffset uint16) []byte {
+	return buildTransaction2FindResponse(req, false, 0, searchCount, endOfSearch, data, lastNameOffset)
+}
+
+// buildTransaction2FindResponse encodes a FIND_FIRST2 or FIND_NEXT2 reply.
+// The two share the data layout but differ in the response param block:
+// FIND_FIRST2 prepends a 2-byte SID (10-byte block); FIND_NEXT2 omits it
+// (8-byte block). Mixing them up makes legacy clients parse SearchCount
+// as SID and silently drop every record after the first.
+func buildTransaction2FindResponse(req []byte, includeSID bool, sid uint16, searchCount int, endOfSearch bool, data []byte, lastNameOffset uint16) []byte {
 	if len(req) < smbHeaderLen || string(req[0:4]) != "\xffSMB" {
 		return nil
 	}
 
-	const paramLen = 10
+	paramLen := 8
+	if includeSID {
+		paramLen = 10
+	}
 	dataLen := len(data)
 	paramOffset := smbHeaderLen + 1 + 20 + 2
 	dataOffset := paramOffset + paramLen
@@ -584,9 +881,9 @@ func buildTransaction2FindFirst2Response(req []byte, sid uint16, searchCount int
 
 	out[smbHeaderLen] = 10
 	w := out[smbHeaderLen+1:]
-	binary.LittleEndian.PutUint16(w[0:2], paramLen)
+	binary.LittleEndian.PutUint16(w[0:2], uint16(paramLen))
 	binary.LittleEndian.PutUint16(w[2:4], uint16(dataLen))
-	binary.LittleEndian.PutUint16(w[6:8], paramLen)
+	binary.LittleEndian.PutUint16(w[6:8], uint16(paramLen))
 	binary.LittleEndian.PutUint16(w[8:10], uint16(paramOffset))
 	binary.LittleEndian.PutUint16(w[12:14], uint16(dataLen))
 	if dataLen > 0 {
@@ -595,13 +892,20 @@ func buildTransaction2FindFirst2Response(req []byte, sid uint16, searchCount int
 	binary.LittleEndian.PutUint16(w[20:22], uint16(paramLen+dataLen))
 
 	p := out[paramOffset:]
-	binary.LittleEndian.PutUint16(p[0:2], sid)
-	binary.LittleEndian.PutUint16(p[2:4], uint16(searchCount))
-	if endOfSearch {
-		binary.LittleEndian.PutUint16(p[4:6], 1)
+	off := 0
+	if includeSID {
+		binary.LittleEndian.PutUint16(p[off:off+2], sid)
+		off += 2
 	}
-	binary.LittleEndian.PutUint16(p[6:8], 0)
-	binary.LittleEndian.PutUint16(p[8:10], lastNameOffset)
+	binary.LittleEndian.PutUint16(p[off:off+2], uint16(searchCount))
+	off += 2
+	if endOfSearch {
+		binary.LittleEndian.PutUint16(p[off:off+2], 1)
+	}
+	off += 2
+	binary.LittleEndian.PutUint16(p[off:off+2], 0)
+	off += 2
+	binary.LittleEndian.PutUint16(p[off:off+2], lastNameOffset)
 
 	if dataLen > 0 {
 		copy(out[dataOffset:], data)

@@ -3,16 +3,32 @@ package smb
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
+	"io/fs"
+	"path/filepath"
 	"strings"
 
 	"github.com/ObsoleteMadness/ClassicStack/pkg/vfs"
 )
 
+// splitSMBParent splits an SMB-style backslash path into its parent
+// component and final leaf. The returned parentSMB has no leading or
+// trailing backslash and may be empty if the leaf sits at the share root.
+func splitSMBParent(smbPath string) (parentSMB, leaf string) {
+	clean := strings.Trim(smbPath, "\\")
+	idx := strings.LastIndex(clean, "\\")
+	if idx < 0 {
+		return "", clean
+	}
+	return clean[:idx], clean[idx+1:]
+}
+
 const (
-	smbStatusAccessDenied    = 0xC0000022
-	smbStatusNameNotFound    = 0xC000007F
-	smbStatusFileIsDirectory = 0xC00000BA
-	smbStatusNotADirectory   = 0xC0000103
+	smbStatusAccessDenied         = 0xC0000022
+	smbStatusNameNotFound         = 0xC000007F
+	smbStatusFileIsDirectory      = 0xC00000BA
+	smbStatusNotADirectory        = 0xC0000103
+	smbStatusObjectNameCollision  = 0xC0000035
 )
 
 func (s *Service) handleDelete(req []byte, conn *connState) []byte {
@@ -86,6 +102,52 @@ func (s *Service) handleRename(req []byte, conn *connState) []byte {
 		return buildSMBErrorResponse(req, smbStatusNameNotFound)
 	}
 	if err := fsys.Rename(resolvedOldPath, resolvedNewPath); err != nil {
+		return buildSMBErrorResponse(req, smbStatusAccessDenied)
+	}
+	return buildSimpleSuccessResponse(req)
+}
+
+func (s *Service) handleCreateDirectory(req []byte, conn *connState) []byte {
+	if len(req) < smbHeaderLen+3 {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	_, slot, fsys, ok := s.resolveRequestTree(req, conn)
+	if !ok {
+		return buildSMBErrorResponse(req, smbStatusBadTID)
+	}
+	rootPath := s.shareRootPath(slot.shareIdx)
+	if s.shares[slot.shareIdx].ReadOnly {
+		return buildSMBErrorResponse(req, smbStatusAccessDenied)
+	}
+
+	path, ok := parseSMBPath(req)
+	if !ok || path == "" {
+		return buildSMBErrorResponse(req, smbStatusNameNotFound)
+	}
+	if strings.Contains(path, "*") || strings.Contains(path, "?") {
+		return buildSMBErrorResponse(req, smbStatusNotSupported)
+	}
+
+	parentHost, matched, info, err := resolveSMBLeaf(fsys, rootPath, path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		// Parent missing or unreadable — let CreateDir surface the right error below.
+	}
+	if matched != "" && info != nil {
+		if info.IsDir() {
+			// Idempotent mkdir on an existing directory.
+			return buildSimpleSuccessResponse(req)
+		}
+		// Existing file blocks the directory creation.
+		return buildSMBErrorResponse(req, smbStatusObjectNameCollision)
+	}
+
+	_, leaf := splitSMBParent(path)
+	target := filepath.Join(parentHost, leaf)
+	if err := fsys.CreateDir(target); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return buildSimpleSuccessResponse(req)
+		}
 		return buildSMBErrorResponse(req, smbStatusAccessDenied)
 	}
 	return buildSimpleSuccessResponse(req)

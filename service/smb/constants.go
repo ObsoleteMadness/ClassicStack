@@ -3,6 +3,8 @@ package smb
 const (
 	CommandCreateDirectory       = 0x00
 	CommandDeleteDirectory       = 0x01
+	CommandOpen                  = 0x02
+	CommandCreate                = 0x03
 	CommandClose                 = 0x04
 	CommandFlush                 = 0x05
 	CommandDelete                = 0x06
@@ -15,6 +17,7 @@ const (
 	CommandReadMPX               = 0x1B
 	CommandCheckDirectory        = 0x10
 	CommandWriteRaw              = 0x1D
+	CommandWriteMPX              = 0x1E
 	CommandWriteComplete         = 0x20
 	CommandSetInformation2       = 0x22
 	CommandLockingAndX           = 0x24

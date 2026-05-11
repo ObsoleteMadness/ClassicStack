@@ -3,7 +3,6 @@ package smb
 import (
 	"fmt"
 	"hash/fnv"
-	"io/fs"
 	"strings"
 	"sync"
 
@@ -36,10 +35,19 @@ type fileHandle struct {
 	tid      uint16
 	writable bool
 	offset   int64
+	// mpxAccum is the running OR of RequestMask values from every
+	// SMB_COM_WRITE_MPX received since the last sequenced (final)
+	// request. Per [MS-CIFS] 2.2.4.26.2 / 3.3.5.27 the server replies
+	// only to the sequenced request (SMB header SequenceNumber != 0)
+	// and returns this accumulated mask as ResponseMask. Replying to
+	// non-sequenced requests breaks Win9x's window state machine and
+	// causes it to skip chunks; staying silent until the sequencing
+	// signal arrives is what the spec mandates and what works.
+	mpxAccum uint32
 }
 
 type searchHandle struct {
-	entries []fs.DirEntry
+	entries []findFirst2Row
 	idx     int
 	tid     uint16
 	pattern string
@@ -164,9 +172,10 @@ func (s *Service) initShareBackendsLocked() error {
 			fsType = "local_fs"
 		}
 		fsys, err := vfs.New(fsType, vfs.Params{
-			Name:     share.Name,
-			Path:     share.Path,
-			ReadOnly: share.ReadOnly,
+			Name:            share.Name,
+			Path:            share.Path,
+			ReadOnly:        share.ReadOnly,
+			ShortnameMapper: s.opts.Shortname,
 		})
 		if err != nil {
 			return fmt.Errorf("smb: init share %q (%s): %w", share.Name, fsType, err)

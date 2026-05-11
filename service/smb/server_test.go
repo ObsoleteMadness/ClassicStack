@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+
+
 	"github.com/ObsoleteMadness/ClassicStack/pkg/vfs"
 	netbiosproto "github.com/ObsoleteMadness/ClassicStack/protocol/netbios"
 	"github.com/ObsoleteMadness/ClassicStack/service/netbios"
@@ -1498,6 +1500,10 @@ func (f *diskUsagePathProbeFS) Capabilities() vfs.Capabilities {
 	return vfs.Capabilities{}
 }
 
+func (f *diskUsagePathProbeFS) ShortName(path string) (string, error) {
+	return "", fs.ErrNotExist
+}
+
 func TestBuildSMBErrorResponseUsesDOSStatusWithoutNTStatusFlag(t *testing.T) {
 	req := make([]byte, smbHeaderLen)
 	copy(req[0:4], []byte{0xff, 'S', 'M', 'B'})
@@ -1697,13 +1703,15 @@ func TestHandleTransaction2FindFirst2ExactPatternDoesNotMatchSidecar(t *testing.
 		t.Fatalf("returned count mismatch: got %d want 1", got)
 	}
 	data := readTrans2DataBlock(t, resp)
-	if !bytes.Contains(bytes.ToUpper(data), []byte("NICOLE CAMERA.JPG")) {
+	expectPrimary := encodeOEM("NICOLE CAMERA.JPG")
+	expectSidecar := encodeOEM("._NICOLE CAMERA.JPG")
+	if !bytes.Contains(bytes.ToUpper(data), expectPrimary) {
 		t.Fatalf("expected primary file in response")
 	}
-	if bytes.Contains(bytes.ToUpper(data), []byte("._NICOLE CAMERA.JPG")) {
+	if bytes.Contains(bytes.ToUpper(data), expectSidecar) {
 		t.Fatalf("unexpected sidecar match in exact-pattern response")
 	}
-	}
+}
 
 func TestHandleTransaction2FindNext2ReturnsSecondPage(t *testing.T) {
 	tmp := t.TempDir()
@@ -1745,7 +1753,7 @@ func TestHandleTransaction2FindNext2ReturnsSecondPage(t *testing.T) {
 		t.Fatalf("next status mismatch: got %#x want %#x", got, uint32(smbStatusSuccess))
 	}
 	nextParam := readTrans2ParamBlock(t, nextResp)
-	if got := binary.LittleEndian.Uint16(nextParam[2:4]); got == 0 {
+	if got := binary.LittleEndian.Uint16(nextParam[0:2]); got == 0 {
 		t.Fatalf("expected second page entries")
 	}
 }
@@ -1783,7 +1791,7 @@ func TestHandleTransaction2FindNext2ResumeNameAdvancesPosition(t *testing.T) {
 		t.Fatalf("next status mismatch: got %#x want %#x", got, uint32(smbStatusSuccess))
 	}
 	nextParam := readTrans2ParamBlock(t, nextResp)
-	if got := binary.LittleEndian.Uint16(nextParam[2:4]); got == 0 {
+	if got := binary.LittleEndian.Uint16(nextParam[0:2]); got == 0 {
 		t.Fatalf("expected resumed entry")
 	}
 }
@@ -2171,14 +2179,18 @@ func makeOpenAndXPayloadWithAccess(tid uint16, path string, openFunction uint16,
 	out[smbHeaderLen] = byte(wct)
 
 	w := out[smbHeaderLen+1 : smbHeaderLen+1+wordBytes]
-	binary.LittleEndian.PutUint16(w[0:2], desiredAccess)
-	binary.LittleEndian.PutUint16(w[2:4], 0)  // searchAttrs
-	binary.LittleEndian.PutUint16(w[4:6], 0)  // fileAttrs
-	binary.LittleEndian.PutUint32(w[6:10], 0) // createTime
-	binary.LittleEndian.PutUint16(w[10:12], openFunction)
-	binary.LittleEndian.PutUint32(w[12:16], 0) // allocSize
-	binary.LittleEndian.PutUint32(w[16:20], 0) // timeout
-	binary.LittleEndian.PutUint16(w[20:22], 0) // reserved
+	w[0] = 0xFF                                  // AndXCommand
+	w[1] = 0x00                                  // AndXReserved
+	binary.LittleEndian.PutUint16(w[2:4], 0)     // AndXOffset
+	binary.LittleEndian.PutUint16(w[4:6], 0)     // Flags
+	binary.LittleEndian.PutUint16(w[6:8], desiredAccess)
+	binary.LittleEndian.PutUint16(w[8:10], 0)    // SearchAttrs
+	binary.LittleEndian.PutUint16(w[10:12], 0)   // FileAttrs
+	binary.LittleEndian.PutUint32(w[12:16], 0)   // CreationTime
+	binary.LittleEndian.PutUint16(w[16:18], openFunction)
+	binary.LittleEndian.PutUint32(w[18:22], 0)   // AllocationSize
+	binary.LittleEndian.PutUint32(w[22:26], 0)   // Timeout
+	binary.LittleEndian.PutUint32(w[26:30], 0)   // Reserved
 
 	binary.LittleEndian.PutUint16(out[bytesOffset:bytesOffset+2], uint16(byteCount))
 	out[bytesOffset+2] = 0x04

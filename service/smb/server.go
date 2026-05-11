@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
-	"github.com/ObsoleteMadness/ClassicStack/pkg/shortname"
 	"github.com/ObsoleteMadness/ClassicStack/pkg/vfs"
 	netbiosproto "github.com/ObsoleteMadness/ClassicStack/protocol/netbios"
 	"github.com/ObsoleteMadness/ClassicStack/service/netbios"
@@ -86,10 +85,55 @@ const (
 	smbStatusErrInvNetName  = 0x00430001 // ERRDOS/ERRinvnetname
 	smbStatusErrSrvError    = 0x00010002 // ERRSRV/ERRerror
 	smbStatusUseStandard    = 0x00FB0002 // ERRSRV/ERRuseSTD — fall back to SMB_COM_READ/WRITE
+	smbStatusInvalidHandle  = 0xC0000008 // STATUS_INVALID_HANDLE
+	smbStatusErrBadFid      = 0x00060001 // ERRDOS/ERRbadfid — invalid FID
 
-	// NT SMB capability bits advertised in the NEGOTIATE response.
-	capNTSMBs   = uint32(0x00000010) // CAP_NT_SMBS
-	capStatus32 = uint32(0x00000040) // CAP_STATUS32
+	// SMB1 NEGOTIATE capability bits ([MS-CIFS] 2.2.4.52.2). All defined
+	// flags are listed for documentation; only a curated subset is
+	// actually OR'd into the advertised Capabilities field below.
+	capRawMode              = uint32(0x00000001) // CAP_RAW_MODE — server supports SMB_COM_READ_RAW / WRITE_RAW
+	capMpxMode              = uint32(0x00000002) // CAP_MPX_MODE — server supports SMB_COM_READ_MPX / WRITE_MPX
+	capUnicode              = uint32(0x00000004) // CAP_UNICODE — server supports Unicode strings
+	capLargeFiles           = uint32(0x00000008) // CAP_LARGE_FILES — server supports 64-bit file offsets
+	capNTSMBs               = uint32(0x00000010) // CAP_NT_SMBS — server supports the NT-mode SMBs
+	capRpcRemoteApi         = uint32(0x00000020) // CAP_RPC_REMOTE_APIS
+	capStatus32             = uint32(0x00000040) // CAP_STATUS32 — server returns 32-bit NTSTATUS
+	capLevel2Oplocks        = uint32(0x00000080) // CAP_LEVEL_II_OPLOCKS
+	capLockAndRead          = uint32(0x00000100) // CAP_LOCK_AND_READ
+	capNTFind               = uint32(0x00000200) // CAP_NT_FIND
+	capDFS                  = uint32(0x00001000) // CAP_DFS
+	capInfoLevelPassthrough = uint32(0x00002000) // CAP_INFOLEVEL_PASSTHRU
+	capLargeReadX           = uint32(0x00004000) // CAP_LARGE_READX
+	capLargeWriteX          = uint32(0x00008000) // CAP_LARGE_WRITEX
+	capLwio                 = uint32(0x00010000) // CAP_LWIO
+	capUnix                 = uint32(0x00800000) // CAP_UNIX
+	capDynamicReauth        = uint32(0x20000000) // CAP_DYNAMIC_REAUTH
+	capExtendedSecurity     = uint32(0x80000000) // CAP_EXTENDED_SECURITY
+
+	// negotiateCapabilities is the exact set we advertise. We deliberately
+	// do NOT advertise CAP_RAW_MODE or CAP_MPX_MODE — both legacy
+	// transports (read/write raw, read/write mpx) are unimplemented and
+	// silently corrupt files when half-emulated. Win9x falls back to
+	// SMB_COM_READ / SMB_COM_WRITE / SMB_COM_WRITE_ANDX when those bits
+	// are clear.
+	negotiateCapabilities = capNTSMBs |
+		capStatus32 |
+		capNTFind |
+		capLargeFiles
+
+	// SMB1 NEGOTIATE numeric parameters. These match SMBLibrary defaults
+	// and are conservative enough to keep Win9x clients happy on a
+	// connectionless transport (Direct IPX) where larger windows just
+	// invite retransmission storms.
+	negotiateMaxMpxCount   = uint16(1)      // single-request server, no parallel commands
+	negotiateMaxNumberVcs  = uint16(1)      // one virtual circuit per session
+	negotiateMaxBufferSize = uint32(0x4000) // 16 KiB per request
+	negotiateMaxRawSize    = uint32(0)      // raw mode disabled (paired with no CAP_RAW_MODE)
+
+	// SecurityMode bits ([MS-CIFS] 2.2.4.52.2). User-level security with
+	// no challenge: clients send credentials in the clear which we accept
+	// as a guest session.
+	negotiateSecurityMode = byte(0x01) // bit 0: SECURITY_MODE_USER_SECURITY
 
 	// windowsFiletimeOffset is the difference in 100-nanosecond intervals
 	// between the Windows FILETIME epoch (1 Jan 1601) and the Unix epoch
@@ -107,13 +151,19 @@ const (
 	rapStatusErrReqNotAccepted  = uint16(71) // ERROR_REQ_NOT_ACCEP
 
 	// SMB1 header field byte offsets (within the 32-byte SMB1 header).
-	smbOffStatus = 5
-	smbOffFlags  = 9
-	smbOffFlags2 = 10
-	smbOffTID    = 24
-	smbOffUID    = 28
+	// On a connectionless transport the SecurityFeatures region holds
+	// Key(4) + CID(2) + SequenceNumber(2) at offsets 14..21 per
+	// [MS-CIFS] 2.2.3.1; SequenceNumber identifies the final request of
+	// a multiplexed write sequence (see SMB_COM_WRITE_MPX).
+	smbOffStatus         = 5
+	smbOffFlags          = 9
+	smbOffFlags2         = 10
+	smbOffSequenceNumber = 20
+	smbOffTID            = 24
+	smbOffUID            = 28
 
-	smbFlags2NTStatus = 0x4000
+	smbFlags2KnowsLongNames = 0x0001
+	smbFlags2NTStatus       = 0x4000
 
 	// rapNetShareEnum is the RAP function code for NetShareEnum.
 	rapNetShareEnum = uint16(0x0000)
@@ -142,7 +192,7 @@ type ServerOptions struct {
 	Bus vfs.Bus
 	// Shortname is the optional 8.3 mapper used when responding to
 	// legacy DOS/Windows clients. Nil disables shortname mapping.
-	Shortname shortname.Mapper
+	Shortname vfs.ShortnameMapper
 }
 
 // Authenticator validates SMB credentials. The stub permits everyone.

@@ -179,6 +179,16 @@ func (s *Service) HandleSessionContext(packet *netbiosproto.SessionPacket, ctx n
 			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
 		respPayload = s.handleWriteAndX(packet.Payload, conn)
 
+	case CommandWriteMPX:
+		netlog.Debug("[SMB][Session] write-mpx (rejected) src=%x.%x:%02x%02x",
+			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
+		respPayload = s.handleWriteMPX(packet.Payload, conn)
+
+	case CommandWriteRaw:
+		netlog.Debug("[SMB][Session] write-raw (rejected) src=%x.%x:%02x%02x",
+			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
+		respPayload = s.handleWriteRaw(packet.Payload, conn)
+
 	case CommandClose:
 		netlog.Debug("[SMB][Session] close src=%x.%x:%02x%02x",
 			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
@@ -209,6 +219,26 @@ func (s *Service) HandleSessionContext(packet *netbiosproto.SessionPacket, ctx n
 			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
 		respPayload = s.handleDeleteDirectory(packet.Payload, conn)
 
+	case CommandCreateDirectory:
+		netlog.Debug("[SMB][Session] create-directory src=%x.%x:%02x%02x",
+			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
+		respPayload = s.handleCreateDirectory(packet.Payload, conn)
+
+	case CommandOpen:
+		netlog.Debug("[SMB][Session] open src=%x.%x:%02x%02x",
+			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
+		respPayload = s.handleOpen(packet.Payload, conn)
+
+	case CommandCreate:
+		netlog.Debug("[SMB][Session] create src=%x.%x:%02x%02x",
+			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
+		respPayload = s.handleCreate(packet.Payload, conn)
+
+	case CommandWrite:
+		netlog.Debug("[SMB][Session] write src=%x.%x:%02x%02x",
+			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
+		respPayload = s.handleWrite(packet.Payload, conn)
+
 	default:
 		netlog.Debug("[SMB][Session] unsupported command=0x%02x src=%x.%x:%02x%02x",
 			cmd, ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
@@ -218,6 +248,7 @@ func (s *Service) HandleSessionContext(packet *netbiosproto.SessionPacket, ctx n
 	if respPayload == nil {
 		return nil, nil
 	}
+	stampSMBResponseHeader(respPayload)
 	return &netbiosproto.SessionPacket{
 		Type:    netbiosproto.SessionMessage,
 		Payload: respPayload,

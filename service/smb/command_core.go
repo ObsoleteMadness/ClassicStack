@@ -7,6 +7,16 @@ import (
 	"time"
 )
 
+func stampSMBResponseHeader(out []byte) {
+	if len(out) < smbHeaderLen || string(out[0:4]) != "\xffSMB" {
+		return
+	}
+	out[smbOffFlags] |= 0x80
+	flags2 := binary.LittleEndian.Uint16(out[smbOffFlags2 : smbOffFlags2+2])
+	flags2 |= smbFlags2KnowsLongNames
+	binary.LittleEndian.PutUint16(out[smbOffFlags2:smbOffFlags2+2], flags2)
+}
+
 func buildSMBErrorResponse(req []byte, status uint32) []byte {
 	if len(req) < smbHeaderLen || string(req[0:4]) != "\xffSMB" {
 		return nil
@@ -14,7 +24,7 @@ func buildSMBErrorResponse(req []byte, status uint32) []byte {
 	out := make([]byte, smbHeaderLen+3)
 	copy(out[:smbHeaderLen], req[:smbHeaderLen])
 	binary.LittleEndian.PutUint32(out[smbOffStatus:smbOffStatus+4], toWireErrorStatus(req, status))
-	out[9] = req[9] | 0x80
+	stampSMBResponseHeader(out)
 	out[32] = 0
 	binary.LittleEndian.PutUint16(out[33:35], 0)
 	return out
@@ -45,6 +55,8 @@ func toWireErrorStatus(req []byte, status uint32) uint32 {
 		return smbStatusErrBadFile
 	case smbStatusFileIsDirectory, smbStatusNotADirectory:
 		return smbStatusErrBadPath
+	case smbStatusInvalidHandle:
+		return smbStatusErrBadFid
 	default:
 		if status&0xFF000000 == 0 {
 			return status
@@ -106,18 +118,18 @@ func buildNegotiateResponse(req []byte, workgroup string) []byte {
 	out[smbOffFlags] |= 0x80
 	out[smbHeaderLen] = 17 // WCT
 	w := out[smbHeaderLen+1:]
-	binary.LittleEndian.PutUint16(w[0:2], uint16(dialectIdx))      // DialectIndex
-	w[2] = 0x01                                                    // SecurityMode: user-level, no encryption
-	binary.LittleEndian.PutUint16(w[3:5], 50)                      // MaxMpxCount
-	binary.LittleEndian.PutUint16(w[5:7], 1)                       // MaxNumberVcs
-	binary.LittleEndian.PutUint32(w[7:11], 0x4000)                 // MaxBufferSize
-	binary.LittleEndian.PutUint32(w[11:15], 0)                     // MaxRawSize
-	binary.LittleEndian.PutUint32(w[15:19], 0)                     // SessionKey
-	// CAP_MPX_MODE is intentionally not advertised. We reject SMB_COM_READ_MPX /
-	// SMB_COM_WRITE_MPX with STATUS_SMB_USE_STANDARD so clients fall back to
-	// SMB_COM_READ / SMB_COM_WRITE — the same approach Samba's reply_readbmpx
-	// takes (source3/smbd/reply.c).
-	binary.LittleEndian.PutUint32(w[19:23], capNTSMBs|capStatus32) // Capabilities
+	binary.LittleEndian.PutUint16(w[0:2], uint16(dialectIdx)) // DialectIndex
+	w[2] = negotiateSecurityMode                              // SecurityMode
+	binary.LittleEndian.PutUint16(w[3:5], negotiateMaxMpxCount)
+	binary.LittleEndian.PutUint16(w[5:7], negotiateMaxNumberVcs)
+	binary.LittleEndian.PutUint32(w[7:11], negotiateMaxBufferSize)
+	binary.LittleEndian.PutUint32(w[11:15], negotiateMaxRawSize)
+	binary.LittleEndian.PutUint32(w[15:19], 0) // SessionKey
+	// Capabilities — see negotiateCapabilities in server.go for the
+	// exact set and rationale. CAP_MPX_MODE and CAP_RAW_MODE are
+	// deliberately not set; Win9x falls back to SMB_COM_READ /
+	// SMB_COM_WRITE / SMB_COM_WRITE_ANDX when those bits are clear.
+	binary.LittleEndian.PutUint32(w[19:23], negotiateCapabilities)
 	ft := uint64(time.Now().UTC().UnixNano()/100) + windowsFiletimeOffset
 	binary.LittleEndian.PutUint32(w[23:27], uint32(ft))     // SystemTimeLow
 	binary.LittleEndian.PutUint32(w[27:31], uint32(ft>>32)) // SystemTimeHigh
