@@ -63,19 +63,29 @@ func (f *fakeRawLink) Close() error {
 	return nil
 }
 
-// buildLLCNBF wraps an NBF body in 14 bytes of Ethernet + 3 bytes of
-// LLC with DSAP=SSAP=0xF0 and a UI control byte. The NBF body sits
-// at offset 17.
-func buildLLCNBF(body []byte) []byte {
-	const llcLen = 3
+// buildLLCNBF wraps an NBF body in 14 bytes of Ethernet and an LLC
+// header. The control field can be either 1 byte (UI/U format) or 2
+// bytes (I/S format). All MACs are zero.
+func buildLLCNBF(body []byte, control ...byte) []byte {
+	return buildLLCNBFAddressed([6]byte{}, [6]byte{}, body, control...)
+}
+
+// buildLLCNBFAddressed builds a frame with explicit dst/src MACs.
+func buildLLCNBFAddressed(dst, src [6]byte, body []byte, control ...byte) []byte {
+	if len(control) == 0 {
+		control = []byte{0x03}
+	}
+	llcLen := 2 + len(control)
 	frame := make([]byte, 14+llcLen+len(body))
+	copy(frame[0:6], dst[:])
+	copy(frame[6:12], src[:])
 	total := llcLen + len(body)
 	frame[12] = byte(total >> 8)
 	frame[13] = byte(total)
 	frame[14] = 0xF0
 	frame[15] = 0xF0
-	frame[16] = 0x03
-	copy(frame[17:], body)
+	copy(frame[16:16+len(control)], control)
+	copy(frame[14+llcLen:], body)
 	return frame
 }
 
@@ -85,7 +95,7 @@ func TestNetBEUIInboundDecodesNBFBody(t *testing.T) {
 	defer p.Stop()
 
 	delivered := make(chan *netbeui.Frame, 1)
-	p.SetDeliveryCallback(func(f *netbeui.Frame) { delivered <- f })
+	p.SetDeliveryCallback(func(_ [6]byte, _ [6]byte, f *netbeui.Frame) { delivered <- f })
 
 	if err := p.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -111,6 +121,57 @@ func TestNetBEUIInboundDecodesNBFBody(t *testing.T) {
 		}
 		if string(got.Payload) != "payload" {
 			t.Fatalf("payload: got %q want %q", got.Payload, want.Payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no delivery")
+	}
+}
+
+func TestNetBEUIInboundDecodesNBFBodyWithTwoByteLLCControl(t *testing.T) {
+	link := newFakeRawLink()
+	p := NewPort(link)
+	defer p.Stop()
+
+	// Give the port a source MAC and configure a matching destination MAC for
+	// inbound frames so the I-frame dstMAC check passes.
+	ourMAC := [6]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
+	remotMAC := [6]byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66}
+	p.SetSourceMAC(ourMAC)
+
+	delivered := make(chan *netbeui.Frame, 1)
+	p.SetDeliveryCallback(func(_ [6]byte, _ [6]byte, f *netbeui.Frame) { delivered <- f })
+
+	if err := p.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Establish an LLC Type-2 connection by sending a SABME first.
+	sabme := buildLLCNBFAddressed(ourMAC, remotMAC, nil, 0x7F) // SABME to ourMAC
+	link.Push(sabme)
+	time.Sleep(20 * time.Millisecond) // let the port process the SABME
+
+	want := &netbeui.Frame{
+		Command:        netbeui.CmdSessionInitialize,
+		Data1:          0x81,
+		Data2:          0x05B8,
+		XmitCorrelator: 0x4242,
+		DestNumber:     4,
+		SourceNumber:   1,
+	}
+	body, err := want.Encode()
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	// Send I-frame addressed to our MAC from the remote.
+	link.Push(buildLLCNBFAddressed(ourMAC, remotMAC, body, 0x00, 0x00))
+
+	select {
+	case got := <-delivered:
+		if got.Command != want.Command || got.Data2 != want.Data2 {
+			t.Fatalf("header mismatch: got %+v want %+v", got, want)
+		}
+		if got.DestNumber != want.DestNumber || got.SourceNumber != want.SourceNumber {
+			t.Fatalf("session numbers: got dest=%d src=%d want dest=%d src=%d", got.DestNumber, got.SourceNumber, want.DestNumber, want.SourceNumber)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("no delivery")
