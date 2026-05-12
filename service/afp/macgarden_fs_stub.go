@@ -1,4 +1,4 @@
-//go:build afp && !macgarden
+//go:build (afp || all) && !macgarden && !all
 
 package afp
 
@@ -11,7 +11,7 @@ import (
 var ErrMacGardenDisabled = errors.New("macgarden backend not built; rebuild with -tags macgarden")
 
 func init() {
-	RegisterFS(FSTypeMacGarden, func(_ VolumeConfig) (FileSystem, error) {
+	RegisterFS(FSTypeMacGarden, func(_ VolumeConfig, _ Options) (FileSystem, error) {
 		return nil, ErrMacGardenDisabled
 	})
 }

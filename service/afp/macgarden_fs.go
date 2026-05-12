@@ -1,4 +1,4 @@
-//go:build macgarden
+//go:build (afp && macgarden) || all
 
 package afp
 
@@ -17,6 +17,7 @@ import (
 	"unicode"
 
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/vfs"
 	garden "github.com/ObsoleteMadness/ClassicStack/service/macgarden"
 )
 

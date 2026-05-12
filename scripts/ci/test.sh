@@ -12,6 +12,7 @@ tag_sets=(
   "afp macgarden macip"
   "afp sqlite_cnid"
   "all"
+  "ipx netbeui smb"
 )
 
 for tags in "${tag_sets[@]}"; do
