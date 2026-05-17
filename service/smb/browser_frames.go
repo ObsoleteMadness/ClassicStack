@@ -383,10 +383,13 @@ func parseBrowserString(b []byte) string {
 }
 
 func backupListResponseSource(requestDst netbiosproto.Name, server, workgroup string) netbiosproto.Name {
-	// Win9x clients often address GetBackupListRequest to <workgroup><1D>.
-	// Mirror that identity in replies so browser clients can accept the source
-	// as the local master browser for the machine group.
-	if requestDst.Type() == browserNameTypeMasterBrowser && strings.EqualFold(requestDst.String(), workgroup) {
+	// Win9x clients may address GetBackupListRequest to <workgroup><1D> or
+	// to <workgroup><00>. In either case the master-browser identity the
+	// client expects in the reply is <workgroup><1D> ([MS-BRWS] §3.2.5.5):
+	// without it the client rejects the backup list and re-runs the
+	// election (observed in captures/ipx.pcap frames 161–189). Mirror that
+	// identity whenever the destination name matches our workgroup.
+	if strings.EqualFold(requestDst.String(), workgroup) {
 		return netbiosproto.NewName(workgroup, browserNameTypeMasterBrowser)
 	}
 	return netbiosproto.NewName(server, netbiosproto.NameTypeFileServer)

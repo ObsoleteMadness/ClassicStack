@@ -226,8 +226,8 @@ func TestHandleDatagramGetBackupListRequestSendsResponse(t *testing.T) {
 	if got.Destination != in.Source {
 		t.Fatalf("destination mismatch")
 	}
-	if got.Source.String() != "CLASSICSTACK" || got.Source.Type() != netbiosproto.NameTypeFileServer {
-		t.Fatalf("source name/type: got %q<%#x> want CLASSICSTACK<%#x>", got.Source.String(), got.Source.Type(), netbiosproto.NameTypeFileServer)
+	if got.Source.String() != "WORKGROUP" || got.Source.Type() != browserNameTypeMasterBrowser {
+		t.Fatalf("source name/type: got %q<%#x> want WORKGROUP<%#x>", got.Source.String(), got.Source.Type(), browserNameTypeMasterBrowser)
 	}
 	tx, err := unmarshalBrowserMailslotTransaction(got.Payload)
 	if err != nil {
@@ -473,8 +473,8 @@ func TestHandleDatagramContextGetBackupListRequestSendsDirectedResponse(t *testi
 	if got.remote != ctx.Remote {
 		t.Fatalf("remote endpoint mismatch")
 	}
-	if got.datagram.Source.String() != "CLASSICSTACK" || got.datagram.Source.Type() != netbiosproto.NameTypeFileServer {
-		t.Fatalf("source name/type: got %q<%#x> want CLASSICSTACK<%#x>", got.datagram.Source.String(), got.datagram.Source.Type(), netbiosproto.NameTypeFileServer)
+	if got.datagram.Source.String() != "WORKGROUP" || got.datagram.Source.Type() != browserNameTypeMasterBrowser {
+		t.Fatalf("source name/type: got %q<%#x> want WORKGROUP<%#x>", got.datagram.Source.String(), got.datagram.Source.Type(), browserNameTypeMasterBrowser)
 	}
 	tx, err := unmarshalBrowserMailslotTransaction(got.datagram.Payload)
 	if err != nil {
