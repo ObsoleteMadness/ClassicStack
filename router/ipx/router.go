@@ -42,6 +42,18 @@ type SocketHandler interface {
 	HandleDatagram(d *protocol.Datagram)
 }
 
+// NodeHandler receives every inbound IPX datagram addressed to a
+// specific (non-router-owned) node ID. The MacIPX gateway uses this
+// to claim the pool of node IDs it hands out to Mac clients: traffic
+// destined to any of those nodes is delivered to the gateway, which
+// in turn relays it over DDP to the right MacIPX client.
+//
+// NodeHandler takes precedence over SocketHandler dispatch: when
+// DstNode matches a registered node, the socket map is not consulted.
+type NodeHandler interface {
+	HandleNodeDatagram(d *protocol.Datagram)
+}
+
 // Router dispatches inbound IPX datagrams to socket handlers and
 // fills source addresses on outbound datagrams. Implementations must
 // be safe for concurrent use.
@@ -58,6 +70,23 @@ type Router interface {
 	// destination socket matches. Returns an error when socket is
 	// already registered.
 	RegisterSocket(socket [2]byte, handler SocketHandler) error
+	// RegisterNode attaches handler to every inbound datagram whose
+	// destination node matches. Returns an error when the node is
+	// already registered. The address filter accepts the node even
+	// though it differs from the router's own node ID.
+	RegisterNode(node [6]byte, handler NodeHandler) error
+	// UnregisterNode removes a RegisterNode binding. Idempotent.
+	UnregisterNode(node [6]byte)
+	// RegisterBroadcast attaches handler to every inbound datagram
+	// whose destination node is the broadcast address. Broadcast
+	// handlers run *in addition to* any matching socket handler — they
+	// do not displace it. The MacIPX gateway uses this to fan
+	// broadcast IPX (e.g. game discovery on socket 0xDEAD) out to
+	// every MacIPX client that registered a listen for the socket.
+	// Returns an error when a broadcast handler is already registered.
+	RegisterBroadcast(handler NodeHandler) error
+	// UnregisterBroadcast removes the broadcast handler. Idempotent.
+	UnregisterBroadcast()
 	// Send fills SrcNet/SrcNode on d (when zero) and forwards to the
 	// first attached port. Returns an error when no port is attached.
 	Send(d *protocol.Datagram) error
@@ -71,11 +100,13 @@ type Router interface {
 }
 
 type routerImpl struct {
-	mu      sync.RWMutex
-	network [4]byte
-	node    [6]byte
-	sockets map[[2]byte]SocketHandler
-	ports   []ipx.Port
+	mu        sync.RWMutex
+	network   [4]byte
+	node      [6]byte
+	sockets   map[[2]byte]SocketHandler
+	nodes     map[[6]byte]NodeHandler
+	broadcast NodeHandler
+	ports     []ipx.Port
 }
 
 // NewRouter returns a router with the default network number and a
@@ -85,6 +116,7 @@ func NewRouter() Router {
 	return &routerImpl{
 		network: DefaultNetwork,
 		sockets: make(map[[2]byte]SocketHandler),
+		nodes:   make(map[[6]byte]NodeHandler),
 	}
 }
 
@@ -116,6 +148,41 @@ func (r *routerImpl) RegisterSocket(socket [2]byte, handler SocketHandler) error
 	r.sockets[socket] = handler
 	netlog.Debug("[IPX][Router] registered socket=%02x%02x", socket[0], socket[1])
 	return nil
+}
+
+func (r *routerImpl) RegisterNode(node [6]byte, handler NodeHandler) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.nodes[node]; exists {
+		return errors.New("ipx: node already registered")
+	}
+	r.nodes[node] = handler
+	netlog.Debug("[IPX][Router] registered node=%02x%02x%02x%02x%02x%02x",
+		node[0], node[1], node[2], node[3], node[4], node[5])
+	return nil
+}
+
+func (r *routerImpl) UnregisterNode(node [6]byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.nodes, node)
+}
+
+func (r *routerImpl) RegisterBroadcast(handler NodeHandler) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.broadcast != nil {
+		return errors.New("ipx: broadcast handler already registered")
+	}
+	r.broadcast = handler
+	netlog.Debug("[IPX][Router] registered broadcast handler")
+	return nil
+}
+
+func (r *routerImpl) UnregisterBroadcast() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.broadcast = nil
 }
 
 func (r *routerImpl) AddPort(p ipx.Port) {
@@ -179,14 +246,37 @@ func (r *routerImpl) Inbound(d *protocol.Datagram) {
 		d.DstNet, d.DstNode, d.DstSock[0], d.DstSock[1],
 		len(d.Payload),
 	)
+	// Node-scoped handlers (e.g. the MacIPX gateway claiming a pool of
+	// assigned client nodes) take precedence over socket dispatch: the
+	// gateway needs every frame addressed to one of its clients regardless
+	// of which IPX socket the client opened.
 	r.mu.RLock()
-	handler, ok := r.sockets[d.DstSock]
+	nodeHandler, hasNode := r.nodes[d.DstNode]
+	socketHandler, hasSocket := r.sockets[d.DstSock]
+	broadcast := r.broadcast
 	r.mu.RUnlock()
-	if !ok {
-		netlog.Debug("[IPX][Router] no handler for socket=%02x%02x", d.DstSock[0], d.DstSock[1])
+	if hasNode {
+		nodeHandler.HandleNodeDatagram(d)
 		return
 	}
-	handler.HandleDatagram(d)
+	// Broadcasts fan out: deliver to any registered socket handler AND
+	// to the broadcast handler (the MacIPX gateway). Either or both may
+	// be absent; that is fine. A broadcast with no handler at all is
+	// just dropped silently — common on busy segments and not a bug.
+	isBroadcast := d.DstNode == BroadcastNode
+	delivered := false
+	if hasSocket {
+		socketHandler.HandleDatagram(d)
+		delivered = true
+	}
+	if isBroadcast && broadcast != nil {
+		broadcast.HandleNodeDatagram(d)
+		delivered = true
+	}
+	if !delivered {
+		netlog.Debug("[IPX][Router] no handler for socket=%02x%02x (broadcast=%v)",
+			d.DstSock[0], d.DstSock[1], isBroadcast)
+	}
 }
 
 // acceptsDest returns true when (network, node) matches the router's
@@ -197,6 +287,7 @@ func (r *routerImpl) acceptsDest(network [4]byte, node [6]byte) (bool, string) {
 	r.mu.RLock()
 	ours := r.network
 	myNode := r.node
+	_, claimed := r.nodes[node]
 	r.mu.RUnlock()
 
 	if !isZero4(network) && network != ours {
@@ -205,10 +296,10 @@ func (r *routerImpl) acceptsDest(network [4]byte, node [6]byte) (bool, string) {
 	if node == BroadcastNode {
 		return true, ""
 	}
-	if node != myNode {
-		return false, "node"
+	if node == myNode || claimed {
+		return true, ""
 	}
-	return true, ""
+	return false, "node"
 }
 
 func isZero4(b [4]byte) bool { return b == [4]byte{} }

@@ -240,6 +240,160 @@ func TestRegisterSocketRejectsDuplicates(t *testing.T) {
 	}
 }
 
+// fakeNodeHandler is the NodeHandler counterpart of fakeHandler.
+type fakeNodeHandler struct {
+	mu   sync.Mutex
+	last *protocol.Datagram
+	hits atomic.Int32
+}
+
+func (f *fakeNodeHandler) HandleNodeDatagram(d *protocol.Datagram) {
+	f.mu.Lock()
+	f.last = d
+	f.mu.Unlock()
+	f.hits.Add(1)
+}
+
+func TestRegisterNodeDispatch(t *testing.T) {
+	// A node-scoped handler receives traffic addressed to a node that
+	// is *not* the router's own — the MacIPX gateway claims a pool of
+	// assigned client nodes this way.
+	r := NewRouter()
+	net, node := ours()
+	r.SetIdentity(net, node)
+
+	claimed := [6]byte{0x00, 0x00, 0x00, 0x00, 0x01, 0x01} // MacIPX-style
+	nh := &fakeNodeHandler{}
+	if err := r.RegisterNode(claimed, nh); err != nil {
+		t.Fatalf("RegisterNode: %v", err)
+	}
+
+	d := &protocol.Datagram{
+		DstNet:  net,
+		DstNode: claimed,
+		DstSock: [2]byte{0x40, 0x00},
+	}
+	r.Inbound(d)
+	if nh.hits.Load() != 1 {
+		t.Fatalf("node handler not invoked: %d", nh.hits.Load())
+	}
+}
+
+func TestRegisterNodeTakesPrecedenceOverSocket(t *testing.T) {
+	r := NewRouter()
+	net, node := ours()
+	r.SetIdentity(net, node)
+
+	sh := &fakeHandler{}
+	_ = r.RegisterSocket([2]byte{0x04, 0x53}, sh)
+
+	claimed := [6]byte{0x00, 0x00, 0x00, 0x00, 0x01, 0x01}
+	nh := &fakeNodeHandler{}
+	_ = r.RegisterNode(claimed, nh)
+
+	d := &protocol.Datagram{
+		DstNet:  net,
+		DstNode: claimed,
+		DstSock: [2]byte{0x04, 0x53}, // matches the socket handler too
+	}
+	r.Inbound(d)
+	if nh.hits.Load() != 1 || sh.hits.Load() != 0 {
+		t.Fatalf("dispatch precedence wrong: node=%d socket=%d",
+			nh.hits.Load(), sh.hits.Load())
+	}
+}
+
+func TestBroadcastHandlerRuns(t *testing.T) {
+	r := NewRouter()
+	net, node := ours()
+	r.SetIdentity(net, node)
+
+	bh := &fakeNodeHandler{}
+	if err := r.RegisterBroadcast(bh); err != nil {
+		t.Fatalf("RegisterBroadcast: %v", err)
+	}
+
+	d := &protocol.Datagram{
+		DstNet:  net,
+		DstNode: BroadcastNode,
+		DstSock: [2]byte{0xDE, 0xAD},
+	}
+	r.Inbound(d)
+	if bh.hits.Load() != 1 {
+		t.Fatalf("broadcast handler not invoked: %d", bh.hits.Load())
+	}
+}
+
+func TestBroadcastDoesNotDisplaceSocketHandler(t *testing.T) {
+	// SAP responds to broadcast queries; the gateway is also a
+	// broadcast listener. Both must run for the same frame.
+	r := NewRouter()
+	net, node := ours()
+	r.SetIdentity(net, node)
+
+	sh := &fakeHandler{}
+	_ = r.RegisterSocket([2]byte{0x04, 0x52}, sh) // SAP
+
+	bh := &fakeNodeHandler{}
+	_ = r.RegisterBroadcast(bh)
+
+	d := &protocol.Datagram{
+		DstNet:  net,
+		DstNode: BroadcastNode,
+		DstSock: [2]byte{0x04, 0x52},
+	}
+	r.Inbound(d)
+	if sh.hits.Load() != 1 {
+		t.Fatalf("socket handler missed: %d", sh.hits.Load())
+	}
+	if bh.hits.Load() != 1 {
+		t.Fatalf("broadcast handler missed: %d", bh.hits.Load())
+	}
+}
+
+func TestUnregisterBroadcastIsIdempotent(t *testing.T) {
+	r := NewRouter()
+	bh := &fakeNodeHandler{}
+	_ = r.RegisterBroadcast(bh)
+	r.UnregisterBroadcast()
+	r.UnregisterBroadcast() // must not panic
+
+	net, node := ours()
+	r.SetIdentity(net, node)
+	d := &protocol.Datagram{
+		DstNet:  net,
+		DstNode: BroadcastNode,
+		DstSock: [2]byte{0xDE, 0xAD},
+	}
+	r.Inbound(d)
+	if bh.hits.Load() != 0 {
+		t.Fatalf("broadcast handler ran after UnregisterBroadcast: %d", bh.hits.Load())
+	}
+}
+
+func TestUnregisterNodeIsIdempotent(t *testing.T) {
+	r := NewRouter()
+	claimed := [6]byte{0x00, 0x00, 0x00, 0x00, 0x01, 0x01}
+	nh := &fakeNodeHandler{}
+	_ = r.RegisterNode(claimed, nh)
+	r.UnregisterNode(claimed)
+	r.UnregisterNode(claimed) // second call must not panic
+
+	// After unregister the router must no longer accept traffic for
+	// that node.
+	net, node := ours()
+	r.SetIdentity(net, node)
+	d := &protocol.Datagram{
+		DstNet:  net,
+		DstNode: claimed,
+		DstSock: [2]byte{0x40, 0x00},
+	}
+	r.Inbound(d)
+	if nh.hits.Load() != 0 {
+		t.Fatalf("handler invoked after UnregisterNode")
+	}
+}
+
 func TestNewRouterDefaults(t *testing.T) {
 	r := NewRouter()
 	if r.Network() != DefaultNetwork {
