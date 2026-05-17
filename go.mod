@@ -1,8 +1,6 @@
 module github.com/ObsoleteMadness/ClassicStack
 
-go 1.23.0
-
-toolchain go1.23.4
+go 1.25.10
 
 require (
 	github.com/PuerkitoBio/goquery v1.10.0
@@ -11,8 +9,8 @@ require (
 	github.com/knadh/koanf/parsers/toml/v2 v2.2.0
 	github.com/knadh/koanf/providers/file v1.2.1
 	github.com/knadh/koanf/v2 v2.3.4
-	golang.org/x/net v0.33.0
-	golang.org/x/sys v0.32.0
+	golang.org/x/net v0.54.0
+	golang.org/x/sys v0.44.0
 	modernc.org/sqlite v1.35.0
 	tailscale.com v1.64.2
 )
@@ -40,10 +38,10 @@ require (
 	github.com/stretchr/testify v1.11.1 // indirect
 	go4.org/mem v0.0.0-20220726221520-4f986261bf13 // indirect
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
-	golang.org/x/crypto v0.31.0 // indirect
+	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/exp v0.0.0-20240119083558-1b970713d09a // indirect
-	golang.org/x/sync v0.10.0 // indirect
-	golang.org/x/text v0.21.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
+	golang.org/x/text v0.37.0 // indirect
 	golang.zx2c4.com/wireguard/windows v0.5.3 // indirect
 	modernc.org/libc v1.61.13 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
