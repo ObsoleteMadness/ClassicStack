@@ -5,6 +5,7 @@ package afp
 import (
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
 	"github.com/ObsoleteMadness/ClassicStack/pkg/cnid"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/vfs"
 )
 
 // CNID constants and the Store interface now live in pkg/cnid. These
@@ -73,4 +74,25 @@ func resolveCNIDBackend(options Options) CNIDBackend {
 	default:
 		return SQLiteCNIDBackend{}
 	}
+}
+
+// CNIDEventSubscriber implements vfs.Subscriber to watch for OpRename
+// and OpDelete events, updating the CNID DB when a HostPath falls within
+// a mounted volume.
+type CNIDEventSubscriber struct {
+	// In the future this will hold references to mounted volumes
+}
+
+// OnVFSEvent implements vfs.Subscriber.
+func (s *CNIDEventSubscriber) OnVFSEvent(ev vfs.Event) {
+	if ev.Origin == "afp" {
+		return
+	}
+	if ev.Op == vfs.OpRename || ev.Op == vfs.OpDelete {
+		netlog.Debug("[AFP][CNID] vfs event %s on %s (origin: %s)", ev.Op, ev.HostPath, ev.Origin)
+	}
+}
+
+func init() {
+	vfs.DefaultBus.Subscribe(&CNIDEventSubscriber{})
 }

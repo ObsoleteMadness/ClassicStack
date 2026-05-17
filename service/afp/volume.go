@@ -40,7 +40,7 @@ func (s *Service) installVolumes(configs []VolumeConfig, fallbackFS FileSystem) 
 		store.EnsureReserved(filepath.Clean(cfg.Path), CNIDRoot)
 		s.cnidStores[volume.ID] = store
 
-		s.volumeFS[volume.ID] = resolveVolumeFS(cfg, fallbackFS)
+		s.volumeFS[volume.ID] = s.resolveVolumeFS(cfg, fallbackFS)
 		s.installAppleDoubleBackend(volume.ID, cfg, fallbackFS)
 	}
 }
@@ -54,11 +54,11 @@ func (s *Service) assignVolumeID(cfg VolumeConfig, i int, used map[uint16]struct
 	return id
 }
 
-func resolveVolumeFS(cfg VolumeConfig, fallbackFS FileSystem) FileSystem {
+func (s *Service) resolveVolumeFS(cfg VolumeConfig, fallbackFS FileSystem) FileSystem {
 	if fallbackFS != nil {
 		return fallbackFS
 	}
-	if backend, err := newBackendForVolumeConfig(cfg); err == nil {
+	if backend, err := s.newBackendForVolumeConfig(cfg); err == nil {
 		return backend
 	}
 	return nil
@@ -538,12 +538,12 @@ func (s *Service) fsForPath(path string) FileSystem {
 	return s.fs
 }
 
-func newBackendForVolumeConfig(cfg VolumeConfig) (FileSystem, error) {
+func (s *Service) newBackendForVolumeConfig(cfg VolumeConfig) (FileSystem, error) {
 	fsType, err := NormalizeFSType(cfg.FSType)
 	if err != nil {
 		return nil, err
 	}
 	cfg.FSType = fsType
 	cfg.Path = filepath.Clean(cfg.Path)
-	return NewFS(cfg)
+	return NewFS(cfg, s.options)
 }

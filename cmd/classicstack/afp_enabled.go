@@ -9,6 +9,7 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/config"
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/vfs"
 	"github.com/ObsoleteMadness/ClassicStack/service"
 	"github.com/ObsoleteMadness/ClassicStack/service/afp"
 	"github.com/ObsoleteMadness/ClassicStack/service/asp"
@@ -86,6 +87,11 @@ func wireAFP(in AFPWiring) (AFPHook, error) {
 	if err != nil {
 		return nil, fmt.Errorf("AFP: %w", err)
 	}
+	var mapper vfs.ShortnameMapper
+	if in.Shortname != nil {
+		mapper = in.Shortname.Mapper()
+	}
+
 	afpSvc := afp.NewService(
 		cfg.Name,
 		vols,
@@ -97,6 +103,7 @@ func wireAFP(in AFPWiring) (AFPHook, error) {
 			AppleDoubleMode:     mode,
 			ExtensionMap:        extMap,
 			PersistentVolumeIDs: cfg.PersistentVolumeIDs,
+			ShortnameMapper:     mapper,
 		},
 	)
 	for _, t := range transports {

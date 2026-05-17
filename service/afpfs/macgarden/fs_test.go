@@ -3,6 +3,7 @@
 package macgarden
 
 import (
+	"errors"
 	"io/fs"
 	"path/filepath"
 	"testing"
@@ -166,7 +167,7 @@ func TestMacGardenStat_ItemChildIsLazyUntilItemOpened(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected fs.ErrNotExist for unopened item child path")
 	}
-	if err != fs.ErrNotExist {
+	if !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("Stat error = %v, want %v", err, fs.ErrNotExist)
 	}
 	if len(fsys.itemByURL) != 0 {

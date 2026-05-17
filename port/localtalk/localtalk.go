@@ -45,7 +45,6 @@ type Port struct {
 	node            uint8
 	networkMin      uint16
 	networkMax      uint16
-	extendedNetwork bool
 	nodeAttempts    int
 	desiredNodeList []uint8
 	mu              sync.Mutex
@@ -318,6 +317,11 @@ func (p *Port) nodeRun() {
 func (p *Port) InboundFrame(frame []byte) {
 	parsed, err := LLAPFrameFromBytes(frame)
 	if err != nil {
+		return
+	}
+	// Filter out loopback frames: if the source node is our own node address,
+	// this is a UDP/serial loopback echo of our outbound frame, so drop it.
+	if parsed.SourceNode == p.node && p.node != 0 {
 		return
 	}
 	parsedBytes := parsed.Bytes()

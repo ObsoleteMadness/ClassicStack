@@ -50,6 +50,11 @@ func main() {
 	pcapHWAddr := flag.String("ethertalk-hw-address", "DE:AD:BE:EF:CA:FE", "EtherTalk hardware address (6-byte MAC)")
 	etBridgeMode := flag.String("ethertalk-bridge-mode", "auto", "EtherTalk bridge mode: auto, ethernet, wifi")
 	etBridgeHostMAC := flag.String("ethertalk-bridge-host-mac", "", "Host adapter MAC used for Wi-Fi bridge shim (default: ethertalk-hw-address)")
+	etFilter := flag.String("ethertalk-filter", "", "pcap BPF filter override for EtherTalk")
+	bridgeMode := flag.String("bridge-mode", "", "Shared raw-link backend mode: pcap, tap, or tun (overrides ethertalk-backend)")
+	bridgeDevice := flag.String("bridge-device", "", "Shared raw-link device/interface (overrides ethertalk-device)")
+	bridgeHWAddr := flag.String("bridge-hw-address", "", "Shared raw-link host MAC (overrides ethertalk-hw-address)")
+	bridgeFrameMode := flag.String("bridge-frame-mode", "", "Shared frame mode for bridge adaptation: auto, ethernet, wifi (overrides ethertalk-bridge-mode)")
 	listPcap := flag.Bool("list-pcap-devices", false, "List pcap devices and exit")
 	etNetMin := flag.Uint("ethertalk-seed-network-min", 3, "EtherTalk seed network min")
 	etNetMax := flag.Uint("ethertalk-seed-network-max", 5, "EtherTalk seed network max")
@@ -69,6 +74,7 @@ func main() {
 	macipNAT := flag.Bool("macip-nat", false, "Enable NAPT: rewrite Mac client source IPs to the gateway IP on the physical network")
 	macipDHCP := flag.Bool("macip-dhcp-relay", false, "Use DHCP to assign IPs to MacIP clients instead of the static pool (non-NAT mode)")
 	macipStateFile := flag.String("macip-lease-file", "", "File to persist MacIP lease state across restarts (empty to disable)")
+	macipFilter := flag.String("macip-filter", "", "pcap BPF filter override for MacIP (default is auto-generated)")
 
 	// Packet parsing / capture flags.
 	parsePackets := flag.Bool("parse-packets", false, "Decode and log every inbound DDP packet (ATP/ASP/AFP layers)")
@@ -90,6 +96,41 @@ func main() {
 	afpAppleDoubleMode := flag.String("afp-appledouble-mode", "modern", "AppleDouble metadata mode: modern or legacy")
 	var afpVolumes volumeFlags
 	flag.Var(&afpVolumes, "afp-volume", `AFP volume to share, format: "Name:Path" (repeatable, e.g. -afp-volume "Mac Share:c:\mac")`)
+
+	// IPX flags. Real packet handling lands behind //go:build ipx; the
+	// disabled stub logs a warning if -ipx-enabled is set without the tag.
+	ipxEnable := flag.Bool("ipx-enabled", false, "Enable IPX router (requires -tags ipx)")
+	ipxIface := flag.String("ipx-interface", "", "Rawlink/pcap interface for IPX (default: reuse -ethertalk-device)")
+	ipxFraming := flag.String("ipx-framing", "ethernet_ii", "IPX framing: ethernet_ii, raw_802_3, llc, snap")
+	ipxInternal := flag.String("ipx-internal-network", "", "IPX internal network number (8-hex-digit, e.g. DEADBEEF)")
+	ipxFilter := flag.String("ipx-filter", "", "pcap BPF filter override for IPX (default: ipx)")
+
+	// NetBEUI flags.
+	netbeuiEnable := flag.Bool("netbeui-enabled", false, "Enable NetBEUI port (requires -tags netbeui)")
+	netbeuiIface := flag.String("netbeui-interface", "", "Rawlink/pcap interface for NetBEUI (default: reuse -ethertalk-device)")
+	netbeuiFilter := flag.String("netbeui-filter", "", "pcap BPF filter override for NetBEUI (default: llc)")
+
+	// NetBIOS flags.
+	netbiosEnable := flag.Bool("netbios-enabled", false, "Enable NetBIOS service (requires -tags netbios)")
+	netbiosTransports := flag.String("netbios-transports", "tcp", "Comma-separated NetBIOS transports: any of tcp, netbeui, ipx")
+	netbiosScopeID := flag.String("netbios-scope-id", "", "NetBIOS scope ID (RFC 1001/1002)")
+	netbiosServerName := flag.String("netbios-server-name", "", "Deprecated: NetBIOS identity derives from SMB server/workgroup")
+	netbiosWorkgroup := flag.String("netbios-workgroup", "", "Deprecated: NetBIOS identity derives from SMB server/workgroup")
+
+	// SMB flags.
+	smbEnable := flag.Bool("smb-enabled", false, "Enable SMB 1.0 server (requires -tags smb)")
+	smbNBT := flag.String("smb-nbt-binding", ":139", "SMB NBT (NetBIOS over TCP) listen address")
+	smbDirect := flag.String("smb-direct-binding", "", "SMB direct (TCP/445) listen address; empty disables direct SMB")
+	smbGuest := flag.Bool("smb-guest-ok", false, "Accept unauthenticated SMB sessions")
+	smbServerName := flag.String("smb-server-name", "CLASSICSTACK", "SMB/NetBIOS computer name")
+	smbWorkgroup := flag.String("smb-workgroup", "WORKGROUP", "SMB/NetBIOS workgroup name")
+	var smbShares volumeFlags
+	flag.Var(&smbShares, "smb-share", `SMB share, format: "Name:Path" (repeatable)`)
+
+	// Shortname flags.
+	shortWindows := flag.Bool("shortname-windows-shortnames", false, "Enable Windows native shortnames")
+	shortBackend := flag.String("shortname-backend", "memory", "Shortname store backend: memory or sqlite")
+	shortDB := flag.String("shortname-db", "", "Shortname store DB path (sqlite backend)")
 
 	flag.Parse()
 
@@ -138,22 +179,28 @@ func main() {
 		configSource = src
 	} else {
 		cfg = flagsToConfig(flagInputs{
-			LogLevel:                *logLevel,
-			LogTraffic:              *logTraffic,
-			ParsePackets:            *parsePackets,
-			ParseOutput:             *parseOutput,
-			LToUDPEnabled:           *ltoudp,
-			LToUDPInterface:         *ltIface,
-			LToUDPSeedNetwork:       *ltNet,
-			LToUDPSeedZone:          *ltZone,
-			TashTalkPort:            *tashtalkSerial,
-			TashTalkSeedNetwork:     *ttNet,
-			TashTalkSeedZone:        *ttZone,
+			LogLevel:            *logLevel,
+			LogTraffic:          *logTraffic,
+			ParsePackets:        *parsePackets,
+			ParseOutput:         *parseOutput,
+			LToUDPEnabled:       *ltoudp,
+			LToUDPInterface:     *ltIface,
+			LToUDPSeedNetwork:   *ltNet,
+			LToUDPSeedZone:      *ltZone,
+			TashTalkPort:        *tashtalkSerial,
+			TashTalkSeedNetwork: *ttNet,
+			TashTalkSeedZone:    *ttZone,
+			BridgeMode:          *bridgeMode,
+			BridgeDevice:        *bridgeDevice,
+			BridgeHWAddress:     *bridgeHWAddr,
+			BridgeBridgeMode:    *bridgeFrameMode,
+
 			EtherTalkDevice:         *pcapDev,
 			EtherTalkBackend:        *etBackend,
 			EtherTalkHWAddress:      *pcapHWAddr,
 			EtherTalkBridgeMode:     *etBridgeMode,
 			EtherTalkBridgeHostMAC:  *etBridgeHostMAC,
+			EtherTalkFilter:         *etFilter,
 			EtherTalkSeedNetworkMin: *etNetMin,
 			EtherTalkSeedNetworkMax: *etNetMax,
 			EtherTalkSeedZone:       *etZone,
@@ -168,9 +215,38 @@ func main() {
 			MacIPNAT:                *macipNAT,
 			MacIPDHCPRelay:          *macipDHCP,
 			MacIPLeaseFile:          *macipStateFile,
+			MacIPFilter:             *macipFilter,
 			CaptureLocalTalk:        *captureLocalTalk,
 			CaptureEtherTalk:        *captureEtherTalk,
 			CaptureSnaplen:          *captureSnaplen,
+
+			IPXEnabled:         *ipxEnable,
+			IPXInterface:       *ipxIface,
+			IPXFraming:         *ipxFraming,
+			IPXInternalNetwork: *ipxInternal,
+			IPXFilter:          *ipxFilter,
+
+			NetBEUIEnabled:   *netbeuiEnable,
+			NetBEUIInterface: *netbeuiIface,
+			NetBEUIFilter:    *netbeuiFilter,
+
+			NetBIOSEnabled:    *netbiosEnable,
+			NetBIOSTransports: *netbiosTransports,
+			NetBIOSScopeID:    *netbiosScopeID,
+			NetBIOSServerName: *netbiosServerName,
+			NetBIOSWorkgroup:  *netbiosWorkgroup,
+
+			SMBEnabled:       *smbEnable,
+			SMBNBTBinding:    *smbNBT,
+			SMBDirectBinding: *smbDirect,
+			SMBGuestOk:       *smbGuest,
+			SMBServerName:    *smbServerName,
+			SMBWorkgroup:     *smbWorkgroup,
+			SMBShareValues:   []string(smbShares),
+
+			ShortnameWindowsShortnames: *shortWindows,
+			ShortnameBackend:           *shortBackend,
+			ShortnameDBPath:            *shortDB,
 		})
 	}
 
@@ -195,12 +271,13 @@ func main() {
 		netlog.SetLogFunc(func(s string) { netlog.Debug("%s", s) })
 	}
 
-	cfg.EtherTalk.Backend = strings.ToLower(strings.TrimSpace(cfg.EtherTalk.Backend))
-	switch cfg.EtherTalk.Backend {
+	cfg.Bridge.Mode = strings.ToLower(strings.TrimSpace(cfg.Bridge.Mode))
+	switch cfg.Bridge.Mode {
 	case "", "pcap", "tap", "tun":
 	default:
-		log.Fatalf("invalid -ethertalk-backend %q (want pcap, tap, or tun)", cfg.EtherTalk.Backend)
+		log.Fatalf("invalid bridge mode %q (want pcap, tap, or tun)", cfg.Bridge.Mode)
 	}
+	syncBridgeToEtherTalk(&cfg)
 
 	if *listPcap {
 		names, err := rawlink.InterfaceNames()
@@ -228,15 +305,20 @@ func main() {
 		return
 	}
 
-	if cfg.EtherTalk.Device == "" && cfg.EtherTalk.Backend == "pcap" {
+	if cfg.EtherTalk.Device == "" && cfg.Bridge.Mode == "pcap" {
 		if detected, ok := rawlink.DetectDefaultPcapInterface(); ok {
 			netlog.Info("[MAIN] auto-detected pcap interface: %s", detected)
-			cfg.EtherTalk.Device = detected
+			cfg.Bridge.Device = detected
+			syncBridgeToEtherTalk(&cfg)
 		}
 	}
-	if cfg.EtherTalk.Device != "" && cfg.EtherTalk.Backend == "pcap" && strings.TrimSpace(cfg.EtherTalk.BridgeHostMAC) == "" {
+	if cfg.EtherTalk.Device != "" && cfg.Bridge.Mode == "pcap" && strings.TrimSpace(cfg.EtherTalk.BridgeHostMAC) == "" {
 		if hostMAC, ok := rawlink.DetectHostMACForPcapInterface(cfg.EtherTalk.Device); ok {
 			cfg.EtherTalk.BridgeHostMAC = hostMAC
+			if strings.TrimSpace(cfg.Bridge.HWAddress) == "" {
+				cfg.Bridge.HWAddress = hostMAC
+				syncBridgeToEtherTalk(&cfg)
+			}
 			netlog.Info("[MAIN] auto-detected bridge host MAC for %s: %s", cfg.EtherTalk.Device, hostMAC)
 		}
 	}
@@ -262,6 +344,7 @@ func main() {
 			DesiredNode:    uint8(cfg.EtherTalk.DesiredNode),
 			SeedZoneNames:  [][]byte{[]byte(cfg.EtherTalk.SeedZone)},
 			BridgeMode:     cfg.EtherTalk.BridgeMode,
+			Filter:         cfg.EtherTalk.Filter,
 		}
 		if cfg.EtherTalk.BridgeHostMAC != "" {
 			hostMAC, err := hwaddr.ParseEthernet(cfg.EtherTalk.BridgeHostMAC)
@@ -313,33 +396,62 @@ func main() {
 	}
 
 	macIP, err := wireMacIP(MacIPConfig{
-		Enabled:          cfg.MacIPEnabled,
-		NATGatewayIP:     cfg.MacIPGWIP,
-		NATSubnet:        cfg.MacIPSubnet,
-		Nameserver:       cfg.MacIPNameserver,
-		Zone:             cfg.MacIPZone,
-		IPGateway:        cfg.MacIPGatewayIP,
-		NAT:              cfg.MacIPNAT,
-		DHCPRelay:        cfg.MacIPDHCPRelay,
-		StateFile:        cfg.MacIPLeaseFile,
-		PcapDevice:       cfg.EtherTalk.Device,
-		BridgeHostMAC:    cfg.EtherTalk.BridgeHostMAC,
-		PcapHWAddr:       cfg.EtherTalk.HWAddress,
-		EtherTalkZone:    cfg.EtherTalk.SeedZone,
-		EtherTalkBackend: cfg.EtherTalk.Backend,
-		NBP:              nbpSvc,
+		Enabled:         cfg.MacIPEnabled,
+		BridgeMode:      cfg.Bridge.Mode,
+		BridgeDevice:    cfg.Bridge.Device,
+		BridgeHWAddress: cfg.Bridge.HWAddress,
+		BridgeFrameMode: cfg.Bridge.BridgeMode,
+		NATGatewayIP:    cfg.MacIPGWIP,
+		NATSubnet:       cfg.MacIPSubnet,
+		Nameserver:      cfg.MacIPNameserver,
+		Zone:            cfg.MacIPZone,
+		IPGateway:       cfg.MacIPGatewayIP,
+		NAT:             cfg.MacIPNAT,
+		DHCPRelay:       cfg.MacIPDHCPRelay,
+		StateFile:       cfg.MacIPLeaseFile,
+		Filter:          cfg.MacIPFilter,
+		EtherTalkZone:   cfg.EtherTalk.SeedZone,
+		NBP:             nbpSvc,
 	})
 	if err != nil {
-		log.Fatalf("MacIP wiring failed: %v", err)
+		for _, s := range captureSinks {
+			_ = s.Close()
+		}
+		log.Fatalf("MacIP wiring failed: %v", err) //nolint:gocritic // captureSinks closed manually above
 	}
 	if macIP != nil {
 		services = append(services, macIP.Service())
+	}
+
+	ipxGW, err := wireIPXGW(IPXGWConfig{
+		Enabled:  cfg.IPXGWEnabled,
+		Bindings: cfg.IPXGWBindings,
+		NBP:      nbpSvc,
+	})
+	if err != nil {
+		for _, s := range captureSinks {
+			_ = s.Close()
+		}
+		log.Fatalf("IPXGW wiring failed: %v", err) //nolint:gocritic // captureSinks closed manually above
+	}
+	if ipxGW != nil {
+		services = append(services, ipxGW.Service())
+	}
+
+	shortHook, err := wireShortname(ShortnameConfig{
+		WindowsShortnames: cfg.ShortnameWindowsShortnames,
+		Backend:           cfg.ShortnameBackend,
+		DBPath:            cfg.ShortnameDBPath,
+	})
+	if err != nil {
+		log.Fatalf("Shortname wiring failed: %v", err)
 	}
 
 	afpHook, err := wireAFP(AFPWiring{
 		Source:     configSource,
 		FromConfig: fromConfigFile,
 		NBP:        nbpSvc,
+		Shortname:  shortHook,
 		Flags: AFPFlagInputs{
 			ServerName:       *afpServerName,
 			Zone:             *afpZone,
@@ -359,6 +471,100 @@ func main() {
 		afpHook.AttachMacIP(macIPAFPHooks{macIP})
 	}
 	services = append(services, afpHook.Services()...)
+
+	// IPX and NetBEUI each open their own pcap rawlink in wireIPX /
+	// wireNetBEUI. They don't share with EtherTalk; the kernel filter
+	// per handle keeps the cross-protocol traffic isolated. When no
+	// interface is configured for them explicitly, fall back to
+	// EtherTalk's — the typical deployment runs every protocol on
+	// the same physical NIC.
+	ipxResolvedIface := cfg.IPXInterface
+	if cfg.IPXEnabled && strings.TrimSpace(ipxResolvedIface) == "" && cfg.EtherTalk.Device != "" {
+		if cfg.Bridge.Device != "" {
+			ipxResolvedIface = cfg.Bridge.Device
+			netlog.Info("[MAIN][IPX] no -ipx-interface set; reusing Bridge interface %s", ipxResolvedIface)
+		} else {
+			ipxResolvedIface = cfg.EtherTalk.Device
+			netlog.Info("[MAIN][IPX] no -ipx-interface set; reusing EtherTalk interface %s", ipxResolvedIface)
+		}
+	}
+	ipxHook, err := wireIPX(IPXConfig{
+		Enabled:         cfg.IPXEnabled,
+		BridgeMode:      cfg.Bridge.Mode,
+		BridgeFrameMode: cfg.Bridge.BridgeMode,
+		Interface:       ipxResolvedIface,
+		BridgeHWAddress: cfg.Bridge.HWAddress,
+		Framing:         cfg.IPXFraming,
+		InternalNetwork: cfg.IPXInternalNetwork,
+		Filter:          cfg.IPXFilter,
+		CapturePath:     cfg.Capture.IPX,
+		CaptureSnaplen:  cfg.Capture.Snaplen,
+	})
+	if err != nil {
+		log.Fatalf("IPX wiring failed: %v", err)
+	}
+	if ipxGW != nil && ipxHook != nil {
+		ipxGW.AttachIPXRouter(ipxHook.Router())
+	}
+	netbeuiResolvedIface := cfg.NetBEUIInterface
+	if cfg.NetBEUIEnabled && strings.TrimSpace(netbeuiResolvedIface) == "" && cfg.EtherTalk.Device != "" {
+		if cfg.Bridge.Device != "" {
+			netbeuiResolvedIface = cfg.Bridge.Device
+			netlog.Info("[MAIN][NetBEUI] no -netbeui-interface set; reusing Bridge interface %s", netbeuiResolvedIface)
+		} else {
+			netbeuiResolvedIface = cfg.EtherTalk.Device
+			netlog.Info("[MAIN][NetBEUI] no -netbeui-interface set; reusing EtherTalk interface %s", netbeuiResolvedIface)
+		}
+	}
+	nbeuiHook, err := wireNetBEUI(NetBEUIConfig{
+		Enabled:         cfg.NetBEUIEnabled,
+		BridgeMode:      cfg.Bridge.Mode,
+		BridgeFrameMode: cfg.Bridge.BridgeMode,
+		Interface:       netbeuiResolvedIface,
+		BridgeHWAddress: cfg.Bridge.HWAddress,
+		Filter:          cfg.NetBEUIFilter,
+		CapturePath:     cfg.Capture.NetBEUI,
+		CaptureSnaplen:  cfg.Capture.Snaplen,
+	})
+	if err != nil {
+		log.Fatalf("NetBEUI wiring failed: %v", err)
+	}
+	nbHook, err := wireNetBIOS(NetBIOSConfig{
+		Enabled:    cfg.NetBIOSEnabled,
+		Transports: cfg.NetBIOSTransports,
+		ScopeID:    cfg.NetBIOSScopeID,
+		ServerName: cfg.NetBIOSServerName,
+		Workgroup:  cfg.NetBIOSWorkgroup,
+		IPX:        ipxHook,
+		NetBEUI:    nbeuiHook,
+	})
+	if err != nil {
+		log.Fatalf("NetBIOS wiring failed: %v", err)
+	}
+
+	smbShareConfigs := loadSMBShares(configSource, fromConfigFile, cfg.SMBShareFlags)
+	smbHook, err := wireSMB(SMBConfig{
+		Enabled:       cfg.SMBEnabled,
+		NBTBinding:    cfg.SMBNBTBinding,
+		DirectBinding: cfg.SMBDirectBinding,
+		GuestOk:       cfg.SMBGuestOk,
+		Workgroup:     cfg.SMBWorkgroup,
+		ServerName:    cfg.SMBServerName,
+		Shares:        smbShareConfigs,
+		NetBIOS:       nbHook,
+		IPX:           ipxHook,
+		Shortname:     shortHook,
+	})
+	if err != nil {
+		log.Fatalf("SMB wiring failed: %v", err)
+	}
+
+	// SMB rides on NetBIOS and is not a DDP service either, so it
+	// lives outside the AppleTalk service set. Its lifecycle is
+	// driven directly below alongside IPX/NetBEUI/NetBIOS. The
+	// shortname mapper is consumed via wireSMB; no lifecycle of
+	// its own.
+	_ = shortHook
 
 	r := router.New("router", ports, services)
 
@@ -384,8 +590,55 @@ func main() {
 	}
 	netlog.Info("[MAIN] router away!")
 
+	// IPX, NetBEUI, and NetBIOS each own their own router/port and are
+	// not members of the AppleTalk service set, so their lifecycles are
+	// driven independently from main.go in start order: transports
+	// (IPX, NetBEUI) first, then the layers that consume them.
+	if ipxHook != nil {
+		if err := ipxHook.Start(ctx); err != nil {
+			netlog.Warn("[MAIN][IPX] start failed: %v", err)
+		}
+	}
+	if nbeuiHook != nil {
+		if err := nbeuiHook.Start(ctx); err != nil {
+			netlog.Warn("[MAIN][NetBEUI] start failed: %v", err)
+		}
+	}
+	if nbHook != nil {
+		if err := nbHook.Start(ctx); err != nil {
+			netlog.Warn("[MAIN][NetBIOS] start failed: %v", err)
+		}
+	}
+	if smbHook != nil {
+		if err := smbHook.Start(ctx); err != nil {
+			netlog.Warn("[MAIN][SMB] start failed: %v", err)
+		}
+	}
+
 	<-ctx.Done()
 
+	// Stop in reverse start order so consumers tear down before the
+	// transports they sit on.
+	if smbHook != nil {
+		if err := smbHook.Stop(); err != nil {
+			netlog.Warn("[MAIN][SMB] stop warning: %v", err)
+		}
+	}
+	if nbHook != nil {
+		if err := nbHook.Stop(); err != nil {
+			netlog.Warn("[MAIN][NetBIOS] stop warning: %v", err)
+		}
+	}
+	if nbeuiHook != nil {
+		if err := nbeuiHook.Stop(); err != nil {
+			netlog.Warn("[MAIN][NetBEUI] stop warning: %v", err)
+		}
+	}
+	if ipxHook != nil {
+		if err := ipxHook.Stop(); err != nil {
+			netlog.Warn("[MAIN][IPX] stop warning: %v", err)
+		}
+	}
 	if err := r.Stop(); err != nil {
 		netlog.Warn("[MAIN] stop warning: %v", err)
 	}

@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/ObsoleteMadness/ClassicStack/pkg/vfs"
 )
 
 // MemoryStore keeps CNIDs in memory for the lifetime of the process. It
@@ -14,14 +16,18 @@ type MemoryStore struct {
 	cnidToPath map[uint32]string
 	pathToCNID map[string]uint32
 	nextCNID   uint32
+	shortnames map[string]map[string]string // dir -> long -> short
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{
+	m := &MemoryStore{
 		cnidToPath: make(map[uint32]string),
 		pathToCNID: make(map[string]uint32),
 		nextCNID:   firstDynamic,
+		shortnames: make(map[string]map[string]string),
 	}
+	vfs.DefaultBus.Subscribe(m)
+	return m
 }
 
 func (s *MemoryStore) RootID() uint32 { return Root }
@@ -125,5 +131,55 @@ func (s *MemoryStore) nextAvailableCNIDLocked() uint32 {
 		if _, exists := s.cnidToPath[cnid]; !exists {
 			return cnid
 		}
+	}
+}
+
+func (s *MemoryStore) Get(short string) (string, bool) {
+	// Not an efficient mapping in this simplistic stub memory store
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, m := range s.shortnames {
+		for long, existingShort := range m {
+			if existingShort == short {
+				return long, true
+			}
+		}
+	}
+	return "", false
+}
+
+func (s *MemoryStore) LookupShort(dir string, long string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if m, ok := s.shortnames[dir]; ok {
+		if short, ok := m[long]; ok {
+			return short, true
+		}
+	}
+	return "", false
+}
+
+func (s *MemoryStore) Put(dir string, long, short string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.shortnames[dir]; !ok {
+		s.shortnames[dir] = make(map[string]string)
+	}
+	s.shortnames[dir][long] = short
+	return nil
+}
+
+// OnVFSEvent implements vfs.Subscriber.
+func (s *MemoryStore) OnVFSEvent(ev vfs.Event) {
+	if ev.Origin == "afp" {
+		return
+	}
+	switch ev.Op {
+	case vfs.OpCreate:
+		s.Ensure(ev.HostPath)
+	case vfs.OpDelete:
+		s.Remove(ev.HostPath)
+	case vfs.OpRename:
+		s.Rebind(ev.OldPath, ev.HostPath)
 	}
 }

@@ -84,6 +84,7 @@ jobs:
           - "afp macgarden macip"
           - "afp sqlite_cnid"
           - "all"
+          - "ipx netbeui smb"
     steps:
       - name: Checkout
         uses: actions/checkout@v4

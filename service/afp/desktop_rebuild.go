@@ -168,7 +168,7 @@ func (s *Service) RebuildDesktopDBFromVolume(volID uint16) (filesScanned, iconsA
 	}
 	iconName := s.iconFileNameFor(volID)
 	netlog.Info("[AFP][Desktop] rebuild starting volID=%d root=%q iconName=%q", volID, root, iconName)
-	filepath.Walk(root, func(path string, info fs.FileInfo, err error) error {
+	_ = filepath.Walk(root, func(path string, info fs.FileInfo, err error) error {
 		if err != nil || info == nil {
 			return nil
 		}

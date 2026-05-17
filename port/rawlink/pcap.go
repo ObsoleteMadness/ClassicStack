@@ -1,6 +1,7 @@
 package rawlink
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -38,6 +39,34 @@ func DefaultMacIPConfig(iface string) PcapConfig {
 		Promiscuous:   true,
 		ReadTimeout:   100 * time.Millisecond,
 		ImmediateMode: false,
+	}
+}
+
+// DefaultIPXConfig returns a PcapConfig suitable for IPX: promiscuous,
+// immediate mode, 250ms read timeout. The handle is shaped like
+// EtherTalk's because IPX has the same low-latency requirements for
+// RIP/SAP/NCP exchanges.
+func DefaultIPXConfig(iface string) PcapConfig {
+	return PcapConfig{
+		Interface:     iface,
+		SnapLen:       65535,
+		Promiscuous:   true,
+		ReadTimeout:   250 * time.Millisecond,
+		ImmediateMode: true,
+	}
+}
+
+// DefaultNetBEUIConfig returns a PcapConfig suitable for NetBEUI:
+// promiscuous, immediate mode, 250ms read timeout. NetBEUI session
+// state is sensitive to round-trip latency, so the handle uses the
+// same low-latency shape as EtherTalk.
+func DefaultNetBEUIConfig(iface string) PcapConfig {
+	return PcapConfig{
+		Interface:     iface,
+		SnapLen:       65535,
+		Promiscuous:   true,
+		ReadTimeout:   250 * time.Millisecond,
+		ImmediateMode: true,
 	}
 }
 
@@ -143,7 +172,7 @@ func OpenPcapSimple(iface string, snapLen int, promisc bool, timeout time.Durati
 func (l *pcapLink) ReadFrame() ([]byte, error) {
 	data, _, err := l.handle.ReadPacketData()
 	if err != nil {
-		if err == pcap.NextErrorTimeoutExpired {
+		if errors.Is(err, pcap.NextErrorTimeoutExpired) {
 			return nil, ErrTimeout
 		}
 		return nil, err

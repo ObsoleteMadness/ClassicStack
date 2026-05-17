@@ -13,9 +13,9 @@ func TestParsePacketLkUp(t *testing.T) {
 		(CtrlLkUp << 4) | 1, // function | tuple count
 		0x77,                // NBPID
 		0x00, 0x01,          // network 1
-		0x02,                // node
-		0x03,                // socket
-		0x04,                // enumerator
+		0x02, // node
+		0x03, // socket
+		0x04, // enumerator
 		byte(len(obj)),
 	}
 	data = append(data, obj...)

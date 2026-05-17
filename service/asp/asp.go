@@ -1,14 +1,12 @@
 //go:build afp || all
 
-/*
-Package asp implements the AppleTalk Session Protocol (ASP) as a classicstack
-service. The ATP transaction layer is provided by go/service/atp; this file
-is concerned only with ASP semantics — session lifecycle, command/write
-dispatch, tickle keep-alives, attentions — and delegates all retry, XO
-duplicate filtering, and TRel handling to atp.Endpoint.
-
-Inside Macintosh: Networking, Chapter 8.
-*/
+// Package asp implements the AppleTalk Session Protocol (ASP) as a classicstack
+// service. The ATP transaction layer is provided by go/service/atp; this file
+// is concerned only with ASP semantics — session lifecycle, command/write
+// dispatch, tickle keep-alives, attentions — and delegates all retry, XO
+// duplicate filtering, and TRel handling to atp.Endpoint.
+//
+// Inside Macintosh: Networking, Chapter 8.
 package asp
 
 import (

@@ -66,3 +66,4 @@ type FilterableLink interface {
 	// the expression is invalid or unsupported by the backend.
 	SetFilter(expr string) error
 }
+

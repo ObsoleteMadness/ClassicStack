@@ -4,34 +4,61 @@
 
 # ClassicStack
 
-### ClassicStack is a all-in-one AppleTalk Phase 2 router, MacIP Router and AFP file server for bridging classic Apple networking into modern environments. 🍏💾
+ClassicStack is an AppleTalk router and classic LAN services stack that bridges legacy Macintosh networking into modern environments.
 
 </div>
 
-## Architecture
+## What it does
 
-For a guided tour of the codebase — package layout, layering rules,
-core interfaces, logging/telemetry, and the AFP design — see
-[ARCHITECTURE.md](ARCHITECTURE.md).
+- AppleTalk Phase 2 routing across EtherTalk and LocalTalk transports.
+- AFP file server over both classic DDP and modern TCP transports.
+- MacIP gateway for IP-over-AppleTalk clients.
+- Optional IPX, NetBEUI, NetBIOS, and SMB1 services (build-tag gated).
+- Shared raw-link bridge settings for EtherTalk, MacIP, IPX, and NetBEUI.
 
-## Features
+## Build
 
-- Cross Platform Support: runs on Windows, MacOS and Linux.
-- 100% user-mode code, no special kernels or features needed.
-- AppleTalk routing across multiple transports.
-- EtherTalk support via pcap, plus tap/tun backend options.
-- LocalTalk via LToUDP and TashTalk serial adapters.
-- AFP file server running over both DDP (ASP/ATP) and TCP (DSI).
-- MacIP gateway support with both a bridged mode and NAT mode.
-- Zone and routing protocols (RTMP/ZIP/NBP) implemented as router services.
+Requirements:
 
+- Go 1.23+
+- Npcap on Windows for pcap mode: https://npcap.com/#download
+- libpcap on Linux/macOS for pcap mode
 
+Build default binary (all optional protocol hooks enabled):
+
+~~~bash
+go build -tags all -o classicstack ./cmd/classicstack
+~~~
+
+Build with a custom protocol tag set:
+
+~~~bash
+go build -tags "ipx netbeui netbios smb" -o classicstack ./cmd/classicstack
+~~~
+
+or:
+
+~~~bash
+go build -tags all -o classicstack ./cmd/classicstack
+~~~
+
+Build router-only variant (no optional build-tag services):
+
+~~~bash
+go build -o classicstack ./cmd/classicstack
+~~~
+
+Run tests:
+
+~~~bash
+go test ./...
+~~~
 
 ## Quick start
 
-- Copy server.toml.example to server.toml and edit values.
-- Run ClassicStack with no flags to auto-load server.toml.
-- Or pass a config file explicitly with -config.
+1. Copy [server.toml.example](server.toml.example) to server.toml.
+2. Edit bridge/device/network values.
+3. Run with no flags (auto-loads server.toml) or pass -config.
 
 Examples:
 
@@ -43,481 +70,201 @@ Examples:
 .\classicstack.exe -config server.toml
 ~~~
 
-Config-loading rule:
+Config loading rules:
 
 - -config cannot be combined with other flags.
-- If no flags are supplied, ClassicStack auto-loads server.toml if present.
+- When no flags are passed, server.toml is loaded automatically if present.
 
----
+## Shared bridge model
 
-## License
- - Currently GPL3. 
+Bridge defaults live in [Bridge] and are reused by EtherTalk, MacIP, IPX, and NetBEUI.
 
+| Key | Type | Default | Description |
+|---|---|---|---|
+| mode | string | pcap | Raw-link backend: pcap, tap, tun. |
+| device | string | (empty) | Interface/device name used by shared raw-link consumers. |
+| hw_address | string | DE:AD:BE:EF:CA:FE | Shared host MAC identity. |
+| bridge_mode | string | auto | Frame adaptation mode: auto, ethernet, wifi. |
 
-## Build instructions
+Important: legacy bridge keys under [EtherTalk] are no longer accepted in config files. Use [Bridge] only.
 
-Requirements:
+Per-protocol pcap filter overrides:
 
-- Go 1.23+
-- On Windows for EtherTalk/pcap: [Npcap](https://npcap.com/#download)
-- On Linux/macOS for EtherTalk/pcap: libpcap
+- [EtherTalk].filter
+- [MacIP].filter
+- [IPX].filter
+- [NetBEUI].filter
 
-Build from repository root:
+These filters apply only in pcap mode.
 
-~~~bash
-go build ./cmd/classicstack
+## Transport and service sections
+
+### [LToUdp]
+
+| Key | Default | Notes |
+|---|---|---|
+| enabled | true | Enables LocalTalk-over-UDP port. |
+| interface | 0.0.0.0 | Local IPv4 bind/join interface. |
+| seed_network | 1 | Seed network ID for this segment. |
+| seed_zone | LToUDP Network | Seed zone name. |
+
+### [TashTalk]
+
+| Key | Default | Notes |
+|---|---|---|
+| port | (empty) | Serial device path/name; empty disables. |
+| seed_network | 2 | Seed network ID for this segment. |
+| seed_zone | TashTalk Network | Seed zone name. |
+
+### [EtherTalk]
+
+| Key | Default | Notes |
+|---|---|---|
+| bridge_host_mac | (empty) | Optional host adapter MAC for wifi bridge shim. |
+| filter | (protocol default) | Optional BPF override in pcap mode. |
+| seed_network_min | 3 | Seed network range start. |
+| seed_network_max | 5 | Seed network range end. |
+| seed_zone | EtherTalk Network | Seed zone name. |
+
+### [MacIP]
+
+| Key | Default | Notes |
+|---|---|---|
+| enabled | false | Enables MacIP gateway. |
+| mode | pcap | pcap or nat. |
+| zone | (empty) | Registration zone override. |
+| nat_subnet | 192.168.100.0/24 | Subnet/pool for NAT mode. |
+| nat_gw | (empty) | Gateway address advertised in NAT mode. |
+| lease_file | (empty) | Optional lease persistence file. |
+| ip_gateway | (empty) | Upstream gateway address. |
+| dhcp_relay | false | Translate/relay DHCP for clients. |
+| nameserver | (empty) | DNS server for clients. |
+| filter | (protocol default) | Optional BPF override in pcap mode. |
+
+### [IPX]
+
+IPX is optional and requires build tag ipx or all.
+
+| Key | Default | Notes |
+|---|---|---|
+| enabled | false | Enables IPX router services. |
+| interface | (empty) | Raw-link interface; empty reuses bridge device. |
+| framing | ethernet_ii | One of ethernet_ii, raw_802_3, llc, snap. |
+| internal_network | (empty) | 8 hex digits; empty falls back to default network. |
+| filter | ipx (internal default) | Optional BPF override in pcap mode. |
+
+### [NetBEUI]
+
+NetBEUI is optional and requires build tag netbeui or all.
+
+| Key | Default | Notes |
+|---|---|---|
+| enabled | false | Enables NetBEUI raw-link port. |
+| interface | (empty) | Raw-link interface; empty reuses bridge device. |
+| filter | llc (internal default) | Optional BPF override in pcap mode. |
+
+### [NetBIOS]
+
+NetBIOS is optional and requires build tag netbios or all.
+
+| Key | Default | Notes |
+|---|---|---|
+| enabled | false | Enables NetBIOS service. |
+| transports | ["tcp"] | Allowed values: tcp, netbeui, ipx. |
+| scope_id | (empty) | Optional NetBIOS scope ID. |
+
+NetBIOS server/workgroup identity is derived from SMB server/workgroup values.
+
+### [SMB]
+
+SMB is optional and requires build tag smb or all.
+
+| Key | Default | Notes |
+|---|---|---|
+| enabled | false | Enables SMB server. |
+| nbt_binding | :139 | NetBIOS-over-TCP listener. |
+| direct_binding | (empty) | Optional direct SMB listener (for example :445). |
+| guest_ok | false | Allows guest sessions. |
+| server_name | CLASSICSTACK | Computer/server name. |
+| workgroup | WORKGROUP | Workgroup/domain label. |
+
+SMB shares are configured as [SMB.Volumes.<name>] sections.
+
+Example:
+
+~~~toml
+[SMB]
+enabled = true
+nbt_binding = ":139"
+guest_ok = true
+server_name = "CLASSICSTACK"
+workgroup = "WORKGROUP"
+
+[SMB.Volumes.Public]
+name = "Public"
+path = "./public"
+fs_type = "local_fs"
+read_only = false
 ~~~
 
-Build with explicit binary name:
+### [AFP]
 
-~~~bash
-go build -o classicstack ./cmd/classicstack
-~~~
+AFP runs over ddp, tcp, or both.
 
-Build with explicit semantic version metadata:
+| Key | Default | Notes |
+|---|---|---|
+| enabled | true | Enables AFP service. |
+| name | ClassicStack (example) | Advertised AFP server name. |
+| zone | (empty) | Registration zone override. |
+| protocols | ddp,tcp | AFP transports. |
+| binding | :548 | DSI listener. |
+| extension_map | (empty) | Extension map file path. |
+| cnid_backend | sqlite | sqlite or memory. |
+| use_decomposed_names | true | Reserved-character mapping behavior. |
+| appledouble_mode | modern | modern or legacy sidecar layout. |
 
-~~~bash
-go build -trimpath \
-	-ldflags "-X main.BuildVersion=1.2.3 -X main.BuildCommit=$(git rev-parse --short HEAD) -X main.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-	-o classicstack ./cmd/classicstack
-~~~
+AFP volumes are configured as [AFP.Volumes.<name>] sections.
 
-Build using the shared local/CI scripts:
+## Logging and capture
 
-~~~bash
-bash scripts/ci/build.sh
-bash scripts/ci/test.sh
-~~~
+[Logging]:
 
-~~~powershell
-./scripts/ci/build.ps1
-./scripts/ci/test.ps1
-~~~
+- level: debug, info, warn
+- parse_packets: protocol decode logging
+- parse_output: file target for parsed logs
+- log_traffic: raw traffic logging
 
-Print runtime/build version info:
+[Capture]:
 
-~~~bash
-./classicstack -version
-~~~
+- localtalk, ethertalk, ipx capture output paths
+- snaplen for capture truncation length
 
-Run tests:
+## Useful commands
 
-~~~bash
-go test ./...
-~~~
-
-## CI and releases
-
-- Pull requests to `main`/`master` run GitHub Actions CI for tests and cross-platform builds.
-- Pushes (including merges) to `main` publish a `dev-*` prerelease.
-- Pushing a SemVer tag like `v1.2.3` publishes a stable release for that tag.
-- GitHub Actions calls the same scripts under `scripts/ci/` that you can run locally.
-- Release assets are produced for Linux, macOS, and Windows.
-- Release packages include the repository `dist/` content.
-- Windows release binaries include icon and file version metadata from `icons/classicstack.ico`.
-- macOS release bundles include app icon metadata from `icons/classicstack.icns`.
-- Go build/test already ignores non-Go folders; additionally `scripts/ci/test.sh` and `scripts/ci/test.ps1` explicitly exclude `dist`, `icon`, and `icons` from the package list.
-
-## Status and provenance
-> **Warning:** large parts of this codebase were developed in a "vibe coded" style. It appears to work in real use, but treat behavior as pragmatic rather than formally verified.
-
-## Attribution
-- The AppleTalk routing is based on tashrouter by lampmerchant: https://github.com/lampmerchant/tashrouter (in-fact it's basically an LLM port).
-
-
-## AppleTalk Routing
-
-Route AppleTalk between EtherTalk and LocalTalk ports, with RTMP/ZIP/NBP services provided by the router.
-
-### At a glance
-
-- Ports: EtherTalk (pcap/tap/tun), LToUDP, TashTalk.
-- Core keys: `[LToUdp]`, `[TashTalk]`, `[EtherTalk]`.
-- Wi-Fi note: use `bridge_mode=wifi` when adapters/APs reject non-host source MACs.
-
-### Listing interfaces on Windows
-
-Use the built-in pcap listing mode:
+List pcap devices:
 
 ~~~powershell
 .\classicstack.exe -list-pcap-devices
 ~~~
 
-This prints available interface names and pcap device IDs. Use the device string in [EtherTalk] device, for example:
+Print version:
 
-~~~ini
-device = "\Device\NPF_{YOUR-GUID-HERE}"
+~~~bash
+./classicstack -version
 ~~~
 
-Tip: [install Npcap](https://npcap.com/#download) first, otherwise pcap devices may not appear.
+## Status and attribution
 
-### Example interface configs (Linux, macOS, Windows)
+Warning: this project is pragmatic and evolving. Validate behavior in your environment before production use.
 
-These examples show only relevant keys; merge into your full server.toml.
+AppleTalk routing was originally inspired by tashrouter:
+https://github.com/lampmerchant/tashrouter
 
-Linux example:
+## License
 
-~~~toml
-[LToUdp]
-enabled = true
-interface = "192.168.1.10"
+GPL-3.0.
 
-[EtherTalk]
-backend = "pcap"
-device = "eth0"
-hw_address = "DE:AD:BE:EF:CA:FE"
-seed_network_min = 3
-seed_network_max = 5
-seed_zone = "EtherTalk Network"
-~~~
+## Additional docs
 
-macOS example:
-
-~~~toml
-[LToUdp]
-enabled = true
-interface = "192.168.1.20"
-
-[EtherTalk]
-backend = "pcap"
-device = "en0"
-hw_address = "DE:AD:BE:EF:CA:FE"
-seed_network_min = 3
-seed_network_max = 5
-seed_zone = "EtherTalk Network"
-~~~
-
-Windows example:
-
-~~~toml
-[LToUdp]
-enabled = true
-interface = "0.0.0.0"
-
-# On Windows, use TOML literal strings (single quotes) so backslashes are not
-# interpreted as escapes by the parser.
-[EtherTalk]
-backend = "pcap"
-device = '\Device\NPF_{1DFDAA9C-7DD4-40F8-B6D4-9298C273D654}'
-hw_address = "DE:AD:BE:EF:CA:FE"
-bridge_mode = "auto"
-seed_network_min = 3
-seed_network_max = 5
-seed_zone = "EtherTalk Network"
-~~~
-
-### Configuration reference
-
-### [LToUdp]
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| enabled | bool | true | Enables LToUDP LocalTalk port. |
-| interface | string | 0.0.0.0 | Local IPv4 address used for multicast join/send. 0.0.0.0 means auto/default interface. |
-| seed_network | uint | 1 | Seed network number for this LocalTalk segment. |
-| seed_zone | string | LToUDP Network | Seed zone name advertised for LToUDP. |
-
-### [TashTalk]
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| port | string | (empty) | Serial port path/name for TashTalk. Empty disables TashTalk. |
-| seed_network | uint | 2 | Seed network number for TashTalk segment. |
-| seed_zone | string | TashTalk Network | Seed zone name advertised for TashTalk. |
-
-### [EtherTalk]
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| backend | string | pcap | Backend type: blank, pcap, tap, or tun. Blank disables EtherTalk. |
-| device | string | (empty) | Interface/device identifier. For pcap this is adapter name/device ID. |
-| hw_address | string | DE:AD:BE:EF:CA:FE | Router MAC address used by EtherTalk port. |
-| bridge_mode | string | auto | Bridge mode: auto, ethernet, or wifi. |
-| bridge_host_mac | string | (empty) | Optional host adapter MAC for Wi-Fi bridge shim logic. |
-| seed_network_min | uint | 3 | Minimum network in seeded EtherTalk range. |
-| seed_network_max | uint | 5 | Maximum network in seeded EtherTalk range. |
-| seed_zone | string | EtherTalk Network | Seed zone for EtherTalk. |
-
-#### EtherTalk bridge modes
-
-- `bridge_mode=auto`: Detects medium and picks `ethernet` for wired links or `wifi` for wireless links.
-- `bridge_mode=ethernet`: Raw pass-through bridging. Frames are forwarded without MAC rewrite.
-- `bridge_mode=wifi`: Enables Wi-Fi bridge shim behavior for adapters/APs that do not allow arbitrary source MACs.
-
-Why `wifi` mode exists:
-
-- Many Wi-Fi adapters and AP paths reject or rewrite frames when the source MAC does not match the host adapter MAC.
-- On Windows, the miniport/NDIS path commonly drops transmit frames when source hardware address does not match the host adapter MAC.
-- In `wifi` mode ClassicStack rewrites outbound EtherTalk frame source MAC to the host adapter MAC and updates AARP hardware fields accordingly.
-- For inbound traffic, ClassicStack reverses destination rewrite using a short-lived peer-to-virtual mapping so the EtherTalk port still sees the expected virtual MAC identity.
-- This is effectively an L2 NAT-style shim for MAC identities (not MacIP IP-layer NAT).
-
-Recommended settings:
-
-- On Wi-Fi, set `bridge_mode=wifi` (or leave `auto` and verify it detected Wi-Fi correctly).
-- Set `bridge_host_mac` to your actual Wi-Fi adapter MAC when needed; if blank, ClassicStack falls back to `hw_address`.
-- On wired Ethernet, prefer `bridge_mode=ethernet` or `auto`.
-
-##### Wi-Fi troubleshooting
-
-Common symptoms:
-
-- You see AppleTalk traffic in one direction only.
-- AARP appears unanswered even when peers are present.
-- ClassicStack works on wired Ethernet but fails on the same host over Wi-Fi.
-
-Checks and fixes:
-
-- Force `bridge_mode=wifi` instead of relying on `auto` while testing.
-- Set `bridge_host_mac` to the real Wi-Fi adapter MAC shown by your OS/NIC tools.
-- On Windows, confirm the adapter MAC did not randomize or change after reconnect; update `bridge_host_mac` if it did.
-- Ensure your WLAN does not enable client isolation/AP isolation when testing peer-to-peer visibility.
-- Verify you selected the intended pcap device (especially when multiple virtual/VPN adapters exist).
-
-## MacIP Gateway
-
-Provide IP connectivity to AppleTalk clients via a MacIP gateway.
-
-### At a glance
-
-- Use `mode=nat` when upstream routers cannot install static routes to your MacIP client subnet.
-- Use `mode=pcap` for bridged/static-pool style behavior.
-- Use `dhcp_relay=true` to relay/translate DHCP for MacIP clients instead of relying only on static gateway semantics.
-
-Example NAT-oriented configuration:
-
-~~~toml
-[MacIP]
-enabled = true
-mode = "nat"
-zone = "EtherTalk Network"
-nat_subnet = "192.168.100.0/24"
-nat_gw = "192.168.100.1"
-ip_gateway = "192.168.1.1"
-nameserver = "192.168.1.1"
-dhcp_relay = false
-lease_file = "leases.txt"
-~~~
-
-### [MacIP]
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| enabled | bool | false | Enables MacIP service. |
-| mode | string | pcap | MacIP mode: pcap (bridged/static-pool behavior) or nat. |
-| zone | string | (empty) | Zone used for MacIP NBP registration. Empty falls back to EtherTalk/first zone. |
-| nat_subnet | string | 192.168.100.0/24 | MacIP subnet CIDR for address assignment/NAT pool. |
-| nat_gw | string | (empty) | Gateway IP presented to MacIP clients in NAT mode. |
-| lease_file | string | (empty in code; example uses leases.txt) | Optional path for lease persistence across restarts. |
-| ip_gateway | string | (empty) | Upstream/default gateway IP on IP-side network. |
-| dhcp_relay | bool | false | Enables DHCP relay/translation mode for MacIP clients. |
-| nameserver | string | (empty) | DNS server advertised to MacIP clients. |
-
-## AFP
-
-ClassicStack includes an AFP file server focused on AFP 2.0-level behavior, with selective AFP 2.1/2.2 calls, exposed over both classic AppleTalk transport and modern TCP transport:
-
-- DDP stack: DDP -> ATP -> ASP -> AFP
-- TCP stack: TCP -> DSI -> AFP
-- Advertised AFP versions: AFPVersion 2.0 and AFPVersion 2.1
-
-### AFP feature status
-
-Supported:
-
-- Core volume, directory, file, fork, and enumerate operations.
-- Desktop database operations (icons, APPL mappings, comments).
-- File extension to type/creator fallback via extension map.
-
-Unsupported or limited:
-
-- Catalog search (`FPCatSearch`) is currently not implemented.
-- Multi-phase login continuation (`FPLoginCont`) is not implemented.
-- `FPChangePassword` and `FPGetUserInfo` return call-not-supported.
-
-### Authentication model
-
-- Server info advertises `No User Authent`.
-- Runtime behavior is effectively guest/no-user-auth.
-- The internal cleartext-password path exists in code but is not exposed via current runtime config.
-
-### AFP configuration overview
-
-#### Server identity and transports
-
-- Set server display name with `[AFP] name`.
-- Select transports with `[AFP] protocols` (`ddp`, `tcp`, or both).
-- Set DSI listen address with `[AFP] binding`.
-
-### [AFP]
-
-These keys are server-wide; per-volume options live in `[Volumes.<name>]` (see below).
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| enabled | bool | true | Enables AFP service. |
-| name | string | Go File Server | NBP-advertised AFP server name. |
-| zone | string | (empty) | Zone for AFP registration. Empty uses router-selected default. |
-| protocols | string | tcp,ddp | Enabled AFP transports: tcp, ddp, or both comma-separated. |
-| binding | string | :548 | TCP listen address for DSI AFP. |
-| extension_map | string | (empty) | Path to Netatalk-compatible extension map file. Relative paths are resolved from the config file's directory. |
-| use_decomposed_names | bool | true | Encode host-reserved filename characters as `0xNN` tokens in AFP mapping. Server-wide. |
-| cnid_backend | string | sqlite | CNID backend used by all volumes: `sqlite` (when built with the `sqlite_cnid` or `all` tag) or `memory`. |
-| desktop_backend | string | sqlite | Backend for the AFP desktop database (icons, APPL mappings, comments). |
-| appledouble_mode | string | modern | Default metadata layout: `modern` (`._` sidecars) or `legacy` (`.AppleDouble/` directories). Volumes may override. |
-| persistent_volume_ids | bool | true | Persist per-volume IDs across restarts so clients keep their aliases. |
-
-#### Filename mapping and encoding
-
-Behavior:
-
-- AFP names are converted between MacRoman (wire) and UTF-8 (host filesystem).
-- With `use_decomposed_names=true` (default), host-reserved filename characters are escaped as `0xNN` tokens.
-- Reserved-character escaping is platform-aware (Windows has a larger reserved set than POSIX).
-
-#### Extension mapping (extmap.conf)
-
-Use `[AFP] extension_map` to provide Macintosh type/creator metadata for files based on extension.
-
-Example in `server.toml`:
-
-~~~toml
-[AFP]
-enabled = true
-extension_map = "extmap.conf"
-~~~
-
-Format rules:
-
-- One mapping per non-empty line.
-- Lines starting with `#` are comments.
-- First token is the extension key (typically with leading dot, for example `.txt`).
-- Next two quoted fields are required: `"TYPE"` and `"CREA"`.
-- `TYPE` and `CREA` must each be exactly 4 bytes.
-- A default `.` mapping is required and is used when no specific extension match exists.
-- Extension matching is case-insensitive (`ReadMe.TXT` matches `.txt`).
-
-Examples (from the shipped `extmap.conf`):
-
-~~~text
-.         "????"  "????"      Unix Binary                    Unix                      application/octet-stream
-.txt      "TEXT"  "ttxt"      ASCII Text                     SimpleText                text/plain
-.bin      "SIT!"  "SITx"      MacBinary                      StuffIt Expander          application/macbinary
-.hqx      "TEXT"  "SITx"      BinHex                         StuffIt Expander          application/mac-binhex40
-.sit      "SIT!"  "SITx"      StuffIt 1.5.1 Archive          StuffIt Expander          application/x-stuffit
-~~~
-
-Notes:
-
-- In `extmap.conf`, many mappings are disabled by default with `#`; remove `#` to enable a line.
-- Extra columns after the first three fields are allowed and treated as descriptive metadata.
-
-### [Volumes.<name>]
-
-Each volume is configured as a separate `[Volumes.<section-name>]` section. The section suffix is used as the volume name unless `name` is set.
-
-> Note: `cnid_backend`, `use_decomposed_names`, and the default `appledouble_mode` are server-wide settings under `[AFP]` — they are not configurable per volume. A volume may override `appledouble_mode` to choose a sidecar layout that differs from the server default.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| name | string | section suffix | Display name for the AFP volume (max 31 chars recommended). |
-| path | string | required (except for `macgarden`) | Host filesystem path to export. For `fs_type = "macgarden"` a default path is derived from `name` if omitted. |
-| fs_type | string | local_fs | Filesystem backend: `local_fs` (host disk) or `macgarden` (read-only virtual Macintosh Garden view, requires the `macgarden` or `all` build tag). |
-| password | string | (empty) | Optional volume password. The internal cleartext-password path exists in code but is not exposed via the live authentication flow today. |
-| read_only | bool | false | Exports the volume as read-only at AFP protocol level. |
-| rebuild_desktop_db | bool | false | Rebuilds AFP desktop database from resource fork metadata at startup. |
-| appledouble_mode | string | inherits `[AFP] appledouble_mode` | Per-volume override of the metadata layout: `modern` (`._` sidecars) or `legacy` (`.AppleDouble/` directories). |
-
-#### Read-only volume behavior
-
-When `read_only=true` is set on a volume:
-
-- `FPGetVolParms` reports the volume read-only flag (VolAttrReadOnly, bit 15).
-- Directory access rights are returned as read-only in directory parameter replies.
-- File attributes include WriteInhibit (ReadOnly in AFP 2.0 terminology).
-- Write and metadata-mutating operations are denied.
-
-Error code behavior by AFP version:
-
-- AFP 2.0 and higher: returns `kFPVolLocked` (`-5031`).
-- AFP 1.1 compatibility mode: returns `kFPAccessDenied`.
-
-Example:
-
-~~~toml
-[Volumes.Sample]
-path = "dist/Sample Volume"
-read_only = true
-~~~
-
-Volume naming:
-
-- Volume names are sent as Pascal strings on AFP (1-byte length). Keep names <=255 bytes.
-- For classic Finder compatibility and UI quality, keep names short (31 chars recommended).
-
-#### Sidecar metadata
-
-- AppleDouble is the only resource-fork/metadata storage backend.
-- `appledouble_mode=modern` uses `._filename` sidecars beside files.
-- `appledouble_mode=legacy` uses `.AppleDouble/filename` sidecars.
-- The default mode comes from `[AFP] appledouble_mode`; individual volumes may override it.
-- `rebuild_desktop_db=true` (per volume) rebuilds desktop metadata cache at startup.
-
-#### Netatalk compatibility
-
-- Compatible formats: Netatalk-style extension map syntax and AppleDouble modern/legacy sidecar layouts.
-- Known differences: CNID database implementation is ClassicStack-specific (sqlite or memory), not a drop-in Netatalk CNID store.
-- ClassicStack does not currently provide a Netatalk-style extended-attribute metadata backend.
-- AFP feature coverage is practical but incomplete (for example catalog search is currently implemented as name-based search and backend-dependent).
-
-### [Logging]
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| level | string | info | Log level: debug, info, warn. |
-| parse_packets | bool | false | Decodes and logs inbound DDP packets and upper protocol layers. |
-| parse_output | string | (empty) | Optional output file path for parsed packet logs. |
-| log_traffic | bool | false | Enables low-level traffic logging at debug level. |
-
-## Command-line quick reference
-
-Common operational flags:
-
-- -config
-- -list-pcap-devices
-- -log-level and -log-traffic
-- -parse-packets and -parse-output
-- -afp-volume (repeatable Name:Path)
-
-Use server.toml for repeatable deployments; use flags for quick experiments.
-
-## Rough project layout
-
-- cmd/classicstack: entrypoint, flag handling, TOML config loading, runtime wiring.
-- router: datagram dispatch, routing table, zone information table.
-- port: transport implementations (EtherTalk, LocalTalk variants, rawlink, NAT helpers).
-- service: protocol/application services (AEP, RTMP, ZIP, ASP/ATP/DSI, AFP, MacIP, LLAP).
-- appletalk and protocol/ddp: packet/datagram and protocol encoding helpers.
-- spec: protocol and subsystem design notes.
-
-## Contributing
-
-Contributions are welcome.
-
-Suggested workflow:
-
-1. Open an issue describing the bug, protocol behavior, or enhancement.
-2. Keep pull requests focused to one subsystem when possible.
-3. Add or update tests near the package you changed.
-4. Run go test ./... before opening a PR.
-5. Include protocol notes or packet captures when behavior changes are non-obvious.
-
-Practical expectations:
-
-- Preserve existing architecture patterns (ports, router, services).
-- Keep platform-specific files separated where they already are (for example *_windows.go vs *_other.go).
-- Prefer small, reviewable changes over broad refactors.
-
-## Related docs
-
-- [Inside AppleTalk](https://obsoletemadness.github.io/Inside-AppleTalk/)
+- High-level runtime map: [ARCHITECTURE.md](ARCHITECTURE.md)
+- Protocol notes: [spec](spec)

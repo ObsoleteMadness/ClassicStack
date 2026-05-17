@@ -3,6 +3,7 @@
 package localtalk
 
 import (
+	"errors"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -26,7 +27,7 @@ func multicastInterfaceOperStatus() (map[uint32]bool, error) {
 			}
 			return states, nil
 		}
-		if err != windows.ERROR_BUFFER_OVERFLOW {
+		if !errors.Is(err, windows.ERROR_BUFFER_OVERFLOW) {
 			return nil, err
 		}
 		if size == 0 {

@@ -1,13 +1,11 @@
 //go:build afp || all
 
-/*
-Package dsi implements the Data Stream Interface (DSI).
-
-DSI is a session-layer protocol that carries AppleTalk Filing Protocol (AFP)
-over TCP/IP. It provides session management similar to ASP but for IP networks.
-
-Refer: AppleTalk Filing Protocol 2.1 & 2.2 / AFP over TCP/IP Specification.
-*/
+// Package dsi implements the Data Stream Interface (DSI).
+//
+// DSI is a session-layer protocol that carries AppleTalk Filing Protocol (AFP)
+// over TCP/IP. It provides session management similar to ASP but for IP networks.
+//
+// Refer: AppleTalk Filing Protocol 2.1 & 2.2 / AFP over TCP/IP Specification.
 package dsi
 
 import (
@@ -231,7 +229,7 @@ func (s *Server) ListenAndServe() error {
 		return err
 	}
 	s.listener = l
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	for {
 		conn, err := l.Accept()
@@ -245,7 +243,7 @@ func (s *Server) ListenAndServe() error {
 func (s *Server) handleConn(conn net.Conn) {
 	defer func() {
 		netlog.Debug("[DSI] connection closed: %s", conn.RemoteAddr())
-		conn.Close()
+		_ = conn.Close()
 	}()
 	for {
 		headerBuf := make([]byte, HeaderSize)
@@ -258,7 +256,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 
 		var h Header
-		h.Unmarshal(headerBuf)
+		_ = h.Unmarshal(headerBuf)
 		netlog.Debug("[DSI] <- req=%d cmd=%d flag=%d dataLen=%d from %s", h.RequestID, h.Command, h.Flags, h.DataLen, conn.RemoteAddr())
 
 		payload := make([]byte, h.DataLen)
@@ -292,9 +290,9 @@ func (s *Server) handleConn(conn net.Conn) {
 
 func (s *Server) writeResponse(conn net.Conn, replyHdr Header, data []byte) {
 	netlog.Debug("[DSI] -> req=%d cmd=%d flag=%d dataLen=%d to %s", replyHdr.RequestID, replyHdr.Command, replyHdr.Flags, replyHdr.DataLen, conn.RemoteAddr())
-	conn.Write(replyHdr.Marshal())
+	_, _ = conn.Write(replyHdr.Marshal())
 	if len(data) > 0 {
-		conn.Write(data)
+		_, _ = conn.Write(data)
 	}
 }
 

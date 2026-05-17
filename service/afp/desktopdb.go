@@ -4,6 +4,7 @@ package afp
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -88,7 +89,7 @@ func NewSQLiteDesktopDB(volumeRootPath string) (DesktopDB, error) {
 	}
 	store := &sqliteDesktopDB{db: db}
 	if err := store.initSchema(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	return store, nil
@@ -220,7 +221,7 @@ func (db *sqliteDesktopDB) SetIcon(creator, fileType [4]byte, iconType byte, tag
 	if err == nil && existingSize != len(bitmap) {
 		return ErrIconSizeMismatch
 	}
-	if err != nil && err != sql.ErrNoRows {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 
@@ -285,7 +286,7 @@ func (db *sqliteDesktopDB) ListAPPL(creator [4]byte) []applEntry {
 	if err != nil {
 		return nil
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	entries := make([]applEntry, 0)
 	for rows.Next() {

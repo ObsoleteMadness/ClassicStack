@@ -181,9 +181,15 @@ func (s *Service) packFileInfo(buf *bytes.Buffer, volumeID uint16, bitmap uint16
 			s.writeAFPName(&varBuf, name, volumeID)
 		}
 		if bitmap&DirBitmapShortName != 0 {
+			short := name
+			if volFS != nil {
+				if n, err := volFS.ShortName(fullPath); err == nil && n != "" {
+					short = n
+				}
+			}
 			offset := uint16(fixedSize + varBuf.Len())
 			binutil.WriteU16(buf, offset)
-			s.writeAFPName(&varBuf, name, volumeID)
+			s.writeAFPName(&varBuf, short, volumeID)
 		}
 		if bitmap&DirBitmapDirID != 0 {
 			did := s.getPathDID(volumeID, fullPath)
@@ -257,9 +263,15 @@ func (s *Service) packFileInfo(buf *bytes.Buffer, volumeID uint16, bitmap uint16
 			s.writeAFPName(&varBuf, name, volumeID)
 		}
 		if bitmap&FileBitmapShortName != 0 {
+			short := name
+			if volFS != nil {
+				if n, err := volFS.ShortName(fullPath); err == nil && n != "" {
+					short = n
+				}
+			}
 			offset := uint16(fixedSize + varBuf.Len())
 			binutil.WriteU16(buf, offset)
-			s.writeAFPName(&varBuf, name, volumeID)
+			s.writeAFPName(&varBuf, short, volumeID)
 		}
 		if bitmap&FileBitmapFileNum != 0 {
 			did := s.getPathDID(volumeID, fullPath)

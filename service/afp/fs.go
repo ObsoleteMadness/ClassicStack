@@ -8,12 +8,14 @@ import (
 	"maps"
 	"slices"
 	"sync"
+
+	"github.com/ObsoleteMadness/ClassicStack/pkg/vfs"
 )
 
 // FileSystemFactory constructs a FileSystem from a normalized
 // VolumeConfig. Backends register themselves with RegisterFS during
 // package init().
-type FileSystemFactory func(VolumeConfig) (FileSystem, error)
+type FileSystemFactory func(VolumeConfig, Options) (FileSystem, error)
 
 var (
 	fsRegistryMu sync.RWMutex
@@ -36,14 +38,14 @@ func RegisterFS(name string, f FileSystemFactory) {
 // NewFS dispatches to the factory registered for cfg.FSType. The
 // returned error includes the list of registered names when no
 // factory matches.
-func NewFS(cfg VolumeConfig) (FileSystem, error) {
+func NewFS(cfg VolumeConfig, opts Options) (FileSystem, error) {
 	fsRegistryMu.RLock()
 	f, ok := fsRegistry[cfg.FSType]
 	fsRegistryMu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("afp: no FileSystem registered for fs_type %q (registered: %v)", cfg.FSType, registeredFSNames())
 	}
-	return f(cfg)
+	return f(cfg, opts)
 }
 
 func registeredFSNames() []string {
@@ -61,6 +63,7 @@ type FileSystem interface {
 	OpenFile(path string, flag int) (File, error)
 	Remove(path string) error
 	Rename(oldpath, newpath string) error
+	ShortName(path string) (string, error)
 	Capabilities() FileSystemCapabilities
 	CatSearch(volumeRoot string, query string, reqMatches int32, cursor [16]byte) ([]string, [16]byte, int32)
 	ChildCount(path string) (uint16, error)
@@ -80,11 +83,9 @@ type FileSystemCapabilities struct {
 	ReadOnlyState bool
 }
 
-type File interface {
-	ReadAt(p []byte, off int64) (n int, err error)
-	WriteAt(p []byte, off int64) (n int, err error)
-	Truncate(size int64) error
-	Close() error
-	Stat() (fs.FileInfo, error)
-	Sync() error
-}
+// File is AFP's per-handle file contract. It is a type alias for the
+// shared pkg/vfs.File so that backends registered with pkg/vfs can be
+// used here without an extra adapter, and so AFP-side code that
+// cares about handle methods compiles against the same interface a
+// generic VFS backend implements.
+type File = vfs.File

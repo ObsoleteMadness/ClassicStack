@@ -44,6 +44,10 @@ func (f *catSearchCaptureFS) Stat(path string) (fs.FileInfo, error) {
 }
 
 func (f *catSearchCaptureFS) DiskUsage(path string) (uint64, uint64, error) { return 0, 0, nil }
+
+func (f *catSearchCaptureFS) ShortName(path string) (string, error) {
+	return filepath.Base(path), nil
+}
 func (f *catSearchCaptureFS) CreateDir(path string) error                   { return fs.ErrPermission }
 func (f *catSearchCaptureFS) CreateFile(path string) (File, error)          { return nil, fs.ErrPermission }
 func (f *catSearchCaptureFS) OpenFile(path string, flag int) (File, error) {

@@ -36,16 +36,6 @@ func NewAppleDoubleBackend(fs FileSystem, mode AppleDoubleMode, decomposedNames 
 	return &AppleDoubleBackend{fs: fs, mode: mode, decomposedNames: decomposedNames}
 }
 
-func resolveForkMetadataBackend(options Options, fs FileSystem) ForkMetadataBackend {
-	if options.ForkMetadataBackend != nil {
-		return options.ForkMetadataBackend
-	}
-	if fs == nil {
-		return nil
-	}
-	return NewAppleDoubleBackend(fs, options.AppleDoubleMode, options.DecomposedFilenames)
-}
-
 // MetadataPath returns the AppleDouble sidecar path for the given host file path.
 // If filePath is already a sidecar path, it is returned in canonical form.
 func (b *AppleDoubleBackend) MetadataPath(filePath string) string {
@@ -297,7 +287,7 @@ func (b *AppleDoubleBackend) copyAppleDoubleSidecar(source *AppleDoubleBackend, 
 		}
 		return err
 	}
-	defer srcFile.Close()
+	defer func() { _ = srcFile.Close() }()
 
 	if err := b.ensureAppleDoubleDir(dstMeta); err != nil {
 		return err
@@ -307,7 +297,7 @@ func (b *AppleDoubleBackend) copyAppleDoubleSidecar(source *AppleDoubleBackend, 
 	if err != nil {
 		return err
 	}
-	defer dstFile.Close()
+	defer func() { _ = dstFile.Close() }()
 
 	buf := make([]byte, 32768)
 	var offset int64
@@ -350,7 +340,7 @@ func (b *AppleDoubleBackend) copyMetadataGeneric(source ForkMetadataBackend, src
 		return err
 	}
 	if srcFork != nil {
-		defer srcFork.Close()
+		defer func() { _ = srcFork.Close() }()
 	}
 
 	rsrcLen := metadata.ResourceForkLen
@@ -384,7 +374,7 @@ func (b *AppleDoubleBackend) copyMetadataGeneric(source ForkMetadataBackend, src
 	if dstFork == nil {
 		return nil
 	}
-	defer dstFork.Close()
+	defer func() { _ = dstFork.Close() }()
 
 	if srcFork != nil && rsrcLen > 0 {
 		if err := copyForkBytes(srcFork, srcForkInfo.Offset, dstFork, dstForkInfo.Offset, rsrcLen); err != nil {
@@ -513,7 +503,7 @@ func (b *AppleDoubleBackend) readFile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	info, err := f.Stat()
 	if err != nil {
@@ -550,7 +540,7 @@ func (b *AppleDoubleBackend) writeFile(path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if len(data) > 0 {
 		if _, err := f.WriteAt(data, 0); err != nil {

@@ -50,16 +50,16 @@ func New(shortStr string, ports []port.Port, services []service.Service) *Router
 	r.bindLLAPManager()
 	for _, s := range services {
 		switch v := s.(type) {
+		case *aep.Service:
+			r.servicesBySAS[aep.Socket] = s
+		case *zip.NameInformationService:
+			r.servicesBySAS[zip.NBPSASSocket] = s
 		case interface{ Socket() uint8 }:
 			r.servicesBySAS[v.Socket()] = s
 		case *rtmp.RespondingService:
 			r.servicesBySAS[rtmp.SAS] = s
 		case *zip.RespondingService:
 			r.servicesBySAS[zip.SAS] = s
-		case *aep.Service:
-			r.servicesBySAS[aep.Socket] = s
-		case *zip.NameInformationService:
-			r.servicesBySAS[zip.NBPSASSocket] = s
 		case *rtmp.RoutingTableAgingService:
 			// RoutingTableAgingService doesn't work on socket basis
 		}

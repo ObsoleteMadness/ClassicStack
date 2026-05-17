@@ -78,7 +78,6 @@ type CategoryPageInfo struct {
 
 type headCacheEntry struct {
 	size int64
-	err  error
 }
 
 type Client struct {
@@ -168,7 +167,7 @@ func (c *Client) primeSession() {
 		return
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	u, _ := url.Parse(BaseURL)
 	netlog.Info("[MacGarden] session established, %d cookie(s) stored", len(c.httpClient.Jar.Cookies(u)))
 }
@@ -626,29 +625,6 @@ func (c *Client) appendCategoryResults(results []SearchResult, seen map[string]s
 	return results
 }
 
-func (c *Client) countCategoryResultsOnPage(categoryPath string, doc *goquery.Document) int {
-	count := 0
-	doc.Find("h2 a[href]").Each(func(_ int, s *goquery.Selection) {
-		href, ok := s.Attr("href")
-		if !ok {
-			return
-		}
-		normalized := c.normalizeURL(href)
-		if normalized == "" {
-			return
-		}
-		u, err := url.Parse(normalized)
-		if err != nil {
-			return
-		}
-		if u.Path == categoryPath || strings.Contains(u.RawQuery, "page=") {
-			return
-		}
-		count++
-	})
-	return count
-}
-
 func (c *Client) categoryPaginationURLs(categoryPath string, doc *goquery.Document) []string {
 	pages := map[string]struct{}{}
 	urls := make([]string, 0, 4)
@@ -806,7 +782,7 @@ func (c *Client) ReadURLRange(fileURL string, offset int64, length int) ([]byte,
 		netlog.Warn("[MacGarden] failed to read URL: %v", err)
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
@@ -834,7 +810,7 @@ func (c *Client) FetchFull(fileURL string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
@@ -897,7 +873,7 @@ func (c *Client) HeadContentLength(fileURL string) (int64, error) {
 		c.setCachedHead(fileURL, 0)
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.ContentLength >= 0 {
 		c.setCachedHead(fileURL, resp.ContentLength)
 		c.recordHeadResult(fileURL, resp.ContentLength)
@@ -942,7 +918,7 @@ func (c *Client) rangeContentLength(fileURL string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if cr := strings.TrimSpace(resp.Header.Get("Content-Range")); cr != "" {
 		if slash := strings.LastIndex(cr, "/"); slash >= 0 && slash+1 < len(cr) {
 			total := strings.TrimSpace(cr[slash+1:])
@@ -986,7 +962,7 @@ func (c *Client) fetchDocument(urlStr string) (*goquery.Document, error) {
 		netlog.Warn("[MacGarden] HTTP request failed (%s): %v", urlStr, err)
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)

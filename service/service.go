@@ -1,3 +1,5 @@
+// Package service defines the interface implemented by classicstack
+// services that plug into the router.
 package service
 
 import (

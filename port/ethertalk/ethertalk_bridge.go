@@ -62,7 +62,8 @@ type bridgeFrameAdapter interface {
 }
 
 type ethernetBridgeAdapter struct {
-	hostMAC []byte
+	hostMAC    []byte
+	virtualMAC []byte
 }
 
 type wifiBridgeAdapter struct {
@@ -98,12 +99,20 @@ func newEthertalkBridgeAdapterWithWiFiEncap(hostMAC, virtualMAC []byte, mode bri
 			peerToVirtual: make(map[[6]byte]peerMapEntry),
 		}
 	}
-	return &ethernetBridgeAdapter{hostMAC: hw}
+	return &ethernetBridgeAdapter{hostMAC: hw, virtualMAC: vw}
 }
 
 func (b *ethernetBridgeAdapter) inboundFrame(frame []byte) ([]byte, error) {
 	if len(frame) == 0 {
 		return nil, fmt.Errorf("empty inbound frame")
+	}
+	// Filter out loopback frames: if source MAC matches either hostMAC or virtualMAC,
+	// this is a pcap loopback echo of our outbound frame, so drop it.
+	if len(frame) >= 12 {
+		srcMAC := frame[6:12]
+		if bytes.Equal(srcMAC, b.hostMAC) || bytes.Equal(srcMAC, b.virtualMAC) {
+			return nil, fmt.Errorf("dropping pcap loopback frame from own MAC")
+		}
 	}
 	// Phase 1 behavior: pass through as-is.
 	return append([]byte(nil), frame...), nil
@@ -118,6 +127,14 @@ func (b *ethernetBridgeAdapter) outboundFrame(frame []byte) ([]byte, error) {
 }
 
 func (b *wifiBridgeAdapter) inboundFrame(frame []byte) ([]byte, error) {
+	// Filter out loopback frames: if source MAC matches either hostMAC or virtualMAC,
+	// this is a pcap loopback echo of our outbound frame, so drop it.
+	if len(frame) >= 12 {
+		srcMAC := frame[6:12]
+		if bytes.Equal(srcMAC, b.hostMAC) || bytes.Equal(srcMAC, b.virtualMAC) {
+			return nil, fmt.Errorf("dropping pcap loopback frame from own MAC")
+		}
+	}
 	if len(frame) == 0 {
 		return nil, fmt.Errorf("empty inbound frame")
 	}

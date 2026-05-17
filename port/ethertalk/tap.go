@@ -10,9 +10,7 @@ func NewTapPort(opts Options) (*PcapPort, error) {
 		return nil, err
 	}
 	p.backendLabel = "tap"
-	p.openLink = func(name string) (rawlink.RawLink, error) {
-		return rawlink.OpenTAP(name)
-	}
+	p.openLink = rawlink.OpenTAP
 	p.applyBPFFilter = false
 	return p, nil
 }

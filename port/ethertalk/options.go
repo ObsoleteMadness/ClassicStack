@@ -18,4 +18,6 @@ type Options struct {
 	// BridgeHostMAC is the host adapter's MAC for the Wi-Fi bridge shim.
 	// When nil, falls back to HWAddr.
 	BridgeHostMAC []byte
+	// Filter optionally overrides the pcap BPF filter expression.
+	Filter string
 }

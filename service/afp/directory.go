@@ -8,8 +8,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/vfs"
 )
 
 func (s *Service) handleOpenDir(req *FPOpenDirReq) (*FPOpenDirRes, int32) {
@@ -340,6 +342,14 @@ func (s *Service) handleCreateDir(req *FPCreateDirReq) (*FPCreateDirRes, int32) 
 		}
 		return &FPCreateDirRes{}, ErrAccessDenied
 	}
+
+	vfs.DefaultBus.Publish(vfs.Event{
+		Op:       vfs.OpCreate,
+		HostPath: targetPath,
+		Origin:   "afp",
+		Time:     time.Now(),
+	})
+
 	newDID := s.getPathDID(req.VolumeID, targetPath)
 	return &FPCreateDirRes{DirID: newDID}, NoErr
 }

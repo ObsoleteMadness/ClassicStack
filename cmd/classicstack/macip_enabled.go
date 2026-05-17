@@ -18,51 +18,71 @@ type macipHook struct {
 	svc *macip.Service
 }
 
-func (h *macipHook) Service() service.Service                      { return h.svc }
-func (h *macipHook) PinLeaseToSession(net uint16, node, sess uint8) { h.svc.PinLeaseToSession(net, node, sess) }
-func (h *macipHook) UnpinLeaseFromSession(sess uint8)               { h.svc.UnpinLeaseFromSession(sess) }
-func (h *macipHook) MarkSessionActivity(sess uint8)                 { h.svc.MarkSessionActivity(sess) }
+func (h *macipHook) Service() service.Service { return h.svc }
+func (h *macipHook) PinLeaseToSession(net uint16, node, sess uint8) {
+	h.svc.PinLeaseToSession(net, node, sess)
+}
+func (h *macipHook) UnpinLeaseFromSession(sess uint8) { h.svc.UnpinLeaseFromSession(sess) }
+func (h *macipHook) MarkSessionActivity(sess uint8)   { h.svc.MarkSessionActivity(sess) }
 
 func wireMacIP(cfg MacIPConfig) (MacIPHook, error) {
 	if !cfg.Enabled {
 		return nil, nil
 	}
-	if cfg.EtherTalkBackend != "" && cfg.EtherTalkBackend != "pcap" {
-		return nil, fmt.Errorf("-macip-enabled currently requires -ethertalk-backend pcap (got %q)", cfg.EtherTalkBackend)
+	bridgeMode := strings.ToLower(strings.TrimSpace(cfg.BridgeMode))
+	if bridgeMode == "" {
+		bridgeMode = "pcap"
 	}
 
-	ipIface := cfg.PcapDevice
+	ipIface := cfg.BridgeDevice
 	if ipIface == "" {
-		if detected, ok := rawlink.DetectDefaultPcapInterface(); ok {
-			ipIface = detected
-			netlog.Info("[MAIN][MacIP] auto-detected pcap interface: %s", detected)
+		if bridgeMode == "pcap" {
+			if detected, ok := rawlink.DetectDefaultPcapInterface(); ok {
+				ipIface = detected
+				netlog.Info("[MAIN][MacIP] auto-detected pcap interface: %s", detected)
+			} else {
+				return nil, fmt.Errorf("bridge device is required when -macip-enabled is set (auto-detection failed)")
+			}
 		} else {
-			return nil, fmt.Errorf("-ethertalk-device is required when -macip-enabled is set (auto-detection failed)")
+			return nil, fmt.Errorf("bridge device is required when -macip-enabled is set in %s mode", bridgeMode)
 		}
 	}
 
 	ipMACStr := ""
-	if strings.TrimSpace(cfg.BridgeHostMAC) != "" {
-		ipMACStr = cfg.BridgeHostMAC
+	if strings.TrimSpace(cfg.BridgeHWAddress) != "" {
+		ipMACStr = cfg.BridgeHWAddress
 		netlog.Info("[MAIN][MacIP] using bridge host MAC for IP-side: %s", ipMACStr)
-	} else if hostMAC, ok := rawlink.DetectHostMACForPcapInterface(ipIface); ok {
-		ipMACStr = hostMAC
-		netlog.Info("[MAIN][MacIP] auto-detected IP-side MAC from %s: %s", ipIface, ipMACStr)
-	} else {
-		ipMACStr = cfg.PcapHWAddr
+	} else if bridgeMode == "pcap" {
+		if hostMAC, ok := rawlink.DetectHostMACForPcapInterface(ipIface); ok {
+			ipMACStr = hostMAC
+			netlog.Info("[MAIN][MacIP] auto-detected IP-side MAC from %s: %s", ipIface, ipMACStr)
+		}
+	}
+	if ipMACStr == "" {
+		ipMACStr = cfg.BridgeHWAddress
+	}
+	if strings.TrimSpace(ipMACStr) == "" {
+		return nil, fmt.Errorf("bridge hw_address is required for MacIP when host MAC auto-detection is unavailable")
 	}
 
-	hostIPStr, hostIPDetected := detectPcapInterfaceIPv4(ipIface)
+	hostIPStr, hostIPDetected := "", false
+	if bridgeMode == "pcap" {
+		hostIPStr, hostIPDetected = detectPcapInterfaceIPv4(ipIface)
+	}
 
 	if cfg.IPGateway == "" {
-		if gw, ok := rawlink.DetectDefaultGatewayForPcapInterface(ipIface); ok {
-			cfg.IPGateway = gw
-			netlog.Info("[MAIN][MacIP] auto-detected default gateway %s for interface %s", gw, ipIface)
-		} else if hostIPDetected {
-			cfg.IPGateway = hostIPStr
-			netlog.Warn("[MAIN][MacIP] default gateway auto-detection failed; falling back to interface IPv4 %s on %s", hostIPStr, ipIface)
+		if bridgeMode == "pcap" {
+			if gw, ok := rawlink.DetectDefaultGatewayForPcapInterface(ipIface); ok {
+				cfg.IPGateway = gw
+				netlog.Info("[MAIN][MacIP] auto-detected default gateway %s for interface %s", gw, ipIface)
+			} else if hostIPDetected {
+				cfg.IPGateway = hostIPStr
+				netlog.Warn("[MAIN][MacIP] default gateway auto-detection failed; falling back to interface IPv4 %s on %s", hostIPStr, ipIface)
+			} else {
+				return nil, fmt.Errorf("-macip-ip-gateway is required when -macip-enabled is set (auto-detection failed and no IPv4 address was found)")
+			}
 		} else {
-			return nil, fmt.Errorf("-macip-ip-gateway is required when -macip-enabled is set (auto-detection failed and no IPv4 address was found)")
+			return nil, fmt.Errorf("-macip-ip-gateway is required when -macip-enabled is set in %s mode", bridgeMode)
 		}
 	}
 
@@ -111,15 +131,12 @@ func wireMacIP(cfg MacIPConfig) (MacIPHook, error) {
 		chosenZone = []byte(cfg.EtherTalkZone)
 	}
 
-	ipLink, err := rawlink.OpenPcap(rawlink.DefaultMacIPConfig(ipIface))
+	ipLink, err := openRawlink(bridgeMode, ipIface, rawlinkProfileMacIP)
 	if err != nil {
 		return nil, fmt.Errorf("failed opening MacIP rawlink on %s: %w", ipIface, err)
 	}
-	if fl, ok := ipLink.(rawlink.FilterableLink); ok {
-		if err := fl.SetFilter(macipBPFFilter(ipNet, cfg.DHCPRelay)); err != nil {
-			netlog.Warn("[MAIN][MacIP] could not set BPF filter on %s: %v", ipIface, err)
-		}
-	}
+	ipLink = applyRawlinkBridgeFrameMode(ipLink, bridgeMode, cfg.BridgeFrameMode, ipIface, cfg.BridgeHWAddress, "MacIP")
+	applyRawlinkFilter(ipLink, bridgeMode, ipIface, cfg.Filter, macipBPFFilter(ipNet, cfg.DHCPRelay), "MacIP")
 
 	svc := macip.New(
 		gwIP, ipNet.IP, ipNet.Mask,

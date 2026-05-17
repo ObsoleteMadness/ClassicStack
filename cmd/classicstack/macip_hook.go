@@ -30,6 +30,10 @@ func (a macIPAFPHooks) OnActivity(sessID uint8) { a.h.MarkSessionActivity(sessID
 // caller (main.go, tag-neutral) from the macip package directly.
 type MacIPConfig struct {
 	Enabled         bool
+	BridgeMode      string
+	BridgeDevice    string
+	BridgeHWAddress string
+	BridgeFrameMode string
 	NATGatewayIP    string
 	NATSubnet       string
 	Nameserver      string
@@ -38,10 +42,7 @@ type MacIPConfig struct {
 	NAT             bool
 	DHCPRelay       bool
 	StateFile       string
-	PcapDevice      string
-	BridgeHostMAC   string
-	PcapHWAddr      string
+	Filter          string
 	EtherTalkZone   string
-	EtherTalkBackend string
 	NBP             *zip.NameInformationService
 }

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"strings"
+
 	"github.com/ObsoleteMadness/ClassicStack/capture"
 	"github.com/ObsoleteMadness/ClassicStack/port/ethertalk"
 	"github.com/ObsoleteMadness/ClassicStack/port/localtalk"
@@ -24,11 +26,17 @@ type flagInputs struct {
 	TashTalkSeedNetwork uint
 	TashTalkSeedZone    string
 
+	BridgeMode       string
+	BridgeDevice     string
+	BridgeHWAddress  string
+	BridgeBridgeMode string
+
 	EtherTalkDevice         string
 	EtherTalkBackend        string
 	EtherTalkHWAddress      string
 	EtherTalkBridgeMode     string
 	EtherTalkBridgeHostMAC  string
+	EtherTalkFilter         string
 	EtherTalkSeedNetworkMin uint
 	EtherTalkSeedNetworkMax uint
 	EtherTalkSeedZone       string
@@ -44,10 +52,39 @@ type flagInputs struct {
 	MacIPNAT        bool
 	MacIPDHCPRelay  bool
 	MacIPLeaseFile  string
+	MacIPFilter     string
 
 	CaptureLocalTalk string
 	CaptureEtherTalk string
 	CaptureSnaplen   uint
+
+	IPXEnabled         bool
+	IPXInterface       string
+	IPXFraming         string
+	IPXInternalNetwork string
+	IPXFilter          string
+
+	NetBEUIEnabled   bool
+	NetBEUIInterface string
+	NetBEUIFilter    string
+
+	NetBIOSEnabled    bool
+	NetBIOSTransports string // raw csv from flag; resolveAppConfig parses
+	NetBIOSScopeID    string
+	NetBIOSServerName string
+	NetBIOSWorkgroup  string
+
+	SMBEnabled       bool
+	SMBNBTBinding    string
+	SMBDirectBinding string
+	SMBGuestOk       bool
+	SMBServerName    string
+	SMBWorkgroup     string
+	SMBShareValues   []string // raw "Name:Path" entries from -smb-share
+
+	ShortnameWindowsShortnames bool
+	ShortnameBackend           string
+	ShortnameDBPath            string
 }
 
 // flagsToConfig builds an appConfig from CLI flag values. It is the
@@ -74,12 +111,20 @@ func flagsToConfig(in flagInputs) appConfig {
 		SeedZone:    in.TashTalkSeedZone,
 	}
 
+	cfg.Bridge = BridgeConfig{
+		Mode:       firstNonBlank(in.BridgeMode, in.EtherTalkBackend),
+		Device:     firstNonBlank(in.BridgeDevice, in.EtherTalkDevice),
+		HWAddress:  firstNonBlank(in.BridgeHWAddress, in.EtherTalkHWAddress),
+		BridgeMode: firstNonBlank(in.BridgeBridgeMode, in.EtherTalkBridgeMode),
+	}
+
 	cfg.EtherTalk = ethertalk.Config{
-		Device:         in.EtherTalkDevice,
-		Backend:        in.EtherTalkBackend,
-		HWAddress:      in.EtherTalkHWAddress,
-		BridgeMode:     in.EtherTalkBridgeMode,
+		Device:         cfg.Bridge.Device,
+		Backend:        cfg.Bridge.Mode,
+		HWAddress:      cfg.Bridge.HWAddress,
+		BridgeMode:     cfg.Bridge.BridgeMode,
 		BridgeHostMAC:  in.EtherTalkBridgeHostMAC,
+		Filter:         in.EtherTalkFilter,
 		SeedNetworkMin: in.EtherTalkSeedNetworkMin,
 		SeedNetworkMax: in.EtherTalkSeedNetworkMax,
 		SeedZone:       in.EtherTalkSeedZone,
@@ -96,6 +141,7 @@ func flagsToConfig(in flagInputs) appConfig {
 	cfg.MacIPNAT = in.MacIPNAT
 	cfg.MacIPDHCPRelay = in.MacIPDHCPRelay
 	cfg.MacIPLeaseFile = in.MacIPLeaseFile
+	cfg.MacIPFilter = in.MacIPFilter
 
 	cfg.Capture = capture.Config{
 		LocalTalk: in.CaptureLocalTalk,
@@ -103,5 +149,71 @@ func flagsToConfig(in flagInputs) appConfig {
 		Snaplen:   uint32(in.CaptureSnaplen),
 	}
 
+	cfg.IPXEnabled = in.IPXEnabled
+	cfg.IPXInterface = in.IPXInterface
+	if in.IPXFraming != "" {
+		cfg.IPXFraming = in.IPXFraming
+	}
+	cfg.IPXInternalNetwork = in.IPXInternalNetwork
+	cfg.IPXFilter = in.IPXFilter
+
+	cfg.NetBEUIEnabled = in.NetBEUIEnabled
+	cfg.NetBEUIInterface = in.NetBEUIInterface
+	cfg.NetBEUIFilter = in.NetBEUIFilter
+
+	cfg.NetBIOSEnabled = in.NetBIOSEnabled
+	if in.NetBIOSTransports != "" {
+		parts := splitCSV(in.NetBIOSTransports)
+		if len(parts) > 0 {
+			cfg.NetBIOSTransports = parts
+		}
+	}
+	cfg.NetBIOSScopeID = in.NetBIOSScopeID
+	cfg.NetBIOSServerName = in.NetBIOSServerName
+	cfg.NetBIOSWorkgroup = in.NetBIOSWorkgroup
+
+	cfg.SMBEnabled = in.SMBEnabled
+	if in.SMBNBTBinding != "" {
+		cfg.SMBNBTBinding = in.SMBNBTBinding
+	}
+	cfg.SMBDirectBinding = in.SMBDirectBinding
+	cfg.SMBGuestOk = in.SMBGuestOk
+	if strings.TrimSpace(in.SMBServerName) != "" {
+		cfg.SMBServerName = in.SMBServerName
+	}
+	if strings.TrimSpace(in.SMBWorkgroup) != "" {
+		cfg.SMBWorkgroup = in.SMBWorkgroup
+	}
+	cfg.SMBShareFlags = in.SMBShareValues
+
+	cfg.ShortnameWindowsShortnames = in.ShortnameWindowsShortnames
+	if in.ShortnameBackend != "" {
+		cfg.ShortnameBackend = in.ShortnameBackend
+	}
+	cfg.ShortnameDBPath = in.ShortnameDBPath
+
+	normalizeSMBIdentity(&cfg)
+	syncBridgeToEtherTalk(&cfg)
+
 	return cfg
+}
+
+func firstNonBlank(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func splitCSV(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		p := strings.TrimSpace(part)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

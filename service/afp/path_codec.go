@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ObsoleteMadness/ClassicStack/pkg/encoding"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/vfs"
 )
 
 // AFPOptions controls AFP filename/path translation behavior.
@@ -32,6 +33,10 @@ type Options struct {
 	ForkMetadataBackend ForkMetadataBackend
 	// PersistentVolumeIDs assigns stable volume IDs derived from volume names.
 	PersistentVolumeIDs bool
+	// UseShortnames enables the 8.3 shortname mapping service for AFP clients.
+	UseShortnames bool
+	// ShortnameMapper is the shortname service instance.
+	ShortnameMapper vfs.ShortnameMapper
 }
 
 func DefaultOptions() Options {
@@ -72,7 +77,7 @@ func encodeHostReservedChars(name string) string {
 	var b strings.Builder
 	for _, r := range name {
 		if isHostReservedRune(r) {
-			b.WriteString(fmt.Sprintf("0x%02X", r))
+			fmt.Fprintf(&b, "0x%02X", r)
 		} else {
 			b.WriteRune(r)
 		}

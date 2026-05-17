@@ -12,6 +12,8 @@ import (
 	"sync"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/ObsoleteMadness/ClassicStack/pkg/vfs"
 )
 
 // SQLiteFilename is the standard CNID database filename dropped at the
@@ -49,7 +51,7 @@ func OpenSQLiteDB(volumeRootPath string) (*sql.DB, error) {
 		"PRAGMA busy_timeout=5000",
 	} {
 		if _, execErr := db.Exec(stmt); execErr != nil {
-			db.Close()
+			_ = db.Close()
 			return nil, fmt.Errorf("sqlite pragma %q on %q: %w", stmt, dbPath, execErr)
 		}
 	}
@@ -72,9 +74,10 @@ func NewSQLiteStore(volumeRootPath string) (*SQLiteStore, error) {
 	}
 	store := &SQLiteStore{db: db}
 	if err := store.initSchema(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
+	vfs.DefaultBus.Subscribe(store)
 	return store, nil
 }
 
@@ -85,7 +88,40 @@ func (s *SQLiteStore) initSchema() error {
 			path TEXT NOT NULL UNIQUE
 		);
 		CREATE INDEX IF NOT EXISTS idx_cnid_paths_path ON cnid_paths(path);
+		
+		CREATE TABLE IF NOT EXISTS shortnames (
+			dir TEXT NOT NULL,
+			long TEXT NOT NULL,
+			short TEXT NOT NULL,
+			PRIMARY KEY (dir, long)
+		);
+		CREATE INDEX IF NOT EXISTS idx_shortnames_dir ON shortnames(dir);
 	`)
+	return err
+}
+
+func (s *SQLiteStore) Get(short string) (string, bool) {
+	var long string
+	err := s.db.QueryRow("SELECT long FROM shortnames WHERE short = ?", short).Scan(&long)
+	if err != nil {
+		return "", false
+	}
+	return long, true
+}
+
+func (s *SQLiteStore) LookupShort(dir string, long string) (string, bool) {
+	var short string
+	err := s.db.QueryRow("SELECT short FROM shortnames WHERE dir = ? AND long = ?", dir, long).Scan(&short)
+	if err != nil {
+		return "", false
+	}
+	return short, true
+}
+
+func (s *SQLiteStore) Put(dir string, long, short string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec("INSERT OR REPLACE INTO shortnames(dir, long, short) VALUES(?, ?, ?)", dir, long, short)
 	return err
 }
 
@@ -120,7 +156,7 @@ func (s *SQLiteStore) Ensure(path string) uint32 {
 	if err != nil {
 		return Invalid
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	if cnid, ok := selectCNIDByPathTx(tx, path); ok {
 		_ = tx.Commit()
@@ -150,7 +186,7 @@ func (s *SQLiteStore) EnsureReserved(path string, cnid uint32) uint32 {
 	if err != nil {
 		return Invalid
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	if existing, ok := selectCNIDByPathTx(tx, path); ok {
 		_ = tx.Commit()
@@ -184,13 +220,13 @@ func (s *SQLiteStore) Rebind(oldPath, newPath string) {
 	if err != nil {
 		return
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	rows, err := tx.Query("SELECT cnid, path FROM cnid_paths")
 	if err != nil {
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	type row struct {
 		cnid uint32
@@ -228,13 +264,13 @@ func (s *SQLiteStore) Remove(path string) {
 	if err != nil {
 		return
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	rows, err := tx.Query("SELECT cnid, path FROM cnid_paths")
 	if err != nil {
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var toDelete []uint32
 	for rows.Next() {
@@ -282,4 +318,19 @@ func nextAvailableCNIDTx(tx *sql.Tx) (uint32, error) {
 		return firstDynamic, nil
 	}
 	return maxCNID + 1, nil
+}
+
+// OnVFSEvent implements vfs.Subscriber.
+func (s *SQLiteStore) OnVFSEvent(ev vfs.Event) {
+	if ev.Origin == "afp" {
+		return
+	}
+	switch ev.Op {
+	case vfs.OpCreate:
+		s.Ensure(ev.HostPath)
+	case vfs.OpDelete:
+		s.Remove(ev.HostPath)
+	case vfs.OpRename:
+		s.Rebind(ev.OldPath, ev.HostPath)
+	}
 }

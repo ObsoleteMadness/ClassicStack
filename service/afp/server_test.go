@@ -379,6 +379,9 @@ func (m *mockFS) ReadDir(name string) ([]fs.DirEntry, error) {
 func (m *mockFS) Stat(name string) (fs.FileInfo, error) {
 	return nil, nil
 }
+func (m *mockFS) ShortName(path string) (string, error) {
+	return filepath.Base(path), nil
+}
 func (m *mockFS) DiskUsage(name string) (uint64, uint64, error) {
 	if m.diskUsageErr != nil {
 		return 0, 0, m.diskUsageErr
@@ -539,7 +542,7 @@ func TestAFP_FSDependentMethods(t *testing.T) {
 	closeVolReq := make([]byte, 4)
 	closeVolReq[0] = FPCloseVol
 	binary.BigEndian.PutUint16(closeVolReq[2:4], volID)
-	res, errCode = s.HandleCommand(closeVolReq)
+	_, errCode = s.HandleCommand(closeVolReq)
 	if errCode != NoErr {
 		t.Errorf("Expected CloseVol to succeed, got %v", errCode)
 	}
