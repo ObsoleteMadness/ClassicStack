@@ -519,6 +519,32 @@ func (s *Service) localElectionUptime() uint32 {
 	return secs
 }
 
+// isSelfSourcedDatagram reports whether the inbound browser datagram
+// was sent by this service. Browser frames are addressed to group names
+// the local NetBIOS stack also listens on, so every broadcast we emit
+// is re-delivered to handleDatagram. Without this guard the handler
+// would react to its own transmissions and storm the network.
+func (s *Service) isSelfSourcedDatagram(d *netbiosproto.Datagram) bool {
+	if d == nil {
+		return false
+	}
+	s.mu.Lock()
+	server := s.opts.ServerName
+	workgroup := s.opts.Workgroup
+	s.mu.Unlock()
+	if server == "" {
+		server = "CLASSICSTACK"
+	}
+	if workgroup == "" {
+		workgroup = "WORKGROUP"
+	}
+	src := strings.ToUpper(strings.TrimSpace(d.Source.String()))
+	if src == "" {
+		return false
+	}
+	return src == strings.ToUpper(server) || src == strings.ToUpper(workgroup)
+}
+
 func (s *Service) localElectionFrame(server string) requestElectionFrame {
 	return requestElectionFrame{
 		Version:    browserVersionElection,
@@ -637,6 +663,16 @@ func (s *Service) HandleDatagramContext(d *netbiosproto.Datagram, ctx netbios.Da
 
 func (s *Service) handleDatagram(d *netbiosproto.Datagram, ctx netbios.DatagramContext) error {
 	if d == nil || len(d.Payload) == 0 {
+		return nil
+	}
+	// Drop datagrams whose source name matches our own server identity.
+	// Browser frames are sent to group names (WORKGROUP<1E>, <1D>) that the
+	// local stack is also subscribed to, so each broadcast is delivered
+	// back to us. Without this guard, every election/announcement we emit
+	// re-enters the handler, satisfies cmp >= 0, and triggers another
+	// transmission — producing the storm seen in captures/netbeui.pcap
+	// and captures/ipx.pcap.
+	if s.isSelfSourcedDatagram(d) {
 		return nil
 	}
 	tx, err := unmarshalBrowserMailslotTransaction(d.Payload)
@@ -802,6 +838,15 @@ func (s *Service) handleDatagram(d *netbiosproto.Datagram, ctx netbios.DatagramC
 		s.browserRole = browserRolePotential
 		s.mu.Unlock()
 		netlog.Info("[SMB][Browser] election lost to server=%q criteria=0x%08x uptime=%d", request.ServerName, request.Criteria, request.Uptime)
+		return nil
+	}
+	// A tie (cmp == 0) usually means we just observed our own broadcast
+	// echoed back. Stay silent — otherwise we ping-pong forever. Real
+	// peers with identical criteria/uptime/name are vanishingly rare and
+	// the MS-BRWS tie-break by name still resolves them on the next
+	// election round.
+	if cmp == 0 {
+		netlog.Debug("[SMB][Browser] election tie ignored src=%q server=%q", d.Source.String(), request.ServerName)
 		return nil
 	}
 
