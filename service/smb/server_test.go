@@ -12,8 +12,6 @@ import (
 	"testing"
 	"time"
 
-
-
 	"github.com/ObsoleteMadness/ClassicStack/pkg/vfs"
 	netbiosproto "github.com/ObsoleteMadness/ClassicStack/protocol/netbios"
 	"github.com/ObsoleteMadness/ClassicStack/service/netbios"
@@ -2053,59 +2051,13 @@ func TestHandleOpenAndXResponseIncludesGrantedAccess(t *testing.T) {
 	conn.mu.Unlock()
 }
 
-// TestHandleReadMPXReturnsData asserts handleReadMPX honors the command
-// per [MS-CIFS] 2.2.4.23: returns the requested file bytes in a single
-// response with Count/DataLength set to the bytes delivered. (We used
-// to reject with ERRuseSTD, which forced an extra round-trip via
-// SMB_COM_READ; the spec-compliant path is to honor MPX directly.)
-func TestHandleReadMPXReturnsData(t *testing.T) {
-	tmp := t.TempDir()
-	hostPath := filepath.Join(tmp, "MPX.TXT")
-	if err := os.WriteFile(hostPath, []byte("abcdefghij"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	file, err := os.Open(hostPath)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer file.Close()
-
-	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, nil)
-	conn := &connState{fids: map[uint16]*fileHandle{5: {file: file, path: hostPath}}}
-
-	resp := svc.handleReadMPX(makeReadMPXPayload(5, 2, 4), conn)
-	if resp == nil {
-		t.Fatal("expected response")
-	}
-	if got := binary.LittleEndian.Uint32(resp[smbOffStatus : smbOffStatus+4]); got != smbStatusSuccess {
-		t.Fatalf("status mismatch: got %#x want %#x", got, uint32(smbStatusSuccess))
-	}
-	if got := resp[smbHeaderLen]; got != 8 {
-		t.Fatalf("WCT mismatch: got %d want 8", got)
-	}
-	w := resp[smbHeaderLen+1:]
-	if got := binary.LittleEndian.Uint32(w[0:4]); got != 2 {
-		t.Fatalf("Offset mismatch: got %d want 2", got)
-	}
-	if got := binary.LittleEndian.Uint16(w[4:6]); got != 4 {
-		t.Fatalf("Count mismatch: got %d want 4", got)
-	}
-	if got := binary.LittleEndian.Uint16(w[6:8]); got != 0xFFFF {
-		t.Fatalf("Remaining mismatch: got %#x want 0xFFFF", got)
-	}
-	if got := binary.LittleEndian.Uint16(w[12:14]); got != 4 {
-		t.Fatalf("DataLength mismatch: got %d want 4", got)
-	}
-	dataOffset := binary.LittleEndian.Uint16(w[14:16])
-	if got := string(resp[int(dataOffset) : int(dataOffset)+4]); got != "cdef" {
-		t.Fatalf("Data mismatch: got %q want %q", got, "cdef")
-	}
-}
-
-// TestHandleReadMPXInvalidFID asserts we return ERRDOS/ERRbadfid when the
-// referenced FID is not open. Win9x relies on this status to decide
-// whether to retry against a different handle or give up.
-func TestHandleReadMPXInvalidFID(t *testing.T) {
+// TestHandleReadMPXReturnsUseStandard asserts handleReadMPX rejects
+// SMB_COM_READ_MPX with ERRSRV/ERRuseSTD, matching Samba's
+// reply_readbmpx. Win9x then falls back to SMB_COM_READ which we serve
+// correctly. The previous spec-compliant single-response implementation
+// caused Win9x to retransmit at offset 0 indefinitely
+// (captures/ipx.pcap frames 365–393); see spec/errata.md.
+func TestHandleReadMPXReturnsUseStandard(t *testing.T) {
 	svc := NewService(ServerOptions{ServerName: "ClassicStack", Workgroup: "WORKGROUP"}, nil, nil)
 	conn := &connState{fids: map[uint16]*fileHandle{}}
 
@@ -2113,8 +2065,8 @@ func TestHandleReadMPXInvalidFID(t *testing.T) {
 	if resp == nil {
 		t.Fatal("expected response")
 	}
-	if got := binary.LittleEndian.Uint32(resp[smbOffStatus : smbOffStatus+4]); got != smbStatusErrBadFid {
-		t.Fatalf("status mismatch: got %#x want %#x", got, uint32(smbStatusErrBadFid))
+	if got := binary.LittleEndian.Uint32(resp[smbOffStatus : smbOffStatus+4]); got != smbStatusUseStandard {
+		t.Fatalf("status mismatch: got %#x want %#x", got, uint32(smbStatusUseStandard))
 	}
 }
 
@@ -2167,7 +2119,6 @@ func TestHandleReadReturnsData(t *testing.T) {
 		t.Fatalf("data mismatch: got %q want %q", got, "cde")
 	}
 }
-
 
 func makeQueryInformationPayload(tid uint16, path string) []byte {
 	pathBytes := append([]byte(path), 0)
@@ -2224,18 +2175,18 @@ func makeOpenAndXPayloadWithAccess(tid uint16, path string, openFunction uint16,
 	out[smbHeaderLen] = byte(wct)
 
 	w := out[smbHeaderLen+1 : smbHeaderLen+1+wordBytes]
-	w[0] = 0xFF                                  // AndXCommand
-	w[1] = 0x00                                  // AndXReserved
-	binary.LittleEndian.PutUint16(w[2:4], 0)     // AndXOffset
-	binary.LittleEndian.PutUint16(w[4:6], 0)     // Flags
+	w[0] = 0xFF                              // AndXCommand
+	w[1] = 0x00                              // AndXReserved
+	binary.LittleEndian.PutUint16(w[2:4], 0) // AndXOffset
+	binary.LittleEndian.PutUint16(w[4:6], 0) // Flags
 	binary.LittleEndian.PutUint16(w[6:8], desiredAccess)
-	binary.LittleEndian.PutUint16(w[8:10], 0)    // SearchAttrs
-	binary.LittleEndian.PutUint16(w[10:12], 0)   // FileAttrs
-	binary.LittleEndian.PutUint32(w[12:16], 0)   // CreationTime
+	binary.LittleEndian.PutUint16(w[8:10], 0)  // SearchAttrs
+	binary.LittleEndian.PutUint16(w[10:12], 0) // FileAttrs
+	binary.LittleEndian.PutUint32(w[12:16], 0) // CreationTime
 	binary.LittleEndian.PutUint16(w[16:18], openFunction)
-	binary.LittleEndian.PutUint32(w[18:22], 0)   // AllocationSize
-	binary.LittleEndian.PutUint32(w[22:26], 0)   // Timeout
-	binary.LittleEndian.PutUint32(w[26:30], 0)   // Reserved
+	binary.LittleEndian.PutUint32(w[18:22], 0) // AllocationSize
+	binary.LittleEndian.PutUint32(w[22:26], 0) // Timeout
+	binary.LittleEndian.PutUint32(w[26:30], 0) // Reserved
 
 	binary.LittleEndian.PutUint16(out[bytesOffset:bytesOffset+2], uint16(byteCount))
 	out[bytesOffset+2] = 0x04

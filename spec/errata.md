@@ -14,6 +14,16 @@ This document records places where ClassicStack's wire behavior intentionally di
 
 **Where:** `service/smb/command_fs_search.go` — `formatSearchFileName`.
 
+### SMB_COM_READ_MPX ([MS-CIFS] 2.2.4.23)
+
+**Spec:** *"The server returns the requested data in one or more response messages. Each response carries Offset, Count, DataLength, and DataOffset; the client reassembles by file Offset and stops once Count bytes have been delivered."* — i.e. a single well-formed WCT=8 response with `Count == DataLength` and `Remaining = 0xFFFF` should satisfy the read.
+
+**Observed:** Windows for Workgroups 3.11 / Win9x over Direct IPX (NT LM 0.12 dialect) silently rejects spec-compliant single-response replies. The client retransmits the same Read MPX request at file offset 0 forever, never advancing — see `captures/ipx.pcap` frames 365–393 (FID 0x0003, MID 35457, MaxCount 4096) and frames 415+ (FID 0x0004). The response on the wire was structurally correct: WCT=8, Offset=0, Count=4096, Remaining=0xFFFF, DataLength=4096, DataOffset=52, ByteCount=4097, valid Pad+Data. The exact reason Win9x refuses it is unknown; the multi-response streaming form may be required, or some MID/dialect quirk we have not reverse-engineered.
+
+**What we do:** Reject with `ERRSRV/ERRuseSTD` (`STATUS_SMB_USE_STANDARD`), which prompts the client to fall back to `SMB_COM_READ`. This is exactly what Samba's `reply_readbmpx` (source3/smbd/reply.c) has done since the 1990s. Costs one extra round-trip per chunk; in exchange the transfer actually completes.
+
+**Where:** `service/smb/command_file_io.go` — `handleReadMPX`.
+
 ### SMB_COM_SEARCH MaxCount ([MS-CIFS] 2.2.4.58.1)
 
 **Spec:** *"This value represents the maximum number of entries across the entirety of the search, not just the initial response."*
