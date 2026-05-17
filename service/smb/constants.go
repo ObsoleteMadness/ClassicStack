@@ -30,6 +30,7 @@ const (
 	CommandTransaction2          = 0x32
 	CommandTransaction2Secondary = 0x33
 	CommandFindClose2            = 0x34
+	CommandTreeConnect           = 0x70
 	CommandTreeDisconnect        = 0x71
 	CommandNegotiate             = 0x72
 	CommandSessionSetupAndX      = 0x73

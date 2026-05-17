@@ -19,10 +19,9 @@ type connState struct {
 	fids          map[uint16]*fileHandle
 	searches      map[uint16]*searchHandle
 	lockTables    map[string]*lockTable
-	nextTID       uint16
-	nextFID       uint16
-	nextSID       uint16
-	maxBufferSize uint16
+	nextTID  uint16
+	nextFID  uint16
+	nextSID  uint16
 }
 
 type treeSlot struct {
@@ -32,7 +31,6 @@ type treeSlot struct {
 type fileHandle struct {
 	file     vfs.File
 	path     string
-	tid      uint16
 	writable bool
 	offset   int64
 	// mpxAccum is the running OR of RequestMask values from every
@@ -49,7 +47,6 @@ type fileHandle struct {
 type searchHandle struct {
 	entries []findFirst2Row
 	idx     int
-	tid     uint16
 	pattern string
 	attrs   uint16
 }
@@ -85,13 +82,6 @@ func (s *Service) allocUID() uint16 {
 		s.nextUID++
 	}
 	return s.nextUID
-}
-
-func (s *Service) lookupConn(connID connKey) *connState {
-	s.connsMu.Lock()
-	conn := s.conns[connID]
-	s.connsMu.Unlock()
-	return conn
 }
 
 func (s *Service) ensureConn(connID connKey) *connState {

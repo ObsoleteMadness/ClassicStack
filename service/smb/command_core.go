@@ -165,33 +165,6 @@ func buildSessionSetupResponse(req []byte, uid uint16) []byte {
 	return out
 }
 
-// buildTreeConnectResponse constructs an SMB_COM_TREE_CONNECT_ANDX
-// response assigning TID=1 with IPC$ service type.
-func buildTreeConnectResponse(req []byte) []byte {
-	if len(req) < smbHeaderLen {
-		return nil
-	}
-	service := []byte("IPC\x00")
-	nativeFS := []byte("\x00")
-	byteCount := len(service) + len(nativeFS)
-	// WCT=3: AndXCommand(1b)+AndXReserved(1b)+AndXOffset(2b)+OptionalSupport(2b).
-	out := make([]byte, smbHeaderLen+1+6+2+byteCount)
-	copy(out[:smbHeaderLen], req[:smbHeaderLen])
-	binary.LittleEndian.PutUint32(out[smbOffStatus:smbOffStatus+4], smbStatusSuccess)
-	out[smbOffFlags] |= 0x80
-	binary.LittleEndian.PutUint16(out[smbOffTID:smbOffTID+2], 1) // TID = 1
-	out[smbHeaderLen] = 3                                        // WCT
-	w := out[smbHeaderLen+1:]
-	w[0] = 0xFF                              // AndXCommand = no chaining
-	w[1] = 0x00                              // AndXReserved
-	binary.LittleEndian.PutUint16(w[2:4], 0) // AndXOffset
-	binary.LittleEndian.PutUint16(w[4:6], 0) // OptionalSupport
-	binary.LittleEndian.PutUint16(w[6:8], uint16(byteCount))
-	copy(w[8:], service)
-	copy(w[8+len(service):], nativeFS)
-	return out
-}
-
 // buildEchoResponse constructs a base SMB_COM_ECHO response that mirrors
 // the request body and sets SequenceNumber to 1.
 func buildEchoResponse(req []byte) []byte {
@@ -280,6 +253,73 @@ func (s *Service) handleTreeConnectAndX(req []byte, conn *connState) []byte {
 	conn.mu.Unlock()
 
 	return buildTreeConnectResponseWithTID(req, tid)
+}
+
+// handleTreeConnect handles the original SMB_COM_TREE_CONNECT (0x70)
+// used by Windows for Workgroups 3.11 and other CORE-dialect clients.
+// The request shape (WCT=0, BCC=path/password/service strings) and the
+// response shape (WCT=2, MaxBufferSize+TID, BCC=0) differ from the
+// AndX variant, but the share-resolution logic is identical.
+func (s *Service) handleTreeConnect(req []byte, conn *connState) []byte {
+	if conn == nil {
+		return buildSMBErrorResponse(req, smbStatusBadNetworkName)
+	}
+	shareName, ok := parseTreeConnectShareName(req)
+	if !ok {
+		return buildSMBErrorResponse(req, smbStatusBadNetworkName)
+	}
+
+	if strings.EqualFold(shareName, ipcShareName) {
+		conn.mu.Lock()
+		conn.nextTID++
+		tid := conn.nextTID
+		if tid == 0 {
+			conn.nextTID++
+			tid = conn.nextTID
+		}
+		conn.tids[tid] = treeSlot{shareIdx: ipcShareIdx}
+		conn.mu.Unlock()
+		return buildCoreTreeConnectResponse(req, tid)
+	}
+
+	normalized := normalizeBrowserName(shareName)
+	s.mu.Lock()
+	shareIdx, found := s.shareNameToIndex[normalized]
+	s.mu.Unlock()
+	if !found {
+		return buildSMBErrorResponse(req, smbStatusBadNetworkName)
+	}
+
+	conn.mu.Lock()
+	conn.nextTID++
+	tid := conn.nextTID
+	if tid == 0 {
+		conn.nextTID++
+		tid = conn.nextTID
+	}
+	conn.tids[tid] = treeSlot{shareIdx: shareIdx}
+	conn.mu.Unlock()
+
+	return buildCoreTreeConnectResponse(req, tid)
+}
+
+// buildCoreTreeConnectResponse constructs an SMB_COM_TREE_CONNECT (0x70)
+// success response: WCT=2 (MaxBufferSize, TID), BCC=0.
+func buildCoreTreeConnectResponse(req []byte, tid uint16) []byte {
+	if len(req) < smbHeaderLen {
+		return nil
+	}
+	out := make([]byte, smbHeaderLen+1+4+2)
+	copy(out[:smbHeaderLen], req[:smbHeaderLen])
+	binary.LittleEndian.PutUint32(out[smbOffStatus:smbOffStatus+4], smbStatusSuccess)
+	out[smbOffFlags] |= 0x80
+	binary.LittleEndian.PutUint16(out[smbOffTID:smbOffTID+2], tid)
+	out[smbHeaderLen] = 2 // WCT
+	w := out[smbHeaderLen+1:]
+	binary.LittleEndian.PutUint16(w[0:2], uint16(negotiateMaxBufferSize)) // MaxBufferSize
+	binary.LittleEndian.PutUint16(w[2:4], tid)                            // TID echoed
+	binary.LittleEndian.PutUint16(w[4:6], 0)                              // BCC
+	return out
 }
 
 // buildTreeConnectResponseForIPC constructs an SMB_COM_TREE_CONNECT_ANDX

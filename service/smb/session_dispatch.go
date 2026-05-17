@@ -29,10 +29,6 @@ func (s *Service) HandleSessionContext(packet *netbiosproto.SessionPacket, ctx n
 	connID := connKeyFromSession(ctx)
 	conn := s.ensureConn(connID)
 
-	server := s.opts.ServerName
-	if server == "" {
-		server = "CLASSICSTACK"
-	}
 	workgroup := s.opts.Workgroup
 	if workgroup == "" {
 		workgroup = "WORKGROUP"
@@ -57,6 +53,11 @@ func (s *Service) HandleSessionContext(packet *netbiosproto.SessionPacket, ctx n
 		uid := conn.uid
 		conn.mu.Unlock()
 		respPayload = buildSessionSetupResponse(packet.Payload, uid)
+
+	case CommandTreeConnect:
+		netlog.Debug("[SMB][Session] tree-connect (core) src=%x.%x:%02x%02x",
+			ctx.Remote.Network, ctx.Remote.Node, ctx.Remote.Socket[0], ctx.Remote.Socket[1])
+		respPayload = s.handleTreeConnect(packet.Payload, conn)
 
 	case CommandTreeConnectAndX:
 		netlog.Debug("[SMB][Session] tree-connect src=%x.%x:%02x%02x",
