@@ -47,6 +47,9 @@ type appConfig struct {
 	IPXInternalNetwork string
 	IPXFilter          string
 
+	IPXGWEnabled  bool
+	IPXGWBindings []IPXGWZoneBinding
+
 	NetBEUIEnabled   bool
 	NetBEUIInterface string
 	NetBEUIFilter    string
@@ -165,6 +168,20 @@ func resolveAppConfig(src config.Source) (appConfig, error) {
 	cfg.IPXFraming = stringWithDefault(k, "IPX.framing", cfg.IPXFraming)
 	cfg.IPXInternalNetwork = stringWithDefault(k, "IPX.internal_network", cfg.IPXInternalNetwork)
 	cfg.IPXFilter = strings.TrimSpace(k.String("IPX.filter"))
+
+	cfg.IPXGWEnabled = boolWithDefault(k, "IPXGW.enabled", cfg.IPXGWEnabled)
+	if k.Exists("IPXGW.bindings") {
+		for _, raw := range k.Strings("IPXGW.bindings") {
+			parts := strings.SplitN(raw, ":", 2)
+			if len(parts) != 2 {
+				return cfg, fmt.Errorf("[IPXGW] bindings entry must be \"Object:Zone\", got %q", raw)
+			}
+			cfg.IPXGWBindings = append(cfg.IPXGWBindings, IPXGWZoneBinding{
+				Object: strings.TrimSpace(parts[0]),
+				Zone:   strings.TrimSpace(parts[1]),
+			})
+		}
+	}
 
 	cfg.NetBEUIEnabled = boolWithDefault(k, "NetBEUI.enabled", cfg.NetBEUIEnabled)
 	cfg.NetBEUIInterface = stringWithDefault(k, "NetBEUI.interface", cfg.NetBEUIInterface)

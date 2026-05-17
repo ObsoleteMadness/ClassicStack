@@ -414,10 +414,28 @@ func main() {
 		NBP:             nbpSvc,
 	})
 	if err != nil {
-		log.Fatalf("MacIP wiring failed: %v", err)
+		for _, s := range captureSinks {
+			_ = s.Close()
+		}
+		log.Fatalf("MacIP wiring failed: %v", err) //nolint:gocritic // captureSinks closed manually above
 	}
 	if macIP != nil {
 		services = append(services, macIP.Service())
+	}
+
+	ipxGW, err := wireIPXGW(IPXGWConfig{
+		Enabled:  cfg.IPXGWEnabled,
+		Bindings: cfg.IPXGWBindings,
+		NBP:      nbpSvc,
+	})
+	if err != nil {
+		for _, s := range captureSinks {
+			_ = s.Close()
+		}
+		log.Fatalf("IPXGW wiring failed: %v", err) //nolint:gocritic // captureSinks closed manually above
+	}
+	if ipxGW != nil {
+		services = append(services, ipxGW.Service())
 	}
 
 	shortHook, err := wireShortname(ShortnameConfig{
@@ -484,6 +502,9 @@ func main() {
 	})
 	if err != nil {
 		log.Fatalf("IPX wiring failed: %v", err)
+	}
+	if ipxGW != nil && ipxHook != nil {
+		ipxGW.AttachIPXRouter(ipxHook.Router())
 	}
 	netbeuiResolvedIface := cfg.NetBEUIInterface
 	if cfg.NetBEUIEnabled && strings.TrimSpace(netbeuiResolvedIface) == "" && cfg.EtherTalk.Device != "" {
