@@ -4,10 +4,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ClassicStack is a Go-based AppleTalk Phase 2 router and AFP file server. It bridges legacy Apple networking protocols to modern environments, supporting EtherTalk (raw Ethernet), LToUDP (multicast UDP), TashTalk (serial), and virtual LocalTalk transports.
+ClassicStack is a Go-based AppleTalk Phase 2 router and AFP file server. It also supports other legacy protocols such as NetBEUI, NetBIOS and SMB. 
+It bridges legacy Apple networking protocols to modern environments, supporting EtherTalk (raw Ethernet), LToUDP (multicast UDP), TashTalk (serial), and virtual LocalTalk transports.
 
 **Module:** `github.com/ObsoleteMadness/ClassicStack`  
 **Go version:** 1.23.0
+
+## Remember!
+1. Always confirm implementation details with the specifications found in /spec/*.md
+2. Use consts rather than hard-coded values, especially for responses, errors, etc. 
+3. Use the names from the specification for functions, consts, etc and include a comment with a breif description from the spec for any functions.
+4. Captures of protocols can be found in /captures. Use `tshark` to review protocol captures to aid in diagnosing faults. 
+5. When the observation from a capture differs from the spec, document it in the code and in `/spec/errata.md`
+6. Where we do not have a spec and implementation is from observation, add details on wire format, observed commands, observed responses. Eg, the MacIPX Gateway implementation will be based on observed IPX encapsulation over AppleTalk traffic between a Novell Server and a Macintosh MacIPX client.
+7. If code is from 3rd parties, **Always** attribute it to the original authors. 
+8. Check for linting errors before committing.
+9. Run gofmt before commiting.
+
 
 ## Commands
 
