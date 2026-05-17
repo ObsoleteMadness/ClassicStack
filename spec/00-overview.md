@@ -44,6 +44,7 @@ Well-known DDP type numbers:
 | 4 | Echo |
 | 5 | RTMP Request |
 | 6 | ZIP |
+| 0x4E (78) | MacIPX Gateway — see [15-macipx-gateway.md](15-macipx-gateway.md) (observation-driven) |
 
 ### Port Interface
 
@@ -98,6 +99,7 @@ Maps zone names (case-insensitive, AppleTalk case folding) to sets of network ra
 | [03-rtmp.md](03-rtmp.md) | Routing Table Maintenance Protocol | 1 | 1, 5 |
 | [04-zip.md](04-zip.md) | Zone Information Protocol | 6 | 3, 6 |
 | [05-aging.md](05-aging.md) | Routing Table Aging | (timer only) | — |
+| [15-macipx-gateway.md](15-macipx-gateway.md) | MacIPX Gateway (AppleTalk ↔ IPX) | 78 (0x4E) | 0x4E |
 
 ## Port Implementations
 
