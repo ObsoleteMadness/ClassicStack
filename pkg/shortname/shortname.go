@@ -72,6 +72,15 @@ func (m *mapper) Bind(dir, long string) string {
 		return existing
 	}
 
+	// If the long name is already a valid 8.3 short name (uppercased),
+	// don't mangle it — Windows doesn't, and clients expect the
+	// short and long forms to match for these. Bypasses both the
+	// Windows GetShortPathName fallback and ~N suffixing.
+	if upper, ok := alreadyValid83(long); ok {
+		_ = m.store.Put(dir, long, upper)
+		return upper
+	}
+
 	if m.cfg.WindowsShortnames {
 		fullPath := filepath.Join(dir, long)
 		if short, err := getWindowsShortName(fullPath); err == nil && short != "" {
@@ -83,6 +92,40 @@ func (m *mapper) Bind(dir, long string) string {
 	short := derive83(long, 1)
 	_ = m.store.Put(dir, long, short)
 	return short
+}
+
+// alreadyValid83 reports whether long is already a valid 8.3 short
+// name and returns its uppercase form. A name qualifies when:
+//   - the basename is 1..8 FAT-legal characters
+//   - any extension is 1..3 FAT-legal characters
+//   - case-folding to upper changes only case (no characters get dropped)
+//
+// Names with spaces, lowercase letters that survive sanitization, or
+// any character sanitizeFAT would strip do not qualify, because the
+// uppercase form would not round-trip via the host filesystem.
+func alreadyValid83(long string) (string, bool) {
+	if long == "" || long == "." || long == ".." {
+		return "", false
+	}
+	base, ext := splitExt(long)
+	if len(base) == 0 || len(base) > 8 {
+		return "", false
+	}
+	if len(ext) > 3 {
+		return "", false
+	}
+	upperBase := strings.ToUpper(base)
+	upperExt := strings.ToUpper(ext)
+	if sanitizeFAT(upperBase) != upperBase {
+		return "", false
+	}
+	if sanitizeFAT(upperExt) != upperExt {
+		return "", false
+	}
+	if upperExt != "" {
+		return upperBase + "." + upperExt, true
+	}
+	return upperBase, true
 }
 
 // derive83 produces a deterministic 8.3 candidate from long with the

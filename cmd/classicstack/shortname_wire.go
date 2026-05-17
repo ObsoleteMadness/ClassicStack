@@ -13,9 +13,6 @@ func (h *shortnameHook) Mapper() vfs.ShortnameMapper { return h.mapper }
 
 func wireShortname(cfg ShortnameConfig) (ShortnameHook, error) {
 	var store shortname.Store
-	if cfg.Backend == "sqlite" {
-		// store = ... (left for future sqlite implementation)
-	}
 	if store == nil {
 		store = shortname.NewMemoryStore()
 	}

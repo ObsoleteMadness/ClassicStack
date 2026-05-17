@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 
 	"github.com/knadh/koanf/v2"
@@ -96,6 +97,12 @@ func defaultAppConfig() appConfig {
 		SMBServerName:     defaultSMBServerName,
 		SMBWorkgroup:      defaultSMBWorkgroup,
 		ShortnameBackend:  "memory",
+		// On Windows the host filesystem already has authoritative 8.3
+		// names (NTFS short names, when not disabled) — using them
+		// avoids generating ~N suffixes for names that are already
+		// valid 8.3 (e.g. "FOOD" → "FOOD~1") and matches what other
+		// Windows clients on the same share see.
+		ShortnameWindowsShortnames: runtime.GOOS == "windows",
 	}
 }
 
