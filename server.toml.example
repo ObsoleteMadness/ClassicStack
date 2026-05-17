@@ -39,6 +39,17 @@ dhcp_relay = true              # convert MacTCP auto-config to DHCP requests
 nameserver = "1.1.1.1"         # DNS nameserver
 filter = ""                    # optional pcap BPF filter override
 
+[IPXGW]
+# AppleTalk-to-IPX gateway (the gateway side of Novell's MacIPX client).
+# Discovery-only at this stage: registers NBP names of type "IPX Gateway"
+# in the AppleTalk zones the router serves. Once enabled, MacIPX clients
+# can see the gateway in their control panel — useful for capturing the
+# wire protocol the client speaks once it picks us.
+enabled = false
+# Optional explicit bindings as "Object:Zone" pairs. Omit to register one
+# binding per zone the router knows about (object name = zone name).
+# bindings = ["EtherTalk Network:EtherTalk Network", "LToUDP Network:LToUDP Network"]
+
 [AFP]
 # Apple Filing Protocol server settings
 enabled = true                 # true to enable AFP server
