@@ -3,6 +3,7 @@ package netbeui
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"testing"
 )
 
@@ -209,7 +210,7 @@ func TestStatusResponseWithPayload(t *testing.T) {
 
 func TestDecodeShortFrame(t *testing.T) {
 	_, err := Decode([]byte{0x00, 0x01})
-	if err != ErrShortFrame {
+	if !errors.Is(err, ErrShortFrame) {
 		t.Fatalf("expected ErrShortFrame, got %v", err)
 	}
 }
@@ -220,7 +221,7 @@ func TestDecodeBadDelimiter(t *testing.T) {
 	binary.LittleEndian.PutUint16(b[2:4], 0xBEEF) // wrong delimiter
 	b[4] = CmdAddNameQuery
 	_, err := Decode(b)
-	if err != ErrBadDelimiter {
+	if !errors.Is(err, ErrBadDelimiter) {
 		t.Fatalf("expected ErrBadDelimiter, got %v", err)
 	}
 }
@@ -233,7 +234,7 @@ func TestDecodeSessionShortFrame(t *testing.T) {
 	b[4] = CmdDataAck // session command
 
 	_, err := Decode(b)
-	if err != ErrShortFrame {
+	if !errors.Is(err, ErrShortFrame) {
 		t.Fatalf("expected ErrShortFrame, got %v", err)
 	}
 }

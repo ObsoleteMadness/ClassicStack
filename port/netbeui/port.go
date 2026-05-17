@@ -30,6 +30,14 @@ var llcHeader = [3]byte{0xF0, 0xF0, 0x03}
 
 const ethernetHeaderLen = 14
 
+// ethernetMinFrameLen is the minimum Ethernet payload + header size
+// (60 bytes; with the 4-byte FCS that's the 64-byte minimum specified
+// in IEEE 802.3). NICs and emulated adapters routinely drop sub-60-byte
+// frames as runts, so all outbound frames are zero-padded to this size
+// before being handed to pcap. The IEEE 802.3 length field stays at the
+// LLC payload size — only trailing bytes are added.
+const ethernetMinFrameLen = 60
+
 // NetBEUIBPFFilter is the kernel-level BPF expression NetBEUI pushes to
 // its rawlink. It admits 802.3 length-encoded frames (EtherType slot
 // holds a length ≤ 0x05DC) whose LLC DSAP is 0xF0 and whose SSAP,
@@ -180,7 +188,7 @@ func (p *portImpl) sendLLCUA(dstMAC [6]byte) {
 		return
 	}
 	const llcLen = 3
-	out := make([]byte, ethernetHeaderLen+llcLen)
+	out := make([]byte, ethernetMinFrameLen)
 	copy(out[0:6], dstMAC[:])
 	copy(out[6:12], src[:])
 	out[12] = 0x00
@@ -208,7 +216,7 @@ func (p *portImpl) sendLLCRR(dstMAC [6]byte, nR uint8) {
 		return
 	}
 	const llcLen = 4
-	out := make([]byte, ethernetHeaderLen+llcLen)
+	out := make([]byte, ethernetMinFrameLen)
 	copy(out[0:6], dstMAC[:])
 	copy(out[6:12], src[:])
 	out[12] = 0x00
@@ -243,6 +251,9 @@ func (p *portImpl) sendIFrame(dstMAC [6]byte, body []byte, conn *llcConn) error 
 	conn.mu.Unlock()
 	const llcLen = 4
 	total := ethernetHeaderLen + llcLen + len(body)
+	if total < ethernetMinFrameLen {
+		total = ethernetMinFrameLen
+	}
 	out := make([]byte, total)
 	copy(out[0:6], dstMAC[:])
 	copy(out[6:12], src[:])
@@ -271,6 +282,9 @@ func (p *portImpl) sendUI(dstMAC [6]byte, body []byte) error {
 		return ErrNoSourceMAC
 	}
 	total := 14 + len(llcHeader) + len(body)
+	if total < ethernetMinFrameLen {
+		total = ethernetMinFrameLen
+	}
 	out := make([]byte, total)
 	copy(out[0:6], dstMAC[:])
 	copy(out[6:12], src[:])
@@ -324,7 +338,7 @@ func (p *portImpl) readLoop() {
 		}
 		frame, err := p.link.ReadFrame()
 		if err != nil {
-			if err == rawlink.ErrTimeout {
+			if errors.Is(err, rawlink.ErrTimeout) {
 				continue
 			}
 			netlog.Warn("[NetBEUI] read error: %v", err)

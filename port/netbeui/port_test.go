@@ -102,9 +102,9 @@ func TestNetBEUIInboundDecodesNBFBody(t *testing.T) {
 	}
 
 	want := &netbeui.Frame{
-		Command:            0x08,
-		ResponseCorrelator: 0x4242,
-		Payload:            []byte("payload"),
+		Command:       0x08,
+		RspCorrelator: 0x4242,
+		Payload:       []byte("payload"),
 	}
 	copy(want.DestinationName[:], "WS01            ")
 	copy(want.SourceName[:], "SERVER          ")
@@ -116,7 +116,7 @@ func TestNetBEUIInboundDecodesNBFBody(t *testing.T) {
 
 	select {
 	case got := <-delivered:
-		if got.Command != want.Command || got.ResponseCorrelator != want.ResponseCorrelator {
+		if got.Command != want.Command || got.RspCorrelator != want.RspCorrelator {
 			t.Fatalf("header mismatch: got %+v want %+v", got, want)
 		}
 		if string(got.Payload) != "payload" {
@@ -231,7 +231,7 @@ func TestNetBEUISendRequiresSourceMAC(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	dst := [6]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06}
-	if err := p.Send(dst, &netbeui.Frame{Command: 0x08}); err != ErrNoSourceMAC {
+	if err := p.Send(dst, &netbeui.Frame{Command: 0x08}); !errors.Is(err, ErrNoSourceMAC) {
 		t.Fatalf("expected ErrNoSourceMAC, got %v", err)
 	}
 }

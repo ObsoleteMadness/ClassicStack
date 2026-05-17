@@ -96,6 +96,7 @@ type Frame struct {
 	// --- Deprecated aliases for backward compatibility ---
 
 	// ResponseCorrelator is an alias for RspCorrelator.
+	//
 	// Deprecated: use RspCorrelator.
 	ResponseCorrelator uint16
 }
