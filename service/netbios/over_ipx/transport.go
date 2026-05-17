@@ -94,9 +94,7 @@ func NewTransport(r ipx.Router, sap SAPRegistrar, name protocol.Name) netbios.Tr
 		name:          name,
 		claimRetries:  DefaultNameClaimRetries,
 		claimInterval: DefaultNameClaimInterval,
-		sleep: func(d time.Duration) <-chan time.Time {
-			return time.After(d)
-		},
+		sleep:         time.After,
 		objection: make(chan struct{}, 1),
 		stopped:   make(chan struct{}),
 	}

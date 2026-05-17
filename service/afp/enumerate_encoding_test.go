@@ -471,7 +471,7 @@ func TestHandleEnumerate_UsesReadDirRangeWhenAvailable(t *testing.T) {
 	if len(spy.readDirCalls) != 0 {
 		t.Fatalf("ReadDir calls = %v, want none", spy.readDirCalls)
 	}
-	if res.Data == nil || len(res.Data) == 0 {
+	if len(res.Data) == 0 {
 		t.Fatal("expected enumerate data from range provider")
 	}
 }

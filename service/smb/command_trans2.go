@@ -423,9 +423,7 @@ func (s *Service) handleTransaction2FindFirst2(req []byte, conn *connState, fsys
 		storeSearchHandle(conn, sid, nil, returned, pattern, searchAttrs)
 	} else {
 		rows := make([]findFirst2Row, 0, len(matches)-returned)
-		for _, row := range matches[returned:] {
-			rows = append(rows, row)
-		}
+		rows = append(rows, matches[returned:]...)
 		storeSearchHandle(conn, sid, rows, 0, pattern, searchAttrs)
 	}
 
@@ -913,12 +911,3 @@ func buildTransaction2FindResponse(req []byte, includeSID bool, sid uint16, sear
 	return out
 }
 
-type dirEntryFromFileInfo struct {
-	name string
-	info fs.FileInfo
-}
-
-func (d dirEntryFromFileInfo) Name() string               { return d.name }
-func (d dirEntryFromFileInfo) IsDir() bool                { return d.info.IsDir() }
-func (d dirEntryFromFileInfo) Type() fs.FileMode          { return d.info.Mode().Type() }
-func (d dirEntryFromFileInfo) Info() (fs.FileInfo, error) { return d.info, nil }

@@ -2,6 +2,7 @@ package netbios
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -53,7 +54,7 @@ func TestSessionHeaderRoundTrip(t *testing.T) {
 }
 
 func TestSessionHeaderShort(t *testing.T) {
-	if _, err := DecodeSessionHeader([]byte{1, 2, 3}); err != ErrShortNBIPX {
+	if _, err := DecodeSessionHeader([]byte{1, 2, 3}); !errors.Is(err, ErrShortNBIPX) {
 		t.Fatalf("expected ErrShortNBIPX, got %v", err)
 	}
 }
@@ -88,7 +89,7 @@ func TestNameServiceRoundTrip(t *testing.T) {
 }
 
 func TestNameServiceShort(t *testing.T) {
-	if _, err := DecodeNameService([]byte{1, 2, 3}); err != ErrShortNBIPX {
+	if _, err := DecodeNameService([]byte{1, 2, 3}); !errors.Is(err, ErrShortNBIPX) {
 		t.Fatalf("expected ErrShortNBIPX, got %v", err)
 	}
 }
@@ -135,7 +136,7 @@ func TestDatagramRoundTrip(t *testing.T) {
 }
 
 func TestDatagramShort(t *testing.T) {
-	if _, err := DecodeDatagram([]byte{1, 2, 3}); err != ErrShortDatagram {
+	if _, err := DecodeDatagram([]byte{1, 2, 3}); !errors.Is(err, ErrShortDatagram) {
 		t.Fatalf("expected ErrShortDatagram, got %v", err)
 	}
 }

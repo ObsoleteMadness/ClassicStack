@@ -542,7 +542,7 @@ func TestAFP_FSDependentMethods(t *testing.T) {
 	closeVolReq := make([]byte, 4)
 	closeVolReq[0] = FPCloseVol
 	binary.BigEndian.PutUint16(closeVolReq[2:4], volID)
-	res, errCode = s.HandleCommand(closeVolReq)
+	_, errCode = s.HandleCommand(closeVolReq)
 	if errCode != NoErr {
 		t.Errorf("Expected CloseVol to succeed, got %v", errCode)
 	}

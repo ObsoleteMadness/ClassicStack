@@ -116,7 +116,7 @@ func (s *Service) handleCloseFork(req *FPCloseForkReq) (*FPCloseForkRes, int32) 
 		return &FPCloseForkRes{}, ErrParamErr
 	}
 	if handle.file != nil {
-		handle.file.Close()
+		_ = handle.file.Close()
 	}
 	return &FPCloseForkRes{}, NoErr
 }
@@ -280,7 +280,7 @@ func (s *Service) handleRead(req *FPReadReq) (*FPReadRes, int32) {
 		}
 		buf := make([]byte, readLen)
 		n, err := handle.file.ReadAt(buf, handle.rsrcOff+req.Offset)
-		if err != nil && err != io.EOF {
+		if err != nil && !errors.Is(err, io.EOF) {
 			netlog.Debug("[AFP] Read forkID=%d rsrc: ReadAt error: %v", req.ForkID, err)
 			return &FPReadRes{}, ErrParamErr
 		}
@@ -303,7 +303,7 @@ func (s *Service) handleRead(req *FPReadReq) (*FPReadRes, int32) {
 	netlog.Debug("[AFP] Read forkID=%d data: fileSize=%d req offset=%d count=%d", req.ForkID, fileSize, req.Offset, req.ReqCount)
 	buf := make([]byte, req.ReqCount)
 	n, err := handle.file.ReadAt(buf, req.Offset)
-	if err != nil && err != io.EOF {
+	if err != nil && !errors.Is(err, io.EOF) {
 		netlog.Debug("[AFP] Read forkID=%d data: ReadAt error: %v", req.ForkID, err)
 		return &FPReadRes{}, ErrParamErr
 	}
@@ -386,7 +386,7 @@ func (s *Service) handleWrite(req *FPWriteReq) (*FPWriteRes, int32) {
 			// Update the resource fork length field in the AppleDouble header.
 			lenBuf := make([]byte, 4)
 			binary.BigEndian.PutUint32(lenBuf, uint32(handle.rsrcLen))
-			handle.file.WriteAt(lenBuf, appledouble.ResourceLenFileOffset)
+			_, _ = handle.file.WriteAt(lenBuf, appledouble.ResourceLenFileOffset)
 		}
 	}
 

@@ -77,7 +77,7 @@ func encodeHostReservedChars(name string) string {
 	var b strings.Builder
 	for _, r := range name {
 		if isHostReservedRune(r) {
-			b.WriteString(fmt.Sprintf("0x%02X", r))
+			fmt.Fprintf(&b, "0x%02X", r)
 		} else {
 			b.WriteRune(r)
 		}

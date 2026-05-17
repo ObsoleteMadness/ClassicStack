@@ -96,7 +96,7 @@ const (
 	capUnicode              = uint32(0x00000004) // CAP_UNICODE — server supports Unicode strings
 	capLargeFiles           = uint32(0x00000008) // CAP_LARGE_FILES — server supports 64-bit file offsets
 	capNTSMBs               = uint32(0x00000010) // CAP_NT_SMBS — server supports the NT-mode SMBs
-	capRpcRemoteApi         = uint32(0x00000020) // CAP_RPC_REMOTE_APIS
+	capRPCRemoteAPI         = uint32(0x00000020) // CAP_RPC_REMOTE_APIS
 	capStatus32             = uint32(0x00000040) // CAP_STATUS32 — server returns 32-bit NTSTATUS
 	capLevel2Oplocks        = uint32(0x00000080) // CAP_LEVEL_II_OPLOCKS
 	capLockAndRead          = uint32(0x00000100) // CAP_LOCK_AND_READ

@@ -45,9 +45,7 @@ func NewRIPService(r routeripx.Router) *RIPService {
 	return &RIPService{
 		router: r,
 		now:    time.Now,
-		sleep: func(d time.Duration) <-chan time.Time {
-			return time.After(d)
-		},
+		sleep:  time.After,
 	}
 }
 

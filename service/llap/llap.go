@@ -444,7 +444,7 @@ func (s *Service) beginTransmit(st *portState) int {
 		st.backoff = minInt(maxInt(st.backoff*2, 2), 16)
 		st.collisionHistory = 0
 	} else if bits.OnesCount8(st.deferHistory) < 2 {
-		st.backoff = st.backoff / 2
+		st.backoff /= 2
 		st.deferHistory = 0
 	}
 	st.deferHistory <<= 1

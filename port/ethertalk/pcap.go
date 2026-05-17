@@ -1,6 +1,7 @@
 package ethertalk
 
 import (
+	"errors"
 	"net"
 	"strings"
 	"sync"
@@ -195,7 +196,7 @@ func (p *PcapPort) Stop() error {
 	<-p.readerDone
 	<-p.writerDone
 	if p.link != nil {
-		p.link.Close()
+		_ = p.link.Close()
 	}
 	return p.Port.Stop()
 }
@@ -209,7 +210,7 @@ func (p *PcapPort) readRun() {
 		default:
 			data, err := p.link.ReadFrame()
 			if err != nil {
-				if err != rawlink.ErrTimeout {
+				if !errors.Is(err, rawlink.ErrTimeout) {
 					netlog.Warn("pcap read error on %s: %v", p.interfaceName, err)
 				}
 				continue

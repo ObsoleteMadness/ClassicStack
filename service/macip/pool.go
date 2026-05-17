@@ -130,15 +130,6 @@ func (p *ipPool) assign(requested net.IP, atNetwork uint16, atNode uint8) (net.I
 	return nil, fmt.Errorf("macip: no free IP addresses in pool")
 }
 
-// release frees the lease for the given IP.
-func (p *ipPool) release(ip net.IP) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if i, ok := p.ipToIndex(ip); ok && i > 0 {
-		p.entries[i] = leaseEntry{}
-	}
-}
-
 // updateSeen records a packet received from the given AT address, refreshing
 // the lease expiry timer for both static and DHCP entries.
 func (p *ipPool) updateSeen(atNetwork uint16, atNode uint8) {

@@ -3,10 +3,11 @@ package nat
 
 import (
 	"encoding/binary"
-	"fmt"
+	"errors"
 	"io"
 	"math/rand"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -94,7 +95,7 @@ type tcpFwdFlow struct {
 func (f *tcpFwdFlow) closeConn() {
 	f.doneOnce.Do(func() { close(f.done) })
 	if f.conn != nil {
-		f.conn.Close()
+		_ = f.conn.Close()
 	}
 }
 
@@ -152,11 +153,11 @@ func NewOSNAT(router service.Router, socket uint8, ddpType uint8) *OSNAT {
 func (n *OSNAT) Close() {
 	close(n.stop)
 	if n.icmpConn != nil {
-		n.icmpConn.Close()
+		_ = n.icmpConn.Close()
 	}
 	n.udpMu.Lock()
 	for _, f := range n.udpFlows {
-		f.conn.Close()
+		_ = f.conn.Close()
 	}
 	n.udpMu.Unlock()
 	n.tcpMu.Lock()
@@ -259,7 +260,7 @@ func (n *OSNAT) icmpReadLoop() {
 			return
 		default:
 		}
-		n.icmpConn.SetDeadline(time.Now().Add(100 * time.Millisecond))
+		_ = n.icmpConn.SetDeadline(time.Now().Add(100 * time.Millisecond))
 		size, peer, err := n.icmpConn.ReadFrom(buf)
 		if err != nil {
 			continue
@@ -344,7 +345,7 @@ func (n *OSNAT) forwardUDP(pkt []byte, ihl int, atNet uint16, atNode uint8) {
 func (n *OSNAT) udpReadLoop(key osFlowKey, flow *udpFwdFlow, serverIP [4]byte) {
 	buf := make([]byte, 65535)
 	for {
-		flow.conn.SetReadDeadline(time.Now().Add(osNATUDPTimeout))
+		_ = flow.conn.SetReadDeadline(time.Now().Add(osNATUDPTimeout))
 		m, err := flow.conn.Read(buf)
 		if m > 0 {
 			seg := make([]byte, 8+m)
@@ -482,7 +483,7 @@ func (n *OSNAT) handleTCP(pkt []byte, ihl int, atNet uint16, atNode uint8) {
 	}
 	if hasFIN {
 		if tc, ok := flow.conn.(*net.TCPConn); ok {
-			tc.CloseWrite()
+			_ = tc.CloseWrite()
 		}
 	}
 	if len(payload) > 0 || hasFIN {
@@ -492,7 +493,7 @@ func (n *OSNAT) handleTCP(pkt []byte, ihl int, atNet uint16, atNode uint8) {
 
 // tcpConnect dials the remote server and initializes host-side state for a new TCP flow.
 func (n *OSNAT) tcpConnect(key osFlowKey, macISN uint32, mss uint16, synWindow uint16, serverIPb [4]byte, serverPort uint16, clientIP [4]byte, clientPort uint16, atNet uint16, atNode uint8) {
-	addr := fmt.Sprintf("%s:%d", net.IP(serverIPb[:]), serverPort)
+	addr := net.JoinHostPort(net.IP(serverIPb[:]).String(), strconv.Itoa(int(serverPort)))
 	conn, err := net.DialTimeout("tcp4", addr, osNATTCPDialTimeout)
 	if err != nil {
 		netlog.Debug("macip-osnat: TCP dial %s: %v", addr, err)
@@ -588,7 +589,7 @@ func (n *OSNAT) tcpServerReadLoop(key osFlowKey, flow *tcpFwdFlow) {
 			ack := flow.macSeq
 			flow.ourSeq++
 			flow.mu.Unlock()
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				n.sendTCPSegment(flow, seq, ack, 0x11, nil) // FIN+ACK — graceful close
 			} else {
 				n.sendTCPSegment(flow, seq, ack, 0x14, nil) // RST+ACK — abortive close
@@ -687,7 +688,7 @@ func (n *OSNAT) cleanupLoop() {
 			n.udpMu.Lock()
 			for k, f := range n.udpFlows {
 				if now.After(f.expiry) {
-					f.conn.Close()
+					_ = f.conn.Close()
 					delete(n.udpFlows, k)
 				}
 			}

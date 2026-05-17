@@ -10,7 +10,6 @@
 package macgarden
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -106,7 +105,7 @@ func (f *macGardenFile) ReadAt(p []byte, off int64) (n int, err error) {
 	}
 	data, readErr := f.client.ReadURLRange(f.asset.URL, off, len(p))
 	if readErr != nil {
-		return 0, fmt.Errorf("%w: %v", afp.ErrCopySourceReadEOF, readErr)
+		return 0, fmt.Errorf("%w: %w", afp.ErrCopySourceReadEOF, readErr)
 	}
 	n = copy(p, data)
 	if len(data) < requested {
@@ -1511,15 +1510,6 @@ func (m *MacGardenFileSystem) itemAssetsByDir(dirName string) ([]macGardenAsset,
 	return assets, nil
 }
 
-func (m *MacGardenFileSystem) categoryByName(name string) (garden.Category, bool) {
-	for _, c := range m.categories {
-		if c.Name == name {
-			return c, true
-		}
-	}
-	return garden.Category{}, false
-}
-
 func (m *MacGardenFileSystem) getCategoryURL(catName string) string {
 	m.loadCategories()
 	m.mu.RLock()
@@ -1664,41 +1654,6 @@ func (m *MacGardenFileSystem) readCategoryDirRange(catURL string, startIndex uin
 	return entries, total, nil
 }
 
-func (m *MacGardenFileSystem) getCategoryItems(catURL string) ([]garden.SearchResult, error) {
-	netlog.Debug("[AFP][MacGarden] getCategoryItems for URL: %s", catURL)
-	m.mu.RLock()
-	if items, ok := m.itemsInCategory[catURL]; ok {
-		m.mu.RUnlock()
-		netlog.Debug("[AFP][MacGarden] getCategoryItems found %d cached items for %s", len(items), catURL)
-		return items, nil
-	}
-	m.mu.RUnlock()
-
-	meta, err := m.getCategoryPageMeta(catURL)
-	if err != nil {
-		netlog.Warn("[AFP][MacGarden] failed to fetch category page metadata: %v", err)
-		return nil, err
-	}
-
-	netlog.Debug("[AFP][MacGarden] fetching all pages for category URL: %s", catURL)
-	items := make([]garden.SearchResult, 0, int(meta.TotalCount))
-	for pageNumber := 0; pageNumber <= meta.LastPageNumber; pageNumber++ {
-		pageItems, err := m.getCategoryPage(catURL, pageNumber)
-		if err != nil {
-			netlog.Warn("[AFP][MacGarden] failed to fetch category page %d: %v", pageNumber, err)
-			return nil, err
-		}
-		items = append(items, pageItems...)
-	}
-
-	netlog.Info("[AFP][MacGarden] got %d items from category %s", len(items), catURL)
-	m.mu.Lock()
-	m.itemsInCategory[catURL] = items
-	m.categoryItemCount[catURL] = clampGardenCount(len(items))
-	m.mu.Unlock()
-	return items, nil
-}
-
 func clampGardenCount(count int) uint16 {
 	if count <= 0 {
 		return 0
@@ -1803,15 +1758,6 @@ func pathBase(s string) string {
 	return parts[len(parts)-1]
 }
 
-func pathDir(s string) string {
-	s = filepath.ToSlash(s)
-	idx := strings.LastIndex(s, "/")
-	if idx < 0 {
-		return ""
-	}
-	return s[:idx]
-}
-
 func urlPathFromAbsolute(absURL string) string {
 	u, err := url.Parse(absURL)
 	if err != nil {
@@ -1821,5 +1767,3 @@ func urlPathFromAbsolute(absURL string) string {
 }
 
 var _ afp.FileSystem = (*MacGardenFileSystem)(nil)
-
-var errMacGardenNotFound = errors.New("macgarden: not found")

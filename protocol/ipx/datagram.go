@@ -1,3 +1,4 @@
+// Package ipx implements IPX datagram encoding and decoding.
 package ipx
 
 import "errors"

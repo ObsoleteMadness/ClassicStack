@@ -111,8 +111,7 @@ func (res *FPGetSrvrInfoRes) MarshalWire(b []byte) (int, error) {
 	n, _ = binutil.PutU16(b[off:], res.Flags)
 	off += n
 
-	n, _ = binutil.PutPString(b[off:], []byte(res.ServerName))
-	off += n
+	_, _ = binutil.PutPString(b[off:], []byte(res.ServerName))
 
 	// Skip pad bytes (already zeroed) up to machineOff.
 	off = machineOff

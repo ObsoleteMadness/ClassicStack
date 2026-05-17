@@ -28,7 +28,7 @@ func (c *Config) Validate() error {
 		c.Snaplen = 65535
 	}
 	if c.Snaplen < 64 {
-		return fmt.Errorf("Capture.snaplen %d too small", c.Snaplen)
+		return fmt.Errorf("capture.snaplen %d too small", c.Snaplen)
 	}
 	return nil
 }

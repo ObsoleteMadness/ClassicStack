@@ -41,7 +41,7 @@ func (s *Service) closeFIDLocked(conn *connState, fid uint16) {
 	handle, ok := conn.fids[fid]
 	if ok {
 		if handle != nil && handle.file != nil {
-			handle.file.Close()
+			_ = handle.file.Close()
 		}
 		s.releaseLocksForFIDLocked(conn, fid)
 		delete(conn.fids, fid)
@@ -142,7 +142,7 @@ func (s *Service) handleOpenAndX(req []byte, conn *connState) []byte {
 	// Get file info
 	info, err := file.Stat()
 	if err != nil {
-		file.Close()
+		_ = file.Close()
 		return buildSMBErrorResponse(req, smbStatusNotSupported)
 	}
 
@@ -157,7 +157,6 @@ func (s *Service) handleOpenAndX(req []byte, conn *connState) []byte {
 	conn.fids[fid] = &fileHandle{
 		file:     file,
 		path:     activePath,
-		tid:      tid,
 		writable: created || accessIsWritable(desiredAccess),
 	}
 	conn.mu.Unlock()
@@ -892,7 +891,7 @@ func (s *Service) handleOpen(req []byte, conn *connState) []byte {
 		return buildSMBErrorResponse(req, smbStatusNotSupported)
 	}
 
-	tid, slot, fsys, ok := s.resolveRequestTree(req, conn)
+	_, slot, fsys, ok := s.resolveRequestTree(req, conn)
 	if !ok {
 		return buildSMBErrorResponse(req, smbStatusBadTID)
 	}
@@ -936,7 +935,6 @@ func (s *Service) handleOpen(req []byte, conn *connState) []byte {
 	conn.fids[fid] = &fileHandle{
 		file:     file,
 		path:     resolved,
-		tid:      tid,
 		writable: accessIsWritable(accessMode),
 	}
 	conn.mu.Unlock()
@@ -956,7 +954,7 @@ func (s *Service) handleCreate(req []byte, conn *connState) []byte {
 		return buildSMBErrorResponse(req, smbStatusNotSupported)
 	}
 
-	tid, slot, fsys, ok := s.resolveRequestTree(req, conn)
+	_, slot, fsys, ok := s.resolveRequestTree(req, conn)
 	if !ok {
 		return buildSMBErrorResponse(req, smbStatusBadTID)
 	}
@@ -999,7 +997,6 @@ func (s *Service) handleCreate(req []byte, conn *connState) []byte {
 	conn.fids[fid] = &fileHandle{
 		file:     file,
 		path:     target,
-		tid:      tid,
 		writable: true,
 	}
 	conn.mu.Unlock()

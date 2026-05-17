@@ -1,6 +1,7 @@
 package rawlink
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -171,7 +172,7 @@ func OpenPcapSimple(iface string, snapLen int, promisc bool, timeout time.Durati
 func (l *pcapLink) ReadFrame() ([]byte, error) {
 	data, _, err := l.handle.ReadPacketData()
 	if err != nil {
-		if err == pcap.NextErrorTimeoutExpired {
+		if errors.Is(err, pcap.NextErrorTimeoutExpired) {
 			return nil, ErrTimeout
 		}
 		return nil, err

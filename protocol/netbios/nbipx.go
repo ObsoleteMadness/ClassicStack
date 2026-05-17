@@ -1,3 +1,4 @@
+// Package netbios implements NetBIOS over IPX (NBIPX) packet encoding.
 package netbios
 
 import (

@@ -43,7 +43,7 @@ func (s *Service) handleCreateFile(req *FPCreateFileReq) (*FPCreateFileRes, int3
 			netlog.Debug("[AFP] FPCreateFile hard create %q failed: %v", targetPath, err)
 			return &FPCreateFileRes{}, ErrAccessDenied
 		}
-		f.Close()
+		_ = f.Close()
 	} else {
 		f, err := backend.OpenFile(targetPath, os.O_CREATE|os.O_EXCL)
 		if err != nil {
@@ -53,7 +53,7 @@ func (s *Service) handleCreateFile(req *FPCreateFileReq) (*FPCreateFileRes, int3
 			netlog.Debug("[AFP] FPCreateFile %q failed: %v", targetPath, err)
 			return &FPCreateFileRes{}, ErrAccessDenied
 		}
-		f.Close()
+		_ = f.Close()
 	}
 	vfs.DefaultBus.Publish(vfs.Event{
 		Op:       vfs.OpCreate,
@@ -120,13 +120,13 @@ func (s *Service) handleCopyFile(req *FPCopyFileReq) (*FPCopyFileRes, int32) {
 	if err != nil {
 		return &FPCopyFileRes{}, ErrObjectNotFound
 	}
-	defer srcFile.Close()
+	defer func() { _ = srcFile.Close() }()
 
 	dstFile, err := dstBackend.CreateFile(dstPath)
 	if err != nil {
 		return &FPCopyFileRes{}, ErrAccessDenied
 	}
-	defer dstFile.Close()
+	defer func() { _ = dstFile.Close() }()
 
 	buf := make([]byte, 32768)
 	var offset int64
@@ -138,7 +138,7 @@ func (s *Service) handleCopyFile(req *FPCopyFileReq) (*FPCopyFileRes, int32) {
 			}
 			offset += int64(n)
 		}
-		if readErr == io.EOF {
+		if errors.Is(readErr, io.EOF) {
 			break
 		}
 		if readErr != nil {

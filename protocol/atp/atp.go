@@ -162,7 +162,7 @@ func (h *Header) Marshal() []byte {
 // Unmarshal binary-decodes the ATP header.
 func (h *Header) Unmarshal(b []byte) error {
 	_, err := h.UnmarshalWire(b)
-	if err == binutil.ErrShortBuffer {
+	if errors.Is(err, binutil.ErrShortBuffer) {
 		return errors.New("packet too short for ATP header")
 	}
 	return err

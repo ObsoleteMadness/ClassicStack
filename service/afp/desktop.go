@@ -11,14 +11,6 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
 )
 
-// getDesktopDB looks up the DesktopDB associated with a DTRefNum. The
-// returned bool is false when either the ref number is unknown or the
-// underlying DesktopDB was never opened.
-func (s *Service) getDesktopDB(dtRefNum uint16) (DesktopDB, bool) {
-	db, _, ok := s.desktop.lookupDB(dtRefNum)
-	return db, ok
-}
-
 // volRelPath returns the path of absPath relative to volumeRoot, using forward slashes.
 func volRelPath(volumeRoot, absPath string) string {
 	rel, err := filepath.Rel(volumeRoot, absPath)
@@ -87,7 +79,7 @@ func (s *Service) handleAddIcon(req *FPAddIconReq) (*FPAddIconRes, int32) {
 	}
 	netlog.Debug("[AFP][Desktop] FPAddIcon dtRef=%d creator=%q type=%q itype=%d tag=%d size=%d", req.DTRefNum, string(req.Creator[:]), string(req.Type[:]), req.IType, req.Tag, req.Size)
 	err := db.SetIcon(req.Creator, req.Type, req.IType, req.Tag, req.Data)
-	if err == ErrIconSizeMismatch {
+	if errors.Is(err, ErrIconSizeMismatch) {
 		netlog.Debug("[AFP][Desktop] FPAddIcon creator=%q type=%q itype=%d -> ErrIconTypeError (size mismatch)", string(req.Creator[:]), string(req.Type[:]), req.IType)
 		return &FPAddIconRes{}, ErrIconTypeError
 	}

@@ -129,10 +129,8 @@ func (s *Service) handleCreateDirectory(req []byte, conn *connState) []byte {
 		return buildSMBErrorResponse(req, smbStatusNotSupported)
 	}
 
-	parentHost, matched, info, err := resolveSMBLeaf(fsys, rootPath, path)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		// Parent missing or unreadable — let CreateDir surface the right error below.
-	}
+	// resolveSMBLeaf errors (other than ErrNotExist) fall through; CreateDir surfaces the right error below.
+	parentHost, matched, info, _ := resolveSMBLeaf(fsys, rootPath, path)
 	if matched != "" && info != nil {
 		if info.IsDir() {
 			// Idempotent mkdir on an existing directory.

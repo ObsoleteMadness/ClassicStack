@@ -2,6 +2,7 @@ package atp
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -311,7 +312,7 @@ func TestRequester_RetryExhaustion(t *testing.T) {
 		clk.Advance(time.Second)
 	}
 	_, err := p.Wait(context.Background())
-	if err != ErrTimeout {
+	if !errors.Is(err, ErrTimeout) {
 		t.Fatalf("want timeout, got %v", err)
 	}
 	// Initial + 2 retries = 3 sends.
@@ -424,7 +425,7 @@ func TestRequester_Cancel(t *testing.T) {
 		t.Fatalf("retries continued after cancel: %v", snd.Drain())
 	}
 	_, err := p.Wait(context.Background())
-	if err != ErrCancelled {
+	if !errors.Is(err, ErrCancelled) {
 		t.Fatalf("want ErrCancelled, got %v", err)
 	}
 }

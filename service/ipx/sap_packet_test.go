@@ -1,6 +1,9 @@
 package ipx
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestSAPQueryRoundTrip(t *testing.T) {
 	want := &SAPPacket{
@@ -106,10 +109,10 @@ func TestSAPEncodeTruncatesLongName(t *testing.T) {
 }
 
 func TestSAPDecodeShort(t *testing.T) {
-	if _, err := DecodeSAP([]byte{0}); err != ErrShortSAP {
+	if _, err := DecodeSAP([]byte{0}); !errors.Is(err, ErrShortSAP) {
 		t.Fatalf("expected ErrShortSAP, got %v", err)
 	}
-	if _, err := DecodeSAP([]byte{0x00, 0x01, 0x00}); err != ErrShortSAP {
+	if _, err := DecodeSAP([]byte{0x00, 0x01, 0x00}); !errors.Is(err, ErrShortSAP) {
 		t.Fatalf("expected ErrShortSAP for truncated query, got %v", err)
 	}
 }

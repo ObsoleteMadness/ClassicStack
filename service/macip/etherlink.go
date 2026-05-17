@@ -151,7 +151,7 @@ func (l *etherIPLink) setDefaultGateway(gw net.IP) {
 // fully-quiesced link on return.
 func (l *etherIPLink) close() {
 	close(l.stop)
-	l.link.Close()
+	_ = l.link.Close()
 	l.wg.Wait()
 }
 

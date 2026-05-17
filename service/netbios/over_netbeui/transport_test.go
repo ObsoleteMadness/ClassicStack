@@ -1,6 +1,7 @@
 package over_netbeui
 
 import (
+	"context"
 	"encoding/binary"
 	"sync"
 	"testing"
@@ -187,7 +188,7 @@ func newTestTransport() (*transport, *mockPort) {
 
 func TestNameClaim_NoConflict(t *testing.T) {
 	tp, _ := newTestTransport()
-	if err := tp.Start(nil); err != nil {
+	if err := tp.Start(context.TODO()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer tp.Stop()
@@ -212,7 +213,7 @@ func TestNameClaim_NoConflict(t *testing.T) {
 
 func TestNameClaim_Conflict(t *testing.T) {
 	tp, mock := newTestTransport()
-	if err := tp.Start(nil); err != nil {
+	if err := tp.Start(context.TODO()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer tp.Stop()
@@ -243,7 +244,7 @@ func TestNameClaim_Conflict(t *testing.T) {
 
 func TestAddNameQuery_Responds_WithConflict(t *testing.T) {
 	tp, mock := newTestTransport()
-	if err := tp.Start(nil); err != nil {
+	if err := tp.Start(context.TODO()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer tp.Stop()
@@ -282,7 +283,7 @@ func TestAddNameQuery_Responds_WithConflict(t *testing.T) {
 
 func TestNameQuery_NameRecognized(t *testing.T) {
 	tp, mock := newTestTransport()
-	if err := tp.Start(nil); err != nil {
+	if err := tp.Start(context.TODO()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer tp.Stop()
@@ -328,7 +329,7 @@ func TestNameQuery_NameRecognized(t *testing.T) {
 
 func TestNameQuery_ReusesSessionForDuplicateCallerSession(t *testing.T) {
 	tp, mock := newTestTransport()
-	if err := tp.Start(nil); err != nil {
+	if err := tp.Start(context.TODO()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer tp.Stop()
@@ -380,7 +381,7 @@ func TestNameQuery_ReusesSessionForDuplicateCallerSession(t *testing.T) {
 
 func TestSessionEstablishment(t *testing.T) {
 	tp, mock := newTestTransport()
-	if err := tp.Start(nil); err != nil {
+	if err := tp.Start(context.TODO()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer tp.Stop()
@@ -444,7 +445,7 @@ func TestDataOnlyLast_DeliveryAndAck(t *testing.T) {
 	tp, mock := newTestTransport()
 	handler := &mockHandler{}
 	tp.SetCommandHandler(handler)
-	if err := tp.Start(nil); err != nil {
+	if err := tp.Start(context.TODO()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer tp.Stop()
@@ -496,7 +497,7 @@ func TestDataOnlyLast_ContextualHandlerResponds(t *testing.T) {
 	tp, mock := newTestTransport()
 	h := &mockContextualHandler{response: []byte("SMB reply")}
 	tp.SetCommandHandler(h)
-	if err := tp.Start(nil); err != nil {
+	if err := tp.Start(context.TODO()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer tp.Stop()
@@ -538,7 +539,7 @@ func TestDataOnlyLast_ContextualHandlerResponds(t *testing.T) {
 
 func TestSendDirectedDatagram_UsesRemoteMAC(t *testing.T) {
 	tp, mock := newTestTransport()
-	if err := tp.Start(nil); err != nil {
+	if err := tp.Start(context.TODO()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer tp.Stop()
@@ -567,7 +568,7 @@ func TestSendDirectedDatagram_UsesRemoteMAC(t *testing.T) {
 
 func TestSendSession_SegmentsByRemoteMaxPayload(t *testing.T) {
 	tp, mock := newTestTransport()
-	if err := tp.Start(nil); err != nil {
+	if err := tp.Start(context.TODO()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer tp.Stop()
@@ -606,7 +607,7 @@ func TestSendSession_SegmentsByRemoteMaxPayload(t *testing.T) {
 
 func TestNoReceive_QueuesUntilReceiveContinue(t *testing.T) {
 	tp, mock := newTestTransport()
-	if err := tp.Start(nil); err != nil {
+	if err := tp.Start(context.TODO()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer tp.Stop()
@@ -649,7 +650,7 @@ func TestNoReceive_QueuesUntilReceiveContinue(t *testing.T) {
 
 func TestReceiveOutstanding_RetransmitsLastFrame(t *testing.T) {
 	tp, mock := newTestTransport()
-	if err := tp.Start(nil); err != nil {
+	if err := tp.Start(context.TODO()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer tp.Stop()
@@ -684,7 +685,7 @@ func TestDataOnlyLast_SourceSessionMismatchIgnored(t *testing.T) {
 	tp, mock := newTestTransport()
 	handler := &mockHandler{}
 	tp.SetCommandHandler(handler)
-	if err := tp.Start(nil); err != nil {
+	if err := tp.Start(context.TODO()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer tp.Stop()
@@ -715,7 +716,7 @@ func TestDataFirstMiddle_ReassemblesWithFinalSegment(t *testing.T) {
 	tp, mock := newTestTransport()
 	handler := &mockHandler{}
 	tp.SetCommandHandler(handler)
-	if err := tp.Start(nil); err != nil {
+	if err := tp.Start(context.TODO()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer tp.Stop()
@@ -752,7 +753,7 @@ func TestDataFirstMiddle_ReassemblesWithFinalSegment(t *testing.T) {
 
 func TestSessionEnd_SourceSessionMismatchIgnored(t *testing.T) {
 	tp, mock := newTestTransport()
-	if err := tp.Start(nil); err != nil {
+	if err := tp.Start(context.TODO()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer tp.Stop()
@@ -777,7 +778,7 @@ func TestSessionEnd_SourceSessionMismatchIgnored(t *testing.T) {
 
 func TestDataAck_CorrelatorMismatchIgnored(t *testing.T) {
 	tp, mock := newTestTransport()
-	if err := tp.Start(nil); err != nil {
+	if err := tp.Start(context.TODO()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer tp.Stop()
@@ -803,7 +804,7 @@ func TestDataAck_CorrelatorMismatchIgnored(t *testing.T) {
 
 func TestSessionEnd(t *testing.T) {
 	tp, mock := newTestTransport()
-	if err := tp.Start(nil); err != nil {
+	if err := tp.Start(context.TODO()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer tp.Stop()
@@ -829,7 +830,7 @@ func TestDatagramDelivery(t *testing.T) {
 	tp, mock := newTestTransport()
 	handler := &mockHandler{}
 	tp.SetCommandHandler(handler)
-	if err := tp.Start(nil); err != nil {
+	if err := tp.Start(context.TODO()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer tp.Stop()
@@ -860,7 +861,7 @@ func TestDatagramDelivery(t *testing.T) {
 
 func TestStatusQuery_RegisteredNameResponds(t *testing.T) {
 	tp, mock := newTestTransport()
-	if err := tp.Start(nil); err != nil {
+	if err := tp.Start(context.TODO()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer tp.Stop()
@@ -914,7 +915,7 @@ func TestStatusQuery_RegisteredNameResponds(t *testing.T) {
 
 func TestStatusQuery_TruncatesByRequesterBufferLength(t *testing.T) {
 	tp, mock := newTestTransport()
-	if err := tp.Start(nil); err != nil {
+	if err := tp.Start(context.TODO()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer tp.Stop()
@@ -953,7 +954,7 @@ func TestStatusQuery_TruncatesByRequesterBufferLength(t *testing.T) {
 
 func TestStatusQuery_UnknownNameIgnored(t *testing.T) {
 	tp, mock := newTestTransport()
-	if err := tp.Start(nil); err != nil {
+	if err := tp.Start(context.TODO()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer tp.Stop()

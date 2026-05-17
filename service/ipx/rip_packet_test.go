@@ -2,6 +2,7 @@ package ipx
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -57,7 +58,7 @@ func TestRIPRequestMinimal(t *testing.T) {
 }
 
 func TestRIPDecodeShort(t *testing.T) {
-	if _, err := DecodeRIP([]byte{0}); err != ErrShortRIP {
+	if _, err := DecodeRIP([]byte{0}); !errors.Is(err, ErrShortRIP) {
 		t.Fatalf("expected ErrShortRIP, got %v", err)
 	}
 }

@@ -45,14 +45,15 @@ func (s *Service) handleLogin(req *FPLoginReq) (*FPLoginRes, int32) {
 		return &FPLoginRes{}, ErrBadVersNum
 	}
 
-	if req.UAM == UAMNoUserAuthent {
+	switch req.UAM {
+	case UAMNoUserAuthent:
 		// Nothing else required
-	} else if req.UAM == UAMCleartxtPasswd {
+	case UAMCleartxtPasswd:
 		netlog.Debug("[AFP] Cleartxt Passwrd for User=%q", req.Username)
 		if !s.sessions.checkPassword(req.Username, req.Password) {
 			return &FPLoginRes{}, ErrUserNotAuth
 		}
-	} else {
+	default:
 		return &FPLoginRes{}, ErrBadUAM
 	}
 

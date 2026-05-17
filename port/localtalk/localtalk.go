@@ -45,7 +45,6 @@ type Port struct {
 	node            uint8
 	networkMin      uint16
 	networkMax      uint16
-	extendedNetwork bool
 	nodeAttempts    int
 	desiredNodeList []uint8
 	mu              sync.Mutex

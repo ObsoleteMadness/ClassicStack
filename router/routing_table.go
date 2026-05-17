@@ -107,8 +107,8 @@ func (t *RoutingTable) Consider(e *RoutingTableEntry) bool {
 	}
 	if cur != nil {
 		ck := entryKey(cur)
-		if !(cur.Distance >= e.Distance || t.stateByKey[ck] == stateBad || t.stateByKey[ck] == stateWorst ||
-			(cur.NextNetwork == e.NextNetwork && cur.NextNode == e.NextNode && cur.Port == e.Port)) {
+		if cur.Distance < e.Distance && t.stateByKey[ck] != stateBad && t.stateByKey[ck] != stateWorst &&
+			(cur.NextNetwork != e.NextNetwork || cur.NextNode != e.NextNode || cur.Port != e.Port) {
 			return false
 		}
 		delete(t.stateByKey, ck)

@@ -20,7 +20,7 @@ func TestAppleDoubleBackend_WritesExpectedSidecarByMode(t *testing.T) {
 		{
 			name:          "modern writes underscore sidecar",
 			mode:          AppleDoubleModeModern,
-			sidecarPath:   filepath.Join("._Configuration"),
+			sidecarPath:   "._Configuration",
 			artifactName:  "._Configuration",
 			artifactIsDir: false,
 		},

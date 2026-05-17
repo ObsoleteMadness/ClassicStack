@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -38,7 +39,7 @@ func decodePcap(path string) ([]Event, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	r, err := pcapgo.NewReader(f)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
@@ -48,7 +49,7 @@ func decodePcap(path string) ([]Event, error) {
 	var events []Event
 	for i := 0; ; i++ {
 		data, ci, err := r.ReadPacketData()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

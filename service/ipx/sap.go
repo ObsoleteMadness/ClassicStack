@@ -47,9 +47,7 @@ type SAPService struct {
 func NewSAPService(r routeripx.Router) *SAPService {
 	return &SAPService{
 		router: r,
-		sleep: func(d time.Duration) <-chan time.Time {
-			return time.After(d)
-		},
+		sleep:  time.After,
 	}
 }
 

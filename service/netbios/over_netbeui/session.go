@@ -2,13 +2,9 @@ package over_netbeui
 
 import protocol "github.com/ObsoleteMadness/ClassicStack/protocol/netbios"
 
-type sessionState = protocol.SessionState
-
 const (
-	sessionStateInit    = protocol.SessionStateInit
-	sessionStateActive  = protocol.SessionStateActive
-	sessionStateClosing = protocol.SessionStateClosing
-	sessionStateClosed  = protocol.SessionStateClosed
+	sessionStateActive = protocol.SessionStateActive
+	sessionStateClosed = protocol.SessionStateClosed
 )
 
 type session = protocol.Session[[6]byte]

@@ -196,7 +196,7 @@ func (p *portImpl) readLoop() {
 		}
 		frame, err := p.link.ReadFrame()
 		if err != nil {
-			if err == rawlink.ErrTimeout {
+			if errors.Is(err, rawlink.ErrTimeout) {
 				continue
 			}
 			netlog.Warn("[IPX] read error: %v", err)

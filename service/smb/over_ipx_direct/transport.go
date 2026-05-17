@@ -1,3 +1,4 @@
+// Package over_ipx_direct implements SMB-over-IPX direct hosting transport.
 package over_ipx_direct
 
 import (

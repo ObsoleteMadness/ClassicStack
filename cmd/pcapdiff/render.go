@@ -73,23 +73,23 @@ func renderText(w io.Writer, lpath, rpath string, left, right []Event, limit int
 	ls := summarize(left)
 	rs := summarize(right)
 
-	fmt.Fprintf(w, "pcapdiff\n  left:  %s (%d packets, %d bytes, %d ms)\n  right: %s (%d packets, %d bytes, %d ms)\n\n",
+	_, _ = fmt.Fprintf(w, "pcapdiff\n  left:  %s (%d packets, %d bytes, %d ms)\n  right: %s (%d packets, %d bytes, %d ms)\n\n",
 		lpath, ls.Count, ls.WireBytes, ls.DurationMs,
 		rpath, rs.Count, rs.WireBytes, rs.DurationMs)
 
-	fmt.Fprintln(w, "DDP type histogram:")
+	_, _ = fmt.Fprintln(w, "DDP type histogram:")
 	printIntHist(w, ls.DDPTypeHist, rs.DDPTypeHist, func(k uint8) string { return fmt.Sprintf("type=%d", k) })
 
-	fmt.Fprintln(w, "\nATP function histogram:")
+	_, _ = fmt.Fprintln(w, "\nATP function histogram:")
 	printStrHist(w, ls.ATPFuncHist, rs.ATPFuncHist)
 
 	if len(ls.Notes) > 0 || len(rs.Notes) > 0 {
-		fmt.Fprintln(w, "\nDecode notes (non-DDP / errors):")
+		_, _ = fmt.Fprintln(w, "\nDecode notes (non-DDP / errors):")
 		printStrHist(w, ls.Notes, rs.Notes)
 	}
 
-	fmt.Fprintln(w, "\nTimeline (relative ms within each capture):")
-	fmt.Fprintf(w, "  %-6s %-9s %-9s %-7s %-5s %-7s %-9s   |   %-6s %-9s %-9s %-7s %-5s %-7s %-9s\n",
+	_, _ = fmt.Fprintln(w, "\nTimeline (relative ms within each capture):")
+	_, _ = fmt.Fprintf(w, "  %-6s %-9s %-9s %-7s %-5s %-7s %-9s   |   %-6s %-9s %-9s %-7s %-5s %-7s %-9s\n",
 		"#", "src", "dst", "ddp", "atp", "tid", "note",
 		"#", "src", "dst", "ddp", "atp", "tid", "note")
 	n := max(len(left), len(right))
@@ -102,7 +102,7 @@ func renderText(w io.Writer, lpath, rpath string, left, right []Event, limit int
 }
 
 func writeRow(w io.Writer, i int, left, right []Event) {
-	fmt.Fprintf(w, "  %s   |   %s\n", fmtCell(i, left), fmtCell(i, right))
+	_, _ = fmt.Fprintf(w, "  %s   |   %s\n", fmtCell(i, left), fmtCell(i, right))
 }
 
 func fmtCell(i int, evs []Event) string {
@@ -144,7 +144,7 @@ func printIntHist(w io.Writer, l, r map[uint8]int, label func(uint8) string) {
 	}
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i] < ordered[j] })
 	for _, k := range ordered {
-		fmt.Fprintf(w, "  %-12s left=%-6d right=%-6d delta=%+d\n", label(k), l[k], r[k], r[k]-l[k])
+		_, _ = fmt.Fprintf(w, "  %-12s left=%-6d right=%-6d delta=%+d\n", label(k), l[k], r[k], r[k]-l[k])
 	}
 }
 
@@ -162,7 +162,7 @@ func printStrHist(w io.Writer, l, r map[string]int) {
 	}
 	sort.Strings(ordered)
 	for _, k := range ordered {
-		fmt.Fprintf(w, "  %-20s left=%-6d right=%-6d delta=%+d\n", k, l[k], r[k], r[k]-l[k])
+		_, _ = fmt.Fprintf(w, "  %-20s left=%-6d right=%-6d delta=%+d\n", k, l[k], r[k], r[k]-l[k])
 	}
 }
 

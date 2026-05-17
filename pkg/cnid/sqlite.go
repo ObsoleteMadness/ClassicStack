@@ -51,7 +51,7 @@ func OpenSQLiteDB(volumeRootPath string) (*sql.DB, error) {
 		"PRAGMA busy_timeout=5000",
 	} {
 		if _, execErr := db.Exec(stmt); execErr != nil {
-			db.Close()
+			_ = db.Close()
 			return nil, fmt.Errorf("sqlite pragma %q on %q: %w", stmt, dbPath, execErr)
 		}
 	}
@@ -74,7 +74,7 @@ func NewSQLiteStore(volumeRootPath string) (*SQLiteStore, error) {
 	}
 	store := &SQLiteStore{db: db}
 	if err := store.initSchema(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	vfs.DefaultBus.Subscribe(store)
@@ -156,7 +156,7 @@ func (s *SQLiteStore) Ensure(path string) uint32 {
 	if err != nil {
 		return Invalid
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	if cnid, ok := selectCNIDByPathTx(tx, path); ok {
 		_ = tx.Commit()
@@ -186,7 +186,7 @@ func (s *SQLiteStore) EnsureReserved(path string, cnid uint32) uint32 {
 	if err != nil {
 		return Invalid
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	if existing, ok := selectCNIDByPathTx(tx, path); ok {
 		_ = tx.Commit()
@@ -220,13 +220,13 @@ func (s *SQLiteStore) Rebind(oldPath, newPath string) {
 	if err != nil {
 		return
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	rows, err := tx.Query("SELECT cnid, path FROM cnid_paths")
 	if err != nil {
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	type row struct {
 		cnid uint32
@@ -264,13 +264,13 @@ func (s *SQLiteStore) Remove(path string) {
 	if err != nil {
 		return
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	rows, err := tx.Query("SELECT cnid, path FROM cnid_paths")
 	if err != nil {
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var toDelete []uint32
 	for rows.Next() {

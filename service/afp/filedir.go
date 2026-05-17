@@ -105,7 +105,7 @@ func (s *Service) handleRename(req *FPRenameReq) (*FPRenameRes, int32) {
 	if err != nil {
 		return &FPRenameRes{}, ErrAccessDenied
 	}
-	s.moveAppleDoubleSidecar(oldPath, newPath)
+	_ = s.moveAppleDoubleSidecar(oldPath, newPath)
 	s.rebindDIDSubtree(req.VolumeID, oldPath, newPath)
 	vfs.DefaultBus.Publish(vfs.Event{
 		Op:       vfs.OpRename,
@@ -204,7 +204,7 @@ func (s *Service) handleDelete(req *FPDeleteReq) (*FPDeleteRes, int32) {
 	if err := backend.Remove(targetPath); err != nil {
 		return &FPDeleteRes{}, ErrAccessDenied
 	}
-	s.deleteAppleDoubleSidecar(targetPath)
+	_ = s.deleteAppleDoubleSidecar(targetPath)
 	s.removeDIDSubtree(req.VolumeID, targetPath)
 	vfs.DefaultBus.Publish(vfs.Event{
 		Op:       vfs.OpDelete,
@@ -269,7 +269,7 @@ func (s *Service) handleMoveAndRename(req *FPMoveAndRenameReq) (*FPMoveAndRename
 	if err := backend.Rename(srcPath, dstPath); err != nil {
 		return &FPMoveAndRenameRes{}, ErrAccessDenied
 	}
-	s.moveAppleDoubleSidecar(srcPath, dstPath)
+	_ = s.moveAppleDoubleSidecar(srcPath, dstPath)
 	s.rebindDIDSubtree(req.VolumeID, srcPath, dstPath)
 	vfs.DefaultBus.Publish(vfs.Event{
 		Op:       vfs.OpRename,
@@ -315,7 +315,7 @@ func (s *Service) handleExchangeFiles(req *FPExchangeFilesReq) (*FPExchangeFiles
 	s.rebindDIDSubtree(req.VolumeID, srcPath, tmpPath)
 	if err := backend.Rename(dstPath, srcPath); err != nil {
 		s.rebindDIDSubtree(req.VolumeID, tmpPath, srcPath)
-		backend.Rename(tmpPath, srcPath) // attempt rollback
+		_ = backend.Rename(tmpPath, srcPath) // attempt rollback
 		return &FPExchangeFilesRes{}, ErrAccessDenied
 	}
 	s.rebindDIDSubtree(req.VolumeID, dstPath, srcPath)

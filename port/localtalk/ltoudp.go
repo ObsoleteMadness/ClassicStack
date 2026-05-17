@@ -68,7 +68,7 @@ func (p *LtoudpPort) Start(router port.RouterHooks) error {
 
 	groupIP := net.ParseIP(ltoudpGroupAddr)
 	if err := p.joinMulticastGroup(pc, groupIP); err != nil {
-		c.Close()
+		_ = c.Close()
 		return err
 	}
 
@@ -94,7 +94,7 @@ func (p *LtoudpPort) Start(router port.RouterHooks) error {
 	// and was previously called on every frame.
 	ga, err := net.ResolveUDPAddr("udp", ltoudpGroup)
 	if err != nil {
-		c.Close()
+		_ = c.Close()
 		return err
 	}
 	p.groupAddr = ga
@@ -105,7 +105,7 @@ func (p *LtoudpPort) Start(router port.RouterHooks) error {
 
 	p.conn = c
 	if err := p.Port.Start(router); err != nil {
-		c.Close()
+		_ = c.Close()
 		return err
 	}
 	go p.run()
