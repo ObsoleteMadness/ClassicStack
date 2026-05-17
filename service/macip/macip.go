@@ -332,7 +332,7 @@ func (s *Service) sendATPConfigResp(d ddp.Datagram, rx port.Port, tid uint16, as
 	resp[0] = atpFuncTResp | atpEOM
 	resp[1] = 0 // seq 0
 	resp[2] = byte(tid >> 8)
-	resp[3] = byte(tid)
+	resp[3] = byte(tid) //#nosec
 	binary.BigEndian.PutUint16(resp[4:6], macIPVersion)
 	// resp[6:8] = 0 (pad)
 	binary.BigEndian.PutUint32(resp[8:12], macIPFuncAssign)

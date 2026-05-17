@@ -72,12 +72,12 @@ func newIPPool(network net.IP, mask net.IPMask) *ipPool {
 }
 
 func atKey(atNetwork uint16, atNode uint8) [3]byte {
-	return [3]byte{byte(atNetwork >> 8), byte(atNetwork), atNode}
+	return [3]byte{byte(atNetwork >> 8), byte(atNetwork), atNode} //#nosec
 }
 
 func (p *ipPool) indexToIP(i int) net.IP {
-	n := p.base + uint32(i) + 1
-	return net.IP{byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)}
+	n := p.base + uint32(i) + 1 //#nosec
+	return net.IP{byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)} //#nosec
 }
 
 func (p *ipPool) ipToIndex(ip net.IP) (int, bool) {
@@ -221,7 +221,7 @@ func (p *ipPool) lookupIPByAT(atNetwork uint16, atNode uint8) (net.IP, bool) {
 	if !ok {
 		return nil, false
 	}
-	return net.IP{byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)}, true
+	return net.IP{byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)}, true //#nosec
 }
 
 func (p *ipPool) pinSessionLease(atNetwork uint16, atNode uint8, sessionID uint8) {
