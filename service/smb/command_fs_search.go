@@ -283,7 +283,7 @@ func formatSearchFileName(name string) []byte {
 	if ext != "" {
 		out[n] = '.'
 		n++
-		n += copy(out[n:], ext)
+		copy(out[n:], ext)
 	}
 	// Bytes n..12 are already zero from make().
 	return out

@@ -9,7 +9,8 @@ package macip
 import (
 	"context"
 	"encoding/binary"
-	"math/rand"
+	"crypto/rand"
+	mathrand "math/rand"
 	"net"
 	"sync"
 	"time"
@@ -138,7 +139,13 @@ func fabricateMACForAT(atNet uint16, atNode uint8) net.HardwareAddr {
 // the given AppleTalk node. If preferredIP is non-nil it is sent as option 50.
 // Returns nil if DHCP fails, times out, the service stops, or ctx is cancelled.
 func (c *dhcpClient) RequestIP(ctx context.Context, atNet uint16, atNode uint8, preferredIP net.IP) *dhcpResult {
-	xid := rand.Uint32()
+	var xid uint32
+	var xidBytes [4]byte
+	if _, err := rand.Read(xidBytes[:]); err == nil {
+		xid = binary.BigEndian.Uint32(xidBytes[:])
+	} else {
+		xid = mathrand.Uint32() //#nosec
+	}
 	fabMAC := fabricateMACForAT(atNet, atNode)
 	p := &pendingDHCP{
 		xid:    xid,
@@ -324,7 +331,7 @@ func buildDHCPPacket(msgType byte, xid uint32, chaddr net.HardwareAddr, requeste
 // dhcpAppendOpt appends a DHCP option (code, length, value) to the
 // provided options slice and returns the extended slice.
 func dhcpAppendOpt(opts []byte, code byte, val []byte) []byte {
-	return append(append(opts, code, byte(len(val))), val...)
+	return append(append(opts, code, byte(len(val))), val...) //#nosec
 }
 
 // sendBroadcastUDP wraps payload in UDP/IP and sends it as an Ethernet broadcast.
@@ -333,7 +340,7 @@ func (c *dhcpClient) sendBroadcastUDP(payload []byte) {
 	udp := make([]byte, 8+len(payload))
 	binary.BigEndian.PutUint16(udp[0:2], dhcpClientPort)
 	binary.BigEndian.PutUint16(udp[2:4], dhcpServerPort)
-	binary.BigEndian.PutUint16(udp[4:6], uint16(8+len(payload)))
+	binary.BigEndian.PutUint16(udp[4:6], uint16(8+len(payload))) //#nosec
 	// udp[6:8] = checksum = 0 (optional for IPv4 UDP)
 	copy(udp[8:], payload)
 

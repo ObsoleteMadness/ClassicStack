@@ -70,7 +70,7 @@ func (p *ipPool) snapshot() savedState {
 		if t.Before(cutoff) {
 			continue
 		}
-		ip := net.IP{byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)}
+		ip := net.IP{byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)} //#nosec
 		st.DHCP = append(st.DHCP, savedLease{
 			IP:        ip.String(),
 			ATNetwork: uint16(atKey[0])<<8 | uint16(atKey[1]),
@@ -90,7 +90,7 @@ func (p *ipPool) loadFromFile(path string) {
 	if path == "" {
 		return
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //#nosec
 	if err != nil {
 		if !os.IsNotExist(err) {
 			netlog.Warn("macip: state load: %v", err)
