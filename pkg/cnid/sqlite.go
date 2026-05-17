@@ -283,8 +283,23 @@ func (s *SQLiteStore) Remove(path string) {
 			toDelete = append(toDelete, cnid)
 		}
 	}
-	for _, cnid := range toDelete {
-		if _, err := tx.Exec("DELETE FROM cnid_paths WHERE cnid = ?", cnid); err != nil {
+	// Batch deletions using an IN clause.
+	// SQLite has a limit on variables, so we chunk them.
+	const chunkSize = 999
+	for i := 0; i < len(toDelete); i += chunkSize {
+		end := i + chunkSize
+		if end > len(toDelete) {
+			end = len(toDelete)
+		}
+		chunk := toDelete[i:end]
+
+		query := "DELETE FROM cnid_paths WHERE cnid IN (?" + strings.Repeat(",?", len(chunk)-1) + ")"
+		args := make([]any, len(chunk))
+		for j, cnid := range chunk {
+			args[j] = cnid
+		}
+
+		if _, err := tx.Exec(query, args...); err != nil {
 			return
 		}
 	}
