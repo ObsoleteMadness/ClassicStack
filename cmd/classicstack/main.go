@@ -270,9 +270,8 @@ func main() {
 	logging.SetDefault(rootLogger)
 	netlog.SetLogger(rootLogger)
 
-	if cfg.LogTraffic {
-		netlog.SetLogFunc(func(s string) { netlog.Debug("%s", s) })
-	}
+	// Traffic logging (LogTraffic) is wired by the Supervisor from config so
+	// it can be toggled live from the UI; main only sets up the logger.
 
 	cfg.Bridge.Mode = strings.ToLower(strings.TrimSpace(cfg.Bridge.Mode))
 	switch cfg.Bridge.Mode {

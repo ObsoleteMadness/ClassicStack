@@ -260,11 +260,15 @@ Equivalent flags: `-webui-enabled`, `-webui-bind`, `-webui-tls`,
 
 From the dashboard you can **start, stop, and restart** the standalone services
 (IPX, NetBEUI, NetBIOS, SMB) live; stops are dependency-aware (stopping NetBIOS
-also stops SMB). The configuration editor stages edits in memory; **Apply**
-re-wires the running stack, **Save** writes `server.toml` (backing up the prior
-file to `server.toml.NNNN` and dropping comments), and **Download backup**
-exports the current config. The same operations are exposed by the
-transport-agnostic `pkg/control` API, so a future text/telnet UI can reuse them.
+also stops SMB). The configuration editor can edit scalar settings, **add /
+update / remove AFP volumes and SMB shares**, and toggle **packet-dump and pcap
+capture** options (parse-packets, traffic logging, and per-transport capture
+file paths). Edits stage in memory; **Apply** re-wires the running stack (the web
+UI server is preserved across the rebuild), **Save** writes `server.toml`
+(backing up the prior file to `server.toml.NNNN` and dropping comments), and
+**Download backup** exports the current config. The same operations are exposed
+by the transport-agnostic `pkg/control` API, so a future text/telnet UI can
+reuse them.
 
 ## Useful commands
 

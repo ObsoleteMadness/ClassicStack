@@ -196,6 +196,19 @@ const CONFIG_PANELS = [
     ],
   },
   {
+    title: "Packet Dump & Capture",
+    fields: [
+      { label: "Parse packets", path: "Logging.parse_packets", type: "bool" },
+      { label: "Log traffic", path: "Logging.log_traffic", type: "bool" },
+      { label: "Parse output file", path: "Logging.parse_output", type: "text" },
+      { label: "LocalTalk pcap", path: "Capture.localtalk", type: "text" },
+      { label: "EtherTalk pcap", path: "Capture.ethertalk", type: "text" },
+      { label: "IPX pcap", path: "Capture.ipx", type: "text" },
+      { label: "NetBEUI pcap", path: "Capture.netbeui", type: "text" },
+      { label: "Snap length", path: "Capture.snaplen", type: "number" },
+    ],
+  },
+  {
     title: "Web UI",
     fields: [
       { label: "Enabled", path: "WebUI.enabled", type: "bool" },

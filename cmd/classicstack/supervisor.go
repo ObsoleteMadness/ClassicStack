@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
 	"github.com/ObsoleteMadness/ClassicStack/config"
+	"github.com/ObsoleteMadness/ClassicStack/netlog"
 	"github.com/ObsoleteMadness/ClassicStack/pkg/hwaddr"
 	"github.com/ObsoleteMadness/ClassicStack/pkg/status"
 	"github.com/ObsoleteMadness/ClassicStack/port"
@@ -108,6 +110,14 @@ func (s *Supervisor) build() error {
 	}
 
 	s.router = router.New("router", ports, services)
+
+	// Traffic logging is driven by config so toggling it from the UI takes
+	// effect on Apply. Disabling clears the sink.
+	if s.cfg.LogTraffic {
+		netlog.SetLogFunc(func(line string) { netlog.Debug("%s", line) })
+	} else {
+		netlog.SetLogFunc(nil)
+	}
 
 	if s.cfg.ParsePackets {
 		dumper, cleanup, err := newPacketDumper(s.cfg.ParseOutput)
@@ -215,7 +225,12 @@ func (s *Supervisor) buildServices() ([]service.Service, error) {
 		zip.NewRespondingService(),
 		zip.NewSendingService(),
 	}
-	s.registerServiceStatus("Router", true, map[string]string{"zone": cfg.EtherTalk.SeedZone})
+	s.registerServiceStatus("Router", true, map[string]string{
+		"zone":          cfg.EtherTalk.SeedZone,
+		"parse_packets": boolStr(cfg.ParsePackets),
+		"log_traffic":   boolStr(cfg.LogTraffic),
+		"captures":      s.activeCaptureSummary(),
+	})
 
 	macIP, err := wireMacIP(MacIPConfig{
 		Enabled:         cfg.MacIPEnabled,
@@ -531,6 +546,36 @@ func (s *Supervisor) AddExternalHook(name string, h hook, enabled bool) {
 	s.hooks[name] = h
 	s.order = append(s.order, name)
 	s.reg.Set(status.Unit{Name: name, Kind: status.KindHook, Enabled: enabled})
+}
+
+// boolStr renders a bool as "on"/"off" for status properties.
+func boolStr(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
+}
+
+// activeCaptureSummary lists the transports with an active pcap capture
+// path configured, for the dashboard's packet-dump status.
+func (s *Supervisor) activeCaptureSummary() string {
+	c := s.cfg.Capture
+	var active []string
+	for name, path := range map[string]string{
+		"localtalk": c.LocalTalk,
+		"ethertalk": c.EtherTalk,
+		"ipx":       c.IPX,
+		"netbeui":   c.NetBEUI,
+	} {
+		if strings.TrimSpace(path) != "" {
+			active = append(active, name)
+		}
+	}
+	if len(active) == 0 {
+		return "none"
+	}
+	sort.Strings(active)
+	return strings.Join(active, ",")
 }
 
 func (s *Supervisor) closeSinks() {
