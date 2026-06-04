@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -53,6 +54,10 @@ type Supervisor struct {
 	captureSinks []closer
 	// parseCleanup closes the parse-packets output file, if any.
 	parseCleanup func()
+	// alreadyRunning marks hooks that are live before Start is called (the
+	// Web UI preserved across an Apply rebuild), so Start does not restart
+	// them. Cleared after the first Start.
+	alreadyRunning map[string]bool
 
 	// nbp is shared between several services; kept so restarts can re-wire.
 	nbp *zip.NameInformationService
@@ -261,9 +266,11 @@ func (s *Supervisor) buildServices() ([]service.Service, error) {
 	}
 	s.shortHook = shortHook
 
+	// AFP is built from the editable config model (not re-read from the
+	// TOML source) so volume edits made in the web UI take effect on Apply.
 	afpHook, err := wireAFP(AFPWiring{
 		Source:     s.source,
-		FromConfig: s.source.K != nil,
+		FromConfig: false,
 		NBP:        s.nbp,
 		Shortname:  shortHook,
 		Flags:      s.afpFlagInputs(),
@@ -275,7 +282,7 @@ func (s *Supervisor) buildServices() ([]service.Service, error) {
 		afpHook.AttachMacIP(macIPAFPHooks{macIP})
 	}
 	services = append(services, afpHook.Services()...)
-	s.registerServiceStatus("AFP", s.model.AFP.Enabled, map[string]string{"name": s.model.AFP.Name, "zone": s.model.AFP.Zone})
+	s.registerAFPStatus()
 
 	s.macIP = macIP
 	s.ipxGW = ipxGW
@@ -286,15 +293,27 @@ func (s *Supervisor) buildServices() ([]service.Service, error) {
 // works whether the config came from a file or flags.
 func (s *Supervisor) afpFlagInputs() AFPFlagInputs {
 	m := s.model
+	extMap := m.AFP.ExtensionMap
+	if extMap != "" && !filepath.IsAbs(extMap) && s.source.ConfigDir != "" {
+		extMap = filepath.Join(s.source.ConfigDir, extMap)
+	}
+	vols := make([]config.VolumeModel, 0, len(m.AFP.Volumes))
+	for key, v := range m.AFP.Volumes {
+		if v.Name == "" {
+			v.Name = key
+		}
+		vols = append(vols, v)
+	}
 	return AFPFlagInputs{
 		ServerName:      m.AFP.Name,
 		Zone:            m.AFP.Zone,
 		Protocols:       m.AFP.Protocols,
 		TCPAddr:         m.AFP.Binding,
-		ExtensionMap:    m.AFP.ExtensionMap,
+		ExtensionMap:    extMap,
 		DecomposedNames: m.AFP.UseDecomposedNames,
 		CNIDBackend:     m.AFP.CNIDBackend,
 		AppleDoubleMode: m.AFP.AppleDoubleMode,
+		VolumeModels:    vols,
 	}
 }
 
@@ -351,7 +370,11 @@ func (s *Supervisor) buildHooks() error {
 		return fmt.Errorf("NetBIOS wiring failed: %w", err)
 	}
 
-	smbShareConfigs := loadSMBShares(s.source, s.source.K != nil, cfg.SMBShareFlags)
+	// SMB shares come from the editable model so UI edits apply on Apply.
+	smbShareConfigs := smbSharesFromModel(s.model.SMB.Volumes)
+	if len(smbShareConfigs) == 0 {
+		smbShareConfigs = loadSMBShares(s.source, s.source.K != nil, cfg.SMBShareFlags)
+	}
 	smbHook, err := wireSMB(SMBConfig{
 		Enabled:       cfg.SMBEnabled,
 		NBTBinding:    cfg.SMBNBTBinding,
@@ -374,6 +397,9 @@ func (s *Supervisor) buildHooks() error {
 	s.addHook("NetBEUI", nbeuiHook, cfg.NetBEUIEnabled, nil)
 	s.addHook("NetBIOS", nbHook, cfg.NetBIOSEnabled, []string{"IPX", "NetBEUI"})
 	s.addHook("SMB", smbHook, cfg.SMBEnabled, []string{"NetBIOS"})
+	if smbHook != nil {
+		s.registerSMBStatus(cfg.SMBEnabled) // enrich the SMB unit with shares/identity
+	}
 	return nil
 }
 
@@ -439,6 +465,56 @@ func (s *Supervisor) registerServiceStatus(name string, enabled bool, props map[
 		Kind:       status.KindService,
 		Enabled:    enabled,
 		Properties: props,
+	})
+}
+
+// registerAFPStatus records AFP's status including its advertised name,
+// zone, and the list of shared volumes for the dashboard.
+func (s *Supervisor) registerAFPStatus() {
+	m := s.model.AFP
+	shares := make([]status.ShareInfo, 0, len(m.Volumes))
+	for key, v := range m.Volumes {
+		name := v.Name
+		if name == "" {
+			name = key
+		}
+		shares = append(shares, status.ShareInfo{Name: name, Path: v.Path, ReadOnly: v.ReadOnly})
+	}
+	s.reg.Set(status.Unit{
+		Name:       "AFP",
+		Kind:       status.KindService,
+		Enabled:    m.Enabled,
+		Binding:    m.Binding,
+		Properties: map[string]string{"zone": m.Zone},
+		Hostnames:  []string{m.Name},
+		Shares:     shares,
+	})
+}
+
+// registerSMBStatus records SMB's identity and shares for the dashboard.
+func (s *Supervisor) registerSMBStatus(enabled bool) {
+	m := s.model.SMB
+	shares := make([]status.ShareInfo, 0, len(m.Volumes))
+	for key, sh := range m.Volumes {
+		name := sh.Name
+		if name == "" {
+			name = key
+		}
+		shares = append(shares, status.ShareInfo{Name: name, Path: sh.Path, ReadOnly: sh.ReadOnly})
+	}
+	hostnames := []string{}
+	if m.ServerName != "" {
+		hostnames = append(hostnames, m.ServerName)
+	}
+	s.reg.Set(status.Unit{
+		Name:       "SMB",
+		Kind:       status.KindHook,
+		Enabled:    enabled,
+		Binding:    m.NBTBinding,
+		Properties: map[string]string{"workgroup": m.Workgroup},
+		Hostnames:  hostnames,
+		Shares:     shares,
+		DependsOn:  []string{"NetBIOS"},
 	})
 }
 

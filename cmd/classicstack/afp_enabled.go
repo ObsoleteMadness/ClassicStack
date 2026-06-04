@@ -154,6 +154,26 @@ func applyAFPFlagsToConfig(f AFPFlagInputs, cfg *afp.Config) {
 	if f.AppleDoubleMode != "" {
 		cfg.AppleDoubleMode = f.AppleDoubleMode
 	}
+	// Structured volumes from the config model take precedence; this is the
+	// path the supervisor uses so volume edits made in the web UI apply.
+	if len(f.VolumeModels) > 0 {
+		if cfg.Volumes == nil {
+			cfg.Volumes = make(map[string]afp.VolumeConfig)
+		}
+		for key, vm := range volumeModelsByKey(f.VolumeModels) {
+			cfg.Volumes[key] = afp.VolumeConfig{
+				Name:             firstNonBlank(vm.Name, key),
+				Path:             vm.Path,
+				FSType:           vm.FSType,
+				Password:         vm.Password,
+				ReadOnly:         vm.ReadOnly,
+				RebuildDesktopDB: vm.RebuildDesktopDB,
+				AppleDoubleMode:  afp.AppleDoubleMode(vm.AppleDoubleMode),
+			}
+		}
+		return
+	}
+
 	if len(f.VolumeFlagValues) == 0 {
 		return
 	}
@@ -168,6 +188,20 @@ func applyAFPFlagsToConfig(f AFPFlagInputs, cfg *afp.Config) {
 		}
 		cfg.Volumes[v.Name] = v
 	}
+}
+
+// volumeModelsByKey indexes the model volumes by a stable key (their Name,
+// or a positional fallback) for insertion into the AFP volume map.
+func volumeModelsByKey(vols []config.VolumeModel) map[string]config.VolumeModel {
+	out := make(map[string]config.VolumeModel, len(vols))
+	for i, v := range vols {
+		key := v.Name
+		if key == "" {
+			key = fmt.Sprintf("Volume%d", i+1)
+		}
+		out[key] = v
+	}
+	return out
 }
 
 func splitAFPProtocols(s string) (ddp, tcp bool) {

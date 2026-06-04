@@ -225,6 +225,125 @@ async function renderConfig(cfg) {
     panel.fields.forEach((f) => fs.appendChild(renderField(cfg, f)));
     root.appendChild(fs);
   });
+
+  // Volume / share table editors. These mutate the keyed maps in the
+  // config model (AFP.Volumes / SMB.Volumes); the supervisor rebuilds the
+  // service from the model on Apply, so add/update/remove take effect.
+  root.appendChild(
+    renderShareEditor(cfg, "AFP Volumes", "AFP", [
+      { key: "name", label: "Name", type: "text" },
+      { key: "path", label: "Path", type: "text" },
+      { key: "fs_type", label: "FS Type", type: "text", default: "local_fs" },
+      { key: "read_only", label: "Read-only", type: "bool" },
+    ])
+  );
+  root.appendChild(
+    renderShareEditor(cfg, "SMB Shares", "SMB", [
+      { key: "name", label: "Name", type: "text" },
+      { key: "path", label: "Path", type: "text" },
+      { key: "fs_type", label: "FS Type", type: "text", default: "local_fs" },
+      { key: "read_only", label: "Read-only", type: "bool" },
+    ])
+  );
+}
+
+// renderShareEditor builds a table editor over cfg[section].Volumes (a
+// name-keyed map of share/volume objects) with add and remove controls.
+function renderShareEditor(cfg, title, section, columns) {
+  const fs = document.createElement("fieldset");
+  fs.className = "config-panel";
+  const legend = document.createElement("legend");
+  legend.textContent = title;
+  fs.appendChild(legend);
+
+  if (!cfg[section]) cfg[section] = {};
+  if (!cfg[section].Volumes) cfg[section].Volumes = {};
+  const volumes = cfg[section].Volumes;
+
+  const table = document.createElement("table");
+  table.className = "share-table";
+  const head = document.createElement("tr");
+  columns.forEach((c) => {
+    const th = document.createElement("th");
+    th.textContent = c.label;
+    head.appendChild(th);
+  });
+  head.appendChild(document.createElement("th")); // remove column
+  table.appendChild(head);
+
+  function addRow(mapKey, entry) {
+    const tr = document.createElement("tr");
+    columns.forEach((c) => {
+      const td = document.createElement("td");
+      let input;
+      if (c.type === "bool") {
+        input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = !!entry[c.key];
+        input.addEventListener("change", () => {
+          entry[c.key] = input.checked;
+          setDirty(true);
+        });
+      } else {
+        input = document.createElement("input");
+        input.type = "text";
+        input.value = entry[c.key] == null ? "" : entry[c.key];
+        input.addEventListener("input", () => {
+          entry[c.key] = input.value;
+          // Keep the map key in sync with the Name field so the TOML
+          // table key matches what the operator typed.
+          if (c.key === "name") rekey(input.value, entry, tr);
+          setDirty(true);
+        });
+      }
+      td.appendChild(input);
+      tr.appendChild(td);
+    });
+    const rmTd = document.createElement("td");
+    const rm = document.createElement("button");
+    rm.textContent = "Remove";
+    rm.addEventListener("click", () => {
+      delete volumes[tr.dataset.key];
+      tr.remove();
+      setDirty(true);
+    });
+    rmTd.appendChild(rm);
+    tr.appendChild(rmTd);
+    tr.dataset.key = mapKey;
+    table.appendChild(tr);
+  }
+
+  function rekey(newName, entry, tr) {
+    const key = newName.trim();
+    if (!key || key === tr.dataset.key) return;
+    delete volumes[tr.dataset.key];
+    volumes[key] = entry;
+    tr.dataset.key = key;
+  }
+
+  Object.keys(volumes).forEach((k) => {
+    const entry = volumes[k];
+    if (!entry.name) entry.name = k;
+    addRow(k, entry);
+  });
+
+  const add = document.createElement("button");
+  add.textContent = "Add " + (section === "AFP" ? "volume" : "share");
+  add.addEventListener("click", () => {
+    let key = "New" + (Object.keys(volumes).length + 1);
+    while (volumes[key]) key += "_";
+    const entry = { name: key };
+    columns.forEach((c) => {
+      if (c.default !== undefined) entry[c.key] = c.default;
+    });
+    volumes[key] = entry;
+    addRow(key, entry);
+    setDirty(true);
+  });
+
+  fs.appendChild(table);
+  fs.appendChild(add);
+  return fs;
 }
 
 function renderField(cfg, f) {

@@ -39,6 +39,11 @@ type AFPFlagInputs struct {
 	CNIDBackend      string
 	AppleDoubleMode  string
 	VolumeFlagValues []string // raw "Name:Path" flag entries
+	// VolumeModels carries structured volumes from the config model (the
+	// path used when the supervisor builds AFP from the editable model, so
+	// UI edits to volumes take effect). When non-empty it supersedes
+	// VolumeFlagValues.
+	VolumeModels []config.VolumeModel
 }
 
 // AFPWiring is the input bundle for wireAFP.

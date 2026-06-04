@@ -29,10 +29,17 @@ func (s *Supervisor) Start(ctx context.Context) error {
 
 	s.ctx = ctx
 	for _, name := range s.order {
+		if s.alreadyRunning[name] {
+			// Preserved across an Apply rebuild (e.g. the Web UI); it is
+			// already serving, so do not restart it.
+			s.reg.SetRunning(name, true)
+			continue
+		}
 		if err := s.startHookLocked(ctx, name); err != nil {
 			netlog.Warn("[SUP][%s] start failed: %v", name, err)
 		}
 	}
+	s.alreadyRunning = nil
 	s.started = true
 	return nil
 }

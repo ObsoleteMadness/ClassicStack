@@ -8,6 +8,38 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/service/smb"
 )
 
+// smbSharesFromModel builds the SMB share list from the editable config
+// model. This is the path the supervisor uses so share add/update/remove
+// done in the web UI take effect on Apply (the file-source loaders below
+// remain for the legacy startup path).
+func smbSharesFromModel(shares map[string]config.ShareModel) []smb.ShareConfig {
+	if len(shares) == 0 {
+		return nil
+	}
+	out := make([]smb.ShareConfig, 0, len(shares))
+	for key, sh := range shares {
+		name := sh.Name
+		if name == "" {
+			name = key
+		}
+		if strings.TrimSpace(sh.Path) == "" {
+			netlog.Warn("[MAIN][SMB] share %q missing path; skipping", key)
+			continue
+		}
+		fsType := sh.FSType
+		if fsType == "" {
+			fsType = "local_fs"
+		}
+		out = append(out, smb.ShareConfig{
+			Name:     name,
+			Path:     sh.Path,
+			FSType:   fsType,
+			ReadOnly: sh.ReadOnly,
+		})
+	}
+	return out
+}
+
 // loadSMBShares assembles the SMB share list from whichever source is
 // active. In TOML mode it reads [SMB.Volumes.<key>] sections; in flag
 // mode it parses "Name:Path" entries from -smb-share. The two sources

@@ -98,6 +98,22 @@ main { padding: 1rem; }
   min-width: 200px;
 }
 
+.share-table { width: 100%; border-collapse: collapse; margin: 0.4rem 0 0.6rem; }
+.share-table th {
+  text-align: left;
+  font-size: 0.8rem;
+  color: var(--muted);
+  padding: 0.2rem 0.4rem;
+  border-bottom: 1px solid var(--border);
+}
+.share-table td { padding: 0.2rem 0.4rem; }
+.share-table input[type="text"] {
+  width: 100%;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+
 .banner {
   background: #fff7e6;
   border: 1px solid #f0d28a;

@@ -7,6 +7,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/config"
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
 	"github.com/ObsoleteMadness/ClassicStack/pkg/control"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/status"
 	"github.com/ObsoleteMadness/ClassicStack/port/rawlink"
 )
 
@@ -14,12 +15,24 @@ import (
 // interface the management plane drives. RestartService is already
 // implemented in supervisor_lifecycle.go.
 
-// Apply re-wires the running stack to match the supplied config model. For
-// now this is an atomic whole-stack rebuild: the entire stack is stopped,
-// reconstructed from the new model, and started again. Finer-grained
-// per-service application can layer on later using the dynamic-router
-// primitives; the control-plane contract (and the UI) is unchanged by that
-// evolution.
+// webUIUnitName is the reserved status/hook name for the management UI.
+const webUIUnitName = "WebUI"
+
+// Apply re-wires the running stack to match the supplied config model. It is
+// an atomic whole-stack rebuild — the stack is stopped, reconstructed from
+// the new model, and started — with one exception: the Web UI server is
+// preserved across the rebuild. The UI must outlive a reconfiguration
+// because Apply is itself driven by an in-flight UI request; tearing the
+// server down here would drop that request and the operator's connection.
+// Finer-grained per-service application can layer on later using the
+// dynamic-router primitives without changing the control-plane contract.
+//
+// Known limitation of the atomic rebuild: services that bind a fixed TCP
+// port (AFP/DSI on :548, SMB on :139) are torn down and re-bound on every
+// Apply. On some platforms the OS holds the port briefly in TIME_WAIT, so a
+// rebind immediately after stop can fail. Per-service application (rebuild
+// only what changed) is the planned remedy; until then, an Apply that only
+// touched, say, AFP volumes still cycles every listener.
 func (s *Supervisor) Apply(ctx context.Context, cfg control.ConfigModel) error {
 	model, ok := cfg.(*config.Model)
 	if !ok {
@@ -31,25 +44,64 @@ func (s *Supervisor) Apply(ctx context.Context, cfg control.ConfigModel) error {
 		return fmt.Errorf("supervisor: invalid config: %w", err)
 	}
 
-	netlog.Info("[SUP] applying new configuration (atomic rebuild)")
+	netlog.Info("[SUP] applying new configuration (atomic rebuild, web UI preserved)")
+
+	// Detach the live Web UI hook so the stack stop does not tear it down.
+	webui := s.detachWebUI()
+
 	if err := s.Stop(); err != nil {
 		netlog.Warn("[SUP] stop during apply: %v", err)
 	}
 
-	// Rebuild a fresh supervisor state from the new model, then graft its
-	// freshly constructed components onto this instance so the control
-	// plane keeps pointing at the same Supervisor.
 	rebuilt, err := NewSupervisor(newCfg, s.source, model)
 	if err != nil {
 		return fmt.Errorf("supervisor: rebuild failed: %w", err)
 	}
 	s.adoptFrom(rebuilt)
 
+	// Re-attach the preserved Web UI so it remains a managed (already
+	// running) unit of the rebuilt stack.
+	s.reattachWebUI(webui)
+
 	if err := s.Start(ctx); err != nil {
 		return fmt.Errorf("supervisor: restart failed: %w", err)
 	}
 	netlog.Info("[SUP] configuration applied")
 	return nil
+}
+
+// detachWebUI removes the Web UI hook from the running stack without
+// stopping it, returning it so Apply can re-attach it to the rebuilt stack.
+func (s *Supervisor) detachWebUI() hook {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	h := s.hooks[webUIUnitName]
+	if h == nil {
+		return nil
+	}
+	delete(s.hooks, webUIUnitName)
+	for i, name := range s.order {
+		if name == webUIUnitName {
+			s.order = append(s.order[:i], s.order[i+1:]...)
+			break
+		}
+	}
+	return h
+}
+
+// reattachWebUI registers a preserved, already-running Web UI hook on the
+// rebuilt stack and marks it running in the status registry. The hook is
+// recorded in s.started-tracking via the order slice but is not (re)started
+// by Start, since it never stopped.
+func (s *Supervisor) reattachWebUI(h hook) {
+	if h == nil {
+		return
+	}
+	s.mu.Lock()
+	s.hooks[webUIUnitName] = h
+	s.alreadyRunning = map[string]bool{webUIUnitName: true}
+	s.mu.Unlock()
+	s.reg.Set(status.Unit{Name: webUIUnitName, Kind: status.KindHook, Enabled: true, Running: true})
 }
 
 // adoptFrom replaces this supervisor's built components with those from a
@@ -66,6 +118,7 @@ func (s *Supervisor) adoptFrom(other *Supervisor) {
 	s.hooks = other.hooks
 	s.order = other.order
 	s.captureSinks = other.captureSinks
+	s.parseCleanup = other.parseCleanup
 	s.nbp = other.nbp
 	s.shortHook = other.shortHook
 	s.macIP = other.macIP
