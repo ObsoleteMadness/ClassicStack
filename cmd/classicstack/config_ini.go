@@ -72,6 +72,8 @@ type appConfig struct {
 	ShortnameWindowsShortnames bool
 	ShortnameBackend           string
 	ShortnameDBPath            string
+
+	WebUI WebUIConfigOptions
 }
 
 const (
@@ -97,6 +99,7 @@ func defaultAppConfig() appConfig {
 		SMBServerName:     defaultSMBServerName,
 		SMBWorkgroup:      defaultSMBWorkgroup,
 		ShortnameBackend:  "memory",
+		WebUI:             DefaultWebUIConfig(),
 		// On Windows the host filesystem already has authoritative 8.3
 		// names (NTFS short names, when not disabled) — using them
 		// avoids generating ~N suffixes for names that are already
@@ -212,6 +215,10 @@ func resolveAppConfig(src config.Source) (appConfig, error) {
 	cfg.ShortnameWindowsShortnames = boolWithDefault(k, "Shortname.windows_shortnames", cfg.ShortnameWindowsShortnames)
 	cfg.ShortnameBackend = stringWithDefault(k, "Shortname.backend", cfg.ShortnameBackend)
 	cfg.ShortnameDBPath = stringWithDefault(k, "Shortname.db_path", cfg.ShortnameDBPath)
+
+	if err := loadSection(k, "WebUI", &cfg.WebUI); err != nil {
+		return cfg, err
+	}
 
 	normalizeSMBIdentity(&cfg)
 

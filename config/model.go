@@ -1,0 +1,184 @@
+package config
+
+// Model is the in-memory, mutable, serialisable representation of the whole
+// ClassicStack configuration. It is the source of truth the management
+// plane stages edits against and writes back to server.toml. Field names
+// and `toml` tags mirror the section/key layout of server.toml so a
+// round-trip through ToTOML reproduces an equivalent file (comments are not
+// preserved — the UI warns about this before saving).
+//
+// Model lives in package config (untagged) and uses neutral volume/share
+// types rather than importing service/afp or service/smb (which are behind
+// build tags); the cmd-layer wiring converts between Model and those
+// packages' own config structs.
+type Model struct {
+	Logging   LoggingModel   `toml:"Logging"`
+	Bridge    BridgeModel    `toml:"Bridge"`
+	LToUDP    LToUDPModel    `toml:"LToUdp"`
+	TashTalk  TashTalkModel  `toml:"TashTalk"`
+	EtherTalk EtherTalkModel `toml:"EtherTalk"`
+	Capture   CaptureModel   `toml:"Capture"`
+	MacIP     MacIPModel     `toml:"MacIP"`
+	IPX       IPXModel       `toml:"IPX"`
+	IPXGW     IPXGWModel     `toml:"IPXGW"`
+	NetBEUI   NetBEUIModel   `toml:"NetBEUI"`
+	NetBIOS   NetBIOSModel   `toml:"NetBIOS"`
+	SMB       SMBModel       `toml:"SMB"`
+	AFP       AFPModel       `toml:"AFP"`
+	Shortname ShortnameModel `toml:"Shortname"`
+	WebUI     WebUIModel     `toml:"WebUI"`
+}
+
+// LoggingModel is the [Logging] section.
+type LoggingModel struct {
+	Level        string `toml:"level"`
+	ParsePackets bool   `toml:"parse_packets"`
+	LogTraffic   bool   `toml:"log_traffic"`
+	ParseOutput  string `toml:"parse_output,omitempty"`
+}
+
+// BridgeModel is the [Bridge] section.
+type BridgeModel struct {
+	Mode       string `toml:"mode,omitempty"`
+	Device     string `toml:"device,omitempty"`
+	HWAddress  string `toml:"hw_address,omitempty"`
+	BridgeMode string `toml:"bridge_mode,omitempty"`
+}
+
+// LToUDPModel is the [LToUdp] section.
+type LToUDPModel struct {
+	Enabled     bool   `toml:"enabled"`
+	Interface   string `toml:"interface,omitempty"`
+	SeedNetwork uint   `toml:"seed_network"`
+	SeedZone    string `toml:"seed_zone"`
+}
+
+// TashTalkModel is the [TashTalk] section.
+type TashTalkModel struct {
+	Port        string `toml:"port"`
+	SeedNetwork uint   `toml:"seed_network"`
+	SeedZone    string `toml:"seed_zone"`
+}
+
+// EtherTalkModel is the [EtherTalk] section (bridge keys live in [Bridge]).
+type EtherTalkModel struct {
+	BridgeHostMAC  string `toml:"bridge_host_mac,omitempty"`
+	Filter         string `toml:"filter,omitempty"`
+	SeedNetworkMin uint   `toml:"seed_network_min"`
+	SeedNetworkMax uint   `toml:"seed_network_max"`
+	SeedZone       string `toml:"seed_zone"`
+	DesiredNetwork uint   `toml:"desired_network,omitempty"`
+	DesiredNode    uint   `toml:"desired_node,omitempty"`
+}
+
+// CaptureModel is the [Capture] section.
+type CaptureModel struct {
+	LocalTalk string `toml:"localtalk,omitempty"`
+	EtherTalk string `toml:"ethertalk,omitempty"`
+	IPX       string `toml:"ipx,omitempty"`
+	NetBEUI   string `toml:"netbeui,omitempty"`
+	Snaplen   uint32 `toml:"snaplen,omitempty"`
+}
+
+// MacIPModel is the [MacIP] section.
+type MacIPModel struct {
+	Enabled    bool   `toml:"enabled"`
+	Mode       string `toml:"mode,omitempty"` // pcap or nat
+	Zone       string `toml:"zone,omitempty"`
+	NATSubnet  string `toml:"nat_subnet,omitempty"`
+	NATGW      string `toml:"nat_gw,omitempty"`
+	LeaseFile  string `toml:"lease_file,omitempty"`
+	IPGateway  string `toml:"ip_gateway,omitempty"`
+	DHCPRelay  bool   `toml:"dhcp_relay,omitempty"`
+	Nameserver string `toml:"nameserver,omitempty"`
+	Filter     string `toml:"filter,omitempty"`
+}
+
+// IPXModel is the [IPX] section.
+type IPXModel struct {
+	Enabled         bool   `toml:"enabled"`
+	Interface       string `toml:"interface,omitempty"`
+	Framing         string `toml:"framing,omitempty"`
+	InternalNetwork string `toml:"internal_network,omitempty"`
+	Filter          string `toml:"filter,omitempty"`
+}
+
+// IPXGWModel is the [IPXGW] section.
+type IPXGWModel struct {
+	Enabled  bool     `toml:"enabled"`
+	Bindings []string `toml:"bindings,omitempty"` // "Object:Zone" entries
+}
+
+// NetBEUIModel is the [NetBEUI] section.
+type NetBEUIModel struct {
+	Enabled   bool   `toml:"enabled"`
+	Interface string `toml:"interface,omitempty"`
+	Filter    string `toml:"filter,omitempty"`
+}
+
+// NetBIOSModel is the [NetBIOS] section.
+type NetBIOSModel struct {
+	Enabled    bool     `toml:"enabled"`
+	Transports []string `toml:"transports,omitempty"`
+	ScopeID    string   `toml:"scope_id,omitempty"`
+}
+
+// SMBModel is the [SMB] section, including [SMB.Volumes.*] shares.
+type SMBModel struct {
+	Enabled       bool                  `toml:"enabled"`
+	NBTBinding    string                `toml:"nbt_binding,omitempty"`
+	DirectBinding string                `toml:"direct_binding,omitempty"`
+	GuestOk       bool                  `toml:"guest_ok,omitempty"`
+	ServerName    string                `toml:"server_name,omitempty"`
+	Workgroup     string                `toml:"workgroup,omitempty"`
+	Volumes       map[string]ShareModel `toml:"Volumes,omitempty"`
+}
+
+// ShareModel is one [SMB.Volumes.<key>] entry.
+type ShareModel struct {
+	Name     string `toml:"name,omitempty"`
+	Path     string `toml:"path"`
+	FSType   string `toml:"fs_type,omitempty"`
+	ReadOnly bool   `toml:"read_only,omitempty"`
+}
+
+// AFPModel is the [AFP] section, including [AFP.Volumes.*] volumes.
+type AFPModel struct {
+	Enabled            bool                   `toml:"enabled"`
+	Name               string                 `toml:"name,omitempty"`
+	Zone               string                 `toml:"zone,omitempty"`
+	Protocols          string                 `toml:"protocols,omitempty"`
+	Binding            string                 `toml:"binding,omitempty"`
+	ExtensionMap       string                 `toml:"extension_map,omitempty"`
+	CNIDBackend        string                 `toml:"cnid_backend,omitempty"`
+	UseDecomposedNames bool                   `toml:"use_decomposed_names,omitempty"`
+	AppleDoubleMode    string                 `toml:"appledouble_mode,omitempty"`
+	Volumes            map[string]VolumeModel `toml:"Volumes,omitempty"`
+}
+
+// VolumeModel is one [AFP.Volumes.<key>] entry.
+type VolumeModel struct {
+	Name             string `toml:"name,omitempty"`
+	Path             string `toml:"path,omitempty"`
+	FSType           string `toml:"fs_type,omitempty"`
+	Password         string `toml:"password,omitempty"`
+	ReadOnly         bool   `toml:"read_only,omitempty"`
+	RebuildDesktopDB bool   `toml:"rebuild_desktop_db,omitempty"`
+	AppleDoubleMode  string `toml:"appledouble_mode,omitempty"`
+}
+
+// ShortnameModel is the [Shortname] section.
+type ShortnameModel struct {
+	WindowsShortnames bool   `toml:"windows_shortnames,omitempty"`
+	Backend           string `toml:"backend,omitempty"`
+	DBPath            string `toml:"db_path,omitempty"`
+}
+
+// WebUIModel is the [WebUI] section.
+type WebUIModel struct {
+	Enabled bool   `toml:"enabled"`
+	Bind    string `toml:"bind,omitempty"`
+	TLS     bool   `toml:"tls"`
+	CertPEM string `toml:"cert_pem,omitempty"`
+	KeyPEM  string `toml:"key_pem,omitempty"`
+}

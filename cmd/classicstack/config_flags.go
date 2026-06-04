@@ -85,6 +85,12 @@ type flagInputs struct {
 	ShortnameWindowsShortnames bool
 	ShortnameBackend           string
 	ShortnameDBPath            string
+
+	WebUIEnabled bool
+	WebUIBind    string
+	WebUITLS     bool
+	WebUICertPEM string
+	WebUIKeyPEM  string
 }
 
 // flagsToConfig builds an appConfig from CLI flag values. It is the
@@ -191,6 +197,14 @@ func flagsToConfig(in flagInputs) appConfig {
 		cfg.ShortnameBackend = in.ShortnameBackend
 	}
 	cfg.ShortnameDBPath = in.ShortnameDBPath
+
+	cfg.WebUI = WebUIConfigOptions{
+		Enabled: in.WebUIEnabled,
+		Bind:    firstNonBlank(in.WebUIBind, cfg.WebUI.Bind),
+		TLS:     in.WebUITLS,
+		CertPEM: in.WebUICertPEM,
+		KeyPEM:  in.WebUIKeyPEM,
+	}
 
 	normalizeSMBIdentity(&cfg)
 	syncBridgeToEtherTalk(&cfg)

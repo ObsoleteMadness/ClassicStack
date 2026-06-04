@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ClassicStack</title>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>ClassicStack</h1>
+    <nav>
+      <button data-tab="dashboard" class="tab active">Dashboard</button>
+      <button data-tab="config" class="tab">Configuration</button>
+      <button data-tab="diagnostics" class="tab">Diagnostics</button>
+    </nav>
+    <span id="dirty-indicator" class="dirty hidden">Unsaved changes</span>
+  </header>
+
+  <main>
+    <section id="dashboard" class="panel-view active">
+      <div id="service-grid" class="grid"></div>
+    </section>
+
+    <section id="config" class="panel-view">
+      <div class="banner">
+        Saving rewrites <code>server.toml</code> and removes any comments in the file.
+      </div>
+      <div id="config-panels"></div>
+      <div class="actions">
+        <button id="btn-download">Download backup</button>
+        <button id="btn-apply">Apply (live)</button>
+        <button id="btn-save" class="primary">Save</button>
+      </div>
+      <pre id="config-status" class="status-line"></pre>
+    </section>
+
+    <section id="diagnostics" class="panel-view">
+      <div class="diag-tools">
+        <button data-diag="zones">List Zones</button>
+        <button data-diag="zip">ZIP Enumerate</button>
+        <button data-diag="ddp">DDP Enumerate</button>
+        <button data-diag="smb-browse">SMB Browse</button>
+        <span class="aep">
+          AEP Echo net <input id="aep-net" type="number" min="0" value="0" />
+          node <input id="aep-node" type="number" min="0" max="255" value="0" />
+          <button data-diag="aep-echo">Echo</button>
+        </span>
+      </div>
+      <pre id="diag-output" class="status-line"></pre>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

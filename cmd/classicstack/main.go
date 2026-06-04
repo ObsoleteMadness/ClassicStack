@@ -132,6 +132,14 @@ func main() {
 	shortBackend := flag.String("shortname-backend", "memory", "Shortname store backend: memory or sqlite")
 	shortDB := flag.String("shortname-db", "", "Shortname store DB path (sqlite backend)")
 
+	// Web UI flags. The HTTP server lives behind -tags webui; the
+	// disabled stub warns if -webui-enabled is set without the tag.
+	webuiEnable := flag.Bool("webui-enabled", false, "Enable the management web UI (requires -tags webui)")
+	webuiBind := flag.String("webui-bind", "127.0.0.1:8080", "Web UI listen address (IP:PORT)")
+	webuiTLS := flag.Bool("webui-tls", true, "Serve the web UI over HTTPS (self-signed when no cert/key given)")
+	webuiCert := flag.String("webui-cert-pem", "", "Path to PEM certificate for the web UI (blank: self-signed)")
+	webuiKey := flag.String("webui-key-pem", "", "Path to PEM private key for the web UI (blank: self-signed)")
+
 	flag.Parse()
 
 	if *showVersion {
@@ -247,6 +255,12 @@ func main() {
 			ShortnameWindowsShortnames: *shortWindows,
 			ShortnameBackend:           *shortBackend,
 			ShortnameDBPath:            *shortDB,
+
+			WebUIEnabled: *webuiEnable,
+			WebUIBind:    *webuiBind,
+			WebUITLS:     *webuiTLS,
+			WebUICertPEM: *webuiCert,
+			WebUIKeyPEM:  *webuiKey,
 		})
 	}
 
