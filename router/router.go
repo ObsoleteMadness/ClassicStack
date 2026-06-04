@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"errors"
+	"sync"
 
 	"github.com/ObsoleteMadness/ClassicStack/protocol/ddp"
 
@@ -20,7 +21,12 @@ import (
 var framesInTotal = telemetry.NewCounter("classicstack_router_frames_in_total")
 
 type Router struct {
-	shortStr             string
+	shortStr string
+	// membership guards Ports, Services, and servicesBySAS against
+	// concurrent mutation (AddPort/RemovePort/AddService/RemoveService)
+	// while the receive path reads them. The routing and zone tables hold
+	// their own locks; this protects only the membership collections.
+	membership           sync.RWMutex
 	Ports                []port.Port
 	Services             []service.Service
 	servicesBySAS        map[uint8]service.Service
@@ -49,22 +55,40 @@ func New(shortStr string, ports []port.Port, services []service.Service) *Router
 	r.Services = services
 	r.bindLLAPManager()
 	for _, s := range services {
-		switch v := s.(type) {
-		case *aep.Service:
-			r.servicesBySAS[aep.Socket] = s
-		case *zip.NameInformationService:
-			r.servicesBySAS[zip.NBPSASSocket] = s
-		case interface{ Socket() uint8 }:
-			r.servicesBySAS[v.Socket()] = s
-		case *rtmp.RespondingService:
-			r.servicesBySAS[rtmp.SAS] = s
-		case *zip.RespondingService:
-			r.servicesBySAS[zip.SAS] = s
-		case *rtmp.RoutingTableAgingService:
-			// RoutingTableAgingService doesn't work on socket basis
-		}
+		r.registerServiceSocket(s)
 	}
 	return r
+}
+
+// registerServiceSocket records the static socket a service listens on, if
+// any. Services that do not bind a socket (e.g. the RTMP aging timer) are
+// ignored. Callers must hold r.membership when mutating at runtime; New
+// runs before the router is shared so it calls this without the lock.
+func (r *Router) registerServiceSocket(s service.Service) {
+	switch v := s.(type) {
+	case *aep.Service:
+		r.servicesBySAS[aep.Socket] = s
+	case *zip.NameInformationService:
+		r.servicesBySAS[zip.NBPSASSocket] = s
+	case interface{ Socket() uint8 }:
+		r.servicesBySAS[v.Socket()] = s
+	case *rtmp.RespondingService:
+		r.servicesBySAS[rtmp.SAS] = s
+	case *zip.RespondingService:
+		r.servicesBySAS[zip.SAS] = s
+	case *rtmp.RoutingTableAgingService:
+		// RoutingTableAgingService doesn't work on socket basis
+	}
+}
+
+// unregisterServiceSocket drops s from the socket dispatch map. Callers
+// must hold r.membership.
+func (r *Router) unregisterServiceSocket(s service.Service) {
+	for sock, svc := range r.servicesBySAS {
+		if svc == s {
+			delete(r.servicesBySAS, sock)
+		}
+	}
 }
 
 func (r *Router) ShortString() string { return r.shortStr }
@@ -83,31 +107,47 @@ func defaultServices() []service.Service {
 }
 
 func (r *Router) bindLLAPManager() {
-	var llapSvc *llap.Service
+	for _, p := range r.Ports {
+		r.bindPortLLAP(p)
+	}
+}
+
+// llapManager returns the registered LLAP service, or nil if none is
+// present in the service set.
+func (r *Router) llapManager() *llap.Service {
 	for _, svc := range r.Services {
 		if candidate, ok := svc.(*llap.Service); ok {
-			llapSvc = candidate
-			break
+			return candidate
 		}
 	}
+	return nil
+}
+
+// bindPortLLAP wires the LLAP link manager into a single port if the port
+// is LocalTalk-style (implements SetLLAPLinkManager) and an LLAP service is
+// present. Used both at construction and when a port is added at runtime.
+func (r *Router) bindPortLLAP(p port.Port) {
+	llapSvc := r.llapManager()
 	if llapSvc == nil {
 		return
 	}
-	for _, p := range r.Ports {
-		if managed, ok := p.(interface{ SetLLAPLinkManager(localtalk.LinkManager) }); ok {
-			managed.SetLLAPLinkManager(llapSvc)
-		}
+	if managed, ok := p.(interface{ SetLLAPLinkManager(localtalk.LinkManager) }); ok {
+		managed.SetLLAPLinkManager(llapSvc)
 	}
 }
 
 func (r *Router) deliver(datagram ddp.Datagram, rxPort port.Port) {
-	if svc, ok := r.servicesBySAS[datagram.DestinationSocket]; ok {
+	r.membership.RLock()
+	svc, ok := r.servicesBySAS[datagram.DestinationSocket]
+	r.membership.RUnlock()
+	if ok {
 		svc.Inbound(datagram, rxPort)
 	}
 }
 
 func (r *Router) Start(ctx context.Context) error {
-	for _, s := range r.Services {
+	services, ports := r.snapshotMembership()
+	for _, s := range services {
 		if _, ok := s.(*llap.Service); !ok {
 			continue
 		}
@@ -116,14 +156,14 @@ func (r *Router) Start(ctx context.Context) error {
 			return err
 		}
 	}
-	for _, p := range r.Ports {
+	for _, p := range ports {
 		netlog.Info("starting %T...", p)
 		if err := p.Start(r); err != nil {
 			return err
 		}
 	}
 	netlog.Info("all ports started!")
-	for _, s := range r.Services {
+	for _, s := range services {
 		if _, ok := s.(*llap.Service); ok {
 			continue
 		}
@@ -137,15 +177,16 @@ func (r *Router) Start(ctx context.Context) error {
 }
 
 func (r *Router) Stop() error {
+	services, ports := r.snapshotMembership()
 	var errs []error
-	for _, s := range r.Services {
+	for _, s := range services {
 		netlog.Info("stopping %T...", s)
 		if err := s.Stop(); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	netlog.Info("all services stopped!")
-	for _, p := range r.Ports {
+	for _, p := range ports {
 		netlog.Info("stopping %T...", p)
 		if err := p.Stop(); err != nil {
 			errs = append(errs, err)
@@ -156,6 +197,18 @@ func (r *Router) Stop() error {
 		return errors.Join(errs...)
 	}
 	return nil
+}
+
+// snapshotMembership returns copies of the current service and port slices
+// so lifecycle iteration is unaffected by concurrent Add/Remove.
+func (r *Router) snapshotMembership() ([]service.Service, []port.Port) {
+	r.membership.RLock()
+	defer r.membership.RUnlock()
+	services := make([]service.Service, len(r.Services))
+	copy(services, r.Services)
+	ports := make([]port.Port, len(r.Ports))
+	copy(ports, r.Ports)
+	return services, ports
 }
 
 func (r *Router) Inbound(datagram ddp.Datagram, rxPort port.Port) {
@@ -281,7 +334,13 @@ func (r *Router) RoutingTableAge() {
 	r.RoutingTable.Age()
 }
 
-func (r *Router) PortsList() []port.Port { return r.Ports }
+func (r *Router) PortsList() []port.Port {
+	r.membership.RLock()
+	defer r.membership.RUnlock()
+	out := make([]port.Port, len(r.Ports))
+	copy(out, r.Ports)
+	return out
+}
 
 func asServiceEntry(e *RoutingTableEntry) *service.RouteEntry {
 	if e == nil {
