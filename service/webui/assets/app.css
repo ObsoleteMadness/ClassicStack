@@ -78,7 +78,8 @@ main { padding: 1rem; }
 
 .card .metric { font-variant-numeric: tabular-nums; }
 
-.card button { margin-top: 0.5rem; }
+.card-actions { display: flex; gap: 0.4rem; margin-top: 0.6rem; }
+.card-actions button { margin-top: 0; }
 
 .config-panel {
   background: var(--panel);

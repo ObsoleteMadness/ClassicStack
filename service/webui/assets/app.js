@@ -47,14 +47,27 @@ function renderStatus(units) {
     if (u.shares && u.shares.length)
       detail += kv("Shares", u.shares.map((s) => s.name).join(", "));
 
+    // Only standalone hooks (IPX/NetBEUI/NetBIOS/SMB/WebUI) are individually
+    // start/stoppable; ports and the router-set share the stack lifecycle.
+    const controllable = u.kind === "hook";
+    let controls = "";
+    if (controllable) {
+      controls = u.running
+        ? `<button data-action="stop" data-svc="${esc(u.name)}">Stop</button>
+           <button data-action="restart" data-svc="${esc(u.name)}">Restart</button>`
+        : `<button data-action="start" data-svc="${esc(u.name)}">Start</button>`;
+    }
+
     card.innerHTML = `
       <h3><span class="dot ${u.running ? "running" : ""}"></span>${esc(u.name)}</h3>
       <div class="kv">${u.enabled ? "Enabled" : "Disabled"} · ${u.running ? "Running" : "Stopped"}</div>
       ${detail}
       <div class="kv metric" data-metric-for="${esc(u.name)}"></div>
-      <button data-restart="${esc(u.name)}">Restart</button>
+      <div class="card-actions">${controls}</div>
     `;
-    card.querySelector("[data-restart]").addEventListener("click", () => restart(u.name));
+    card.querySelectorAll("[data-action]").forEach((btn) =>
+      btn.addEventListener("click", () => serviceAction(btn.dataset.svc, btn.dataset.action))
+    );
     grid.appendChild(card);
   });
 }
@@ -63,12 +76,12 @@ function kv(k, v) {
   return `<div class="kv"><b>${esc(k)}:</b> ${esc(String(v))}</div>`;
 }
 
-async function restart(name) {
+async function serviceAction(name, action) {
   try {
-    await postJSON(`/api/services/${encodeURIComponent(name)}/restart`, null);
+    await postJSON(`/api/services/${encodeURIComponent(name)}/${action}`, null);
     setTimeout(loadStatus, 300);
   } catch (e) {
-    alert("Restart failed: " + e.message);
+    alert(`${action} failed: ` + e.message);
   }
 }
 
@@ -289,10 +302,10 @@ $("#btn-apply").addEventListener("click", async () => {
   try {
     await putJSON("/api/config", currentConfig);
     await postJSON("/api/config/apply", null);
-    status("Applied live. Changes are running but not yet saved to disk.");
+    setConfigStatus("Applied live. Changes are running but not yet saved to disk.");
     loadStatus();
   } catch (e) {
-    status("Apply failed: " + e.message);
+    setConfigStatus("Apply failed: " + e.message);
   }
 });
 
@@ -302,13 +315,13 @@ $("#btn-save").addEventListener("click", async () => {
     await putJSON("/api/config", currentConfig);
     const r = await postJSON("/api/config/save", null);
     setDirty(false);
-    status("Saved. Backup written to " + (r.backup || "(no previous file)") + ".");
+    setConfigStatus("Saved. Backup written to " + (r.backup || "(no previous file)") + ".");
   } catch (e) {
-    status("Save failed: " + e.message);
+    setConfigStatus("Save failed: " + e.message);
   }
 });
 
-function status(msg) {
+function setConfigStatus(msg) {
   $("#config-status").textContent = msg;
 }
 

@@ -25,6 +25,10 @@ type Supervisor interface {
 	// Apply re-wires the running stack to match cfg, restarting only the
 	// units whose configuration changed.
 	Apply(ctx context.Context, cfg ConfigModel) error
+	// StartService starts a single named unit.
+	StartService(ctx context.Context, name string) error
+	// StopService stops a single named unit (and its dependents).
+	StopService(name string) error
 	// RestartService restarts a single named unit (and its dependents).
 	RestartService(ctx context.Context, name string) error
 	// ListInterfaces returns the host's network interface names for the
@@ -100,6 +104,22 @@ func (p *Plane) ListInterfaces() ([]string, error) {
 // ListSerialPorts returns the host's serial ports for the TashTalk dropdown.
 func (p *Plane) ListSerialPorts() ([]serialport.Info, error) {
 	return serialport.List()
+}
+
+// StartService starts a single named unit.
+func (p *Plane) StartService(ctx context.Context, name string) error {
+	if p.sup == nil {
+		return ErrNoSupervisor
+	}
+	return p.sup.StartService(ctx, name)
+}
+
+// StopService stops a single named unit (and any units depending on it).
+func (p *Plane) StopService(name string) error {
+	if p.sup == nil {
+		return ErrNoSupervisor
+	}
+	return p.sup.StopService(name)
 }
 
 // RestartService restarts a single named unit (and its dependents).

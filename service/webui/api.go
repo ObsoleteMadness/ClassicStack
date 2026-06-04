@@ -150,13 +150,25 @@ func (s *Server) handleServiceAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name, action := parseServicePath(r.URL.Path)
-	if name == "" || action != "restart" {
+	if name == "" {
 		writeError(w, http.StatusNotFound, errNotFound)
 		return
 	}
-	if err := s.opts.Plane.RestartService(r.Context(), name); err != nil {
+	var err error
+	switch action {
+	case "start":
+		err = s.opts.Plane.StartService(r.Context(), name)
+	case "stop":
+		err = s.opts.Plane.StopService(name)
+	case "restart":
+		err = s.opts.Plane.RestartService(r.Context(), name)
+	default:
+		writeError(w, http.StatusNotFound, errNotFound)
+		return
+	}
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"restarted": name})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "service": name, "action": action})
 }

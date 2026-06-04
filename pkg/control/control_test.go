@@ -16,7 +16,9 @@ type fakeSup struct {
 	restarts []string
 }
 
-func (s *fakeSup) Apply(_ context.Context, _ ConfigModel) error { s.applied++; return nil }
+func (s *fakeSup) Apply(_ context.Context, _ ConfigModel) error   { s.applied++; return nil }
+func (s *fakeSup) StartService(_ context.Context, _ string) error { return nil }
+func (s *fakeSup) StopService(_ string) error                     { return nil }
 func (s *fakeSup) RestartService(_ context.Context, name string) error {
 	s.restarts = append(s.restarts, name)
 	return nil

@@ -20,6 +20,8 @@ type ControlPlane interface {
 	Apply(ctx context.Context) error
 	Save() (backupPath string, err error)
 	Export() ([]byte, error)
+	StartService(ctx context.Context, name string) error
+	StopService(name string) error
 	RestartService(ctx context.Context, name string) error
 	ListInterfaces() ([]string, error)
 	ListSerialPorts() ([]serialport.Info, error)
