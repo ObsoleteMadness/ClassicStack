@@ -3,6 +3,9 @@ package control
 import (
 	"context"
 	"testing"
+	"time"
+
+	"github.com/ObsoleteMadness/ClassicStack/pkg/logbuf"
 )
 
 // fakeModel is a minimal ConfigModel for lifecycle tests.
@@ -85,6 +88,36 @@ func TestSaveWithoutPath(t *testing.T) {
 	if _, err := p.Save(); err != ErrNoConfigPath {
 		t.Errorf("Save without path = %v, want ErrNoConfigPath", err)
 	}
+}
+
+func TestLogHistoryAndSubscribe(t *testing.T) {
+	buf := logbuf.New(8)
+	p := New(Deps{Config: &fakeModel{}, Logs: buf})
+
+	buf.Append(logbuf.Entry{Message: "first"})
+
+	hist := p.LogHistory()
+	if len(hist) != 1 || hist[0].Message != "first" {
+		t.Fatalf("LogHistory = %+v, want [first]", hist)
+	}
+
+	ch, cancel := p.SubscribeLogs()
+	defer cancel()
+	buf.Append(logbuf.Entry{Message: "live"})
+	select {
+	case e := <-ch:
+		if e.Message != "live" {
+			t.Fatalf("subscriber got %q, want live", e.Message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("log subscriber did not receive entry")
+	}
+}
+
+func TestLogHistoryDefaultsToGlobal(t *testing.T) {
+	p := New(Deps{Config: &fakeModel{}})
+	// Should not panic and should return the global buffer's snapshot.
+	_ = p.LogHistory()
 }
 
 func TestDiagnosticsFallback(t *testing.T) {

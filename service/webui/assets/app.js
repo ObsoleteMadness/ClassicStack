@@ -19,6 +19,8 @@ $$(".tab").forEach((btn) => {
     btn.classList.add("active");
     $("#" + btn.dataset.tab).classList.add("active");
     if (btn.dataset.tab === "config") loadConfig();
+    if (btn.dataset.tab === "logs") startLogs();
+    else stopLogs();
   });
 });
 
@@ -118,6 +120,70 @@ function sumRatesForUnit(unit) {
   });
   return found ? sum : null;
 }
+
+// ---- logs ----
+// The log viewer opens an SSE stream when its tab is active and closes it on
+// leave. The server replays recent history first, then streams live lines.
+// Rendering is capped to keep the DOM bounded; level filtering is client-side.
+const LOG_MAX_LINES = 1000;
+const LOG_LEVELS = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
+let logSource = null; // active EventSource, or null when the tab is inactive
+
+function startLogs() {
+  if (logSource) return; // already streaming
+  const out = $("#log-output");
+  out.textContent = "";
+  setLogStatus("connecting…");
+  logSource = new EventSource("/api/logs/stream");
+  logSource.onopen = () => setLogStatus("streaming");
+  logSource.onmessage = (ev) => {
+    try {
+      appendLogEntry(JSON.parse(ev.data));
+    } catch (_) {}
+  };
+  logSource.onerror = () => setLogStatus("reconnecting…");
+}
+
+function stopLogs() {
+  if (!logSource) return;
+  logSource.close();
+  logSource = null;
+  setLogStatus("disconnected");
+}
+
+function setLogStatus(s) {
+  $("#log-status").textContent = s;
+}
+
+function appendLogEntry(entry) {
+  const out = $("#log-output");
+  const minLevel = LOG_LEVELS[$("#log-level-filter").value] ?? 0;
+  const level = (entry.level || "INFO").toUpperCase();
+  const line = document.createElement("div");
+  line.className = "log-line log-" + level.toLowerCase();
+  line.dataset.level = level;
+  const ts = entry.t ? new Date(entry.t).toLocaleTimeString() : "";
+  line.textContent = `${ts}  ${level.padEnd(5)}  ${entry.msg || ""}`;
+  if ((LOG_LEVELS[level] ?? 1) < minLevel) line.classList.add("hidden");
+  out.appendChild(line);
+
+  while (out.childElementCount > LOG_MAX_LINES) out.removeChild(out.firstChild);
+
+  if ($("#log-follow").checked) out.scrollTop = out.scrollHeight;
+}
+
+// Re-apply the level filter to already-rendered lines.
+$("#log-level-filter").addEventListener("change", () => {
+  const minLevel = LOG_LEVELS[$("#log-level-filter").value] ?? 0;
+  $$("#log-output .log-line").forEach((el) => {
+    const lvl = LOG_LEVELS[el.dataset.level] ?? 1;
+    el.classList.toggle("hidden", lvl < minLevel);
+  });
+});
+
+$("#btn-log-clear").addEventListener("click", () => {
+  $("#log-output").textContent = "";
+});
 
 // ---- configuration editor ----
 async function loadConfig() {

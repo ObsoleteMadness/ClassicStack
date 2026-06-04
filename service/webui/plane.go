@@ -6,6 +6,7 @@ import (
 	"context"
 
 	"github.com/ObsoleteMadness/ClassicStack/pkg/control"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/logbuf"
 	"github.com/ObsoleteMadness/ClassicStack/pkg/serialport"
 	"github.com/ObsoleteMadness/ClassicStack/pkg/status"
 )
@@ -26,5 +27,7 @@ type ControlPlane interface {
 	ListInterfaces() ([]string, error)
 	ListSerialPorts() ([]serialport.Info, error)
 	Subscribe() (<-chan control.Frame, func())
+	LogHistory() []logbuf.Entry
+	SubscribeLogs() (<-chan logbuf.Entry, func())
 	Diagnostics() control.Diagnostics
 }

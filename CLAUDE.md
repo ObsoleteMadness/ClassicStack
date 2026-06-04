@@ -73,6 +73,7 @@ cmd/classicstack/main.go  →  Ports  →  Router  →  Services
 | `pkg/control/` | Transport-agnostic management API (status, config stage/apply/save, service start/stop/restart, diagnostics); the single contract every UI front-end shares |
 | `pkg/status/` | In-process service-status registry read by the dashboard |
 | `pkg/metrics/` | Streaming stats hub (expvar + SSE sinks) |
+| `pkg/logbuf/` | In-memory log ring buffer + `slog.Handler` + broadcaster feeding the web UI log viewer (installed via `logging.Options.Extra`) |
 | `pkg/serialport/` | Per-OS serial-port enumeration for the TashTalk dropdown |
 | `config/` | Config loader plus `Model` (in-memory, editable, serialisable view of `server.toml` with numbered-backup Save) |
 | `netlog/` | Structured logger with debug/info/warn levels |

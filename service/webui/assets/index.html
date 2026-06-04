@@ -13,6 +13,7 @@
       <button data-tab="dashboard" class="tab active">Dashboard</button>
       <button data-tab="config" class="tab">Configuration</button>
       <button data-tab="diagnostics" class="tab">Diagnostics</button>
+      <button data-tab="logs" class="tab">Logs</button>
     </nav>
     <span id="dirty-indicator" class="dirty hidden">Unsaved changes</span>
   </header>
@@ -48,6 +49,23 @@
         </span>
       </div>
       <pre id="diag-output" class="status-line"></pre>
+    </section>
+
+    <section id="logs" class="panel-view">
+      <div class="log-controls">
+        <label>Level
+          <select id="log-level-filter">
+            <option value="DEBUG">Debug</option>
+            <option value="INFO" selected>Info</option>
+            <option value="WARN">Warn</option>
+            <option value="ERROR">Error</option>
+          </select>
+        </label>
+        <span id="log-status" class="log-status">disconnected</span>
+        <button id="btn-log-clear">Clear</button>
+        <label class="log-follow"><input type="checkbox" id="log-follow" checked /> Follow</label>
+      </div>
+      <pre id="log-output" class="log-output"></pre>
     </section>
   </main>
 

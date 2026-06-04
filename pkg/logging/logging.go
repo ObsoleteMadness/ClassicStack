@@ -45,6 +45,11 @@ type Options struct {
 	// Sinks listed here receive every record the root logger emits. If
 	// empty, a single console sink at LevelInfo on stderr is used.
 	Sinks []Sink
+	// Extra are additional handlers appended to the fanout alongside the
+	// sink-derived ones. Use this to tee records into in-process consumers
+	// such as the management log buffer (pkg/logbuf) without writing to an
+	// io.Writer. A nil slice preserves the prior behaviour.
+	Extra []slog.Handler
 	// Color enables ANSI colouring of the level tag in console output. The
 	// zero value is "off"; callers that want auto-detection should pass
 	// term.IsTerminal(int(os.Stderr.Fd())).
@@ -60,10 +65,11 @@ func New(source string, opts Options) *slog.Logger {
 	if len(sinks) == 0 {
 		sinks = []Sink{{Writer: os.Stderr, Format: FormatConsole, Level: slog.LevelInfo}}
 	}
-	handlers := make([]slog.Handler, 0, len(sinks))
+	handlers := make([]slog.Handler, 0, len(sinks)+len(opts.Extra))
 	for _, s := range sinks {
 		handlers = append(handlers, newHandler(s, opts.Color))
 	}
+	handlers = append(handlers, opts.Extra...)
 	var h slog.Handler
 	if len(handlers) == 1 {
 		h = handlers[0]

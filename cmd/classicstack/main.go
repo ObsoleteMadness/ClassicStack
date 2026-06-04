@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"runtime"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/config"
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/logbuf"
 	"github.com/ObsoleteMadness/ClassicStack/pkg/logging"
 	"github.com/ObsoleteMadness/ClassicStack/port/rawlink"
 )
@@ -266,6 +268,9 @@ func main() {
 	slogLevel, _ := logging.ParseLevel(cfg.LogLevel)
 	rootLogger := logging.New("ClassicStack", logging.Options{
 		Sinks: []logging.Sink{{Writer: os.Stderr, Format: logging.FormatConsole, Level: slogLevel}},
+		// Tee every record into the in-memory ring buffer so the management
+		// plane / web UI log viewer can replay recent history and stream live.
+		Extra: []slog.Handler{logbuf.NewHandler(logbuf.Default, slogLevel)},
 	})
 	logging.SetDefault(rootLogger)
 	netlog.SetLogger(rootLogger)

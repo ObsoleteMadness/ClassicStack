@@ -243,8 +243,8 @@ AFP volumes are configured as [AFP.Volumes.<name>] sections.
 
 A management web UI is available in builds that include `-tags webui` (which
 `-tags all` does). It serves a dashboard showing per-service status, bindings,
-and live (SSE-streamed) statistics, plus a configuration editor and read-only
-diagnostics (zone/network enumeration).
+and live (SSE-streamed) statistics, plus a configuration editor, read-only
+diagnostics (zone/network enumeration), and a live **log viewer**.
 
 [WebUI]:
 
@@ -263,7 +263,9 @@ From the dashboard you can **start, stop, and restart** the standalone services
 also stops SMB). The configuration editor can edit scalar settings, **add /
 update / remove AFP volumes and SMB shares**, and toggle **packet-dump and pcap
 capture** options (parse-packets, traffic logging, and per-transport capture
-file paths). Edits stage in memory; **Apply** re-wires the running stack (the web
+file paths). The **Logs** tab streams the server's log output live (recent
+history is replayed on open, then new lines append) with a client-side level
+filter. Edits stage in memory; **Apply** re-wires the running stack (the web
 UI server is preserved across the rebuild), **Save** writes `server.toml`
 (backing up the prior file to `server.toml.NNNN` and dropping comments), and
 **Download backup** exports the current config. The same operations are exposed

@@ -23,6 +23,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/config/download", s.handleDownload)
 	s.mux.HandleFunc("/api/services/", s.handleServiceAction)
 	s.mux.HandleFunc("/api/stats/stream", s.handleStatsStream)
+	s.mux.HandleFunc("/api/logs", s.handleLogHistory)
+	s.mux.HandleFunc("/api/logs/stream", s.handleLogStream)
 
 	s.registerDiagnosticRoutes()
 }

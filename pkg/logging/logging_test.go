@@ -106,6 +106,36 @@ func TestChildReplacesSource(t *testing.T) {
 	}
 }
 
+// captureHandler is a minimal slog.Handler that records messages, used to
+// verify Options.Extra tees records into additional consumers.
+type captureHandler struct{ msgs *[]string }
+
+func (h captureHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h captureHandler) Handle(_ context.Context, r slog.Record) error {
+	*h.msgs = append(*h.msgs, r.Message)
+	return nil
+}
+func (h captureHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h captureHandler) WithGroup(string) slog.Handler      { return h }
+
+func TestExtraHandlerReceivesRecords(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	var captured []string
+	l := New("Router", Options{
+		Sinks: []Sink{{Writer: &buf, Format: FormatConsole, Level: slog.LevelInfo}},
+		Extra: []slog.Handler{captureHandler{msgs: &captured}},
+	})
+	l.Info("route added")
+
+	if !strings.Contains(buf.String(), "route added") {
+		t.Fatalf("normal sink missed record: %q", buf.String())
+	}
+	if len(captured) != 1 || captured[0] != "route added" {
+		t.Fatalf("extra handler captured = %v, want [route added]", captured)
+	}
+}
+
 func TestParseLevel(t *testing.T) {
 	t.Parallel()
 	cases := map[string]slog.Level{

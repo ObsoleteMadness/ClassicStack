@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/ObsoleteMadness/ClassicStack/config"
 	"github.com/ObsoleteMadness/ClassicStack/pkg/control"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/logbuf"
 	"github.com/ObsoleteMadness/ClassicStack/pkg/metrics"
 	"github.com/ObsoleteMadness/ClassicStack/pkg/status"
 )
@@ -79,6 +80,7 @@ func newControlPlane(sup *Supervisor, model *config.Model, configPath string) *c
 		Supervisor: sup,
 		Registry:   status.Default,
 		Hub:        metrics.Default,
+		Logs:       logbuf.Default,
 		Config:     model,
 		ConfigPath: configPath,
 	})

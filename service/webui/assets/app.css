@@ -145,3 +145,31 @@ button.primary { background: var(--accent); color: var(--accent-text); border-co
 
 .diag-tools { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
 .diag-tools .aep input { width: 70px; }
+
+/* ---- logs ---- */
+.log-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  align-items: center;
+  margin-bottom: 0.6rem;
+}
+.log-status { color: #8aa0b6; font-size: 0.85rem; }
+.log-follow { font-size: 0.9rem; }
+.log-output {
+  background: #0e1116;
+  color: #cfe8ff;
+  padding: 0.6rem 0.8rem;
+  border-radius: 8px;
+  height: 70vh;
+  overflow-y: auto;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+.log-line { white-space: pre-wrap; word-break: break-word; }
+.log-line.hidden { display: none; }
+.log-debug { color: #8a93a0; }
+.log-info { color: #cfe8ff; }
+.log-warn { color: #f0c674; }
+.log-error { color: #ff6b6b; }

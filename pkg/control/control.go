@@ -13,6 +13,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/ObsoleteMadness/ClassicStack/pkg/logbuf"
 	"github.com/ObsoleteMadness/ClassicStack/pkg/metrics"
 	"github.com/ObsoleteMadness/ClassicStack/pkg/serialport"
 	"github.com/ObsoleteMadness/ClassicStack/pkg/status"
@@ -49,9 +50,10 @@ type ConfigModel interface {
 // Plane is the management API. It owns the live and staged config models
 // and the dirty flag, and delegates lifecycle actions to the Supervisor.
 type Plane struct {
-	sup Supervisor
-	reg *status.Registry
-	hub *metrics.Hub
+	sup  Supervisor
+	reg  *status.Registry
+	hub  *metrics.Hub
+	logs *logbuf.Buffer
 
 	mu     sync.Mutex
 	live   ConfigModel
@@ -67,6 +69,7 @@ type Deps struct {
 	Supervisor Supervisor
 	Registry   *status.Registry // defaults to status.Default when nil
 	Hub        *metrics.Hub     // defaults to metrics.Default when nil
+	Logs       *logbuf.Buffer   // defaults to logbuf.Default when nil
 	Config     ConfigModel      // the live config at startup
 	ConfigPath string           // file Save writes to ("" = Save disabled)
 }
@@ -81,10 +84,15 @@ func New(d Deps) *Plane {
 	if hub == nil {
 		hub = metrics.Default
 	}
+	logs := d.Logs
+	if logs == nil {
+		logs = logbuf.Default
+	}
 	return &Plane{
 		sup:  d.Supervisor,
 		reg:  reg,
 		hub:  hub,
+		logs: logs,
 		live: d.Config,
 		path: d.ConfigPath,
 	}
