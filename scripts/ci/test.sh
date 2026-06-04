@@ -13,6 +13,7 @@ tag_sets=(
   "afp sqlite_cnid"
   "all"
   "ipx netbeui smb"
+  "webui"
 )
 
 for tags in "${tag_sets[@]}"; do

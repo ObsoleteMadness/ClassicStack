@@ -69,7 +69,19 @@ cmd/classicstack/main.go  →  Ports  →  Router  →  Services
 | `service/atp/` | AppleTalk Transaction Protocol — reliable messaging |
 | `service/dsi/` | Data Stream Interface — AFP transport over TCP |
 | `service/macip/` | IP-over-AppleTalk gateway with NAT and DHCP relay |
+| `service/webui/` | Management web UI (`-tags webui`): HTTPS adapter over `pkg/control` — JSON API, SSE stats stream, embedded SPA |
+| `pkg/control/` | Transport-agnostic management API (status, config stage/apply/save, service start/stop/restart, diagnostics); the single contract every UI front-end shares |
+| `pkg/status/` | In-process service-status registry read by the dashboard |
+| `pkg/metrics/` | Streaming stats hub (expvar + SSE sinks) |
+| `pkg/serialport/` | Per-OS serial-port enumeration for the TashTalk dropdown |
+| `config/` | Config loader plus `Model` (in-memory, editable, serialisable view of `server.toml` with numbered-backup Save) |
 | `netlog/` | Structured logger with debug/info/warn levels |
+
+The `cmd/classicstack` `Supervisor` owns the whole runtime: it builds ports, the
+router (and its DDP service set), and the standalone hooks from the config
+`Model`, and exposes per-service Start/Stop/Restart (dependency-aware) that the
+web UI drives through `pkg/control`. `main.go` only parses flags / loads TOML,
+builds the `Model`, and hands off to the supervisor.
 
 ### AFP Architecture
 

@@ -239,6 +239,33 @@ AFP volumes are configured as [AFP.Volumes.<name>] sections.
 - localtalk, ethertalk, ipx capture output paths
 - snaplen for capture truncation length
 
+## Web UI
+
+A management web UI is available in builds that include `-tags webui` (which
+`-tags all` does). It serves a dashboard showing per-service status, bindings,
+and live (SSE-streamed) statistics, plus a configuration editor and read-only
+diagnostics (zone/network enumeration).
+
+[WebUI]:
+
+- enabled: turn the listener on (default off)
+- bind: `IP:PORT` to listen on (default `127.0.0.1:8080`, loopback)
+- tls: serve HTTPS (default true); a self-signed certificate is generated at
+  startup when `cert_pem`/`key_pem` are blank
+- cert_pem / key_pem: paths to a PEM certificate and key (supply both, or
+  leave both blank for the self-signed certificate)
+
+Equivalent flags: `-webui-enabled`, `-webui-bind`, `-webui-tls`,
+`-webui-cert-pem`, `-webui-key-pem`.
+
+From the dashboard you can **start, stop, and restart** the standalone services
+(IPX, NetBEUI, NetBIOS, SMB) live; stops are dependency-aware (stopping NetBIOS
+also stops SMB). The configuration editor stages edits in memory; **Apply**
+re-wires the running stack, **Save** writes `server.toml` (backing up the prior
+file to `server.toml.NNNN` and dropping comments), and **Download backup**
+exports the current config. The same operations are exposed by the
+transport-agnostic `pkg/control` API, so a future text/telnet UI can reuse them.
+
 ## Useful commands
 
 List pcap devices:

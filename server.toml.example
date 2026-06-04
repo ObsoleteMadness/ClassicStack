@@ -132,3 +132,14 @@ snaplen = 65535                # per-frame snap length
 # [VFSBus]
 # subscriber_buffer = 256
 # drop_warn_interval = "30s"
+
+# [WebUI]
+# Management web UI: a dashboard showing per-service status/statistics and a
+# configuration editor. Requires a binary built with -tags webui (included in
+# -tags all). Saving from the UI rewrites this file and removes comments,
+# backing up the previous version to server.toml.NNNN first.
+# enabled = false
+# bind = "127.0.0.1:8080"          # IP:PORT to listen on; loopback by default
+# tls = true                       # serve HTTPS; self-signed when no cert/key given
+# cert_pem = ""                    # path to PEM certificate; blank: self-signed
+# key_pem = ""                     # path to PEM private key; blank: self-signed
