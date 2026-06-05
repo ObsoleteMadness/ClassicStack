@@ -27,6 +27,8 @@ type ControlPlane interface {
 	ListInterfaces() ([]control.InterfaceInfo, error)
 	ListFSTypes() []string
 	ListSerialPorts() ([]serialport.Info, error)
+	ExtMap() (path string, data []byte, err error)
+	SaveExtMap(data []byte) (backup string, err error)
 	Subscribe() (<-chan control.Frame, func())
 	LogHistory() []logbuf.Entry
 	SubscribeLogs() (<-chan logbuf.Entry, func())

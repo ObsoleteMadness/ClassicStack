@@ -34,6 +34,23 @@
         <button id="btn-save" class="primary">Save</button>
       </div>
       <pre id="config-status" class="status-line"></pre>
+
+      <details id="extmap-editor" class="extmap">
+        <summary>Extension map (type/creator)</summary>
+        <p class="extmap-path">File: <code id="extmap-path">—</code></p>
+        <p class="extmap-hint">
+          Netatalk-style <code>.ext "TYPE" "CRTR"</code> lines map file
+          extensions to classic Mac OS type/creator codes. Changes take effect
+          on the next Apply.
+        </p>
+        <textarea id="extmap-text" class="extmap-text" spellcheck="false"
+          wrap="off" rows="18"></textarea>
+        <div class="actions">
+          <button id="btn-extmap-reload">Reload</button>
+          <button id="btn-extmap-save" class="primary">Save extension map</button>
+        </div>
+        <pre id="extmap-status" class="status-line"></pre>
+      </details>
     </section>
 
     <section id="diagnostics" class="panel-view">

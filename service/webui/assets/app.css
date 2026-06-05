@@ -178,6 +178,30 @@ button.primary { background: var(--accent); color: var(--accent-text); border-co
 .diag-tools { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
 .diag-tools .aep input { width: 70px; }
 
+/* ---- extension-map editor ---- */
+.extmap { margin-top: 1.4rem; border-top: 1px solid #243042; padding-top: 1rem; }
+.extmap > summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #cfe8ff;
+  user-select: none;
+}
+.extmap-path { margin: 0.6rem 0 0.2rem; color: #8aa0b6; font-size: 0.85rem; }
+.extmap-hint { margin: 0.2rem 0 0.6rem; color: #8aa0b6; font-size: 0.85rem; }
+.extmap-text {
+  width: 100%;
+  box-sizing: border-box;
+  background: #0e1116;
+  color: #cfe8ff;
+  border: 1px solid #243042;
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  resize: vertical;
+}
+
 /* ---- logs ---- */
 .log-controls {
   display: flex;

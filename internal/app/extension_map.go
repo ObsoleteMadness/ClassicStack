@@ -21,6 +21,15 @@ func loadAFPExtensionMap(path string) (*afp.ExtensionMap, error) {
 	return parseAFPExtensionMap(data)
 }
 
+// validateExtMap reports whether data is a parseable extension-map file,
+// returning a descriptive error (with the offending line) otherwise. The
+// management plane calls it before saving an edited map so a typo cannot
+// produce a file AFP fails to load on the next Apply.
+func validateExtMap(data []byte) error {
+	_, err := parseAFPExtensionMap(data)
+	return err
+}
+
 func parseAFPExtensionMap(data []byte) (*afp.ExtensionMap, error) {
 	entries := make(map[string]afp.ExtensionMapping)
 	lines := strings.Split(string(data), "\n")

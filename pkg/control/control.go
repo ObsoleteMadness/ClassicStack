@@ -41,6 +41,14 @@ type Supervisor interface {
 	// build (e.g. "local_fs", and "macgarden" when built with that tag), for
 	// the volume/share FS-type dropdown.
 	ListFSTypes() []string
+	// ReadExtMap returns the configured AFP extension-map file path and its
+	// current contents, for the extension-map editor. A missing file yields
+	// empty contents and no error.
+	ReadExtMap() (path string, data []byte, err error)
+	// WriteExtMap validates and saves edited extension-map contents (creating
+	// a numbered backup), returning the backup path. The change takes effect
+	// on the next Apply.
+	WriteExtMap(data []byte) (backup string, err error)
 }
 
 // InterfaceInfo describes one network interface for the UI dropdowns. Name is
@@ -135,6 +143,24 @@ func (p *Plane) ListFSTypes() []string {
 // ListSerialPorts returns the host's serial ports for the TashTalk dropdown.
 func (p *Plane) ListSerialPorts() ([]serialport.Info, error) {
 	return serialport.List()
+}
+
+// ExtMap returns the configured extension-map file path and its contents for
+// the editor.
+func (p *Plane) ExtMap() (path string, data []byte, err error) {
+	if p.sup == nil {
+		return "", nil, ErrNoSupervisor
+	}
+	return p.sup.ReadExtMap()
+}
+
+// SaveExtMap validates and writes edited extension-map contents, returning the
+// numbered backup path of any pre-existing file.
+func (p *Plane) SaveExtMap(data []byte) (backup string, err error) {
+	if p.sup == nil {
+		return "", ErrNoSupervisor
+	}
+	return p.sup.WriteExtMap(data)
 }
 
 // StartService starts a single named unit.

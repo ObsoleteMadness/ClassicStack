@@ -2,7 +2,10 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/ObsoleteMadness/ClassicStack/config"
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
@@ -160,4 +163,51 @@ func (s *Supervisor) ListInterfaces() ([]control.InterfaceInfo, error) {
 // ListFSTypes returns the AFP filesystem types registered in this build.
 func (s *Supervisor) ListFSTypes() []string {
 	return registeredFSTypes()
+}
+
+// extMapPath resolves the configured AFP extension-map file path, resolving a
+// relative path against the config directory exactly as AFP wiring does. It
+// returns "" when no extension map is configured.
+func (s *Supervisor) extMapPath() string {
+	if s.model == nil {
+		return ""
+	}
+	p := s.model.AFP.ExtensionMap
+	if p != "" && !filepath.IsAbs(p) && s.source.ConfigDir != "" {
+		p = filepath.Join(s.source.ConfigDir, p)
+	}
+	return p
+}
+
+// ReadExtMap returns the configured extension-map path and its current file
+// contents. It is used by the management UI's extension-map editor. The path
+// is returned even on read error so the UI can show what it tried to open;
+// a missing file yields empty content and no error (the operator can create
+// it by saving).
+func (s *Supervisor) ReadExtMap() (path string, data []byte, err error) {
+	path = s.extMapPath()
+	if path == "" {
+		return "", nil, fmt.Errorf("no AFP extension_map configured")
+	}
+	data, err = os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return path, nil, nil
+	}
+	return path, data, err
+}
+
+// WriteExtMap validates data as an extension-map file and, if it parses,
+// writes it to the configured path (creating a numbered backup of any
+// existing file). It returns the backup path created (empty when none).
+// The change takes effect on the next configuration Apply, which reloads the
+// map; WriteExtMap itself does not restart AFP.
+func (s *Supervisor) WriteExtMap(data []byte) (backup string, err error) {
+	path := s.extMapPath()
+	if path == "" {
+		return "", fmt.Errorf("no AFP extension_map configured")
+	}
+	if err := validateExtMap(data); err != nil {
+		return "", err
+	}
+	return config.SaveBytes(path, data)
 }

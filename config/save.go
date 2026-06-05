@@ -33,6 +33,26 @@ func Save(path string, m *Model) (backupPath string, err error) {
 	return backupPath, nil
 }
 
+// SaveBytes writes data to path, first duplicating any existing file to the
+// next free numbered backup (path.NNNN), exactly like Save but for an
+// arbitrary text file (e.g. the AFP extension map) rather than the TOML model.
+// The write is atomic via a temp file + rename. It returns the backup path
+// created (empty when path did not previously exist).
+func SaveBytes(path string, data []byte) (backupPath string, err error) {
+	if _, statErr := os.Stat(path); statErr == nil {
+		backupPath, err = backupExisting(path)
+		if err != nil {
+			return "", err
+		}
+	} else if !os.IsNotExist(statErr) {
+		return "", statErr
+	}
+	if err := atomicWrite(path, data); err != nil {
+		return "", err
+	}
+	return backupPath, nil
+}
+
 // backupExisting copies path to the next free path.NNNN and returns the
 // backup path.
 func backupExisting(path string) (string, error) {

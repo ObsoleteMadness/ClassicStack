@@ -767,6 +767,51 @@ function setConfigStatus(msg) {
   $("#config-status").textContent = msg;
 }
 
+// ---- extension-map editor ----
+// A raw text editor for the Netatalk-style type/creator file. We edit the
+// file verbatim (preserving comments/order) rather than parsing it into a
+// grid; the server validates on save and reports the offending line.
+let extMapLoaded = false;
+
+async function loadExtMap() {
+  try {
+    const r = await fetchJSON("/api/extmap");
+    $("#extmap-path").textContent = r.path || "(unset)";
+    $("#extmap-text").value = r.content || "";
+    setExtMapStatus("");
+    extMapLoaded = true;
+  } catch (e) {
+    $("#extmap-path").textContent = "(unavailable)";
+    $("#extmap-text").value = "";
+    setExtMapStatus("Could not load extension map: " + e.message);
+  }
+}
+
+function setExtMapStatus(msg) {
+  $("#extmap-status").textContent = msg;
+}
+
+const extMapEditor = $("#extmap-editor");
+if (extMapEditor) {
+  // Lazily load the file the first time the section is expanded.
+  extMapEditor.addEventListener("toggle", () => {
+    if (extMapEditor.open && !extMapLoaded) loadExtMap();
+  });
+  $("#btn-extmap-reload").addEventListener("click", loadExtMap);
+  $("#btn-extmap-save").addEventListener("click", async () => {
+    try {
+      const r = await putJSON("/api/extmap", { content: $("#extmap-text").value });
+      setExtMapStatus(
+        "Saved. Backup written to " +
+          (r.backup || "(no previous file)") +
+          ". Applies on next Apply.",
+      );
+    } catch (e) {
+      setExtMapStatus("Save failed: " + e.message);
+    }
+  });
+}
+
 // ---- diagnostics ----
 $$("[data-diag]").forEach((btn) => {
   btn.addEventListener("click", async () => {

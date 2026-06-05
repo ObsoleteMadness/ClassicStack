@@ -15,8 +15,9 @@ func (f *fakeModel) ToTOML() ([]byte, error) { return []byte(f.toml), nil }
 
 // fakeSup records Apply/Restart calls.
 type fakeSup struct {
-	applied  int
-	restarts []string
+	applied       int
+	restarts      []string
+	extMapWritten []byte
 }
 
 func (s *fakeSup) Apply(_ context.Context, _ ConfigModel) error   { s.applied++; return nil }
@@ -30,6 +31,13 @@ func (s *fakeSup) ListInterfaces() ([]InterfaceInfo, error) {
 	return []InterfaceInfo{{Name: "eth0", Description: "Ethernet"}}, nil
 }
 func (s *fakeSup) ListFSTypes() []string { return []string{"local_fs"} }
+func (s *fakeSup) ReadExtMap() (string, []byte, error) {
+	return "/etc/extmap.conf", []byte(".txt \"TEXT\" \"ttxt\"\n"), nil
+}
+func (s *fakeSup) WriteExtMap(data []byte) (string, error) {
+	s.extMapWritten = data
+	return "/etc/extmap.conf.0001", nil
+}
 
 func TestListInterfacesAndFSTypes(t *testing.T) {
 	p := New(Deps{Supervisor: &fakeSup{}})
@@ -45,6 +53,40 @@ func TestListInterfacesAndFSTypes(t *testing.T) {
 	fsTypes := p.ListFSTypes()
 	if len(fsTypes) != 1 || fsTypes[0] != "local_fs" {
 		t.Fatalf("ListFSTypes = %v, want [local_fs]", fsTypes)
+	}
+}
+
+func TestExtMapDelegates(t *testing.T) {
+	sup := &fakeSup{}
+	p := New(Deps{Supervisor: sup})
+
+	path, data, err := p.ExtMap()
+	if err != nil {
+		t.Fatalf("ExtMap: %v", err)
+	}
+	if path != "/etc/extmap.conf" || len(data) == 0 {
+		t.Fatalf("ExtMap = (%q, %d bytes), want path + non-empty", path, len(data))
+	}
+
+	backup, err := p.SaveExtMap([]byte(".dat \"BINA\" \"hDmp\"\n"))
+	if err != nil {
+		t.Fatalf("SaveExtMap: %v", err)
+	}
+	if backup != "/etc/extmap.conf.0001" {
+		t.Errorf("SaveExtMap backup = %q, want /etc/extmap.conf.0001", backup)
+	}
+	if string(sup.extMapWritten) == "" {
+		t.Error("SaveExtMap did not forward data to supervisor")
+	}
+}
+
+func TestExtMapWithoutSupervisor(t *testing.T) {
+	p := New(Deps{Config: &fakeModel{}})
+	if _, _, err := p.ExtMap(); err != ErrNoSupervisor {
+		t.Errorf("ExtMap without supervisor = %v, want ErrNoSupervisor", err)
+	}
+	if _, err := p.SaveExtMap(nil); err != ErrNoSupervisor {
+		t.Errorf("SaveExtMap without supervisor = %v, want ErrNoSupervisor", err)
 	}
 }
 
