@@ -118,6 +118,7 @@ func (s *Supervisor) adoptFrom(other *Supervisor) {
 	s.router = other.router
 	s.ports = other.ports
 	s.portNames = other.portNames
+	s.meters = other.meters
 	s.hooks = other.hooks
 	s.order = other.order
 	s.captureSinks = other.captureSinks

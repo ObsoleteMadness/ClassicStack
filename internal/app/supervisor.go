@@ -48,6 +48,7 @@ type Supervisor struct {
 	router    *router.Router
 	ports     []port.Port
 	portNames []string        // status-unit name per entry in ports
+	meters    []*portMeter    // per-port traffic meters (nil entries skipped)
 	hooks     map[string]hook // name -> standalone hook (ipx, netbeui, …)
 	order     []string        // hook start order; stop walks it in reverse
 	started   bool
@@ -206,6 +207,18 @@ func (s *Supervisor) buildPorts() ([]port.Port, []closer, error) {
 	sinks := make([]closer, 0)
 	for _, snk := range attachCaptureSinks(ports, cfg.Capture) {
 		sinks = append(sinks, snk)
+	}
+
+	// Attach a traffic meter to each port so the dashboard gets live per-port
+	// rx/tx throughput. Ports report via the optional port.TrafficMetered
+	// interface, so this neither wraps the port nor disturbs the concrete-type
+	// assertions capture-sink attachment relies on. s.portNames is parallel to
+	// ports (set by registerPortStatus above), giving each meter its unit name.
+	s.meters = nil
+	for i := range ports {
+		if m := attachPortMeter(s.portNames[i], ports[i]); m != nil {
+			s.meters = append(s.meters, m)
+		}
 	}
 	return ports, sinks, nil
 }

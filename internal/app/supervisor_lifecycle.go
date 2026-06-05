@@ -42,28 +42,37 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	s.alreadyRunning = nil
 	s.started = true
 
-	// Periodically refresh live dashboard counts (MacIP leases/sessions),
-	// which change at runtime and so cannot be captured once at wire time.
-	if s.macIP != nil {
-		stop := make(chan struct{})
-		s.statusTickerStop = stop
-		go s.runStatusRefresh(stop)
-	}
+	// Drive the periodic refresher: it publishes per-port throughput metrics
+	// every second (the SSE broadcaster derives per-second rates from
+	// successive counter values) and refreshes live MacIP lease/session
+	// counts every few seconds. Always run it — metered ports exist whenever
+	// any transport is configured.
+	stop := make(chan struct{})
+	s.statusTickerStop = stop
+	go s.runStatusRefresh(stop)
 	return nil
 }
 
-// runStatusRefresh re-publishes time-varying dashboard status (MacIP live
-// counts) on a fixed cadence until stop is closed. It does not hold s.mu — it
-// reads stable post-Start fields and the independently-locked status registry.
+// runStatusRefresh publishes time-varying dashboard data until stop is closed:
+// per-port traffic counters each tick (1s, matching the rate window) and the
+// MacIP live status every fifth tick. It does not hold s.mu — it reads stable
+// post-Start fields and the independently-locked status registry/metrics hub.
 func (s *Supervisor) runStatusRefresh(stop chan struct{}) {
-	t := time.NewTicker(5 * time.Second)
+	t := time.NewTicker(time.Second)
 	defer t.Stop()
+	tick := 0
 	for {
 		select {
 		case <-stop:
 			return
 		case <-t.C:
-			s.refreshMacIPStatus()
+			for _, m := range s.meters {
+				m.publish()
+			}
+			if tick%5 == 0 && s.macIP != nil {
+				s.refreshMacIPStatus()
+			}
+			tick++
 		}
 	}
 }

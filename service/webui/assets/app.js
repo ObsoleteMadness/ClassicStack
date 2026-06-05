@@ -9,7 +9,8 @@ const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
 let currentConfig = null; // last-loaded config model (edited in place)
-let latestRates = {}; // metric name -> per-second rate from SSE
+let latestRates = {}; // metric name -> per-second rate from SSE (counters)
+let latestGauges = {}; // metric name -> latest absolute value from SSE (gauges)
 // pendingServices holds the names of services with an in-flight start/stop/
 // restart action. While pending, the card shows a spinner and its action
 // buttons are disabled so the operator can't double-fire a transition.
@@ -84,7 +85,7 @@ function renderStatus(units) {
       <h3>${indicator}${esc(u.name)}</h3>
       <div class="kv">${stateLine}</div>
       ${detail}
-      <div class="kv metric" data-metric-for="${esc(u.name)}"></div>
+      <div class="kv metric hidden" data-metric-for="${esc(u.name)}"></div>
       <div class="card-actions">${controls}</div>
     `;
     card.querySelectorAll("[data-action]").forEach((btn) =>
@@ -122,10 +123,11 @@ function startStats() {
     try {
       const frame = JSON.parse(ev.data);
       latestRates = frame.rates || {};
+      latestGauges = frame.gauges || {};
       $$("[data-metric-for]").forEach((el) => {
-        const name = el.getAttribute("data-metric-for");
-        const total = sumRatesForUnit(name);
-        if (total !== null) el.textContent = `${total}/s`;
+        const text = metricsForUnit(el.getAttribute("data-metric-for"));
+        el.textContent = text;
+        el.classList.toggle("hidden", text === "");
       });
     } catch (_) {}
   };
@@ -134,19 +136,44 @@ function startStats() {
   };
 }
 
-// sumRatesForUnit matches metric names that embed the unit name. Naming is
-// best-effort until services publish per-unit metric labels.
-function sumRatesForUnit(unit) {
-  const key = unit.toLowerCase().replace(/[^a-z0-9]/g, "");
-  let sum = 0;
-  let found = false;
-  Object.keys(latestRates).forEach((m) => {
-    if (m.toLowerCase().replace(/[^a-z0-9]/g, "").includes(key)) {
-      sum += latestRates[m];
-      found = true;
-    }
-  });
-  return found ? sum : null;
+// Producers publish samples named "unit:<UnitName>:<metric>" so each sample
+// attributes to exactly one dashboard card. unitMetric reads the per-second
+// rate (counters) or latest value (gauges) for one such metric, or 0.
+function unitRate(unit, metric) {
+  return latestRates[`unit:${unit}:${metric}`] || 0;
+}
+function unitGauge(unit, metric) {
+  return latestGauges[`unit:${unit}:${metric}`];
+}
+
+// metricsForUnit renders a one-line live summary for a card: rx/tx throughput
+// for ports (packets and bytes per second) plus any gauge value the unit
+// publishes (e.g. active sessions). Returns "" when the unit has no live
+// metrics, so the line is hidden rather than showing a bare "0/s".
+function metricsForUnit(unit) {
+  const parts = [];
+  const rxp = unitRate(unit, "rx.packets");
+  const txp = unitRate(unit, "tx.packets");
+  const rxb = unitRate(unit, "rx.bytes");
+  const txb = unitRate(unit, "tx.bytes");
+  const hasTraffic = [`unit:${unit}:rx.packets`, `unit:${unit}:tx.packets`].some(
+    (n) => n in latestRates
+  );
+  if (hasTraffic) {
+    parts.push(`↓ ${rxp} pkt/s (${fmtBytes(rxb)}/s)`);
+    parts.push(`↑ ${txp} pkt/s (${fmtBytes(txb)}/s)`);
+  }
+  const sessions = unitGauge(unit, "sessions");
+  if (sessions !== undefined) parts.push(`${sessions} session${sessions === 1 ? "" : "s"}`);
+  return parts.join(" · ");
+}
+
+// fmtBytes renders a byte count as B/KB/MB with one decimal for the larger
+// units, matching the compact per-second throughput display.
+function fmtBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 // ---- logs ----
