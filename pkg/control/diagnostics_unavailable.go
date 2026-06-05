@@ -32,3 +32,7 @@ func (unavailableDiagnostics) DDPEnumerate(context.Context) ([]NetworkInfo, erro
 func (unavailableDiagnostics) SMBBrowse(context.Context) ([]ServerInfo, error) {
 	return nil, ErrDiagUnavailable
 }
+
+func (unavailableDiagnostics) MacIPLeases(context.Context) ([]LeaseInfo, error) {
+	return nil, ErrDiagUnavailable
+}

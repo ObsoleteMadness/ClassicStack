@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/pkg/control"
 	"github.com/ObsoleteMadness/ClassicStack/pkg/hwaddr"
 	"github.com/ObsoleteMadness/ClassicStack/port/rawlink"
 	"github.com/ObsoleteMadness/ClassicStack/service"
@@ -24,6 +25,32 @@ func (h *macipHook) PinLeaseToSession(net uint16, node, sess uint8) {
 }
 func (h *macipHook) UnpinLeaseFromSession(sess uint8) { h.svc.UnpinLeaseFromSession(sess) }
 func (h *macipHook) MarkSessionActivity(sess uint8)   { h.svc.MarkSessionActivity(sess) }
+
+func (h *macipHook) Leases() []control.LeaseInfo {
+	src := h.svc.Leases()
+	out := make([]control.LeaseInfo, 0, len(src))
+	for _, l := range src {
+		out = append(out, control.LeaseInfo{
+			IP:           l.IP,
+			ATNetwork:    l.ATNetwork,
+			ATNode:       l.ATNode,
+			Source:       l.Source,
+			LastSeenUnix: l.LastSeenUnix,
+		})
+	}
+	return out
+}
+
+func (h *macipHook) State() control.MacIPState {
+	s := h.svc.GatewayStats()
+	return control.MacIPState{
+		Mode:         s.Mode,
+		DHCPRelay:    s.DHCPRelay,
+		Zone:         s.Zone,
+		ActiveLeases: s.ActiveLeases,
+		Sessions:     s.Sessions,
+	}
+}
 
 func wireMacIP(cfg MacIPConfig) (MacIPHook, error) {
 	if !cfg.Enabled {

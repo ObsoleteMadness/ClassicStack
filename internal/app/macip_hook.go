@@ -1,6 +1,7 @@
 package app
 
 import (
+	"github.com/ObsoleteMadness/ClassicStack/pkg/control"
 	"github.com/ObsoleteMadness/ClassicStack/service"
 	"github.com/ObsoleteMadness/ClassicStack/service/zip"
 )
@@ -13,6 +14,10 @@ type MacIPHook interface {
 	PinLeaseToSession(net uint16, node, sessID uint8)
 	UnpinLeaseFromSession(sessID uint8)
 	MarkSessionActivity(sessID uint8)
+	// Leases returns the gateway's current IP leases for the diagnostics view.
+	Leases() []control.LeaseInfo
+	// State returns a point-in-time MacIP summary for the dashboard.
+	State() control.MacIPState
 }
 
 // macIPAFPHooks adapts a MacIPHook to the AFPSessionHooks interface

@@ -268,6 +268,54 @@ func (s *Service) MarkSessionActivity(sessionID uint8) {
 	s.pool.markSessionActivity(sessionID)
 }
 
+// LeaseInfo is one IP lease for the diagnostics/dashboard view. Source is
+// "static" (pool-assigned) or "dhcp" (relayed).
+type LeaseInfo struct {
+	IP           string
+	ATNetwork    uint16
+	ATNode       uint8
+	Source       string
+	LastSeenUnix int64
+}
+
+// Leases returns a point-in-time copy of all non-expired IP leases.
+func (s *Service) Leases() []LeaseInfo {
+	st := s.pool.snapshot()
+	out := make([]LeaseInfo, 0, len(st.Static)+len(st.DHCP))
+	for _, l := range st.Static {
+		out = append(out, LeaseInfo{IP: l.IP, ATNetwork: l.ATNetwork, ATNode: l.ATNode, Source: "static", LastSeenUnix: l.LastSeen})
+	}
+	for _, l := range st.DHCP {
+		out = append(out, LeaseInfo{IP: l.IP, ATNetwork: l.ATNetwork, ATNode: l.ATNode, Source: "dhcp", LastSeenUnix: l.LastSeen})
+	}
+	return out
+}
+
+// Stats is a point-in-time summary of the gateway for the dashboard.
+type Stats struct {
+	Mode         string // "nat" or "bridge"
+	DHCPRelay    bool
+	Zone         string
+	ActiveLeases int
+	Sessions     int
+}
+
+// GatewayStats returns the current MacIP gateway state and live counts.
+func (s *Service) GatewayStats() Stats {
+	mode := "bridge"
+	if s.natEnabled {
+		mode = "nat"
+	}
+	ps := s.pool.stats()
+	return Stats{
+		Mode:         mode,
+		DHCPRelay:    s.dhcpMode,
+		Zone:         string(s.zoneName),
+		ActiveLeases: ps.activeLeases,
+		Sessions:     ps.sessions,
+	}
+}
+
 // Inbound is called by the router for every DDP datagram addressed to socket 72.
 func (s *Service) Inbound(d ddp.Datagram, p port.Port) {
 	select {

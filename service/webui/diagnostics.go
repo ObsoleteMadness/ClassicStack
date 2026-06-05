@@ -16,6 +16,7 @@ func (s *Server) registerDiagnosticRoutes() {
 	s.mux.HandleFunc("/api/diag/ddp", s.handleDiagDDP)
 	s.mux.HandleFunc("/api/diag/aep-echo", s.handleDiagAEPEcho)
 	s.mux.HandleFunc("/api/diag/smb-browse", s.handleDiagSMBBrowse)
+	s.mux.HandleFunc("/api/diag/macip-leases", s.handleDiagMacIPLeases)
 }
 
 func (s *Server) handleDiagZones(w http.ResponseWriter, r *http.Request) {
@@ -91,4 +92,17 @@ func (s *Server) handleDiagSMBBrowse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, servers)
+}
+
+func (s *Server) handleDiagMacIPLeases(w http.ResponseWriter, r *http.Request) {
+	if s.opts.Plane == nil {
+		writeError(w, http.StatusServiceUnavailable, errNoPlane)
+		return
+	}
+	leases, err := s.opts.Plane.Diagnostics().MacIPLeases(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, leases)
 }

@@ -30,6 +30,26 @@ type ServerInfo struct {
 	Comment string `json:"comment,omitempty"`
 }
 
+// LeaseInfo is one MacIP IP lease reported by MacIPLeases. Source is
+// "static" (pool-assigned) or "dhcp" (relayed from the network's DHCP server).
+type LeaseInfo struct {
+	IP           string `json:"ip"`
+	ATNetwork    uint16 `json:"at_network"`
+	ATNode       uint8  `json:"at_node"`
+	Source       string `json:"source"`
+	LastSeenUnix int64  `json:"last_seen_unix"`
+}
+
+// MacIPState is a point-in-time summary of the MacIP gateway for the
+// dashboard: its mode, options, and live counts.
+type MacIPState struct {
+	Mode         string `json:"mode"` // "nat" or "bridge"
+	DHCPRelay    bool   `json:"dhcp_relay"`
+	Zone         string `json:"zone,omitempty"`
+	ActiveLeases int    `json:"active_leases"`
+	Sessions     int    `json:"sessions"`
+}
+
 // Diagnostics is the set of read-only network probes the UI exposes. The
 // concrete implementation is provided by the supervisor at wire time
 // (some probes — e.g. SMB browse — are only available when that subsystem
@@ -46,6 +66,9 @@ type Diagnostics interface {
 	// SMBBrowse returns the SMB/NetBIOS browse list of servers. Only
 	// available in SMB-enabled builds.
 	SMBBrowse(ctx context.Context) ([]ServerInfo, error)
+	// MacIPLeases returns the MacIP gateway's current IP leases. Only
+	// available when MacIP is built in and enabled.
+	MacIPLeases(ctx context.Context) ([]LeaseInfo, error)
 }
 
 // SetDiagnostics installs the diagnostics implementation.

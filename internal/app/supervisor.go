@@ -69,6 +69,10 @@ type Supervisor struct {
 	macIP     MacIPHook
 	ipxGW     IPXGWHook
 
+	// statusTickerStop stops the periodic dashboard-status refresher (live
+	// MacIP lease/session counts). Closed and nilled on Stop.
+	statusTickerStop chan struct{}
+
 	// netbios is the NetBIOS hook so the lifecycle can attach/detach
 	// transports as their underlying protocol starts/stops. nil when NetBIOS
 	// is disabled.
@@ -277,7 +281,7 @@ func (s *Supervisor) buildServices() ([]service.Service, error) {
 	}
 	if macIP != nil {
 		services = append(services, macIP.Service())
-		s.registerServiceStatus("MacIP", cfg.MacIPEnabled, nil)
+		s.registerMacIPStatus(cfg.MacIPEnabled)
 	}
 
 	ipxGW, err := wireIPXGW(IPXGWConfig{
@@ -707,6 +711,76 @@ func (s *Supervisor) registerIPXStatus(h IPXHook, enabled bool) {
 		Binding:    iface,
 		Properties: props,
 	})
+}
+
+// macIPStatusProps builds the MacIP dashboard properties from the gateway's
+// live state. Returns a base set (mode/dhcp/zone) plus live counts when the
+// service is reachable.
+func (s *Supervisor) macIPStatusProps() map[string]string {
+	props := map[string]string{
+		"mode":       boolStrMode(s.cfg.MacIPNAT),
+		"dhcp_relay": boolStr(s.cfg.MacIPDHCPRelay),
+	}
+	if z := strings.TrimSpace(s.cfg.MacIPZone); z != "" {
+		props["zone"] = z
+	}
+	if s.macIP != nil {
+		st := s.macIP.State()
+		props["mode"] = st.Mode
+		props["dhcp_relay"] = boolStr(st.DHCPRelay)
+		if st.Zone != "" {
+			props["zone"] = st.Zone
+		}
+		props["leases"] = fmt.Sprintf("%d", st.ActiveLeases)
+		props["sessions"] = fmt.Sprintf("%d", st.Sessions)
+	}
+	return props
+}
+
+// registerMacIPStatus records the MacIP gateway's mode, options, and live
+// lease/session counts for the dashboard.
+func (s *Supervisor) registerMacIPStatus(enabled bool) {
+	binding := strings.TrimSpace(s.cfg.MacIPGatewayIP)
+	if binding == "" {
+		binding = strings.TrimSpace(s.cfg.MacIPSubnet)
+	}
+	s.reg.Set(status.Unit{
+		Name:       "MacIP",
+		Kind:       status.KindService,
+		Enabled:    enabled,
+		Binding:    binding,
+		Properties: s.macIPStatusProps(),
+	})
+}
+
+// refreshMacIPStatus re-publishes MacIP's live counts (leases/sessions change
+// at runtime), preserving the Running flag.
+func (s *Supervisor) refreshMacIPStatus() {
+	if s.macIP == nil {
+		return
+	}
+	running := s.unitRunning("MacIP")
+	binding := strings.TrimSpace(s.cfg.MacIPGatewayIP)
+	if binding == "" {
+		binding = strings.TrimSpace(s.cfg.MacIPSubnet)
+	}
+	s.reg.Set(status.Unit{
+		Name:       "MacIP",
+		Kind:       status.KindService,
+		Enabled:    s.cfg.MacIPEnabled,
+		Running:    running,
+		Binding:    binding,
+		Properties: s.macIPStatusProps(),
+	})
+}
+
+// boolStrMode renders the MacIP gateway mode for the base (pre-service)
+// status when the live State is not yet available.
+func boolStrMode(nat bool) string {
+	if nat {
+		return "nat"
+	}
+	return "bridge"
 }
 
 // registerNetBEUIStatus records the NetBEUI hook's bound device.

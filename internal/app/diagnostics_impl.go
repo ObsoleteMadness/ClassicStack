@@ -80,3 +80,12 @@ func (d *routerDiagnostics) AEPEcho(context.Context, uint16, uint8) (control.Ech
 func (d *routerDiagnostics) SMBBrowse(context.Context) ([]control.ServerInfo, error) {
 	return nil, control.ErrDiagUnavailable
 }
+
+// MacIPLeases returns the MacIP gateway's current IP leases, or unavailable
+// when MacIP is not built in / not enabled.
+func (d *routerDiagnostics) MacIPLeases(context.Context) ([]control.LeaseInfo, error) {
+	if d.sup == nil || d.sup.macIP == nil {
+		return nil, control.ErrDiagUnavailable
+	}
+	return d.sup.macIP.Leases(), nil
+}

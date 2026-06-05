@@ -145,4 +145,7 @@ func TestDiagnosticsFallback(t *testing.T) {
 	if _, err := p.Diagnostics().ListZones(context.Background()); err != ErrDiagUnavailable {
 		t.Errorf("unset diagnostics = %v, want ErrDiagUnavailable", err)
 	}
+	if _, err := p.Diagnostics().MacIPLeases(context.Background()); err != ErrDiagUnavailable {
+		t.Errorf("unset MacIPLeases = %v, want ErrDiagUnavailable", err)
+	}
 }

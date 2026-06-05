@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
 )
@@ -41,7 +42,31 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	}
 	s.alreadyRunning = nil
 	s.started = true
+
+	// Periodically refresh live dashboard counts (MacIP leases/sessions),
+	// which change at runtime and so cannot be captured once at wire time.
+	if s.macIP != nil {
+		stop := make(chan struct{})
+		s.statusTickerStop = stop
+		go s.runStatusRefresh(stop)
+	}
 	return nil
+}
+
+// runStatusRefresh re-publishes time-varying dashboard status (MacIP live
+// counts) on a fixed cadence until stop is closed. It does not hold s.mu — it
+// reads stable post-Start fields and the independently-locked status registry.
+func (s *Supervisor) runStatusRefresh(stop chan struct{}) {
+	t := time.NewTicker(5 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-t.C:
+			s.refreshMacIPStatus()
+		}
+	}
 }
 
 // Stop tears the stack down in reverse order: hooks first (reverse of
@@ -51,6 +76,10 @@ func (s *Supervisor) Stop() error {
 	defer s.mu.Unlock()
 	if !s.started {
 		return nil
+	}
+	if s.statusTickerStop != nil {
+		close(s.statusTickerStop)
+		s.statusTickerStop = nil
 	}
 	for i := len(s.order) - 1; i >= 0; i-- {
 		name := s.order[i]
