@@ -3,7 +3,7 @@ package macgarden
 import (
 	"bytes"
 	"context"
-	"crypto/sha1"
+	"crypto/sha1" // #nosec G505 -- SHA-1 only names cache files, not a security primitive
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
@@ -130,7 +130,11 @@ func NewClient() *Client {
 				return nil
 			},
 			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+				// #nosec G402 -- macintoshgarden.org and its mirrors serve
+				// abandonware over certs that are frequently expired/self-signed;
+				// this client fetches public, non-sensitive files from a fixed
+				// allow-list of hosts, so TLS verification is intentionally relaxed.
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
 			},
 		},
 		allowedHost: map[string]struct{}{
@@ -253,6 +257,8 @@ func (c *Client) loadItemCache() {
 	c.itemCacheMu.Lock()
 	defer c.itemCacheMu.Unlock()
 	cachePath := c.itemCachePath()
+	// #nosec G304 -- cachePath is built from a constant relative path under the
+	// client's own cache dir, not from external input.
 	body, err := os.ReadFile(cachePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -272,12 +278,14 @@ func (c *Client) saveItemCache() {
 	defer c.itemCacheMu.RUnlock()
 	cachePath := c.itemCachePath()
 	cacheDir := filepath.Dir(cachePath)
+	// #nosec G301 -- a public read-only abandonware cache; world-readable is intentional.
 	_ = os.MkdirAll(cacheDir, 0o755)
 	body, err := json.MarshalIndent(c.itemCache, "", "  ")
 	if err != nil {
 		return
 	}
 	tmpPath := cachePath + ".tmp"
+	// #nosec G306 -- cached public file listing; world-readable is intentional.
 	if err := os.WriteFile(tmpPath, body, 0o644); err != nil {
 		return
 	}
@@ -979,6 +987,8 @@ func (c *Client) fetchDocument(urlStr string) (*goquery.Document, error) {
 
 func (c *Client) readDocumentFromCache(urlStr string) (*goquery.Document, bool, error) {
 	cachePath := c.cachePathForURL(urlStr)
+	// #nosec G304 -- cachePath is a SHA-1 digest of the URL under the client's
+	// own cache dir (see cachePathForURL), never raw external input.
 	body, err := os.ReadFile(cachePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -997,10 +1007,12 @@ func (c *Client) readDocumentFromCache(urlStr string) (*goquery.Document, bool, 
 func (c *Client) writeDocumentToCache(urlStr string, body []byte) error {
 	cachePath := c.cachePathForURL(urlStr)
 	cacheDir := filepath.Dir(cachePath)
+	// #nosec G301 -- public read-only page cache; world-readable is intentional.
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return err
 	}
 	tmpPath := cachePath + ".tmp"
+	// #nosec G306 -- cached public HTML page; world-readable is intentional.
 	if err := os.WriteFile(tmpPath, body, 0o644); err != nil {
 		return err
 	}
@@ -1015,6 +1027,8 @@ func (c *Client) writeDocumentToCache(urlStr string, body []byte) error {
 }
 
 func (c *Client) cachePathForURL(urlStr string) string {
+	// #nosec G401 -- SHA-1 is used only to derive a stable cache filename from
+	// the URL, not for any security purpose; collision resistance is irrelevant.
 	sum := sha1.Sum([]byte(strings.TrimSpace(urlStr)))
 	file := hex.EncodeToString(sum[:]) + ".html"
 	cacheDir := c.cacheDir

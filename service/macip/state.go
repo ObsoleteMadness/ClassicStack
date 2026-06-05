@@ -122,6 +122,8 @@ func (p *ipPool) loadFromFile(path string) {
 	if path == "" {
 		return
 	}
+	// #nosec G304 -- path is the operator-configured lease-state file, not
+	// untrusted external input.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
