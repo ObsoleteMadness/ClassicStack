@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -82,10 +83,10 @@ func TestExtMapDelegates(t *testing.T) {
 
 func TestExtMapWithoutSupervisor(t *testing.T) {
 	p := New(Deps{Config: &fakeModel{}})
-	if _, _, err := p.ExtMap(); err != ErrNoSupervisor {
+	if _, _, err := p.ExtMap(); !errors.Is(err, ErrNoSupervisor) {
 		t.Errorf("ExtMap without supervisor = %v, want ErrNoSupervisor", err)
 	}
-	if _, err := p.SaveExtMap(nil); err != ErrNoSupervisor {
+	if _, err := p.SaveExtMap(nil); !errors.Is(err, ErrNoSupervisor) {
 		t.Errorf("SaveExtMap without supervisor = %v, want ErrNoSupervisor", err)
 	}
 }
@@ -147,7 +148,7 @@ func TestSaveClearsDirty(t *testing.T) {
 
 func TestSaveWithoutPath(t *testing.T) {
 	p := New(Deps{Config: &fakeModel{}})
-	if _, err := p.Save(); err != ErrNoConfigPath {
+	if _, err := p.Save(); !errors.Is(err, ErrNoConfigPath) {
 		t.Errorf("Save without path = %v, want ErrNoConfigPath", err)
 	}
 }
@@ -184,10 +185,10 @@ func TestLogHistoryDefaultsToGlobal(t *testing.T) {
 
 func TestDiagnosticsFallback(t *testing.T) {
 	p := New(Deps{Config: &fakeModel{}})
-	if _, err := p.Diagnostics().ListZones(context.Background()); err != ErrDiagUnavailable {
+	if _, err := p.Diagnostics().ListZones(context.Background()); !errors.Is(err, ErrDiagUnavailable) {
 		t.Errorf("unset diagnostics = %v, want ErrDiagUnavailable", err)
 	}
-	if _, err := p.Diagnostics().MacIPLeases(context.Background()); err != ErrDiagUnavailable {
+	if _, err := p.Diagnostics().MacIPLeases(context.Background()); !errors.Is(err, ErrDiagUnavailable) {
 		t.Errorf("unset MacIPLeases = %v, want ErrDiagUnavailable", err)
 	}
 }

@@ -3,6 +3,7 @@
 package serialport
 
 import (
+	"errors"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,12 +21,12 @@ func list() ([]Info, error) {
 	key, err := registry.OpenKey(registry.LOCAL_MACHINE, `HARDWARE\DEVICEMAP\SERIALCOMM`, registry.QUERY_VALUE)
 	if err != nil {
 		// No serial ports present: the key is absent. Treat as empty.
-		if err == registry.ErrNotExist {
+		if errors.Is(err, registry.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	defer key.Close()
+	defer func() { _ = key.Close() }()
 
 	names, err := key.ReadValueNames(0)
 	if err != nil {

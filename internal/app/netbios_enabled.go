@@ -74,9 +74,7 @@ func netbiosTransportBuilders(cfg NetBIOSConfig) []netbiosNamedBuilder {
 	for _, name := range cfg.Transports {
 		switch name {
 		case "tcp":
-			out = append(out, netbiosNamedBuilder{name: "tcp", build: func() netbios.Transport {
-				return over_tcp.NewTransport()
-			}})
+			out = append(out, netbiosNamedBuilder{name: "tcp", build: over_tcp.NewTransport})
 		case "netbeui":
 			if cfg.NetBEUI != nil && cfg.NetBEUI.Port() != nil {
 				nb := cfg.NetBEUI
