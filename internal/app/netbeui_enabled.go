@@ -10,6 +10,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/capture"
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
 	"github.com/ObsoleteMadness/ClassicStack/pkg/hwaddr"
+	"github.com/ObsoleteMadness/ClassicStack/port"
 	"github.com/ObsoleteMadness/ClassicStack/port/netbeui"
 	"github.com/ObsoleteMadness/ClassicStack/port/rawlink"
 )
@@ -23,6 +24,15 @@ type netbeuiHookEnabled struct {
 	capturePath    string
 	captureSnaplen uint32
 	sink           *capture.PcapSink
+}
+
+// SetTrafficObserver forwards traffic metering to the underlying NetBEUI port
+// when it supports it, so the supervisor can publish per-port throughput
+// (port.TrafficMetered).
+func (h *netbeuiHookEnabled) SetTrafficObserver(obs port.TrafficObserver) {
+	if tm, ok := h.port.(port.TrafficMetered); ok {
+		tm.SetTrafficObserver(obs)
+	}
 }
 
 func (h *netbeuiHookEnabled) Start(_ context.Context) error {

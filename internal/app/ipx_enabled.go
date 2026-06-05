@@ -11,6 +11,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/capture"
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
 	"github.com/ObsoleteMadness/ClassicStack/pkg/hwaddr"
+	"github.com/ObsoleteMadness/ClassicStack/port"
 	"github.com/ObsoleteMadness/ClassicStack/port/ipx"
 	"github.com/ObsoleteMadness/ClassicStack/port/rawlink"
 	routeripx "github.com/ObsoleteMadness/ClassicStack/router/ipx"
@@ -33,6 +34,15 @@ type ipxHookEnabled struct {
 
 func (h *ipxHookEnabled) Router() routeripx.Router { return h.router }
 func (h *ipxHookEnabled) SAP() *ipxsvc.SAPService  { return h.sap }
+
+// SetTrafficObserver forwards traffic metering to the underlying IPX port when
+// it supports it, so the supervisor can publish per-port throughput
+// (port.TrafficMetered).
+func (h *ipxHookEnabled) SetTrafficObserver(obs port.TrafficObserver) {
+	if tm, ok := h.port.(port.TrafficMetered); ok {
+		tm.SetTrafficObserver(obs)
+	}
+}
 
 func (h *ipxHookEnabled) Start(ctx context.Context) error {
 	if h.port != nil {

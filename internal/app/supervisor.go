@@ -484,7 +484,29 @@ func (s *Supervisor) buildHooks() error {
 		s.registerSMBStatus(cfg.SMBEnabled) // enrich the SMB unit with shares/identity
 	}
 	s.registerTransportBindings(ipxHook, nbeuiHook, smbHook)
+
+	// Meter IPX/NetBEUI port throughput for the dashboard. The hooks forward
+	// SetTrafficObserver to their underlying port when it supports metering;
+	// nil hooks (disabled protocols) are skipped.
+	s.attachHookMeter("IPX", ipxHook)
+	s.attachHookMeter("NetBEUI", nbeuiHook)
 	return nil
+}
+
+// attachHookMeter attaches a traffic meter to a transport hook that supports
+// metering (port.TrafficMetered), recording it for periodic publishing. A nil
+// hook or one whose port does not meter is skipped.
+func (s *Supervisor) attachHookMeter(unit string, h any) {
+	if h == nil {
+		return
+	}
+	tm, ok := h.(port.TrafficMetered)
+	if !ok {
+		return
+	}
+	if m := attachMeterTo(unit, tm); m != nil {
+		s.meters = append(s.meters, m)
+	}
 }
 
 // registerTransportBindings records, for each transport-protocol hook, the

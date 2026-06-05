@@ -61,6 +61,13 @@ func attachPortMeter(unit string, p port.Port) *portMeter {
 	if !ok {
 		return nil
 	}
+	return attachMeterTo(unit, tm)
+}
+
+// attachMeterTo installs a meter on any value that supports traffic metering.
+// It serves the standalone-protocol ports (IPX, NetBEUI) whose interfaces do
+// not embed port.Port but expose SetTrafficObserver as an optional method.
+func attachMeterTo(unit string, tm port.TrafficMetered) *portMeter {
 	m := newPortMeter(unit)
 	tm.SetTrafficObserver(m.observe)
 	return m

@@ -19,6 +19,7 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/capture"
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/port"
 	"github.com/ObsoleteMadness/ClassicStack/port/rawlink"
 	"github.com/ObsoleteMadness/ClassicStack/protocol/netbeui"
 )
@@ -115,6 +116,7 @@ type portImpl struct {
 	hasSrc bool
 	cb     DeliveryCallback
 	cs     capture.Sink
+	obs    port.TrafficObserver
 	link   rawlink.RawLink // current rawlink; nil while stopped.
 
 	connsMu sync.RWMutex
@@ -232,6 +234,27 @@ func (p *portImpl) SetCaptureSink(sink capture.Sink) {
 	p.mu.Lock()
 	p.cs = sink
 	p.mu.Unlock()
+}
+
+// SetTrafficObserver installs an observer notified of each NBF frame sent or
+// received, for dashboard throughput metrics. It is an optional method the
+// supervisor type-asserts, not part of the Port interface, so test fakes need
+// not implement it.
+func (p *portImpl) SetTrafficObserver(obs port.TrafficObserver) {
+	p.mu.Lock()
+	p.obs = obs
+	p.mu.Unlock()
+}
+
+// observeTraffic reports one frame's direction and byte size to the installed
+// observer, if any.
+func (p *portImpl) observeTraffic(dir port.Direction, bytes int) {
+	p.mu.RLock()
+	obs := p.obs
+	p.mu.RUnlock()
+	if obs != nil {
+		obs(dir, bytes)
+	}
 }
 
 // LLC unnumbered frame control values.
@@ -371,6 +394,7 @@ func (p *portImpl) Send(dstMAC [6]byte, frame *netbeui.Frame) error {
 	if err != nil {
 		return err
 	}
+	p.observeTraffic(port.Tx, len(body))
 	// Session-layer commands (SESSION_INITIALIZE, DATA_*, SESSION_CONFIRM, etc.)
 	// use LLC Type-2 I-framing when a connection is established. Non-session
 	// frames (NAME_RECOGNIZED, ADD_NAME_RESPONSE, DATAGRAM, etc.) always use
@@ -501,6 +525,7 @@ func (p *portImpl) handleFrame(raw []byte) {
 			if err != nil {
 				return
 			}
+			p.observeTraffic(port.Rx, len(nbfPayload))
 			cb(srcMAC, dstMAC, decoded)
 		}
 		return
@@ -561,6 +586,7 @@ func (p *portImpl) handleFrame(raw []byte) {
 		if err != nil {
 			return
 		}
+		p.observeTraffic(port.Rx, len(nbfPayload))
 		cb(srcMAC, dstMAC, decoded)
 	}
 }

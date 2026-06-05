@@ -15,6 +15,7 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/capture"
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/port"
 	"github.com/ObsoleteMadness/ClassicStack/port/rawlink"
 	protocol "github.com/ObsoleteMadness/ClassicStack/protocol/ipx"
 )
@@ -94,6 +95,7 @@ type portImpl struct {
 	mu   sync.RWMutex
 	cb   DeliveryCallback
 	cs   capture.Sink
+	obs  port.TrafficObserver
 	link rawlink.RawLink // current rawlink; nil while stopped.
 
 	dedupMu      sync.Mutex
@@ -207,6 +209,7 @@ func (p *portImpl) Send(d *protocol.Datagram) error {
 	if err != nil {
 		return err
 	}
+	p.observeTraffic(port.Tx, len(payload))
 	switch p.framing {
 	case FramingEthernetII:
 		return p.sendEthernetII(d, payload)
@@ -253,6 +256,27 @@ func (p *portImpl) SetCaptureSink(sink capture.Sink) {
 	p.mu.Lock()
 	p.cs = sink
 	p.mu.Unlock()
+}
+
+// SetTrafficObserver installs an observer notified of each IPX datagram sent
+// or received, for dashboard throughput metrics (the supervisor type-asserts
+// this optional method; it is not part of the Port interface so test fakes
+// need not implement it).
+func (p *portImpl) SetTrafficObserver(obs port.TrafficObserver) {
+	p.mu.Lock()
+	p.obs = obs
+	p.mu.Unlock()
+}
+
+// observeTraffic reports one frame's direction and byte size to the installed
+// observer, if any.
+func (p *portImpl) observeTraffic(dir port.Direction, bytes int) {
+	p.mu.RLock()
+	obs := p.obs
+	p.mu.RUnlock()
+	if obs != nil {
+		obs(dir, bytes)
+	}
 }
 
 // readLoop is the single inbound reader. It demultiplexes by EtherType
@@ -369,5 +393,6 @@ func (p *portImpl) deliver(payload []byte) {
 	if err != nil {
 		return
 	}
+	p.observeTraffic(port.Rx, len(payload))
 	cb(d)
 }
