@@ -25,6 +25,25 @@ func requireLiveTests(t *testing.T) {
 	}
 }
 
+// loadCapturedPage reads a captured macintoshgarden.org HTML page from
+// testdata and rewrites its root-relative hrefs ("/apps/...", pager links) to
+// absolute URLs under serverURL, so a test http server can serve the real
+// markup while the client's allowedHost check (keyed on the server host) still
+// passes. Using captured HTML keeps these tests faithful to the live site's
+// structure rather than hand-written fixtures that can drift from how the
+// goquery/x-net HTML parser actually treats the page.
+func loadCapturedPage(t *testing.T, name, serverURL string) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatalf("read captured page %s: %v", name, err)
+	}
+	// Rewrite href="/path" -> href="<serverURL>/path". The captured pages use
+	// root-relative links throughout (items and pager), so a single prefix
+	// rewrite reroutes every link to the test server.
+	return strings.ReplaceAll(string(raw), `href="/`, `href="`+serverURL+`/`)
+}
+
 type headErrorRoundTripper struct {
 	hits int
 }
@@ -228,18 +247,10 @@ func TestCountCategoryItems_UsesFirstAndLastPages(t *testing.T) {
 		_, _ = fmt.Fprint(w, body)
 	}))
 	defer server.Close()
-	pages["/apps/utilities/antivirus"] = fmt.Sprintf(`
-		<html><body>
-		<h2><a href="%s/apps/anti-virus-boot-disk">Anti-Virus Boot Disk</a></h2>
-		<h2><a href="%s/apps/clamav-upgrade-leopard-server">ClamAV upgrade for Leopard Server</a></h2>
-		<a href="%s/apps/utilities/antivirus?page=1">1</a>
-		<a href="%s/apps/utilities/antivirus?page=2">2</a>
-		<a href="%s/apps/utilities/antivirus?page=2">last »</a>
-		</body></html>`, server.URL, server.URL, server.URL, server.URL, server.URL)
-	pages["/apps/utilities/antivirus?page=2"] = fmt.Sprintf(`
-		<html><body>
-		<h2><a href="%s/apps/secureinit">SecureInit</a></h2>
-		</body></html>`, server.URL)
+	// Real captured pages: the antivirus category has 6 pages (last is
+	// ?page=5), 10 items on page 1 and 8 on the last page.
+	pages["/apps/utilities/antivirus"] = loadCapturedPage(t, "category_antivirus_page1.html", server.URL)
+	pages["/apps/utilities/antivirus?page=5"] = loadCapturedPage(t, "category_antivirus_page5.html", server.URL)
 
 	c := NewClient()
 	c.httpClient = server.Client()
@@ -251,8 +262,9 @@ func TestCountCategoryItems_UsesFirstAndLastPages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CountCategoryItems: %v", err)
 	}
-	if count != 5 {
-		t.Fatalf("count = %d, want 5", count)
+	// firstPageCount*(pageCount-1) + lastPageCount = 10*5 + 8.
+	if count != 58 {
+		t.Fatalf("count = %d, want 58", count)
 	}
 }
 
@@ -271,18 +283,9 @@ func TestGetCategoryPageInfo_UsesFirstAndLastPages(t *testing.T) {
 		_, _ = fmt.Fprint(w, body)
 	}))
 	defer server.Close()
-	pages["/apps/utilities/antivirus"] = fmt.Sprintf(`
-		<html><body>
-		<h2><a href="%s/apps/anti-virus-boot-disk">Anti-Virus Boot Disk</a></h2>
-		<h2><a href="%s/apps/clamav-upgrade-leopard-server">ClamAV upgrade for Leopard Server</a></h2>
-		<a href="%s/apps/utilities/antivirus?page=1">1</a>
-		<a href="%s/apps/utilities/antivirus?page=2">2</a>
-		<a href="%s/apps/utilities/antivirus?page=2">last »</a>
-		</body></html>`, server.URL, server.URL, server.URL, server.URL, server.URL)
-	pages["/apps/utilities/antivirus?page=2"] = fmt.Sprintf(`
-		<html><body>
-		<h2><a href="%s/apps/secureinit">SecureInit</a></h2>
-		</body></html>`, server.URL)
+	// Real captured antivirus category pages (first page + last page ?page=5).
+	pages["/apps/utilities/antivirus"] = loadCapturedPage(t, "category_antivirus_page1.html", server.URL)
+	pages["/apps/utilities/antivirus?page=5"] = loadCapturedPage(t, "category_antivirus_page5.html", server.URL)
 
 	c := NewClient()
 	c.httpClient = server.Client()
@@ -294,20 +297,22 @@ func TestGetCategoryPageInfo_UsesFirstAndLastPages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetCategoryPageInfo: %v", err)
 	}
-	if info.TotalCount != 5 {
-		t.Fatalf("TotalCount = %d, want 5", info.TotalCount)
+	// Page 1 lists 10 items; the last page (?page=5) lists 8. Pagination is
+	// zero-based, so a last query of page=5 means 6 pages: 10*5 + 8 = 58.
+	if info.TotalCount != 58 {
+		t.Fatalf("TotalCount = %d, want 58", info.TotalCount)
 	}
-	if info.FirstPageCount != 2 {
-		t.Fatalf("FirstPageCount = %d, want 2", info.FirstPageCount)
+	if info.FirstPageCount != 10 {
+		t.Fatalf("FirstPageCount = %d, want 10", info.FirstPageCount)
 	}
-	if info.LastPageNumber != 2 {
-		t.Fatalf("LastPageNumber = %d, want 2", info.LastPageNumber)
+	if info.LastPageNumber != 5 {
+		t.Fatalf("LastPageNumber = %d, want 5", info.LastPageNumber)
 	}
-	if len(info.LastPage) != 1 || info.LastPage[0].Name != "SecureInit" {
-		t.Fatalf("LastPage = %+v, want SecureInit only", info.LastPage)
+	if len(info.LastPage) != 8 || info.LastPage[len(info.LastPage)-1].Name != "VirusDetective" {
+		t.Fatalf("LastPage = %+v, want 8 items ending in VirusDetective", info.LastPage)
 	}
-	if info.PageSize != 2 {
-		t.Fatalf("PageSize = %d, want 2", info.PageSize)
+	if info.PageSize != 10 {
+		t.Fatalf("PageSize = %d, want 10", info.PageSize)
 	}
 }
 
