@@ -285,15 +285,32 @@ const CONFIG_PANELS = [
     ],
   },
   {
+    title: "IPX Gateway (MacIPX)",
+    fields: [
+      { label: "Enabled", path: "IPXGW.enabled", type: "bool", hint: "Register an 'IPX Gateway' NBP name so MacIPX clients can discover us." },
+      {
+        label: "Zone Bindings",
+        path: "IPXGW.bindings",
+        type: "stringlist",
+        placeholder: "Object:Zone",
+        hint: "Optional 'Object:Zone' pairs. Leave empty to register one binding per zone the router knows.",
+      },
+    ],
+  },
+  {
     title: "MacIP Gateway",
     interfaceFor: "MacIP",
     fields: [
       { label: "Enabled", path: "MacIP.enabled", type: "bool" },
       { label: "Gateway Mode", path: "MacIP.mode", type: "select", options: ["pcap", "nat"] },
-      { label: "Zone", path: "MacIP.zone", type: "text" },
-      { label: "NAT Subnet", path: "MacIP.nat_subnet", type: "text" },
-      { label: "IP Gateway", path: "MacIP.ip_gateway", type: "text" },
-      { label: "DHCP Relay", path: "MacIP.dhcp_relay", type: "bool" },
+      { label: "Zone", path: "MacIP.zone", type: "text", hint: "MacIP gateway zone; defaults to the EtherTalk zone." },
+      { label: "NAT Subnet", path: "MacIP.nat_subnet", type: "text", hint: "NAT mode: subnet to hand out, e.g. 192.168.100.0/24." },
+      { label: "NAT Gateway IP", path: "MacIP.nat_gw", type: "text", hint: "NAT mode: the gateway's own IP on the NAT subnet." },
+      { label: "Lease File", path: "MacIP.lease_file", type: "text", hint: "NAT mode: file to persist DHCP leases across restarts." },
+      { label: "IP Gateway", path: "MacIP.ip_gateway", type: "text", hint: "Upstream/default gateway on the IP-side network." },
+      { label: "DHCP Relay", path: "MacIP.dhcp_relay", type: "bool", hint: "Convert MacTCP auto-config to DHCP requests." },
+      { label: "Nameserver", path: "MacIP.nameserver", type: "text", hint: "DNS server advertised to MacIP clients, e.g. 1.1.1.1." },
+      { label: "BPF Filter", path: "MacIP.filter", type: "text", hint: "Optional pcap BPF filter override (advanced)." },
     ],
   },
   {
@@ -611,6 +628,64 @@ function renderShareEditor(cfg, title, section, columns) {
 // label}), preselecting current. If current is not among the options it is
 // added so a stored value is never silently dropped. onChange(value) fires on
 // selection.
+// buildStringList renders an editable list of free-text rows (one per array
+// element) with per-row remove buttons and an Add button. onChange receives
+// the current array (trimmed of empty entries) whenever it mutates.
+function buildStringList(values, placeholder, onChange) {
+  const wrap = document.createElement("div");
+  wrap.className = "stringlist";
+  const rows = document.createElement("div");
+  rows.className = "stringlist-rows";
+  wrap.appendChild(rows);
+
+  const items = values.slice();
+
+  function emit() {
+    onChange(items.map((s) => s.trim()).filter((s) => s !== ""));
+  }
+  function render() {
+    rows.innerHTML = "";
+    items.forEach((val, i) => {
+      const row = document.createElement("div");
+      row.className = "stringlist-row";
+      const input = document.createElement("input");
+      input.type = "text";
+      input.value = val;
+      input.placeholder = placeholder;
+      input.addEventListener("input", () => {
+        items[i] = input.value;
+        emit();
+      });
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "stringlist-del";
+      del.textContent = "✕";
+      del.title = "Remove";
+      del.addEventListener("click", () => {
+        items.splice(i, 1);
+        render();
+        emit();
+      });
+      row.appendChild(input);
+      row.appendChild(del);
+      rows.appendChild(row);
+    });
+  }
+
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "stringlist-add";
+  add.textContent = "Add";
+  add.addEventListener("click", () => {
+    items.push("");
+    render();
+  });
+  wrap.appendChild(add);
+
+  render();
+  return wrap;
+}
+
 function buildSelect(options, current, onChange) {
   const sel = document.createElement("select");
   const norm = options.map((o) => (typeof o === "string" ? { value: o, label: o } : o));
@@ -663,6 +738,7 @@ function buildInterfaceSelect(current, onChange) {
 function renderField(cfg, f) {
   const row = document.createElement("div");
   row.className = "field";
+  if (f.hint) row.title = f.hint;
   const label = document.createElement("label");
   label.textContent = f.label;
   row.appendChild(label);
@@ -702,6 +778,13 @@ function renderField(cfg, f) {
   } else if (f.type === "select") {
     input = buildSelect(f.options || [], val, (v) => {
       setPath(cfg, f.path, v);
+      setDirty(true);
+    });
+  } else if (f.type === "stringlist") {
+    input = buildStringList(Array.isArray(val) ? val : [], f.placeholder || "", (list) => {
+      // Store undefined for an empty list so the omitempty field drops out of
+      // the TOML entirely rather than serialising an empty array.
+      setPath(cfg, f.path, list.length ? list : undefined);
       setDirty(true);
     });
   } else {

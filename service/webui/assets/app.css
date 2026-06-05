@@ -146,6 +146,18 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   border-radius: 5px;
 }
 
+/* Editable free-text list (e.g. IPX gateway zone bindings). */
+.stringlist { display: flex; flex-direction: column; gap: 0.3rem; }
+.stringlist-rows { display: flex; flex-direction: column; gap: 0.3rem; }
+.stringlist-row { display: flex; gap: 0.4rem; align-items: center; }
+.stringlist-row input[type="text"] { flex: 1; min-width: 200px; }
+.stringlist-del {
+  padding: 0.2rem 0.5rem;
+  line-height: 1;
+  color: var(--muted);
+}
+.stringlist-add { align-self: flex-start; }
+
 .banner {
   background: #fff7e6;
   border: 1px solid #f0d28a;
