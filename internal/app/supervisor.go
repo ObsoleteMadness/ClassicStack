@@ -69,6 +69,14 @@ type Supervisor struct {
 	macIP     MacIPHook
 	ipxGW     IPXGWHook
 
+	// ddpServiceGroups holds the optional DDP subsystems' services (AFP,
+	// MacIP, IPXGW) keyed by status-unit name. They are NOT part of the
+	// router's initial service set; buildHooks wraps each in a
+	// ddpServiceHook so the UI can start/stop it via router AddService/
+	// RemoveService. Populated in buildServices, consumed in buildHooks.
+	ddpServiceGroups map[string][]service.Service
+	ddpServiceOrder  []string // registration order of ddpServiceGroups
+
 	// statusTickerStop stops the periodic dashboard-status refresher (live
 	// MacIP lease/session counts). Closed and nilled on Stop.
 	statusTickerStop chan struct{}
@@ -236,10 +244,14 @@ func (s *Supervisor) buildEtherTalkPort() (port.Port, error) {
 	}
 }
 
-// buildServices constructs the AppleTalk DDP service set plus the optional
-// DDP services (MacIP, IPXGW, AFP) that ride the router.
+// buildServices constructs the always-on AppleTalk DDP core service set. The
+// optional DDP subsystems (MacIP, IPXGW, AFP) are NOT returned here: their
+// services are collected into s.ddpServiceGroups so buildHooks can wrap each
+// as an independently start/stoppable hook over the live router.
 func (s *Supervisor) buildServices() ([]service.Service, error) {
 	cfg := s.cfg
+	s.ddpServiceGroups = map[string][]service.Service{}
+	s.ddpServiceOrder = nil
 	s.nbp = zip.NewNameInformationService()
 	services := []service.Service{
 		llap.New(),
@@ -280,7 +292,7 @@ func (s *Supervisor) buildServices() ([]service.Service, error) {
 		return nil, fmt.Errorf("MacIP wiring failed: %w", err)
 	}
 	if macIP != nil {
-		services = append(services, macIP.Service())
+		s.addDDPServiceGroup("MacIP", macIP.Service())
 		s.registerMacIPStatus(cfg.MacIPEnabled)
 	}
 
@@ -293,7 +305,7 @@ func (s *Supervisor) buildServices() ([]service.Service, error) {
 		return nil, fmt.Errorf("IPXGW wiring failed: %w", err)
 	}
 	if ipxGW != nil {
-		services = append(services, ipxGW.Service())
+		s.addDDPServiceGroup("IPXGW", ipxGW.Service())
 		s.registerServiceStatus("IPXGW", cfg.IPXGWEnabled, nil)
 	}
 
@@ -322,7 +334,7 @@ func (s *Supervisor) buildServices() ([]service.Service, error) {
 	if macIP != nil {
 		afpHook.AttachMacIP(macIPAFPHooks{macIP})
 	}
-	services = append(services, afpHook.Services()...)
+	s.addDDPServiceGroup("AFP", afpHook.Services()...)
 	s.registerAFPStatus()
 
 	s.macIP = macIP
@@ -362,6 +374,12 @@ func (s *Supervisor) afpFlagInputs() AFPFlagInputs {
 // WebUI) and records them as named units in start order.
 func (s *Supervisor) buildHooks() error {
 	cfg := s.cfg
+
+	// Wrap the optional DDP subsystems (MacIP, IPXGW, AFP) as hooks over the
+	// live router so the UI can start/stop each one independently. They are
+	// recorded ahead of the transport hooks: they depend only on the
+	// AppleTalk router, which is started before any hook.
+	s.buildDDPServiceHooks()
 
 	ipxResolvedIface := s.resolveIPXInterface()
 	ipxHook, err := wireIPX(IPXConfig{
@@ -527,6 +545,71 @@ func (s *Supervisor) resolveNetBEUIInterface() string {
 		iface = cfg.EtherTalk.Device
 	}
 	return iface
+}
+
+// addDDPServiceGroup records the DDP services an optional subsystem
+// contributes, keyed by its status-unit name, so buildHooks can wrap them in a
+// ddpServiceHook once the router exists. Empty groups are ignored so a
+// disabled subsystem registers no hook.
+func (s *Supervisor) addDDPServiceGroup(name string, svcs ...service.Service) {
+	if len(svcs) == 0 {
+		return
+	}
+	if _, ok := s.ddpServiceGroups[name]; !ok {
+		s.ddpServiceOrder = append(s.ddpServiceOrder, name)
+	}
+	s.ddpServiceGroups[name] = append(s.ddpServiceGroups[name], svcs...)
+}
+
+// ddpServiceEnabled reports the configured-enabled flag for a DDP subsystem
+// unit, used when registering its hook so the dashboard shows the right
+// enabled state.
+func (s *Supervisor) ddpServiceEnabled(name string) bool {
+	switch name {
+	case "MacIP":
+		return s.cfg.MacIPEnabled
+	case "IPXGW":
+		return s.cfg.IPXGWEnabled
+	case "AFP":
+		return s.model.AFP.Enabled
+	default:
+		return true
+	}
+}
+
+// buildDDPServiceHooks wraps each recorded DDP service group in a
+// ddpServiceHook and registers it as a restartable unit. It re-Sets the unit's
+// status to KindHook (preserving the enriched properties registered earlier)
+// so the dashboard surfaces start/stop/restart controls. The router-set no
+// longer force-toggles these services, so their running flag now tracks the
+// hook lifecycle.
+func (s *Supervisor) buildDDPServiceHooks() {
+	for _, name := range s.ddpServiceOrder {
+		h := newDDPServiceHook(s.router, s.ddpServiceGroups[name])
+		if h == nil {
+			continue
+		}
+		s.hooks[name] = h
+		s.order = append(s.order, name)
+		s.promoteUnitToHook(name, s.ddpServiceEnabled(name))
+	}
+}
+
+// promoteUnitToHook re-publishes an already-registered status unit as a
+// KindHook (so the UI shows lifecycle controls) while preserving its binding,
+// properties, and other detail. The unit starts not-running; the hook
+// lifecycle sets the running flag.
+func (s *Supervisor) promoteUnitToHook(name string, enabled bool) {
+	for _, u := range s.reg.Snapshot() {
+		if u.Name != name {
+			continue
+		}
+		u.Kind = status.KindHook
+		u.Enabled = enabled
+		u.Running = false
+		s.reg.Set(u)
+		return
+	}
 }
 
 // addHook records a standalone hook as a named, restartable unit.
@@ -766,7 +849,7 @@ func (s *Supervisor) refreshMacIPStatus() {
 	}
 	s.reg.Set(status.Unit{
 		Name:       "MacIP",
-		Kind:       status.KindService,
+		Kind:       status.KindHook,
 		Enabled:    s.cfg.MacIPEnabled,
 		Running:    running,
 		Binding:    binding,

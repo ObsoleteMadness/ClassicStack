@@ -55,8 +55,11 @@ function renderStatus(units) {
     if (u.shares && u.shares.length)
       detail += kv("Shares", u.shares.map((s) => s.name).join(", "));
 
-    // Only standalone hooks (IPX/NetBEUI/NetBIOS/SMB/WebUI) are individually
-    // start/stoppable; ports and the router-set share the stack lifecycle.
+    // Hooks are individually start/stoppable: the transport/service hooks
+    // (IPX/NetBEUI/NetBIOS/SMB/WebUI) and the AppleTalk DDP subsystems
+    // (AFP/MacIP/IPXGW) the supervisor now drives via the router's runtime
+    // AddService/RemoveService. Ports and the core router-set share the stack
+    // lifecycle and so are not controllable.
     const controllable = u.kind === "hook";
     const pending = pendingServices.has(u.name);
     const dis = pending ? " disabled" : "";

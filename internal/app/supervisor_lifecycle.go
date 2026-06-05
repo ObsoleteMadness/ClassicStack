@@ -23,7 +23,6 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	}
 	netlog.Info("[SUP] router away!")
 	s.reg.SetRunning("Router", true)
-	s.markServiceRunning(true)
 	for _, name := range s.portNames {
 		s.reg.SetRunning(name, true)
 	}
@@ -89,7 +88,6 @@ func (s *Supervisor) Stop() error {
 		netlog.Warn("[SUP] router stop warning: %v", err)
 	}
 	s.reg.SetRunning("Router", false)
-	s.markServiceRunning(false)
 	for _, name := range s.portNames {
 		s.reg.SetRunning(name, false)
 	}
@@ -272,12 +270,4 @@ func (s *Supervisor) dependentsOf(name string) []string {
 		}
 	}
 	return out
-}
-
-// markServiceRunning flips the running flag on the DDP service units that
-// live inside the router set (they share the router's lifecycle).
-func (s *Supervisor) markServiceRunning(running bool) {
-	for _, name := range []string{"MacIP", "IPXGW", "AFP"} {
-		s.reg.SetRunning(name, running)
-	}
 }
