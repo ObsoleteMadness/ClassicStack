@@ -39,9 +39,9 @@ type Transport struct {
 	router  ipx.Router
 	handler sessionHandler
 
-	cidMu     sync.Mutex
-	cids      map[[10]byte]uint16 // remote endpoint (network+node) → CID
-	nextCID   uint16
+	cidMu   sync.Mutex
+	cids    map[[10]byte]uint16 // remote endpoint (network+node) → CID
+	nextCID uint16
 }
 
 func New(router ipx.Router, handler sessionHandler) *Transport {
@@ -85,7 +85,15 @@ func (t *Transport) Start(_ context.Context) error {
 	return t.router.RegisterSocket(directSMBSocket, t)
 }
 
-func (t *Transport) Stop() error { return nil }
+// Stop releases the direct-SMB IPX socket so the transport can be
+// started again after a Stop.
+func (t *Transport) Stop() error {
+	if t == nil || t.router == nil {
+		return nil
+	}
+	t.router.UnregisterSocket(directSMBSocket)
+	return nil
+}
 
 func (t *Transport) HandleDatagram(d *ipxproto.Datagram) {
 	if t == nil || d == nil || t.handler == nil {

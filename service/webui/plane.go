@@ -24,7 +24,8 @@ type ControlPlane interface {
 	StartService(ctx context.Context, name string) error
 	StopService(name string) error
 	RestartService(ctx context.Context, name string) error
-	ListInterfaces() ([]string, error)
+	ListInterfaces() ([]control.InterfaceInfo, error)
+	ListFSTypes() []string
 	ListSerialPorts() ([]serialport.Info, error)
 	Subscribe() (<-chan control.Frame, func())
 	LogHistory() []logbuf.Entry

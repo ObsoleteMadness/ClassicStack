@@ -77,18 +77,34 @@ type Port interface {
 	SetCaptureSink(sink capture.Sink)
 }
 
+// LinkFactory opens a fresh rawlink for the port. It is called once per
+// Start so the port can be stopped and started again: Stop frees the
+// previous rawlink (which, for a libpcap-backed link, releases the C
+// handle), and the next Start opens a new one. A factory that returns
+// the same link on every call yields a single-shot port — fine for
+// in-process links that survive Close, but a libpcap link must hand back
+// a freshly opened handle each time.
+type LinkFactory func() (rawlink.RawLink, error)
+
 // portImpl is the rawlink-backed IPX port.
 type portImpl struct {
-	link    rawlink.RawLink
-	framing Framing
+	openLink LinkFactory
+	framing  Framing
 
-	mu sync.RWMutex
-	cb DeliveryCallback
-	cs capture.Sink
+	mu   sync.RWMutex
+	cb   DeliveryCallback
+	cs   capture.Sink
+	link rawlink.RawLink // current rawlink; nil while stopped.
 
 	dedupMu      sync.Mutex
 	recentFrames map[uint64]time.Time
 
+	// running guards the Start/Stop lifecycle. The read-loop channels and
+	// stopOnce are recreated on each Start so the port is fully
+	// restartable; the prior implementation closed them once and panicked
+	// on the second cycle.
+	lifeMu     sync.Mutex
+	running    bool
 	stopOnce   sync.Once
 	readerStop chan struct{}
 	readerDone chan struct{}
@@ -100,38 +116,89 @@ const inboundFrameDedupTTL = 100 * time.Millisecond
 // NewPort opens an IPX port on link using the default Ethernet II
 // framing for outbound transmit. Inbound frames are accepted in all
 // three documented framings.
+//
+// The supplied link is reused across Stop/Start cycles, so this
+// constructor suits in-process links (tests, virtual transports) whose
+// Close does not free unrecoverable resources. For a libpcap link that
+// must be reopened on restart, use NewPortWithLinkFactory.
 func NewPort(link rawlink.RawLink) Port {
 	return NewPortWithFraming(link, FramingEthernetII)
 }
 
 // NewPortWithFraming opens an IPX port on link with the given outbound
-// framing.
+// framing. The link is reused across restarts; see NewPort.
 func NewPortWithFraming(link rawlink.RawLink, framing Framing) Port {
+	return newPort(func() (rawlink.RawLink, error) { return link, nil }, framing)
+}
+
+// NewPortWithLinkFactory builds a restartable port that opens a fresh
+// rawlink from open on every Start and closes it on every Stop. This is
+// the constructor a libpcap-backed deployment uses so that a UI-driven
+// stop/start reopens the interface instead of touching a freed handle.
+func NewPortWithLinkFactory(open LinkFactory, framing Framing) Port {
+	return newPort(open, framing)
+}
+
+func newPort(open LinkFactory, framing Framing) *portImpl {
 	return &portImpl{
-		link:         link,
+		openLink:     open,
 		framing:      framing,
 		recentFrames: make(map[uint64]time.Time),
-		readerStop:   make(chan struct{}),
-		readerDone:   make(chan struct{}),
 	}
 }
 
 func (p *portImpl) Start() error {
-	if fl, ok := p.link.(rawlink.FilterableLink); ok {
+	p.lifeMu.Lock()
+	defer p.lifeMu.Unlock()
+	if p.running {
+		return nil
+	}
+
+	link, err := p.openLink()
+	if err != nil {
+		return err
+	}
+	if fl, ok := link.(rawlink.FilterableLink); ok {
 		if err := fl.SetFilter(IPXBPFFilter); err != nil {
 			netlog.Warn("[IPX] could not set BPF filter: %v", err)
 		}
 	}
-	go p.readLoop()
+
+	// Fresh channels and stopOnce per cycle so the port can be restarted
+	// after a Stop without closing an already-closed channel.
+	p.readerStop = make(chan struct{})
+	p.readerDone = make(chan struct{})
+	p.stopOnce = sync.Once{}
+
+	p.mu.Lock()
+	p.link = link
+	p.mu.Unlock()
+
+	p.running = true
+	// Bind the loop to this cycle's channels and link so a later Start
+	// (which reassigns the fields) cannot race with this goroutine.
+	go p.readLoop(link, p.readerStop, p.readerDone)
 	return nil
 }
 
 func (p *portImpl) Stop() error {
+	p.lifeMu.Lock()
+	defer p.lifeMu.Unlock()
+	if !p.running {
+		return nil
+	}
 	p.stopOnce.Do(func() {
 		close(p.readerStop)
 		<-p.readerDone
-		_ = p.link.Close()
+		p.mu.Lock()
+		link := p.link
+		p.link = nil
+		p.mu.Unlock()
+		if link != nil {
+			_ = link.Close()
+		}
 	})
+	p.running = false
 	return nil
 }
 
@@ -163,13 +230,17 @@ func (p *portImpl) sendEthernetII(d *protocol.Datagram, payload []byte) error {
 	copy(frame[14:], payload)
 	p.mu.RLock()
 	sink := p.cs
+	link := p.link
 	p.mu.RUnlock()
+	if link == nil {
+		return rawlink.ErrClosed
+	}
 	// Pre-register the outbound frame so any loopback copy the kernel
 	// surfaces back through readLoop is suppressed by isDuplicateFrame —
 	// otherwise our own frames are captured (and decoded) twice.
 	p.markFrameSeen(frame)
 	capture.Write(sink, time.Now(), frame)
-	return p.link.WriteFrame(frame)
+	return link.WriteFrame(frame)
 }
 
 func (p *portImpl) SetDeliveryCallback(cb DeliveryCallback) {
@@ -185,19 +256,26 @@ func (p *portImpl) SetCaptureSink(sink capture.Sink) {
 }
 
 // readLoop is the single inbound reader. It demultiplexes by EtherType
-// / length / LLC SAP and hands the IPX body to deliver().
-func (p *portImpl) readLoop() {
-	defer close(p.readerDone)
+// / length / LLC SAP and hands the IPX body to deliver(). The link and
+// stop/done channels are passed in so the loop is bound to the Start
+// cycle that spawned it, immune to a later Start reassigning the fields.
+func (p *portImpl) readLoop(link rawlink.RawLink, stop, done chan struct{}) {
+	defer close(done)
 	for {
 		select {
-		case <-p.readerStop:
+		case <-stop:
 			return
 		default:
 		}
-		frame, err := p.link.ReadFrame()
+		frame, err := link.ReadFrame()
 		if err != nil {
 			if errors.Is(err, rawlink.ErrTimeout) {
 				continue
+			}
+			if errors.Is(err, rawlink.ErrClosed) {
+				// Link was closed out from under us; stop reading rather
+				// than spin on a permanently-failing handle.
+				return
 			}
 			netlog.Warn("[IPX] read error: %v", err)
 			continue

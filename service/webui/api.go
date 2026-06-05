@@ -16,6 +16,7 @@ func (s *Server) routes() {
 
 	s.mux.HandleFunc("/api/status", s.handleStatus)
 	s.mux.HandleFunc("/api/interfaces", s.handleInterfaces)
+	s.mux.HandleFunc("/api/fs-types", s.handleFSTypes)
 	s.mux.HandleFunc("/api/serial-ports", s.handleSerialPorts)
 	s.mux.HandleFunc("/api/config", s.handleConfig)
 	s.mux.HandleFunc("/api/config/apply", s.handleApply)
@@ -48,6 +49,14 @@ func (s *Server) handleInterfaces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, names)
+}
+
+func (s *Server) handleFSTypes(w http.ResponseWriter, r *http.Request) {
+	if s.opts.Plane == nil {
+		writeJSON(w, http.StatusOK, []string{})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.opts.Plane.ListFSTypes())
 }
 
 func (s *Server) handleSerialPorts(w http.ResponseWriter, r *http.Request) {

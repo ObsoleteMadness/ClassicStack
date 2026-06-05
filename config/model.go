@@ -37,13 +37,22 @@ type LoggingModel struct {
 	ParseOutput  string `toml:"parse_output,omitempty" json:"parse_output,omitempty"`
 }
 
-// BridgeModel is the [Bridge] section.
-type BridgeModel struct {
-	Mode       string `toml:"mode,omitempty" json:"mode,omitempty"`
-	Device     string `toml:"device,omitempty" json:"device,omitempty"`
-	HWAddress  string `toml:"hw_address,omitempty" json:"hw_address,omitempty"`
-	BridgeMode string `toml:"bridge_mode,omitempty" json:"bridge_mode,omitempty"`
+// InterfaceModel is a virtual/physical interface definition: the link backend
+// (Mode), the device it binds to, an optional hardware address, and — for the
+// pcap backend — the bridge mode. It is reused by the shared [Bridge] section
+// and by any protocol that defines its own [Section.Custom] interface instead
+// of inheriting [Bridge].
+type InterfaceModel struct {
+	Mode       string `toml:"mode,omitempty" json:"mode,omitempty"`               // pcap | tap | tun (link backend)
+	Device     string `toml:"device,omitempty" json:"device,omitempty"`           // pcap device name / tap device
+	HWAddress  string `toml:"hw_address,omitempty" json:"hw_address,omitempty"`   // virtual hardware address
+	BridgeMode string `toml:"bridge_mode,omitempty" json:"bridge_mode,omitempty"` // pcap only: auto | ethernet | wifi
 }
+
+// BridgeModel is the [Bridge] section: the shared virtual interface protocols
+// inherit unless they define their own. It is an InterfaceModel; the alias
+// keeps the [Bridge] section name and TOML keys unchanged.
+type BridgeModel = InterfaceModel
 
 // LToUDPModel is the [LToUdp] section.
 type LToUDPModel struct {
@@ -92,6 +101,10 @@ type MacIPModel struct {
 	DHCPRelay  bool   `toml:"dhcp_relay,omitempty" json:"dhcp_relay,omitempty"`
 	Nameserver string `toml:"nameserver,omitempty" json:"nameserver,omitempty"`
 	Filter     string `toml:"filter,omitempty" json:"filter,omitempty"`
+	// Custom, when set, is MacIP's own [MacIP.Custom] IP-side interface; nil
+	// means inherit the shared [Bridge] interface. (Distinct from Mode above,
+	// which selects the gateway behaviour — pcap vs nat.)
+	Custom *InterfaceModel `toml:"Custom,omitempty" json:"Custom,omitempty"`
 }
 
 // IPXModel is the [IPX] section.
@@ -101,6 +114,9 @@ type IPXModel struct {
 	Framing         string `toml:"framing,omitempty" json:"framing,omitempty"`
 	InternalNetwork string `toml:"internal_network,omitempty" json:"internal_network,omitempty"`
 	Filter          string `toml:"filter,omitempty" json:"filter,omitempty"`
+	// Custom, when set, is the protocol's own [IPX.Custom] interface; when nil
+	// the protocol inherits the shared [Bridge] interface.
+	Custom *InterfaceModel `toml:"Custom,omitempty" json:"Custom,omitempty"`
 }
 
 // IPXGWModel is the [IPXGW] section.
@@ -114,6 +130,9 @@ type NetBEUIModel struct {
 	Enabled   bool   `toml:"enabled" json:"enabled"`
 	Interface string `toml:"interface,omitempty" json:"interface,omitempty"`
 	Filter    string `toml:"filter,omitempty" json:"filter,omitempty"`
+	// Custom, when set, is the protocol's own [NetBEUI.Custom] interface; nil
+	// means inherit the shared [Bridge] interface.
+	Custom *InterfaceModel `toml:"Custom,omitempty" json:"Custom,omitempty"`
 }
 
 // NetBIOSModel is the [NetBIOS] section.

@@ -32,9 +32,24 @@ type Supervisor interface {
 	StopService(name string) error
 	// RestartService restarts a single named unit (and its dependents).
 	RestartService(ctx context.Context, name string) error
-	// ListInterfaces returns the host's network interface names for the
-	// EtherTalk/IPX/NetBEUI dropdowns.
-	ListInterfaces() ([]string, error)
+	// ListInterfaces returns the host's network interfaces for the
+	// EtherTalk/IPX/NetBEUI/MacIP dropdowns. Each entry carries the device
+	// Name pcap opens plus a human-friendly Description and addresses so the
+	// UI can show a readable label (the raw Name is a GUID on Windows).
+	ListInterfaces() ([]InterfaceInfo, error)
+	// ListFSTypes returns the AFP filesystem-type names registered in this
+	// build (e.g. "local_fs", and "macgarden" when built with that tag), for
+	// the volume/share FS-type dropdown.
+	ListFSTypes() []string
+}
+
+// InterfaceInfo describes one network interface for the UI dropdowns. Name is
+// the value stored in config (the pcap device name); Description and Addresses
+// drive a friendly label.
+type InterfaceInfo struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Addresses   []string `json:"addresses,omitempty"`
 }
 
 // ConfigModel is the in-memory configuration the plane stages and applies.
@@ -101,12 +116,20 @@ func New(d Deps) *Plane {
 // Status returns a snapshot of all registered service/port/hook units.
 func (p *Plane) Status() []status.Unit { return p.reg.Snapshot() }
 
-// ListInterfaces returns host network interface names.
-func (p *Plane) ListInterfaces() ([]string, error) {
+// ListInterfaces returns host network interfaces with friendly labels.
+func (p *Plane) ListInterfaces() ([]InterfaceInfo, error) {
 	if p.sup == nil {
 		return nil, nil
 	}
 	return p.sup.ListInterfaces()
+}
+
+// ListFSTypes returns the AFP filesystem types registered in this build.
+func (p *Plane) ListFSTypes() []string {
+	if p.sup == nil {
+		return nil
+	}
+	return p.sup.ListFSTypes()
 }
 
 // ListSerialPorts returns the host's serial ports for the TashTalk dropdown.

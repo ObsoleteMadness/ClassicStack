@@ -14,6 +14,7 @@ package macip
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -70,6 +71,7 @@ type Service struct {
 
 	// IP-side link parameters (set at construction).
 	ipLink      rawlink.RawLink
+	ipLinkOpen  LinkFactory // optional; reopens ipLink on each Start (UI restart).
 	ipOurMAC    net.HardwareAddr
 	ipHostIP    net.IP
 	ipDefaultGW net.IP
@@ -98,6 +100,19 @@ type inboundPkt struct {
 	d ddp.Datagram
 	p port.Port
 }
+
+// LinkFactory opens a fresh IP-side rawlink. When set via SetLinkFactory it
+// is called on each Start so the service can be stopped and restarted from
+// the UI: each Stop frees the libpcap handle and each Start reopens (and
+// re-BPF-filters) the interface. Without a factory the pre-built ipLink
+// passed to New is reused, which is single-shot once Stop has closed it.
+type LinkFactory func() (rawlink.RawLink, error)
+
+// SetLinkFactory installs an optional factory used to (re)open the IP-side
+// rawlink on every Start. The caller's factory is responsible for applying
+// the same bridge-frame-mode and BPF filter it would apply to a one-shot
+// link. Call before the first Start.
+func (s *Service) SetLinkFactory(f LinkFactory) { s.ipLinkOpen = f }
 
 // New returns a MacIP gateway service.
 //
@@ -145,6 +160,19 @@ func (s *Service) Socket() uint8 { return Socket }
 func (s *Service) Start(ctx context.Context, r service.Router) error {
 	s.router = r
 	s.ctx, s.ctxCancel = context.WithCancel(ctx)
+	// Recreate the stop channel each Start so a Stop/Start cycle does not
+	// close an already-closed channel.
+	s.stop = make(chan struct{})
+
+	// Reopen the IP-side link when a factory is configured, so a UI restart
+	// gets a fresh libpcap handle instead of reusing the freed one.
+	if s.ipLinkOpen != nil {
+		link, err := s.ipLinkOpen()
+		if err != nil {
+			return fmt.Errorf("macip: reopening IP link: %w", err)
+		}
+		s.ipLink = link
+	}
 
 	// Resolve zone name if not supplied.
 	if len(s.zoneName) == 0 {
@@ -209,6 +237,14 @@ func (s *Service) Stop() error {
 	}
 	if s.link != nil {
 		s.link.close()
+		s.link = nil
+	}
+	// The etherIPLink closed the underlying rawlink; drop our reference so a
+	// restart with a link factory reopens a fresh handle rather than reusing
+	// the freed one. Without a factory, Start would fail fast on the closed
+	// link instead of crashing.
+	if s.ipLinkOpen != nil {
+		s.ipLink = nil
 	}
 	s.wg.Wait()
 	s.pool.saveToFile(s.stateFile)

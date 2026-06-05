@@ -62,12 +62,14 @@ func FromSource(src Source) *Model {
 	m.MacIP.DHCPRelay = boolv(k, "MacIP.dhcp_relay", m.MacIP.DHCPRelay)
 	m.MacIP.Nameserver = str(k, "MacIP.nameserver", m.MacIP.Nameserver)
 	m.MacIP.Filter = str(k, "MacIP.filter", m.MacIP.Filter)
+	m.MacIP.Custom = loadCustomInterface(k, "MacIP")
 
 	m.IPX.Enabled = boolv(k, "IPX.enabled", m.IPX.Enabled)
 	m.IPX.Interface = str(k, "IPX.interface", m.IPX.Interface)
 	m.IPX.Framing = str(k, "IPX.framing", m.IPX.Framing)
 	m.IPX.InternalNetwork = str(k, "IPX.internal_network", m.IPX.InternalNetwork)
 	m.IPX.Filter = str(k, "IPX.filter", m.IPX.Filter)
+	m.IPX.Custom = loadCustomInterface(k, "IPX")
 
 	m.IPXGW.Enabled = boolv(k, "IPXGW.enabled", m.IPXGW.Enabled)
 	if k.Exists("IPXGW.bindings") {
@@ -77,6 +79,7 @@ func FromSource(src Source) *Model {
 	m.NetBEUI.Enabled = boolv(k, "NetBEUI.enabled", m.NetBEUI.Enabled)
 	m.NetBEUI.Interface = str(k, "NetBEUI.interface", m.NetBEUI.Interface)
 	m.NetBEUI.Filter = str(k, "NetBEUI.filter", m.NetBEUI.Filter)
+	m.NetBEUI.Custom = loadCustomInterface(k, "NetBEUI")
 
 	m.NetBIOS.Enabled = boolv(k, "NetBIOS.enabled", m.NetBIOS.Enabled)
 	if k.Exists("NetBIOS.transports") {
@@ -165,6 +168,22 @@ func loadVolumes(k *koanf.Koanf) map[string]VolumeModel {
 		}
 	}
 	return out
+}
+
+// loadCustomInterface reads a protocol's [<Section>.Custom] sub-table into an
+// InterfaceModel. It returns nil when the sub-table is absent, meaning the
+// protocol inherits the shared [Bridge] interface.
+func loadCustomInterface(k *koanf.Koanf, section string) *InterfaceModel {
+	base := section + ".Custom"
+	if !k.Exists(base) {
+		return nil
+	}
+	return &InterfaceModel{
+		Mode:       str(k, base+".mode", ""),
+		Device:     str(k, base+".device", ""),
+		HWAddress:  str(k, base+".hw_address", ""),
+		BridgeMode: str(k, base+".bridge_mode", ""),
+	}
 }
 
 func str(k *koanf.Koanf, path, def string) string {

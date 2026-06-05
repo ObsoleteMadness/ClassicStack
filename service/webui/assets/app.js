@@ -10,6 +10,11 @@ const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
 let currentConfig = null; // last-loaded config model (edited in place)
 let latestRates = {}; // metric name -> per-second rate from SSE
+// pendingServices holds the names of services with an in-flight start/stop/
+// restart action. While pending, the card shows a spinner and its action
+// buttons are disabled so the operator can't double-fire a transition.
+const pendingServices = new Set();
+let lastUnits = []; // last status payload, for immediate re-render on pending change
 
 // ---- tab switching ----
 $$(".tab").forEach((btn) => {
@@ -35,6 +40,7 @@ async function loadStatus() {
 }
 
 function renderStatus(units) {
+  lastUnits = units; // cache for immediate re-render (e.g. pending-state change)
   const grid = $("#service-grid");
   grid.innerHTML = "";
   units.forEach((u) => {
@@ -52,17 +58,28 @@ function renderStatus(units) {
     // Only standalone hooks (IPX/NetBEUI/NetBIOS/SMB/WebUI) are individually
     // start/stoppable; ports and the router-set share the stack lifecycle.
     const controllable = u.kind === "hook";
+    const pending = pendingServices.has(u.name);
+    const dis = pending ? " disabled" : "";
     let controls = "";
     if (controllable) {
       controls = u.running
-        ? `<button data-action="stop" data-svc="${esc(u.name)}">Stop</button>
-           <button data-action="restart" data-svc="${esc(u.name)}">Restart</button>`
-        : `<button data-action="start" data-svc="${esc(u.name)}">Start</button>`;
+        ? `<button data-action="stop" data-svc="${esc(u.name)}"${dis}>Stop</button>
+           <button data-action="restart" data-svc="${esc(u.name)}"${dis}>Restart</button>`
+        : `<button data-action="start" data-svc="${esc(u.name)}"${dis}>Start</button>`;
     }
 
+    // While an action is in flight show a spinner instead of the status dot,
+    // and a "Working…" state line, so the transition is visible.
+    const indicator = pending
+      ? `<span class="spinner" aria-label="working"></span>`
+      : `<span class="dot ${u.running ? "running" : ""}"></span>`;
+    const stateLine = pending
+      ? "Working…"
+      : `${u.enabled ? "Enabled" : "Disabled"} · ${u.running ? "Running" : "Stopped"}`;
+
     card.innerHTML = `
-      <h3><span class="dot ${u.running ? "running" : ""}"></span>${esc(u.name)}</h3>
-      <div class="kv">${u.enabled ? "Enabled" : "Disabled"} · ${u.running ? "Running" : "Stopped"}</div>
+      <h3>${indicator}${esc(u.name)}</h3>
+      <div class="kv">${stateLine}</div>
       ${detail}
       <div class="kv metric" data-metric-for="${esc(u.name)}"></div>
       <div class="card-actions">${controls}</div>
@@ -79,11 +96,19 @@ function kv(k, v) {
 }
 
 async function serviceAction(name, action) {
+  if (pendingServices.has(name)) return; // already transitioning
+  pendingServices.add(name);
+  renderStatus(lastUnits); // immediately reflect the spinner/disabled state
   try {
     await postJSON(`/api/services/${encodeURIComponent(name)}/${action}`, null);
-    setTimeout(loadStatus, 300);
   } catch (e) {
     alert(`${action} failed: ` + e.message);
+  } finally {
+    // Clear pending and refresh once the action has settled. The brief delay
+    // lets the supervisor finish the (possibly multi-step) transition before
+    // we re-read status.
+    pendingServices.delete(name);
+    setTimeout(loadStatus, 300);
   }
 }
 
@@ -197,6 +222,11 @@ async function loadConfig() {
   }
 }
 
+// Dropdown option sets shared by the config panels.
+const IFACE_MODES = ["pcap", "tap", "tun"]; // link backend
+const BRIDGE_MODES = ["auto", "ethernet", "wifi"]; // pcap bridge mode
+const IPX_FRAMINGS = ["ethernet_ii", "raw_802_3", "llc", "snap"];
+
 // Panels mirror the classic control-panel layout. Each field binds to a
 // dotted path in the config model.
 const CONFIG_PANELS = [
@@ -218,10 +248,19 @@ const CONFIG_PANELS = [
     ],
   },
   {
-    title: "EtherTalk",
+    // The shared virtual interface protocols inherit unless they go Custom.
+    title: "Bridge (shared interface)",
     fields: [
-      { label: "Interface", path: "Bridge.device", type: "iface" },
-      { label: "Bridge Mode", path: "Bridge.mode", type: "text" },
+      { label: "Mode", path: "Bridge.mode", type: "select", options: IFACE_MODES },
+      { label: "Device", path: "Bridge.device", type: "iface" },
+      { label: "HW Address", path: "Bridge.hw_address", type: "text" },
+      { label: "Bridge Mode", path: "Bridge.bridge_mode", type: "select", options: BRIDGE_MODES },
+    ],
+  },
+  {
+    title: "EtherTalk",
+    interfaceFor: "EtherTalk",
+    fields: [
       { label: "Zone Name", path: "EtherTalk.seed_zone", type: "text" },
       { label: "Seed Net Min", path: "EtherTalk.seed_network_min", type: "number" },
       { label: "Seed Net Max", path: "EtherTalk.seed_network_max", type: "number" },
@@ -229,22 +268,42 @@ const CONFIG_PANELS = [
   },
   {
     title: "NetBEUI (NBF)",
-    fields: [
-      { label: "Enabled", path: "NetBEUI.enabled", type: "bool" },
-      { label: "Interface", path: "NetBEUI.interface", type: "iface" },
-    ],
+    interfaceFor: "NetBEUI",
+    fields: [{ label: "Enabled", path: "NetBEUI.enabled", type: "bool" }],
   },
   {
     title: "IPX",
+    interfaceFor: "IPX",
     fields: [
       { label: "Enabled", path: "IPX.enabled", type: "bool" },
-      { label: "Interface", path: "IPX.interface", type: "iface" },
-      { label: "Framing", path: "IPX.framing", type: "text" },
+      { label: "Framing", path: "IPX.framing", type: "select", options: IPX_FRAMINGS },
       { label: "Network", path: "IPX.internal_network", type: "text" },
     ],
   },
   {
+    title: "MacIP Gateway",
+    interfaceFor: "MacIP",
+    fields: [
+      { label: "Enabled", path: "MacIP.enabled", type: "bool" },
+      { label: "Gateway Mode", path: "MacIP.mode", type: "select", options: ["pcap", "nat"] },
+      { label: "Zone", path: "MacIP.zone", type: "text" },
+      { label: "NAT Subnet", path: "MacIP.nat_subnet", type: "text" },
+      { label: "IP Gateway", path: "MacIP.ip_gateway", type: "text" },
+      { label: "DHCP Relay", path: "MacIP.dhcp_relay", type: "bool" },
+    ],
+  },
+  {
     title: "AFP File Server",
+    editor: {
+      title: "AFP Volumes",
+      section: "AFP",
+      columns: [
+        { key: "name", label: "Name", type: "text" },
+        { key: "path", label: "Path", type: "text" },
+        { key: "fs_type", label: "FS Type", type: "select", options: "fsTypes", default: "local_fs" },
+        { key: "read_only", label: "Read-only", type: "bool" },
+      ],
+    },
     fields: [
       { label: "Enabled", path: "AFP.enabled", type: "bool" },
       { label: "Server Name", path: "AFP.name", type: "text" },
@@ -254,6 +313,16 @@ const CONFIG_PANELS = [
   },
   {
     title: "SMB Server",
+    editor: {
+      title: "SMB Shares",
+      section: "SMB",
+      columns: [
+        { key: "name", label: "Name", type: "text" },
+        { key: "path", label: "Path", type: "text" },
+        { key: "fs_type", label: "FS Type", type: "select", options: "fsTypes", default: "local_fs" },
+        { key: "read_only", label: "Read-only", type: "bool" },
+      ],
+    },
     fields: [
       { label: "Enabled", path: "SMB.enabled", type: "bool" },
       { label: "Server Name", path: "SMB.server_name", type: "text" },
@@ -284,14 +353,26 @@ const CONFIG_PANELS = [
   },
 ];
 
-let interfaceList = [];
+let interfaceList = []; // [{name, description, addresses}]
 let serialList = [];
+let fsTypeList = []; // registered AFP fs_type names
+
+// ifaceLabel builds a friendly dropdown label for an interface: the pcap
+// Description (or the device name on the rare host without one) plus any IPs.
+// On Windows the device name is a GUID, so the description is what's legible.
+function ifaceLabel(i) {
+  let label = i.description || i.name;
+  if (i.addresses && i.addresses.length) label += " (" + i.addresses.join(", ") + ")";
+  return label;
+}
 
 async function renderConfig(cfg) {
-  [interfaceList, serialList] = await Promise.all([
+  [interfaceList, serialList, fsTypeList] = await Promise.all([
     fetchJSON("/api/interfaces").catch(() => []),
     fetchJSON("/api/serial-ports").catch(() => []),
+    fetchJSON("/api/fs-types").catch(() => ["local_fs"]),
   ]);
+  if (!fsTypeList || !fsTypeList.length) fsTypeList = ["local_fs"];
 
   const root = $("#config-panels");
   root.innerHTML = "";
@@ -302,35 +383,126 @@ async function renderConfig(cfg) {
     legend.textContent = panel.title;
     fs.appendChild(legend);
     panel.fields.forEach((f) => fs.appendChild(renderField(cfg, f)));
+    // A per-service Bridge/Custom interface chooser, when the panel declares one.
+    if (panel.interfaceFor) fs.appendChild(renderInterfaceChooser(cfg, panel.interfaceFor));
+    // A grouped volume/share editor, when the panel declares one.
+    if (panel.editor) fs.appendChild(renderShareEditor(cfg, panel.editor.title, panel.editor.section, panel.editor.columns));
     root.appendChild(fs);
   });
+}
 
-  // Volume / share table editors. These mutate the keyed maps in the
-  // config model (AFP.Volumes / SMB.Volumes); the supervisor rebuilds the
-  // service from the model on Apply, so add/update/remove take effect.
-  root.appendChild(
-    renderShareEditor(cfg, "AFP Volumes", "AFP", [
-      { key: "name", label: "Name", type: "text" },
-      { key: "path", label: "Path", type: "text" },
-      { key: "fs_type", label: "FS Type", type: "text", default: "local_fs" },
-      { key: "read_only", label: "Read-only", type: "bool" },
-    ])
-  );
-  root.appendChild(
-    renderShareEditor(cfg, "SMB Shares", "SMB", [
-      { key: "name", label: "Name", type: "text" },
-      { key: "path", label: "Path", type: "text" },
-      { key: "fs_type", label: "FS Type", type: "text", default: "local_fs" },
-      { key: "read_only", label: "Read-only", type: "bool" },
-    ])
-  );
+// renderInterfaceChooser renders the per-service interface selector: a
+// "Bridge" / "Custom" radio. Bridge means the service inherits the shared
+// [Bridge] interface (no <Section>.Custom). Custom reveals a sub-form
+// (Mode, Device, HW Address, and — for pcap — Bridge Mode) bound to
+// cfg[section].Custom. EtherTalk is the bridge consumer itself, so it only
+// shows an informational note.
+function renderInterfaceChooser(cfg, section) {
+  const wrap = document.createElement("div");
+  wrap.className = "iface-chooser";
+  const heading = document.createElement("div");
+  heading.className = "iface-heading";
+  heading.textContent = "Interface";
+  wrap.appendChild(heading);
+
+  if (section === "EtherTalk") {
+    const note = document.createElement("div");
+    note.className = "kv muted";
+    note.textContent = "Uses the shared Bridge interface (configure it in the Bridge panel).";
+    wrap.appendChild(note);
+    return wrap;
+  }
+
+  if (!cfg[section]) cfg[section] = {};
+  const isCustom = () => !!cfg[section].Custom;
+
+  const radioRow = document.createElement("div");
+  radioRow.className = "iface-radio";
+  const sub = document.createElement("div");
+  sub.className = "iface-subform";
+
+  function rebuildSub() {
+    sub.innerHTML = "";
+    if (!isCustom()) {
+      const bridgeDev = (cfg.Bridge && cfg.Bridge.device) || "(none)";
+      const note = document.createElement("div");
+      note.className = "kv muted";
+      note.textContent = "Inherits the shared Bridge (" + bridgeDev + ").";
+      sub.appendChild(note);
+      return;
+    }
+    const c = cfg[section].Custom;
+    const subFields = [
+      { label: "Mode", path: "mode", type: "select", options: IFACE_MODES },
+      { label: "Device", path: "device", type: "iface" },
+      { label: "HW Address", path: "hw_address", type: "text" },
+    ];
+    if ((c.mode || "pcap") === "pcap") {
+      subFields.push({ label: "Bridge Mode", path: "bridge_mode", type: "select", options: BRIDGE_MODES });
+    }
+    subFields.forEach((f) => {
+      const row = document.createElement("div");
+      row.className = "field";
+      const label = document.createElement("label");
+      label.textContent = f.label;
+      row.appendChild(label);
+      let input;
+      if (f.type === "iface") {
+        input = buildInterfaceSelect(c[f.path] || "", (v) => { c[f.path] = v; setDirty(true); });
+      } else if (f.type === "select") {
+        input = buildSelect(f.options, c[f.path] || "", (v) => {
+          c[f.path] = v;
+          setDirty(true);
+          if (f.path === "mode") rebuildSub(); // toggling pcap shows/hides bridge mode
+        });
+      } else {
+        input = document.createElement("input");
+        input.type = "text";
+        input.value = c[f.path] == null ? "" : c[f.path];
+        input.addEventListener("input", () => { c[f.path] = input.value; setDirty(true); });
+      }
+      row.appendChild(input);
+      sub.appendChild(row);
+    });
+  }
+
+  [["bridge", "Bridge"], ["custom", "Custom"]].forEach(([val, lbl]) => {
+    const id = "iface-" + section + "-" + val;
+    const label = document.createElement("label");
+    label.className = "radio";
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = "iface-" + section;
+    radio.id = id;
+    radio.checked = val === "custom" ? isCustom() : !isCustom();
+    radio.addEventListener("change", () => {
+      if (!radio.checked) return;
+      if (val === "custom") {
+        if (!cfg[section].Custom) cfg[section].Custom = { mode: "pcap" };
+      } else {
+        delete cfg[section].Custom;
+      }
+      setDirty(true);
+      rebuildSub();
+    });
+    label.appendChild(radio);
+    label.appendChild(document.createTextNode(" " + lbl));
+    radioRow.appendChild(label);
+  });
+
+  wrap.appendChild(radioRow);
+  wrap.appendChild(sub);
+  rebuildSub();
+  return wrap;
 }
 
 // renderShareEditor builds a table editor over cfg[section].Volumes (a
-// name-keyed map of share/volume objects) with add and remove controls.
+// name-keyed map of share/volume objects) with add and remove controls. It
+// renders as a nested group so it can sit inside its parent service panel
+// (AFP volumes under AFP, SMB shares under SMB).
 function renderShareEditor(cfg, title, section, columns) {
   const fs = document.createElement("fieldset");
-  fs.className = "config-panel";
+  fs.className = "config-panel nested";
   const legend = document.createElement("legend");
   legend.textContent = title;
   fs.appendChild(legend);
@@ -361,6 +533,12 @@ function renderShareEditor(cfg, title, section, columns) {
         input.checked = !!entry[c.key];
         input.addEventListener("change", () => {
           entry[c.key] = input.checked;
+          setDirty(true);
+        });
+      } else if (c.type === "select") {
+        const opts = c.options === "fsTypes" ? fsTypeList : c.options || [];
+        input = buildSelect(opts, entry[c.key] || c.default || "", (v) => {
+          entry[c.key] = v;
           setDirty(true);
         });
       } else {
@@ -425,6 +603,59 @@ function renderShareEditor(cfg, title, section, columns) {
   return fs;
 }
 
+// buildSelect creates a <select> over options (array of strings or {value,
+// label}), preselecting current. If current is not among the options it is
+// added so a stored value is never silently dropped. onChange(value) fires on
+// selection.
+function buildSelect(options, current, onChange) {
+  const sel = document.createElement("select");
+  const norm = options.map((o) => (typeof o === "string" ? { value: o, label: o } : o));
+  if (current && !norm.some((o) => o.value === current)) {
+    norm.unshift({ value: current, label: current });
+  }
+  norm.forEach((o) => {
+    const opt = document.createElement("option");
+    opt.value = o.value;
+    opt.textContent = o.label;
+    if (o.value === current) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  sel.addEventListener("change", () => onChange(sel.value));
+  return sel;
+}
+
+// buildInterfaceSelect creates an interface <select> with friendly labels. The
+// stored value is the device name; a "(none)" blank is offered, and a stored
+// device not present in the enumerated list (e.g. saved on another host) is
+// preserved as its own option.
+function buildInterfaceSelect(current, onChange) {
+  const sel = document.createElement("select");
+  const blank = document.createElement("option");
+  blank.value = "";
+  blank.textContent = "(none)";
+  sel.appendChild(blank);
+  let matched = !current;
+  interfaceList.forEach((i) => {
+    const o = document.createElement("option");
+    o.value = i.name;
+    o.textContent = ifaceLabel(i);
+    if (i.name === current) {
+      o.selected = true;
+      matched = true;
+    }
+    sel.appendChild(o);
+  });
+  if (!matched) {
+    const o = document.createElement("option");
+    o.value = current;
+    o.textContent = current + " (saved)";
+    o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.addEventListener("change", () => onChange(sel.value));
+  return sel;
+}
+
 function renderField(cfg, f) {
   const row = document.createElement("div");
   row.className = "field";
@@ -442,22 +673,31 @@ function renderField(cfg, f) {
       setPath(cfg, f.path, input.checked);
       setDirty(true);
     });
-  } else if (f.type === "iface" || f.type === "serial") {
+  } else if (f.type === "iface") {
+    input = buildInterfaceSelect(val, (v) => {
+      setPath(cfg, f.path, v);
+      setDirty(true);
+    });
+  } else if (f.type === "serial") {
     input = document.createElement("select");
-    const options = f.type === "iface" ? interfaceList : serialList.map((s) => s.name);
     const blank = document.createElement("option");
     blank.value = "";
     blank.textContent = "(none)";
     input.appendChild(blank);
-    options.forEach((opt) => {
+    serialList.forEach((s) => {
       const o = document.createElement("option");
-      o.value = opt;
-      o.textContent = opt;
-      if (opt === val) o.selected = true;
+      o.value = s.name;
+      o.textContent = s.description || s.name;
+      if (s.name === val) o.selected = true;
       input.appendChild(o);
     });
     input.addEventListener("change", () => {
       setPath(cfg, f.path, input.value);
+      setDirty(true);
+    });
+  } else if (f.type === "select") {
+    input = buildSelect(f.options || [], val, (v) => {
+      setPath(cfg, f.path, v);
       setDirty(true);
     });
   } else {

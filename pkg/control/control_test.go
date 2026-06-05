@@ -26,7 +26,27 @@ func (s *fakeSup) RestartService(_ context.Context, name string) error {
 	s.restarts = append(s.restarts, name)
 	return nil
 }
-func (s *fakeSup) ListInterfaces() ([]string, error) { return []string{"eth0"}, nil }
+func (s *fakeSup) ListInterfaces() ([]InterfaceInfo, error) {
+	return []InterfaceInfo{{Name: "eth0", Description: "Ethernet"}}, nil
+}
+func (s *fakeSup) ListFSTypes() []string { return []string{"local_fs"} }
+
+func TestListInterfacesAndFSTypes(t *testing.T) {
+	p := New(Deps{Supervisor: &fakeSup{}})
+
+	ifaces, err := p.ListInterfaces()
+	if err != nil {
+		t.Fatalf("ListInterfaces: %v", err)
+	}
+	if len(ifaces) != 1 || ifaces[0].Name != "eth0" || ifaces[0].Description != "Ethernet" {
+		t.Fatalf("ListInterfaces = %+v, want one eth0/Ethernet", ifaces)
+	}
+
+	fsTypes := p.ListFSTypes()
+	if len(fsTypes) != 1 || fsTypes[0] != "local_fs" {
+		t.Fatalf("ListFSTypes = %v, want [local_fs]", fsTypes)
+	}
+}
 
 func TestDirtyLifecycle(t *testing.T) {
 	sup := &fakeSup{}

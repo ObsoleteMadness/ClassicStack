@@ -159,6 +159,16 @@ func (p *PcapPort) Start(r port.RouterHooks) error {
 	}
 	p.link = link
 
+	// Recreate the lifecycle channels on every Start so the port survives a
+	// Stop/Start cycle: Stop closes these channels, and closing them a
+	// second time (or a goroutine's deferred close of an already-closed
+	// done channel) panics. The UI drives exactly this restart path.
+	p.readerStop = make(chan struct{})
+	p.readerDone = make(chan struct{})
+	p.writerStop = make(chan struct{})
+	p.writerDone = make(chan struct{})
+	p.writerQueue = make(chan []byte, 1024)
+
 	// Detect physical medium and resolve bridge mode.
 	if mr, ok := link.(rawlink.MediumReporter); ok {
 		p.medium = mr.Medium()
@@ -185,8 +195,10 @@ func (p *PcapPort) Start(r port.RouterHooks) error {
 	if err := p.Port.Start(r); err != nil {
 		return err
 	}
-	go p.readRun()
-	go p.writeRun()
+	// Bind each goroutine to this cycle's link and channels so a later
+	// Start (which reassigns the fields) cannot race with them.
+	go p.readRun(link, p.readerStop, p.readerDone)
+	go p.writeRun(link, p.writerQueue, p.writerStop, p.writerDone)
 	return nil
 }
 
@@ -197,19 +209,23 @@ func (p *PcapPort) Stop() error {
 	<-p.writerDone
 	if p.link != nil {
 		_ = p.link.Close()
+		p.link = nil
 	}
 	return p.Port.Stop()
 }
 
-func (p *PcapPort) readRun() {
-	defer close(p.readerDone)
+func (p *PcapPort) readRun(link rawlink.RawLink, stop, done chan struct{}) {
+	defer close(done)
 	for {
 		select {
-		case <-p.readerStop:
+		case <-stop:
 			return
 		default:
-			data, err := p.link.ReadFrame()
+			data, err := link.ReadFrame()
 			if err != nil {
+				if errors.Is(err, rawlink.ErrClosed) {
+					return
+				}
 				if !errors.Is(err, rawlink.ErrTimeout) {
 					netlog.Warn("pcap read error on %s: %v", p.interfaceName, err)
 				}
@@ -234,20 +250,20 @@ func (p *PcapPort) sendFrame(frameData []byte) {
 	}
 }
 
-func (p *PcapPort) writeRun() {
-	defer close(p.writerDone)
+func (p *PcapPort) writeRun(link rawlink.RawLink, queue chan []byte, stop, done chan struct{}) {
+	defer close(done)
 	for {
 		select {
-		case <-p.writerStop:
+		case <-stop:
 			return
-		case frameData := <-p.writerQueue:
+		case frameData := <-queue:
 			prepared, err := p.adapter.outboundFrame(frameData)
 			if err != nil {
 				netlog.Warn("failed to prepare outbound frame on %s: %v", p.interfaceName, err)
 				continue
 			}
 			p.capture(prepared)
-			if err := p.link.WriteFrame(prepared); err != nil {
+			if err := link.WriteFrame(prepared); err != nil {
 				netlog.Warn("couldn't send packet: %v", err)
 			}
 		}

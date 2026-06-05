@@ -95,8 +95,8 @@ func NewTransport(r ipx.Router, sap SAPRegistrar, name protocol.Name) netbios.Tr
 		claimRetries:  DefaultNameClaimRetries,
 		claimInterval: DefaultNameClaimInterval,
 		sleep:         time.After,
-		objection: make(chan struct{}, 1),
-		stopped:   make(chan struct{}),
+		objection:     make(chan struct{}, 1),
+		stopped:       make(chan struct{}),
 	}
 }
 
@@ -106,11 +106,23 @@ func NewTransport(r ipx.Router, sap SAPRegistrar, name protocol.Name) netbios.Tr
 // but no SAP advertisement appears. Errors here would prevent the
 // rest of NetBIOS from starting; we'd rather log and continue.
 func (t *transport) Start(ctx context.Context) error {
-	for _, sock := range Sockets {
+	for i, sock := range Sockets {
 		if err := t.router.RegisterSocket(sock, t); err != nil {
+			// Roll back the sockets we already claimed so a partial
+			// failure does not leak registrations and block a retry.
+			for _, done := range Sockets[:i] {
+				t.router.UnregisterSocket(done)
+			}
 			return err
 		}
 	}
+
+	// Reset the per-run lifecycle state so the transport can be restarted
+	// after a Stop: stopOnce/stopped were consumed by the previous Stop.
+	t.mu.Lock()
+	t.stopOnce = sync.Once{}
+	t.stopped = make(chan struct{})
+	t.mu.Unlock()
 
 	if t.shouldClaimName() {
 		go t.claimAndAdvertise(ctx)
@@ -206,8 +218,10 @@ func (t *transport) broadcastNMPIClaim() error {
 	return t.router.Send(out)
 }
 
-// Stop unregisters the SAP advertisement (if any) and stops further
-// inbound dispatch.
+// Stop unregisters the SAP advertisement (if any), releases the IPX
+// sockets, and stops further inbound dispatch. Releasing the sockets is
+// what lets the transport be started again — otherwise the next Start's
+// RegisterSocket fails with "socket already registered".
 func (t *transport) Stop() error {
 	t.stopOnce.Do(func() {
 		close(t.stopped)
@@ -217,6 +231,9 @@ func (t *transport) Stop() error {
 		t.mu.Unlock()
 		if cancel != nil {
 			cancel()
+		}
+		for _, sock := range Sockets {
+			t.router.UnregisterSocket(sock)
 		}
 	})
 	return nil

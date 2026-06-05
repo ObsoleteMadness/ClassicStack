@@ -272,6 +272,59 @@ UI server is preserved across the rebuild), **Save** writes `server.toml`
 by the transport-agnostic `pkg/control` API, so a future text/telnet UI can
 reuse them.
 
+## Running as a service / daemon
+
+ClassicStack ships a wrapper binary so it can run in the background and start
+automatically. It shares the same runtime as `classicstack`, so the config and
+behaviour are identical — it just manages the process lifecycle. The wrapper is a
+different command per platform:
+
+### Windows service — `classicstack-svc.exe`
+
+Run from an **elevated** (Administrator) prompt:
+
+~~~powershell
+# Register the service (auto-start at boot) pointing at a config file:
+.\classicstack-svc.exe install -config C:\ProgramData\ClassicStack\server.toml
+
+.\classicstack-svc.exe start      # start it now
+.\classicstack-svc.exe status     # query the state
+.\classicstack-svc.exe stop       # stop it
+.\classicstack-svc.exe uninstall  # remove it
+~~~
+
+The service is named `ClassicStack` (visible in `services.msc` and
+`Get-Service ClassicStack`) and writes start/stop entries to the Application event
+log. `classicstack-svc.exe run -config ...` runs the stack in the current console
+for debugging.
+
+### Linux / macOS daemon — `classicstackd`
+
+`classicstackd` self-daemonizes — it needs no systemd or other init system:
+
+~~~bash
+# Start detached in the background (writes a PID file and logs to a file):
+classicstackd start -config /etc/classicstack/server.toml \
+  -pidfile /var/run/classicstack.pid -log /var/log/classicstack.log
+
+classicstackd status   # report whether it is running
+classicstackd stop     # stop it gracefully (SIGTERM)
+classicstackd run -config /etc/classicstack/server.toml   # foreground (Ctrl-C to stop)
+~~~
+
+`-pidfile` and `-log` default to `/var/run/classicstack.pid` and
+`/var/log/classicstack.log`. For boot persistence, point your init system's
+`ExecStart` at `classicstackd run -config <path>`.
+
+On **macOS**, `install`/`uninstall` additionally manage a LaunchAgent so the daemon
+runs as a login item (headless):
+
+~~~bash
+classicstackd install -config ~/Library/Application\ Support/ClassicStack/server.toml
+# writes ~/Library/LaunchAgents/com.obsoletemadness.classicstack.plist and loads it
+classicstackd uninstall   # unload + remove the LaunchAgent
+~~~
+
 ## Useful commands
 
 List pcap devices:

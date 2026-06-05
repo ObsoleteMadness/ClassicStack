@@ -46,10 +46,10 @@ go test ./service/afp/...
 ### Core Data Flow
 
 ```
-cmd/classicstack/main.go  →  Ports  →  Router  →  Services
+cmd/classicstack/main.go  →  internal/app (run-core)  →  Ports  →  Router  →  Services
 ```
 
-1. **Entry point** (`cmd/classicstack/`) parses CLI flags and `server.toml`, constructs ports, wires them to the router, and starts services.
+1. **Entry point** (`cmd/classicstack/`) is a thin `main()` that calls `internal/app`, which parses CLI flags and `server.toml`, constructs ports, wires them to the router, and starts services. Two sibling commands wrap the same run-core for background operation: `cmd/classicstack-svc` (Windows service) and `cmd/classicstackd` (Unix/macOS daemon).
 2. **Router** (`router/`) receives DDP datagrams from all ports, maintains the `RoutingTable` and `ZoneInformationTable`, and dispatches to services by socket number or forwards to other ports.
 3. **Ports** (`port/`) abstract network interfaces. All implement `port.Port` (Unicast/Broadcast/Multicast). Implementations: `ethertalk`, `localtalk/ltoudp`, `localtalk/tashtalk`, `localtalk/virtual`.
 4. **Services** (`service/`) plug into the router by registering socket numbers. Each implements `service.Service`.
@@ -58,6 +58,10 @@ cmd/classicstack/main.go  →  Ports  →  Router  →  Services
 
 | Package | Role |
 |---|---|
+| `internal/app/` | The run-core (formerly `cmd/classicstack` package `main`): flag/TOML parsing, the `Supervisor`, every `wireXxx` hook, control-plane + web UI wiring. Exposes `Main(Version)` and `Run(ctx, args, Version)` so the interactive binary and the service/daemon wrappers all share one runtime. |
+| `cmd/classicstack/` | Thin interactive entry point (`main()` → `app.Main`); holds the link-time `Build*` vars (`-ldflags -X main.Build...`). |
+| `cmd/classicstack-svc/` | Windows service wrapper (SCM via `golang.org/x/sys/windows/svc`); `install`/`uninstall`/`start`/`stop`/`status`/`run`. Stub on non-Windows. |
+| `cmd/classicstackd/` | Unix/macOS background daemon (self-daemonize via fork+`Setsid`, PID file); `start`/`stop`/`status`/`run`, plus macOS LaunchAgent `install`/`uninstall`. Stub on Windows. |
 | `appletalk/` | DDP datagram struct, encode/decode, MacRoman codec |
 | `router/` | Core routing engine, routing table aging, zone info |
 | `port/ethertalk/` | EtherTalk over raw Ethernet using libpcap/Npcap, includes AARP |

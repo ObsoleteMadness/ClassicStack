@@ -87,3 +87,12 @@ if ($tags) {
 } else {
     go build -trimpath -ldflags $ldflags -o $output ./cmd/classicstack
 }
+
+# Build the Windows service wrapper (classicstack-svc.exe) alongside the main
+# binary, next to it in the output directory, sharing the same tags/ldflags.
+$svcOutput = Join-Path (Split-Path -Parent $output) 'classicstack-svc.exe'
+if ($tags) {
+    go build -trimpath -tags $tags -ldflags $ldflags -o $svcOutput ./cmd/classicstack-svc
+} else {
+    go build -trimpath -ldflags $ldflags -o $svcOutput ./cmd/classicstack-svc
+}

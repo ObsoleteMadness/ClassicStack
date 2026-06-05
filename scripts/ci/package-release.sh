@@ -25,6 +25,10 @@ if [[ "$target_os" == "linux" ]]; then
 
   mkdir -p "$stage"
   cp "out/${exe_name}" "$stage/${exe_name}"
+  # Ship the daemon wrapper alongside the main binary when it was built.
+  if [[ -f "out/classicstackd" ]]; then
+    cp "out/classicstackd" "$stage/classicstackd"
+  fi
   cp README.md server.toml.example extmap.conf "$stage/"
   cp -a dist/. "$stage/"
   tar -C release -czf "$archive_name" "$(basename "$stage")"
@@ -45,6 +49,12 @@ if [[ "$target_os" == "macos" ]]; then
   mkdir -p "$app_root/MacOS" "$app_root/Resources"
   cp "out/${exe_name}" "$app_root/MacOS/classicstack"
   chmod +x "$app_root/MacOS/classicstack"
+  # Ship the daemon wrapper inside the bundle when it was built, so the
+  # LaunchAgent (login-item) install flow is available on macOS.
+  if [[ -f "out/classicstackd" ]]; then
+    cp "out/classicstackd" "$app_root/MacOS/classicstackd"
+    chmod +x "$app_root/MacOS/classicstackd"
+  fi
   cp icons/classicstack.icns "$app_root/Resources/classicstack.icns"
 
   if [[ "$build_variant" == "all" ]]; then

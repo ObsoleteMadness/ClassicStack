@@ -70,6 +70,9 @@ type Router interface {
 	// destination socket matches. Returns an error when socket is
 	// already registered.
 	RegisterSocket(socket [2]byte, handler SocketHandler) error
+	// UnregisterSocket removes a RegisterSocket binding so the socket
+	// can be claimed again (e.g. on a service restart). Idempotent.
+	UnregisterSocket(socket [2]byte)
 	// RegisterNode attaches handler to every inbound datagram whose
 	// destination node matches. Returns an error when the node is
 	// already registered. The address filter accepts the node even
@@ -148,6 +151,16 @@ func (r *routerImpl) RegisterSocket(socket [2]byte, handler SocketHandler) error
 	r.sockets[socket] = handler
 	netlog.Debug("[IPX][Router] registered socket=%02x%02x", socket[0], socket[1])
 	return nil
+}
+
+func (r *routerImpl) UnregisterSocket(socket [2]byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.sockets[socket]; !exists {
+		return
+	}
+	delete(r.sockets, socket)
+	netlog.Debug("[IPX][Router] unregistered socket=%02x%02x", socket[0], socket[1])
 }
 
 func (r *routerImpl) RegisterNode(node [6]byte, handler NodeHandler) error {

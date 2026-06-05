@@ -1,9 +1,23 @@
 TAGS ?= all
 
-.PHONY: build test test-race test-tags lint vuln gosec fuzz clean
+# The service/daemon wrapper is a different command per OS: a Windows service
+# (classicstack-svc.exe) or a Unix daemon (classicstackd).
+GOOS ?= $(shell go env GOOS)
+ifeq ($(GOOS),windows)
+SVC_PKG := ./cmd/classicstack-svc
+SVC_BIN := classicstack-svc.exe
+else
+SVC_PKG := ./cmd/classicstackd
+SVC_BIN := classicstackd
+endif
 
-build:
+.PHONY: build build-svc test test-race test-tags lint vuln gosec fuzz clean
+
+build: build-svc
 	go build -tags "$(TAGS)" -o classicstack ./cmd/classicstack
+
+build-svc:
+	go build -tags "$(TAGS)" -o $(SVC_BIN) $(SVC_PKG)
 
 test:
 	go test -tags "$(TAGS)" ./...
@@ -30,5 +44,5 @@ fuzz:
 	done
 
 clean:
-	rm -f classicstack classicstack.exe
+	rm -f classicstack classicstack.exe classicstackd classicstack-svc.exe
 	rm -rf out dist

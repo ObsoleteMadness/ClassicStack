@@ -89,6 +89,40 @@ func buildLLCNBFAddressed(dst, src [6]byte, body []byte, control ...byte) []byte
 	return frame
 }
 
+// TestNetBEUIPortRestart exercises the UI stop/start lifecycle that
+// previously panicked with "close of closed channel" on the second cycle.
+// NewPortWithLinkFactory opens a fresh link and resets the channels on each
+// Start, so repeated Stop/Start must work without panicking.
+func TestNetBEUIPortRestart(t *testing.T) {
+	var mu sync.Mutex
+	var links []*fakeRawLink
+	open := func() (rawlink.RawLink, error) {
+		l := newFakeRawLink()
+		mu.Lock()
+		links = append(links, l)
+		mu.Unlock()
+		return l, nil
+	}
+	p := NewPortWithLinkFactory(open)
+	defer p.Stop()
+
+	for cycle := range 3 {
+		if err := p.Start(); err != nil {
+			t.Fatalf("cycle %d Start: %v", cycle, err)
+		}
+		if err := p.Stop(); err != nil {
+			t.Fatalf("cycle %d Stop: %v", cycle, err)
+		}
+	}
+
+	mu.Lock()
+	n := len(links)
+	mu.Unlock()
+	if n != 3 {
+		t.Fatalf("link factory called %d times, want 3 (one fresh link per Start)", n)
+	}
+}
+
 func TestNetBEUIInboundDecodesNBFBody(t *testing.T) {
 	link := newFakeRawLink()
 	p := NewPort(link)

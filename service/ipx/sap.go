@@ -129,7 +129,8 @@ func (s *SAPService) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop cancels the broadcaster and waits for the goroutine to exit.
+// Stop cancels the broadcaster, waits for the goroutine to exit, and
+// releases the SAP socket so the service can be started again.
 func (s *SAPService) Stop() error {
 	s.mu.Lock()
 	cancel := s.cancel
@@ -142,6 +143,7 @@ func (s *SAPService) Stop() error {
 	if done != nil {
 		<-done
 	}
+	s.router.UnregisterSocket(SAPSocket)
 	return nil
 }
 

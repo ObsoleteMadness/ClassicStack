@@ -8,6 +8,10 @@
 *.so
 *.dylib
 
+# Locally built command binaries (extensionless on Unix)
+/classicstack
+/classicstackd
+
 # Test binary, built with `go test -c`
 *.test
 

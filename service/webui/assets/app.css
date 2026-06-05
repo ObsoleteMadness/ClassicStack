@@ -73,6 +73,22 @@ main { padding: 1rem; }
 .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; background: var(--off); }
 .dot.running { background: var(--ok); }
 
+/* In-flight start/stop/restart indicator shown in place of the status dot. */
+.spinner {
+  width: 11px; height: 11px;
+  display: inline-block;
+  vertical-align: middle;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.card h3 .dot, .card h3 .spinner { margin-right: 0.4rem; }
+
 .kv { font-size: 0.85rem; color: var(--muted); margin: 0.15rem 0; }
 .kv b { color: #1c1c22; font-weight: 600; }
 
@@ -98,6 +114,22 @@ main { padding: 1rem; }
   min-width: 200px;
 }
 
+/* Nested volume/share editor inside its parent service panel. */
+.config-panel.nested {
+  margin: 0.6rem 0 0.2rem;
+  background: transparent;
+  border-style: dashed;
+}
+.config-panel.nested legend { color: var(--muted); font-size: 0.9rem; }
+
+/* Per-service Bridge/Custom interface chooser. */
+.iface-chooser { margin: 0.5rem 0 0.2rem; padding-top: 0.4rem; border-top: 1px dashed var(--border); }
+.iface-heading { font-weight: 600; color: var(--muted); margin-bottom: 0.3rem; }
+.iface-radio { display: flex; gap: 1rem; margin-bottom: 0.4rem; }
+.iface-radio label.radio { display: inline-flex; align-items: center; gap: 0.3rem; color: inherit; width: auto; cursor: pointer; }
+.iface-subform { margin-left: 1.2rem; padding-left: 0.6rem; border-left: 2px solid var(--border); }
+.kv.muted { color: var(--muted); font-style: italic; }
+
 .share-table { width: 100%; border-collapse: collapse; margin: 0.4rem 0 0.6rem; }
 .share-table th {
   text-align: left;
@@ -107,7 +139,7 @@ main { padding: 1rem; }
   border-bottom: 1px solid var(--border);
 }
 .share-table td { padding: 0.2rem 0.4rem; }
-.share-table input[type="text"] {
+.share-table input[type="text"], .share-table select {
   width: 100%;
   padding: 0.25rem 0.4rem;
   border: 1px solid var(--border);

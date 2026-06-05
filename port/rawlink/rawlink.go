@@ -26,6 +26,12 @@ const (
 // as the sentinel so callers have no pcap dependency.
 var ErrTimeout = errors.New("rawlink: read timeout")
 
+// ErrClosed is returned by ReadFrame, WriteFrame, and SetFilter when they are
+// called after Close. The underlying libpcap handle has been freed, so the
+// call must fail cleanly rather than dereference released C memory. This
+// upholds the RawLink contract that operations after Close return errors.
+var ErrClosed = errors.New("rawlink: link closed")
+
 // RawLink is the minimal interface for reading and writing raw Ethernet frames
 // to a network medium. Implementations must be safe for concurrent use from
 // a single reader goroutine and a single writer goroutine simultaneously.
@@ -66,4 +72,3 @@ type FilterableLink interface {
 	// the expression is invalid or unsupported by the backend.
 	SetFilter(expr string) error
 }
-

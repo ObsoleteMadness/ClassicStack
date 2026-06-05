@@ -32,3 +32,12 @@ if [[ -n "$tags" ]]; then
 else
   go build -trimpath -ldflags "$ldflags" -o "$output" ./cmd/classicstack
 fi
+
+# Build the Unix daemon wrapper (classicstackd) alongside the main binary,
+# next to it in the output directory, sharing the same tags/ldflags.
+daemon_output="$(dirname "$output")/classicstackd"
+if [[ -n "$tags" ]]; then
+  go build -trimpath -tags "$tags" -ldflags "$ldflags" -o "$daemon_output" ./cmd/classicstackd
+else
+  go build -trimpath -ldflags "$ldflags" -o "$daemon_output" ./cmd/classicstackd
+fi

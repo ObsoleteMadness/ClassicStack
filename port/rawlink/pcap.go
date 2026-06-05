@@ -3,6 +3,7 @@ package rawlink
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/gopacket/layers"
@@ -74,6 +75,16 @@ func DefaultNetBEUIConfig(iface string) PcapConfig {
 type pcapLink struct {
 	handle *pcap.Handle   // handle is the underlying libpcap handle used for I/O.
 	medium PhysicalMedium // medium reports the detected physical medium for the handle.
+
+	// mu guards closed so that a Close on the supervisor goroutine cannot free
+	// the libpcap handle while a read/write/filter call on another goroutine is
+	// inside the cgo boundary. Once closed is set, the handle must never be
+	// touched again: libpcap frees the C-side handle in pcap_close, and calling
+	// pcap_compile/pcap_next on it is a use-after-free (a 0xC0000005 access
+	// violation on Windows). The lock is held only around the closed check and
+	// the cgo call, never across blocking work, so it does not serialize reads.
+	mu     sync.RWMutex
+	closed bool
 }
 
 // PcapDeviceInfo summarizes a discovered pcap device.
@@ -170,6 +181,11 @@ func OpenPcapSimple(iface string, snapLen int, promisc bool, timeout time.Durati
 // ReadFrame reads the next raw packet from the pcap handle.
 // It returns ErrTimeout when the underlying libpcap read times out.
 func (l *pcapLink) ReadFrame() ([]byte, error) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	if l.closed {
+		return nil, ErrClosed
+	}
 	data, _, err := l.handle.ReadPacketData()
 	if err != nil {
 		if errors.Is(err, pcap.NextErrorTimeoutExpired) {
@@ -182,11 +198,24 @@ func (l *pcapLink) ReadFrame() ([]byte, error) {
 
 // WriteFrame writes a raw packet to the link via the pcap handle.
 func (l *pcapLink) WriteFrame(frame []byte) error {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	if l.closed {
+		return ErrClosed
+	}
 	return l.handle.WritePacketData(frame)
 }
 
-// Close closes the underlying pcap handle and releases resources.
+// Close closes the underlying pcap handle and releases resources. It is
+// idempotent and takes the write lock so it cannot free the handle while a
+// concurrent ReadFrame/WriteFrame/SetFilter is mid-call.
 func (l *pcapLink) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return nil
+	}
+	l.closed = true
 	l.handle.Close()
 	return nil
 }
@@ -196,6 +225,11 @@ func (l *pcapLink) Medium() PhysicalMedium { return l.medium }
 
 // SetFilter implements FilterableLink.
 func (l *pcapLink) SetFilter(expr string) error {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	if l.closed {
+		return ErrClosed
+	}
 	return l.handle.SetBPFFilter(expr)
 }
 
