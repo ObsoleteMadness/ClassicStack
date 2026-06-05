@@ -210,6 +210,10 @@ $("#btn-log-clear").addEventListener("click", () => {
   $("#log-output").textContent = "";
 });
 
+$("#btn-log-download").addEventListener("click", () => {
+  window.location.href = "/api/logs/download";
+});
+
 // ---- configuration editor ----
 async function loadConfig() {
   try {

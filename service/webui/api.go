@@ -26,6 +26,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/stats/stream", s.handleStatsStream)
 	s.mux.HandleFunc("/api/logs", s.handleLogHistory)
 	s.mux.HandleFunc("/api/logs/stream", s.handleLogStream)
+	s.mux.HandleFunc("/api/logs/download", s.handleLogDownload)
 
 	s.registerDiagnosticRoutes()
 }

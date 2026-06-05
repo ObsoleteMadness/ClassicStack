@@ -4,7 +4,10 @@ package webui
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
+	"time"
 )
 
 // handleLogHistory returns the retained recent log entries (oldest-first) as
@@ -15,6 +18,26 @@ func (s *Server) handleLogHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.opts.Plane.LogHistory())
+}
+
+// handleLogDownload serves the retained log history as a plain-text file
+// attachment (one entry per line: "2006-01-02 15:04:05.000 LEVEL message"),
+// for users who want to save or share the recent log without copying from the
+// viewer.
+func (s *Server) handleLogDownload(w http.ResponseWriter, r *http.Request) {
+	if s.opts.Plane == nil {
+		writeError(w, http.StatusServiceUnavailable, errNoPlane)
+		return
+	}
+	var b strings.Builder
+	for _, e := range s.opts.Plane.LogHistory() {
+		ts := time.UnixMilli(e.UnixMilli).Format("2006-01-02 15:04:05.000")
+		fmt.Fprintf(&b, "%s %-5s %s\n", ts, e.Level, e.Message)
+	}
+	filename := "classicstack-" + time.Now().Format("20060102-150405") + ".log"
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	_, _ = w.Write([]byte(b.String()))
 }
 
 // handleLogStream is a Server-Sent Events endpoint that first replays the
