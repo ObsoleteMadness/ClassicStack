@@ -1,10 +1,19 @@
+
 <div align="center">
 
 <img src="https://raw.githubusercontent.com/ObsoleteMadness/ClassicStack/main/icon256.png" alt="ClassicStack" width="256" height="256"/>
 
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/obsoletemadness/classicstack/release-main.yml)
+[![CodeFactor](https://www.codefactor.io/repository/github/obsoletemadness/classicstack/badge)](https://www.codefactor.io/repository/github/obsoletemadness/classicstack)
+![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/obsoletemadness/classicstack)
+![GitHub License](https://img.shields.io/github/license/obsoletemadness/classicstack)
+![GitHub repo size](https://img.shields.io/github/repo-size/obsoletemadness/classicstack)
+[![GitHub Repo stars](https://img.shields.io/github/stars/obsoletemadness/classicstack)](https://github.com/obsoletemadness/classicstack/stargazers)
+
+
 # ClassicStack
 
-ClassicStack is an AppleTalk router and classic LAN services stack that bridges legacy Macintosh networking into modern environments.
+ClassicStack is an AppleTalk router and classic LAN services stack that bridges legacy Macintosh and DOS networking into modern environments. Always in beta. 
 
 </div>
 
@@ -13,8 +22,20 @@ ClassicStack is an AppleTalk router and classic LAN services stack that bridges 
 - AppleTalk Phase 2 routing across EtherTalk and LocalTalk transports.
 - AFP file server over both classic DDP and modern TCP transports.
 - MacIP gateway for IP-over-AppleTalk clients.
+- MacIPX gateway for IPX-over-AppleTalk clients. 
 - Optional IPX, NetBEUI, NetBIOS, and SMB1 services (build-tag gated).
 - Shared raw-link bridge settings for EtherTalk, MacIP, IPX, and NetBEUI.
+
+## Releases
+Grab the latest release from Github Releases [releases](https://github.com/ObsoleteMadness/ClassicStack/releases/latest).
+
+## Screenshots
+
+![WebUI](./img/webui.png)
+The web interface. 
+
+![Doom](./img/doom.png)
+Doom running over MacIPX over AppleTalk over LtOUDP through Snow, back to IPX on 86box. 
 
 ## Build
 
