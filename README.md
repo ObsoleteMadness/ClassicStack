@@ -9,7 +9,7 @@
 ![GitHub License](https://img.shields.io/github/license/obsoletemadness/classicstack)
 ![GitHub repo size](https://img.shields.io/github/repo-size/obsoletemadness/classicstack)
 [![GitHub Repo stars](https://img.shields.io/github/stars/obsoletemadness/classicstack)](https://github.com/obsoletemadness/classicstack/stargazers)
-
+[![WARN-LLM GENERATED](https://img.shields.io/badge/WARN-LLM%20GENERATED-FF6347)](https://github.com/40ants/ai-badges)
 
 # ClassicStack
 
