@@ -217,6 +217,45 @@ func (t *RoutingTable) Age() {
 	}
 }
 
+// stateName maps an internal RTMP aging state to a human label. RTMP routers
+// age entries through Good → Suspect → Bad → (removed) on successive aging
+// ticks; receiving the route again resets it to Good. This validity state is
+// RTMP's notion of an entry's "age" — there is no wall-clock timestamp.
+func stateName(s int) string {
+	switch s {
+	case stateGood:
+		return "good"
+	case stateSus:
+		return "suspect"
+	case stateBad:
+		return "bad"
+	case stateWorst:
+		return "worst"
+	default:
+		return "unknown"
+	}
+}
+
+// RoutingTableSnapshotEntry is one routing-table entry plus its RTMP aging
+// state, for read-only diagnostics.
+type RoutingTableSnapshotEntry struct {
+	Entry *RoutingTableEntry
+	State string // RTMP aging state: good | suspect | bad | worst
+}
+
+// Snapshot returns every distinct routing-table entry with its RTMP aging
+// state. Directly-connected entries (Distance 0) are always "good"; learned
+// entries carry the state the aging machine has reached.
+func (t *RoutingTable) Snapshot() []RoutingTableSnapshotEntry {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	out := make([]RoutingTableSnapshotEntry, 0, len(t.entryByKey))
+	for k, e := range t.entryByKey {
+		out = append(out, RoutingTableSnapshotEntry{Entry: e, State: stateName(t.stateByKey[k])})
+	}
+	return out
+}
+
 func (t *RoutingTable) Entries() []struct {
 	Entry *RoutingTableEntry
 	Bad   bool

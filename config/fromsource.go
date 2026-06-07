@@ -22,6 +22,10 @@ func FromSource(src Source) *Model {
 	m.Logging.LogTraffic = boolv(k, "Logging.log_traffic", m.Logging.LogTraffic)
 	m.Logging.ParseOutput = str(k, "Logging.parse_output", m.Logging.ParseOutput)
 
+	if k.Exists("Router.ports") {
+		m.Router.Ports = k.Strings("Router.ports")
+	}
+
 	m.Bridge.Mode = str(k, "Bridge.mode", m.Bridge.Mode)
 	m.Bridge.Device = str(k, "Bridge.device", m.Bridge.Device)
 	m.Bridge.HWAddress = str(k, "Bridge.hw_address", m.Bridge.HWAddress)

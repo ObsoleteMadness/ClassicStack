@@ -32,6 +32,9 @@ type Supervisor interface {
 	StopService(name string) error
 	// RestartService restarts a single named unit (and its dependents).
 	RestartService(ctx context.Context, name string) error
+	// RestartAll restarts the whole stack (all ports, the router, and every
+	// hook) without a configuration change.
+	RestartAll(ctx context.Context) error
 	// ListInterfaces returns the host's network interfaces for the
 	// EtherTalk/IPX/NetBEUI/MacIP dropdowns. Each entry carries the device
 	// Name pcap opens plus a human-friendly Description and addresses so the
@@ -185,4 +188,12 @@ func (p *Plane) RestartService(ctx context.Context, name string) error {
 		return ErrNoSupervisor
 	}
 	return p.sup.RestartService(ctx, name)
+}
+
+// RestartAll restarts the whole stack without a configuration change.
+func (p *Plane) RestartAll(ctx context.Context) error {
+	if p.sup == nil {
+		return ErrNoSupervisor
+	}
+	return p.sup.RestartAll(ctx)
 }

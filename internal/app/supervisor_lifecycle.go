@@ -18,15 +18,10 @@ func (s *Supervisor) Start(ctx context.Context) error {
 		return fmt.Errorf("supervisor already started")
 	}
 
-	if err := s.router.Start(ctx); err != nil {
-		return fmt.Errorf("router start: %w", err)
-	}
-	netlog.Info("[SUP] router away!")
-	s.reg.SetRunning("Router", true)
-	for _, name := range s.portNames {
-		s.reg.SetRunning(name, true)
-	}
-
+	// Ports and the AppleTalk router are now hooks in s.order (ports first, then
+	// the router, then the DDP subsystems that ride it), so the single walk
+	// below brings the whole stack up in dependency order. Nothing is started
+	// inline here any more.
 	s.ctx = ctx
 	for _, name := range s.order {
 		if s.alreadyRunning[name] {
@@ -89,16 +84,11 @@ func (s *Supervisor) Stop() error {
 		close(s.statusTickerStop)
 		s.statusTickerStop = nil
 	}
+	// Tear the stack down in reverse start order: DDP subsystems, then the
+	// router, then the ports — all driven through the hook lifecycle.
 	for i := len(s.order) - 1; i >= 0; i-- {
 		name := s.order[i]
 		s.stopHookLocked(name)
-	}
-	if err := s.router.Stop(); err != nil {
-		netlog.Warn("[SUP] router stop warning: %v", err)
-	}
-	s.reg.SetRunning("Router", false)
-	for _, name := range s.portNames {
-		s.reg.SetRunning(name, false)
 	}
 	s.closeSinks()
 	s.started = false

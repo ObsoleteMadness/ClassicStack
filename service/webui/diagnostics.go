@@ -14,6 +14,7 @@ func (s *Server) registerDiagnosticRoutes() {
 	s.mux.HandleFunc("/api/diag/zones", s.handleDiagZones)
 	s.mux.HandleFunc("/api/diag/zip", s.handleDiagZIP)
 	s.mux.HandleFunc("/api/diag/ddp", s.handleDiagDDP)
+	s.mux.HandleFunc("/api/diag/rtmp", s.handleDiagRTMP)
 	s.mux.HandleFunc("/api/diag/aep-echo", s.handleDiagAEPEcho)
 	s.mux.HandleFunc("/api/diag/smb-browse", s.handleDiagSMBBrowse)
 	s.mux.HandleFunc("/api/diag/macip-leases", s.handleDiagMacIPLeases)
@@ -56,6 +57,19 @@ func (s *Server) handleDiagDDP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, nets)
+}
+
+func (s *Server) handleDiagRTMP(w http.ResponseWriter, r *http.Request) {
+	if s.opts.Plane == nil {
+		writeError(w, http.StatusServiceUnavailable, errNoPlane)
+		return
+	}
+	entries, err := s.opts.Plane.Diagnostics().RTMPTable(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, entries)
 }
 
 func (s *Server) handleDiagAEPEcho(w http.ResponseWriter, r *http.Request) {

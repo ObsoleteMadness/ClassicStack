@@ -9,10 +9,12 @@ import (
 
 // Frame is a per-second snapshot of streamed statistics pushed to UI
 // subscribers. Rates holds derived per-second deltas for counter metrics;
-// Gauges holds the latest absolute value for gauge metrics.
+// Totals holds the latest cumulative value for those same counters; Gauges
+// holds the latest absolute value for gauge metrics.
 type Frame struct {
 	UnixMilli int64            `json:"t"`
 	Rates     map[string]int64 `json:"rates,omitempty"`
+	Totals    map[string]int64 `json:"totals,omitempty"`
 	Gauges    map[string]int64 `json:"gauges,omitempty"`
 }
 
@@ -71,10 +73,12 @@ func (b *statsBroadcaster) broadcast() {
 	frame := Frame{
 		UnixMilli: time.Now().UnixMilli(),
 		Rates:     make(map[string]int64, len(b.counters)),
+		Totals:    make(map[string]int64, len(b.counters)),
 		Gauges:    make(map[string]int64, len(b.gauges)),
 	}
 	for name, v := range b.counters {
 		frame.Rates[name] = v - b.prev[name]
+		frame.Totals[name] = v
 		b.prev[name] = v
 	}
 	for name, v := range b.gauges {

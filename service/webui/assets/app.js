@@ -10,6 +10,7 @@ const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
 let currentConfig = null; // last-loaded config model (edited in place)
 let latestRates = {}; // metric name -> per-second rate from SSE (counters)
+let latestTotals = {}; // metric name -> cumulative total from SSE (counters)
 let latestGauges = {}; // metric name -> latest absolute value from SSE (gauges)
 // pendingServices holds the names of services with an in-flight start/stop/
 // restart action. While pending, the card shows a spinner and its action
@@ -56,11 +57,11 @@ function renderStatus(units) {
     if (u.shares && u.shares.length)
       detail += kv("Shares", u.shares.map((s) => s.name).join(", "));
 
-    // Hooks are individually start/stoppable: the transport/service hooks
-    // (IPX/NetBEUI/NetBIOS/SMB/WebUI) and the AppleTalk DDP subsystems
-    // (AFP/MacIP/IPXGW) the supervisor now drives via the router's runtime
-    // AddService/RemoveService. Ports and the core router-set share the stack
-    // lifecycle and so are not controllable.
+    // Every unit the supervisor drives as a hook is individually
+    // start/stoppable: the ports/transports (LToUDP/TashTalk/EtherTalk), the
+    // AppleTalk router, the DDP subsystems (AFP/MacIP/IPXGW), the
+    // NetBIOS-family hooks (IPX/NetBEUI/NetBIOS/SMB), and the Web UI. Ports run
+    // independently of the router; the DDP subsystems depend on it.
     const controllable = u.kind === "hook";
     const pending = pendingServices.has(u.name);
     const dis = pending ? " disabled" : "";
@@ -81,18 +82,28 @@ function renderStatus(units) {
       ? "Working…"
       : `${u.enabled ? "Enabled" : "Disabled"} · ${u.running ? "Running" : "Stopped"}`;
 
+    // A cog opens this unit's config modal — shown only for units that have at
+    // least one config panel mapped to them.
+    const hasConfig = panelsForUnit(u.name).length > 0;
+    const cog = hasConfig
+      ? `<button class="cog" data-config="${esc(u.name)}" title="Configure ${esc(u.name)}" aria-label="Configure ${esc(u.name)}">⚙</button>`
+      : "";
+
     card.innerHTML = `
-      <h3>${indicator}${esc(u.name)}</h3>
+      <h3>${indicator}<span class="card-title">${esc(u.name)}</span>${cog}</h3>
       <div class="kv">${stateLine}</div>
       ${detail}
-      <div class="kv metric hidden" data-metric-for="${esc(u.name)}"></div>
+      <div class="kv metric" data-metric-for="${esc(u.name)}"></div>
       <div class="card-actions">${controls}</div>
     `;
     card.querySelectorAll("[data-action]").forEach((btn) =>
       btn.addEventListener("click", () => serviceAction(btn.dataset.svc, btn.dataset.action))
     );
+    const cogBtn = card.querySelector("[data-config]");
+    if (cogBtn) cogBtn.addEventListener("click", () => openServiceConfig(cogBtn.dataset.config));
     grid.appendChild(card);
   });
+  renderMetrics(); // populate the just-built cards from the last SSE frame
 }
 
 function kv(k, v) {
@@ -123,12 +134,9 @@ function startStats() {
     try {
       const frame = JSON.parse(ev.data);
       latestRates = frame.rates || {};
+      latestTotals = frame.totals || {};
       latestGauges = frame.gauges || {};
-      $$("[data-metric-for]").forEach((el) => {
-        const text = metricsForUnit(el.getAttribute("data-metric-for"));
-        el.textContent = text;
-        el.classList.toggle("hidden", text === "");
-      });
+      renderMetrics();
     } catch (_) {}
   };
   es.onerror = () => {
@@ -136,36 +144,58 @@ function startStats() {
   };
 }
 
+// renderMetrics writes each card's live-stats line from the latest SSE frame.
+// Called on every frame and on each status re-render so a freshly built card
+// shows the last-known stats immediately rather than waiting for the next tick.
+function renderMetrics() {
+  $$("[data-metric-for]").forEach((el) => {
+    el.innerHTML = metricsForUnit(el.getAttribute("data-metric-for"));
+  });
+}
+
 // Producers publish samples named "unit:<UnitName>:<metric>" so each sample
-// attributes to exactly one dashboard card. unitMetric reads the per-second
-// rate (counters) or latest value (gauges) for one such metric, or 0.
+// attributes to exactly one dashboard card. These read the per-second rate,
+// the cumulative total (counters) or the latest value (gauges) for one such
+// metric.
 function unitRate(unit, metric) {
   return latestRates[`unit:${unit}:${metric}`] || 0;
+}
+function unitTotal(unit, metric) {
+  return latestTotals[`unit:${unit}:${metric}`] || 0;
 }
 function unitGauge(unit, metric) {
   return latestGauges[`unit:${unit}:${metric}`];
 }
 
-// metricsForUnit renders a one-line live summary for a card: rx/tx throughput
-// for ports (packets and bytes per second) plus any gauge value the unit
-// publishes (e.g. active sessions). Returns "" when the unit has no live
-// metrics, so the line is hidden rather than showing a bare "0/s".
+// metricsForUnit renders the live summary for a card: cumulative rx/tx packet
+// totals plus current throughput for ports, and any gauge value the unit
+// publishes (e.g. active sessions). The traffic line is always shown for units
+// that report traffic counters (even when idle, so the totals stay visible);
+// returns "" only for units that publish no metrics at all.
 function metricsForUnit(unit) {
   const parts = [];
-  const rxp = unitRate(unit, "rx.packets");
-  const txp = unitRate(unit, "tx.packets");
-  const rxb = unitRate(unit, "rx.bytes");
-  const txb = unitRate(unit, "tx.bytes");
-  const hasTraffic = [`unit:${unit}:rx.packets`, `unit:${unit}:tx.packets`].some(
-    (n) => n in latestRates
-  );
+  const hasTraffic =
+    `unit:${unit}:rx.packets` in latestTotals || `unit:${unit}:tx.packets` in latestTotals;
   if (hasTraffic) {
-    parts.push(`↓ ${rxp} pkt/s (${fmtBytes(rxb)}/s)`);
-    parts.push(`↑ ${txp} pkt/s (${fmtBytes(txb)}/s)`);
+    const rxt = unitTotal(unit, "rx.packets");
+    const txt = unitTotal(unit, "tx.packets");
+    const rxp = unitRate(unit, "rx.packets");
+    const txp = unitRate(unit, "tx.packets");
+    const rxb = unitRate(unit, "rx.bytes");
+    const txb = unitRate(unit, "tx.bytes");
+    parts.push(
+      `↓ ${fmtCount(rxt)} pkt (${rxp}/s, ${fmtBytes(rxb)}/s)`,
+      `↑ ${fmtCount(txt)} pkt (${txp}/s, ${fmtBytes(txb)}/s)`,
+    );
   }
   const sessions = unitGauge(unit, "sessions");
   if (sessions !== undefined) parts.push(`${sessions} session${sessions === 1 ? "" : "s"}`);
-  return parts.join(" · ");
+  return parts.map(esc).join(" · ");
+}
+
+// fmtCount renders a packet count with thousands separators for readability.
+function fmtCount(n) {
+  return Number(n).toLocaleString();
 }
 
 // fmtBytes renders a byte count as B/KB/MB with one decimal for the larger
@@ -266,24 +296,30 @@ const IPX_FRAMINGS = ["ethernet_ii", "raw_802_3", "llc", "snap"];
 const CONFIG_PANELS = [
   {
     title: "LocalTalk over UDP",
+    units: ["LToUDP"],
     fields: [
       { label: "Enabled", path: "LToUdp.enabled", type: "bool" },
       { label: "Interface", path: "LToUdp.interface", type: "text" },
       { label: "Zone Name", path: "LToUdp.seed_zone", type: "text" },
       { label: "Seed Network", path: "LToUdp.seed_network", type: "number" },
+      { label: "Attach to AppleTalk router", path: "LToUdp", type: "router-port", port: "LToUdp" },
     ],
   },
   {
     title: "TashTalk (LocalTalk)",
+    units: ["TashTalk"],
     fields: [
       { label: "Serial Port", path: "TashTalk.port", type: "serial" },
       { label: "Zone Name", path: "TashTalk.seed_zone", type: "text" },
       { label: "Seed Network", path: "TashTalk.seed_network", type: "number" },
+      { label: "Attach to AppleTalk router", path: "TashTalk", type: "router-port", port: "TashTalk" },
     ],
   },
   {
     // The shared virtual interface protocols inherit unless they go Custom.
     title: "Bridge (shared interface)",
+    // EtherTalk (and other bridge consumers) edit the shared Bridge too.
+    units: ["EtherTalk"],
     fields: [
       { label: "Mode", path: "Bridge.mode", type: "select", options: IFACE_MODES },
       { label: "Device", path: "Bridge.device", type: "iface" },
@@ -293,20 +329,24 @@ const CONFIG_PANELS = [
   },
   {
     title: "EtherTalk",
+    units: ["EtherTalk"],
     interfaceFor: "EtherTalk",
     fields: [
       { label: "Zone Name", path: "EtherTalk.seed_zone", type: "text" },
       { label: "Seed Net Min", path: "EtherTalk.seed_network_min", type: "number" },
       { label: "Seed Net Max", path: "EtherTalk.seed_network_max", type: "number" },
+      { label: "Attach to AppleTalk router", path: "EtherTalk", type: "router-port", port: "EtherTalk" },
     ],
   },
   {
     title: "NetBEUI (NBF)",
+    units: ["NetBEUI"],
     interfaceFor: "NetBEUI",
     fields: [{ label: "Enabled", path: "NetBEUI.enabled", type: "bool" }],
   },
   {
     title: "IPX",
+    units: ["IPX"],
     interfaceFor: "IPX",
     fields: [
       { label: "Enabled", path: "IPX.enabled", type: "bool" },
@@ -316,6 +356,7 @@ const CONFIG_PANELS = [
   },
   {
     title: "IPX Gateway (MacIPX)",
+    units: ["IPXGW"],
     fields: [
       { label: "Enabled", path: "IPXGW.enabled", type: "bool", hint: "Register an 'IPX Gateway' NBP name so MacIPX clients can discover us." },
       {
@@ -329,6 +370,7 @@ const CONFIG_PANELS = [
   },
   {
     title: "MacIP Gateway",
+    units: ["MacIP"],
     interfaceFor: "MacIP",
     fields: [
       { label: "Enabled", path: "MacIP.enabled", type: "bool" },
@@ -345,6 +387,7 @@ const CONFIG_PANELS = [
   },
   {
     title: "AFP File Server",
+    units: ["AFP"],
     editor: {
       title: "AFP Volumes",
       section: "AFP",
@@ -363,7 +406,23 @@ const CONFIG_PANELS = [
     ],
   },
   {
+    title: "NetBIOS",
+    units: ["NetBIOS"],
+    fields: [
+      { label: "Enabled", path: "NetBIOS.enabled", type: "bool" },
+      {
+        label: "Transports",
+        path: "NetBIOS.transports",
+        type: "stringlist",
+        placeholder: "ipx | netbeui",
+        hint: "Transports NetBIOS binds (e.g. ipx, netbeui). Leave empty for the defaults.",
+      },
+      { label: "Scope ID", path: "NetBIOS.scope_id", type: "text" },
+    ],
+  },
+  {
     title: "SMB Server",
+    units: ["SMB"],
     editor: {
       title: "SMB Shares",
       section: "SMB",
@@ -396,10 +455,22 @@ const CONFIG_PANELS = [
   },
   {
     title: "Web UI",
+    units: ["WebUI"],
     fields: [
       { label: "Enabled", path: "WebUI.enabled", type: "bool" },
       { label: "Bind", path: "WebUI.bind", type: "text" },
       { label: "TLS", path: "WebUI.tls", type: "bool" },
+    ],
+  },
+  {
+    // The AppleTalk router has no parameters of its own beyond which transports
+    // it binds; surface those toggles here so the Router card's cog is useful.
+    title: "AppleTalk Router",
+    units: ["Router"],
+    fields: [
+      { label: "Bind LToUDP", path: "LToUdp", type: "router-port", port: "LToUdp" },
+      { label: "Bind TashTalk", path: "TashTalk", type: "router-port", port: "TashTalk" },
+      { label: "Bind EtherTalk", path: "EtherTalk", type: "router-port", port: "EtherTalk" },
     ],
   },
 ];
@@ -417,29 +488,48 @@ function ifaceLabel(i) {
   return label;
 }
 
-async function renderConfig(cfg) {
+// loadConfigLists fetches the dropdown option sets (interfaces, serial ports,
+// fs-types) the config fields need. Shared by the full editor and the
+// per-service modal so both render the same friendly selectors.
+async function loadConfigLists() {
   [interfaceList, serialList, fsTypeList] = await Promise.all([
     fetchJSON("/api/interfaces").catch(() => []),
     fetchJSON("/api/serial-ports").catch(() => []),
     fetchJSON("/api/fs-types").catch(() => ["local_fs"]),
   ]);
   if (!fsTypeList || !fsTypeList.length) fsTypeList = ["local_fs"];
+}
 
+// renderPanel builds one config panel (a <fieldset>) bound to cfg, including
+// its fields, optional interface chooser, and optional share/volume editor. It
+// is the unit of reuse shared by the full Configuration tab and the per-service
+// modal opened from a dashboard card's cog.
+function renderPanel(cfg, panel) {
+  const fs = document.createElement("fieldset");
+  fs.className = "config-panel";
+  const legend = document.createElement("legend");
+  legend.textContent = panel.title;
+  fs.appendChild(legend);
+  panel.fields.forEach((f) => fs.appendChild(renderField(cfg, f)));
+  // A per-service Bridge/Custom interface chooser, when the panel declares one.
+  if (panel.interfaceFor) fs.appendChild(renderInterfaceChooser(cfg, panel.interfaceFor));
+  // A grouped volume/share editor, when the panel declares one.
+  if (panel.editor) fs.appendChild(renderShareEditor(cfg, panel.editor.title, panel.editor.section, panel.editor.columns));
+  return fs;
+}
+
+async function renderConfig(cfg) {
+  await loadConfigLists();
   const root = $("#config-panels");
   root.innerHTML = "";
-  CONFIG_PANELS.forEach((panel) => {
-    const fs = document.createElement("fieldset");
-    fs.className = "config-panel";
-    const legend = document.createElement("legend");
-    legend.textContent = panel.title;
-    fs.appendChild(legend);
-    panel.fields.forEach((f) => fs.appendChild(renderField(cfg, f)));
-    // A per-service Bridge/Custom interface chooser, when the panel declares one.
-    if (panel.interfaceFor) fs.appendChild(renderInterfaceChooser(cfg, panel.interfaceFor));
-    // A grouped volume/share editor, when the panel declares one.
-    if (panel.editor) fs.appendChild(renderShareEditor(cfg, panel.editor.title, panel.editor.section, panel.editor.columns));
-    root.appendChild(fs);
-  });
+  CONFIG_PANELS.forEach((panel) => root.appendChild(renderPanel(cfg, panel)));
+}
+
+// panelsForUnit returns the config panels that edit the given dashboard unit,
+// matched by the panel's `units` tag (a unit may span several panels, e.g.
+// EtherTalk edits both its own panel and the shared Bridge panel).
+function panelsForUnit(unit) {
+  return CONFIG_PANELS.filter((p) => Array.isArray(p.units) && p.units.includes(unit));
 }
 
 // renderInterfaceChooser renders the per-service interface selector: a
@@ -783,6 +873,19 @@ function renderField(cfg, f) {
       setPath(cfg, f.path, input.checked);
       setDirty(true);
     });
+  } else if (f.type === "router-port") {
+    // Router attachment lives in the [Router].ports allow-list, not on the
+    // transport. The checkbox reflects/edits membership: an empty/absent list
+    // means "bind every transport" (the default), so an unset list shows
+    // checked. Toggling off switches the list to an explicit allow-list of the
+    // other transports; toggling the last one back on clears it to empty again.
+    input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = routerBindsPort(cfg, f.port);
+    input.addEventListener("change", () => {
+      setRouterPort(cfg, f.port, input.checked);
+      setDirty(true);
+    });
   } else if (f.type === "iface") {
     input = buildInterfaceSelect(val, (v) => {
       setPath(cfg, f.path, v);
@@ -828,6 +931,39 @@ function renderField(cfg, f) {
   }
   row.appendChild(input);
   return row;
+}
+
+// The transports the [Router].ports allow-list can name. Mirrors the Go
+// RouterPort* constants (config/model.go) and the TOML section names.
+const ROUTER_PORTS = ["LToUdp", "TashTalk", "EtherTalk"];
+
+// routerBindsPort mirrors config.RouterModel.BindsPort: an empty/absent list
+// binds every transport; otherwise only listed ones (case-insensitive).
+function routerBindsPort(cfg, name) {
+  const ports = (cfg.Router && cfg.Router.ports) || [];
+  if (ports.length === 0) return true;
+  return ports.some((p) => String(p).trim().toLowerCase() === name.toLowerCase());
+}
+
+// setRouterPort toggles a transport's membership in [Router].ports while
+// preserving the "empty = all" convention: the list is only made explicit when
+// some transport is detached, and collapses back to empty once all are
+// attached again.
+function setRouterPort(cfg, name, attached) {
+  if (!cfg.Router) cfg.Router = {};
+  // Start from the effective attached set (empty list ⇒ everything).
+  let set = routerBindsPort(cfg, "")
+    ? new Set(ROUTER_PORTS)
+    : new Set(ROUTER_PORTS.filter((p) => routerBindsPort(cfg, p)));
+  if (attached) set.add(name);
+  else set.delete(name);
+  // All attached ⇒ collapse to empty (the clean default); otherwise emit the
+  // explicit allow-list in canonical order.
+  if (ROUTER_PORTS.every((p) => set.has(p))) {
+    delete cfg.Router.ports;
+  } else {
+    cfg.Router.ports = ROUTER_PORTS.filter((p) => set.has(p));
+  }
 }
 
 function getPath(obj, path) {
@@ -878,6 +1014,85 @@ $("#btn-save").addEventListener("click", async () => {
 
 function setConfigStatus(msg) {
   $("#config-status").textContent = msg;
+}
+
+// ---- per-service config modal ----
+// A dashboard card's cog opens a modal showing just that service's config
+// panels (the same fields as the Configuration tab). Apply stages the edited
+// model and runs a live Apply, which the supervisor handles as an atomic
+// whole-stack rebuild — so the edited service restarts with the new config.
+// Edits are NOT written to disk; the modal makes that explicit.
+let modalConfig = null; // deep clone of the config edited inside the modal
+let modalUnit = null; // unit name the modal is currently editing
+
+async function openServiceConfig(unit) {
+  const panels = panelsForUnit(unit);
+  if (!panels.length) return;
+  try {
+    await loadConfigLists();
+    const resp = await fetchJSON("/api/config");
+    // Edit a deep clone so closing without Apply discards the changes and the
+    // dashboard's own config view is untouched.
+    modalConfig = JSON.parse(JSON.stringify(resp.config || {}));
+    modalUnit = unit;
+  } catch (e) {
+    alert("Could not load config: " + e.message);
+    return;
+  }
+
+  $("#modal-title").textContent = "Configure " + unit;
+  const body = $("#modal-body");
+  body.innerHTML = "";
+  panels.forEach((p) => body.appendChild(renderPanel(modalConfig, p)));
+  setModalStatus("");
+  $("#service-modal").classList.remove("hidden");
+}
+
+function closeServiceConfig() {
+  $("#service-modal").classList.add("hidden");
+  modalConfig = null;
+  modalUnit = null;
+}
+
+function setModalStatus(msg) {
+  $("#modal-status").textContent = msg;
+}
+
+// Wire the modal's static controls once at load.
+(function initServiceModal() {
+  const modal = $("#service-modal");
+  if (!modal) return;
+  $("#modal-close").addEventListener("click", closeServiceConfig);
+  $("#modal-cancel").addEventListener("click", closeServiceConfig);
+  // Click on the dimmed backdrop (outside the dialog) closes the modal.
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) closeServiceConfig();
+  });
+  // Escape closes it too.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !modal.classList.contains("hidden")) closeServiceConfig();
+  });
+  $("#modal-apply").addEventListener("click", applyServiceConfig);
+})();
+
+async function applyServiceConfig() {
+  if (!modalConfig || !modalUnit) return;
+  const applyBtn = $("#modal-apply");
+  applyBtn.disabled = true;
+  setModalStatus("Applying…");
+  try {
+    await putJSON("/api/config", modalConfig);
+    await postJSON("/api/config/apply", null);
+    // The whole-stack Apply restarts the affected service; reflect it on the
+    // dashboard and mark the live config dirty (applied but not saved).
+    setDirty(true);
+    closeServiceConfig();
+    loadStatus();
+  } catch (e) {
+    setModalStatus("Apply failed: " + e.message);
+  } finally {
+    applyBtn.disabled = false;
+  }
 }
 
 // ---- extension-map editor ----
@@ -943,6 +1158,27 @@ $$("[data-diag]").forEach((btn) => {
     }
   });
 });
+
+// Restart the whole stack (all ports, the router, and every hook). The Web UI
+// server is preserved across the rebuild, so this connection survives.
+const restartAllBtn = $("#btn-restart-all");
+if (restartAllBtn) {
+  restartAllBtn.addEventListener("click", async () => {
+    if (!confirm("Restart the whole stack? Active sessions will be dropped.")) return;
+    const out = $("#diag-output");
+    restartAllBtn.disabled = true;
+    out.textContent = "Restarting stack…";
+    try {
+      await postJSON("/api/restart-all", null);
+      out.textContent = "Stack restarted.";
+      loadStatus();
+    } catch (e) {
+      out.textContent = "Restart failed: " + e.message;
+    } finally {
+      restartAllBtn.disabled = false;
+    }
+  });
+}
 
 // ---- fetch helpers ----
 async function fetchJSON(url) {

@@ -15,6 +15,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/port"
 	"github.com/ObsoleteMadness/ClassicStack/port/ethertalk"
 	"github.com/ObsoleteMadness/ClassicStack/port/localtalk"
+	"github.com/ObsoleteMadness/ClassicStack/protocol/ddp"
 	"github.com/ObsoleteMadness/ClassicStack/router"
 	"github.com/ObsoleteMadness/ClassicStack/service"
 	"github.com/ObsoleteMadness/ClassicStack/service/aep"
@@ -43,15 +44,23 @@ type Supervisor struct {
 	model  *config.Model
 	reg    *status.Registry
 
-	mu        sync.Mutex
-	ctx       context.Context
-	router    *router.Router
-	ports     []port.Port
-	portNames []string        // status-unit name per entry in ports
-	meters    []*portMeter    // per-port traffic meters (nil entries skipped)
-	hooks     map[string]hook // name -> standalone hook (ipx, netbeui, …)
-	order     []string        // hook start order; stop walks it in reverse
-	started   bool
+	mu         sync.Mutex
+	ctx        context.Context
+	router     *router.Router
+	ports      []port.Port     // all built ports (routed + standalone)
+	portNames  []string        // status-unit name per entry in ports
+	portRouted []bool          // routed flag per entry in ports (parallel to portNames)
+	meters     []*portMeter    // per-port traffic meters (nil entries skipped)
+	hooks      map[string]hook // name -> standalone hook (ipx, netbeui, …)
+	order      []string        // hook start order; stop walks it in reverse
+	started    bool
+
+	// portHooks maps each port's status-unit name to the hook that owns its
+	// lifecycle, so the router hook can adopt/detach routed ports as it
+	// starts/stops. routerHook is the hook over the AppleTalk routing services.
+	// Both are also recorded in hooks/order like any other unit.
+	portHooks  map[string]*portHook
+	routerHook *routerHook
 
 	// captureSinks are closed on Stop.
 	captureSinks []closer
@@ -112,11 +121,12 @@ type closer interface{ Close() error }
 // constructs but does not start anything; call Start to bring it up.
 func NewSupervisor(cfg appConfig, source config.Source, model *config.Model) (*Supervisor, error) {
 	s := &Supervisor{
-		cfg:    cfg,
-		source: source,
-		model:  model,
-		reg:    status.Default,
-		hooks:  make(map[string]hook),
+		cfg:       cfg,
+		source:    source,
+		model:     model,
+		reg:       status.Default,
+		hooks:     make(map[string]hook),
+		portHooks: make(map[string]*portHook),
 	}
 	if err := s.build(); err != nil {
 		return nil, err
@@ -144,7 +154,16 @@ func (s *Supervisor) build() error {
 		return err
 	}
 
-	s.router = router.New("router", ports, services)
+	// The router is built with NO ports in its set: ports are independent units
+	// driven by their own hooks. Routed ports attach themselves to the router
+	// when both are running (see buildPortAndRouterHooks / portHook).
+	s.router = router.New("router", nil, services)
+
+	// Wrap the router and each port in lifecycle hooks so the management UI can
+	// start/stop them individually, recording them as the first units in start
+	// order (the router, then the ports, then — via buildHooks — the DDP
+	// subsystems that ride it).
+	s.buildPortAndRouterHooks()
 
 	// Traffic logging is driven by config so toggling it from the UI takes
 	// effect on Apply. Disabling clears the sink.
@@ -175,19 +194,23 @@ func (s *Supervisor) build() error {
 	return nil
 }
 
-// buildPorts constructs the configured ports and attaches capture sinks.
+// buildPorts constructs the configured ports and attaches capture sinks. Each
+// port records, via registerPortStatus, whether it is router-attached (the
+// routed flag, derived from the [Router].ports allow-list — a router-config
+// setting, not a per-port one). The port hooks built later consult that flag to
+// decide whether a running port attaches to the router (see portHook).
 func (s *Supervisor) buildPorts() ([]port.Port, []closer, error) {
 	cfg := s.cfg
 	var ports []port.Port
 	if cfg.LToUDP.Enabled {
 		p := localtalk.NewLtoudpPort(cfg.LToUDP.Interface, uint16(cfg.LToUDP.SeedNetwork), []byte(cfg.LToUDP.SeedZone))
 		ports = append(ports, p)
-		s.registerPortStatus("LToUDP", p, true, map[string]string{"seed_zone": cfg.LToUDP.SeedZone})
+		s.registerPortStatus("LToUDP", p, true, cfg.LToUDPAttachRouter, map[string]string{"seed_zone": cfg.LToUDP.SeedZone})
 	}
 	if cfg.TashTalk.Port != "" {
 		p := localtalk.NewTashTalkPort(cfg.TashTalk.Port, uint16(cfg.TashTalk.SeedNetwork), []byte(cfg.TashTalk.SeedZone))
 		ports = append(ports, p)
-		s.registerPortStatus("TashTalk", p, true, map[string]string{"seed_zone": cfg.TashTalk.SeedZone})
+		s.registerPortStatus("TashTalk", p, true, cfg.TashTalkAttachRouter, map[string]string{"seed_zone": cfg.TashTalk.SeedZone})
 	}
 	if cfg.EtherTalk.Device != "" {
 		ep, err := s.buildEtherTalkPort()
@@ -195,7 +218,9 @@ func (s *Supervisor) buildPorts() ([]port.Port, []closer, error) {
 			return nil, nil, err
 		}
 		ports = append(ports, ep)
-		s.registerPortStatus("EtherTalk", ep, true, map[string]string{"device": cfg.EtherTalk.Device, "seed_zone": cfg.EtherTalk.SeedZone})
+		// The bound interface is carried by Binding (the port's ShortString);
+		// don't duplicate it as a "device" property.
+		s.registerPortStatus("EtherTalk", ep, true, cfg.EtherTalkAttachRouter, map[string]string{"seed_zone": cfg.EtherTalk.SeedZone})
 	}
 	if len(ports) == 0 {
 		return nil, nil, fmt.Errorf("no ports configured")
@@ -222,6 +247,14 @@ func (s *Supervisor) buildPorts() ([]port.Port, []closer, error) {
 	}
 	return ports, sinks, nil
 }
+
+// noopRouterHooks is the port.RouterHooks sink given to standalone ports. A
+// standalone port is detached from the router: it still comes up, acquires its
+// node, and feeds capture sinks / traffic meters / the observer, but its decoded
+// inbound datagrams are intentionally dropped here rather than routed.
+type noopRouterHooks struct{}
+
+func (noopRouterHooks) Inbound(ddp.Datagram, port.Port) {}
 
 func (s *Supervisor) buildEtherTalkPort() (port.Port, error) {
 	cfg := s.cfg
@@ -280,7 +313,7 @@ func (s *Supervisor) buildServices() ([]service.Service, error) {
 		"zone":          cfg.EtherTalk.SeedZone,
 		"parse_packets": boolStr(cfg.ParsePackets),
 		"log_traffic":   boolStr(cfg.LogTraffic),
-		"captures":      s.activeCaptureSummary(),
+		"captures":      s.appleTalkCaptureSummary(),
 	})
 
 	macIP, err := wireMacIP(MacIPConfig{
@@ -612,6 +645,52 @@ func (s *Supervisor) ddpServiceEnabled(name string) bool {
 	}
 }
 
+// buildPortAndRouterHooks wraps the AppleTalk router and each configured port
+// in a lifecycle hook and records them as the first restartable units, in start
+// order: the router first, then every port. Starting the router before the
+// ports lets each routed port join the live router with the clean AddPort path
+// (rather than coming up detached and being re-attached). The two are otherwise
+// loosely coupled — a port runs whether or not the router is up, and the router
+// routes whatever ports happen to be up — so no dependency edges are declared
+// between them. The DDP subsystems (built later) do depend on the router.
+func (s *Supervisor) buildPortAndRouterHooks() {
+	s.routerHook = newRouterHook(s.router, s.routedPortHooks)
+	s.hooks["Router"] = s.routerHook
+	s.order = append(s.order, "Router")
+	// Promote the Router unit (registered in buildServices) to a hook so the
+	// dashboard surfaces lifecycle controls. It declares no DependsOn (loosely
+	// coupled to ports); the DDP subsystems depend on it, not the reverse.
+	s.promoteUnitToHook("Router", true, nil)
+
+	routerRunning := func() bool { return s.routerHook != nil && s.routerHook.IsRunning() }
+	for i, p := range s.ports {
+		name := s.portNames[i]
+		routed := s.portRouted[i]
+		h := newPortHook(p, s.router, routed, routerRunning)
+		s.portHooks[name] = h
+		s.hooks[name] = h
+		s.order = append(s.order, name)
+		// Promote the already-registered port unit to a hook so the dashboard
+		// surfaces start/stop/restart controls; the hook lifecycle drives its
+		// Running flag. Ports are independent of the router (no DependsOn).
+		s.promoteUnitToHook(name, true, nil)
+	}
+}
+
+// routedPortHooks returns the port hooks for the router-attached ports, in
+// registration order, for the router hook to adopt/detach on start/stop.
+func (s *Supervisor) routedPortHooks() []*portHook {
+	out := make([]*portHook, 0, len(s.portNames))
+	for i, name := range s.portNames {
+		if s.portRouted[i] {
+			if h := s.portHooks[name]; h != nil {
+				out = append(out, h)
+			}
+		}
+	}
+	return out
+}
+
 // buildDDPServiceHooks wraps each recorded DDP service group in a
 // ddpServiceHook and registers it as a restartable unit. It re-Sets the unit's
 // status to KindHook (preserving the enriched properties registered earlier)
@@ -626,15 +705,19 @@ func (s *Supervisor) buildDDPServiceHooks() {
 		}
 		s.hooks[name] = h
 		s.order = append(s.order, name)
-		s.promoteUnitToHook(name, s.ddpServiceEnabled(name))
+		// DDP subsystems ride the AppleTalk router's service set, so they depend
+		// on the Router: stopping the router stops them (and they restart with
+		// it), and the UI surfaces that ordering.
+		s.promoteUnitToHook(name, s.ddpServiceEnabled(name), []string{"Router"})
 	}
 }
 
 // promoteUnitToHook re-publishes an already-registered status unit as a
 // KindHook (so the UI shows lifecycle controls) while preserving its binding,
-// properties, and other detail. The unit starts not-running; the hook
-// lifecycle sets the running flag.
-func (s *Supervisor) promoteUnitToHook(name string, enabled bool) {
+// properties, and other detail. dependsOn records lifecycle ordering for the
+// dashboard and the dependents-of cascade. The unit starts not-running; the
+// hook lifecycle sets the running flag.
+func (s *Supervisor) promoteUnitToHook(name string, enabled bool, dependsOn []string) {
 	for _, u := range s.reg.Snapshot() {
 		if u.Name != name {
 			continue
@@ -642,6 +725,7 @@ func (s *Supervisor) promoteUnitToHook(name string, enabled bool) {
 		u.Kind = status.KindHook
 		u.Enabled = enabled
 		u.Running = false
+		u.DependsOn = dependsOn
 		s.reg.Set(u)
 		return
 	}
@@ -662,11 +746,14 @@ func (s *Supervisor) addHook(name string, h hook, enabled bool, dependsOn []stri
 	})
 }
 
-func (s *Supervisor) registerPortStatus(name string, p port.Port, enabled bool, props map[string]string) {
+func (s *Supervisor) registerPortStatus(name string, p port.Port, enabled, routed bool, props map[string]string) {
 	if props == nil {
 		props = map[string]string{}
 	}
 	props["range"] = fmt.Sprintf("%d-%d", p.NetworkMin(), p.NetworkMax())
+	// routed=on means the port is part of the AppleTalk router; off means it
+	// runs standalone (no RTMP/ZIP/forwarding).
+	props["routed"] = boolStr(routed)
 	s.reg.Set(status.Unit{
 		Name:       name,
 		Kind:       status.KindPort,
@@ -675,6 +762,7 @@ func (s *Supervisor) registerPortStatus(name string, p port.Port, enabled bool, 
 		Properties: props,
 	})
 	s.portNames = append(s.portNames, name)
+	s.portRouted = append(s.portRouted, routed)
 }
 
 func (s *Supervisor) registerServiceStatus(name string, enabled bool, props map[string]string) {
@@ -815,7 +903,12 @@ func (s *Supervisor) registerIPXStatus(h IPXHook, enabled bool) {
 	}
 	cfg := s.cfg
 	iface := s.resolveIPXInterface()
-	props := map[string]string{"device": iface, "framing": ipxFramingLabel(cfg.IPXFraming)}
+	// The bound interface is carried by Binding (below); don't duplicate it as a
+	// "device" property.
+	props := map[string]string{
+		"framing": ipxFramingLabel(cfg.IPXFraming),
+		"capture": captureLabel(cfg.Capture.IPX),
+	}
 	// The IPX router carries the resolved network number (the configured
 	// internal network, or the router default when unset).
 	if r := h.Router(); r != nil {
@@ -907,12 +1000,15 @@ func (s *Supervisor) registerNetBEUIStatus(h NetBEUIHook, enabled bool) {
 		return
 	}
 	iface := s.resolveNetBEUIInterface()
+	// The bound interface is carried by Binding; don't duplicate it as "device".
 	s.reg.Set(status.Unit{
-		Name:       "NetBEUI",
-		Kind:       status.KindHook,
-		Enabled:    enabled,
-		Binding:    iface,
-		Properties: map[string]string{"device": iface},
+		Name:    "NetBEUI",
+		Kind:    status.KindHook,
+		Enabled: enabled,
+		Binding: iface,
+		Properties: map[string]string{
+			"capture": captureLabel(s.cfg.Capture.NetBEUI),
+		},
 	})
 }
 
@@ -988,16 +1084,17 @@ func boolStr(b bool) string {
 	return "off"
 }
 
-// activeCaptureSummary lists the transports with an active pcap capture
-// path configured, for the dashboard's packet-dump status.
-func (s *Supervisor) activeCaptureSummary() string {
+// appleTalkCaptureSummary lists the AppleTalk transports with an active pcap
+// capture path configured, for the Router unit's packet-dump status. Only the
+// transports the AppleTalk router actually carries belong here — LocalTalk
+// (LToUDP/TashTalk) and EtherTalk. IPX and NetBEUI are separate, non-DDP
+// protocols; their captures surface on their own units (see captureLabel).
+func (s *Supervisor) appleTalkCaptureSummary() string {
 	c := s.cfg.Capture
 	var active []string
 	for name, path := range map[string]string{
 		"localtalk": c.LocalTalk,
 		"ethertalk": c.EtherTalk,
-		"ipx":       c.IPX,
-		"netbeui":   c.NetBEUI,
 	} {
 		if strings.TrimSpace(path) != "" {
 			active = append(active, name)
@@ -1008,6 +1105,15 @@ func (s *Supervisor) activeCaptureSummary() string {
 	}
 	sort.Strings(active)
 	return strings.Join(active, ",")
+}
+
+// captureLabel renders a single transport's capture path for its status unit:
+// the configured path, or "off" when no capture is configured.
+func captureLabel(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return "off"
+	}
+	return path
 }
 
 func (s *Supervisor) closeSinks() {

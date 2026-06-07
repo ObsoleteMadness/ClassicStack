@@ -64,6 +64,36 @@ func (d *routerDiagnostics) DDPEnumerate(context.Context) ([]control.NetworkInfo
 	return out, nil
 }
 
+// RTMPTable returns the full RTMP routing table with each entry's aging
+// state, for the management UI's RTMP table view.
+func (d *routerDiagnostics) RTMPTable(context.Context) ([]control.RTMPEntry, error) {
+	r := d.router()
+	if r == nil {
+		return nil, control.ErrDiagUnavailable
+	}
+	snap := r.RTMPSnapshot()
+	out := make([]control.RTMPEntry, 0, len(snap))
+	for _, s := range snap {
+		if s.Entry == nil {
+			continue
+		}
+		portName := ""
+		if s.Entry.Port != nil {
+			portName = s.Entry.Port.ShortString()
+		}
+		out = append(out, control.RTMPEntry{
+			NetworkMin:  s.Entry.NetworkMin,
+			NetworkMax:  s.Entry.NetworkMax,
+			Distance:    s.Entry.Distance,
+			Port:        portName,
+			NextNetwork: s.Entry.NextNetwork,
+			NextNode:    s.Entry.NextNode,
+			State:       s.State,
+		})
+	}
+	return out, nil
+}
+
 // ZIPEnumerate currently mirrors ListZones; a dedicated ZIP GetZoneList
 // walk can replace this when wired.
 func (d *routerDiagnostics) ZIPEnumerate(ctx context.Context) ([]control.ZoneInfo, error) {

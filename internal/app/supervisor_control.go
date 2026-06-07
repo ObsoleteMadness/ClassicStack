@@ -73,6 +73,23 @@ func (s *Supervisor) Apply(ctx context.Context, cfg control.ConfigModel) error {
 	return nil
 }
 
+// RestartAll restarts the whole running stack — every port, the AppleTalk
+// router, and all hooks — without changing the configuration. It is the
+// diagnostics screen's "Restart" action. Like Apply it is an atomic
+// stop/rebuild/start that preserves the Web UI server (the restart is driven by
+// an in-flight UI request, so the server must outlive it); it simply rebuilds
+// from the current model rather than a new one.
+func (s *Supervisor) RestartAll(ctx context.Context) error {
+	s.mu.Lock()
+	model := s.model
+	s.mu.Unlock()
+	if model == nil {
+		return fmt.Errorf("supervisor: no config model to restart from")
+	}
+	netlog.Info("[SUP] restarting whole stack (web UI preserved)")
+	return s.Apply(ctx, model)
+}
+
 // detachWebUI removes the Web UI hook from the running stack without
 // stopping it, returning it so Apply can re-attach it to the rebuilt stack.
 func (s *Supervisor) detachWebUI() hook {
@@ -118,6 +135,9 @@ func (s *Supervisor) adoptFrom(other *Supervisor) {
 	s.router = other.router
 	s.ports = other.ports
 	s.portNames = other.portNames
+	s.portRouted = other.portRouted
+	s.portHooks = other.portHooks
+	s.routerHook = other.routerHook
 	s.meters = other.meters
 	s.hooks = other.hooks
 	s.order = other.order

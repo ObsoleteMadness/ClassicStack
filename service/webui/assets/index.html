@@ -58,6 +58,7 @@
         <button data-diag="zones">List Zones</button>
         <button data-diag="zip">ZIP Enumerate</button>
         <button data-diag="ddp">DDP Enumerate</button>
+        <button data-diag="rtmp">RTMP Table</button>
         <button data-diag="smb-browse">SMB Browse</button>
         <button data-diag="macip-leases">MacIP Leases</button>
         <span class="aep">
@@ -65,9 +66,30 @@
           node <input id="aep-node" type="number" min="0" max="255" value="0" />
           <button data-diag="aep-echo">Echo</button>
         </span>
+        <button id="btn-restart-all" class="danger">Restart stack</button>
       </div>
       <pre id="diag-output" class="status-line"></pre>
     </section>
+
+    <div id="service-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal">
+        <header class="modal-head">
+          <h2 id="modal-title">Configure</h2>
+          <button id="modal-close" class="modal-close" aria-label="Close">✕</button>
+        </header>
+        <div class="modal-note">
+          Changes apply <strong>live</strong> and restart this service, but are
+          <strong>not saved to disk</strong>. Use the Configuration tab's Save to
+          persist them to <code>server.toml</code>.
+        </div>
+        <div id="modal-body" class="modal-body"></div>
+        <pre id="modal-status" class="status-line"></pre>
+        <footer class="modal-actions">
+          <button id="modal-cancel">Cancel</button>
+          <button id="modal-apply" class="primary">Apply &amp; restart</button>
+        </footer>
+      </div>
+    </div>
 
     <section id="logs" class="panel-view">
       <div class="log-controls">

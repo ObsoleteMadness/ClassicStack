@@ -18,6 +18,7 @@ func (f *fakeModel) ToTOML() ([]byte, error) { return []byte(f.toml), nil }
 type fakeSup struct {
 	applied       int
 	restarts      []string
+	restartAll    int
 	extMapWritten []byte
 }
 
@@ -28,6 +29,7 @@ func (s *fakeSup) RestartService(_ context.Context, name string) error {
 	s.restarts = append(s.restarts, name)
 	return nil
 }
+func (s *fakeSup) RestartAll(_ context.Context) error { s.restartAll++; return nil }
 func (s *fakeSup) ListInterfaces() ([]InterfaceInfo, error) {
 	return []InterfaceInfo{{Name: "eth0", Description: "Ethernet"}}, nil
 }
@@ -78,6 +80,24 @@ func TestExtMapDelegates(t *testing.T) {
 	}
 	if string(sup.extMapWritten) == "" {
 		t.Error("SaveExtMap did not forward data to supervisor")
+	}
+}
+
+func TestRestartAllDelegates(t *testing.T) {
+	sup := &fakeSup{}
+	p := New(Deps{Supervisor: sup})
+	if err := p.RestartAll(context.Background()); err != nil {
+		t.Fatalf("RestartAll: %v", err)
+	}
+	if sup.restartAll != 1 {
+		t.Errorf("RestartAll forwarded %d times, want 1", sup.restartAll)
+	}
+}
+
+func TestRestartAllWithoutSupervisor(t *testing.T) {
+	p := New(Deps{Config: &fakeModel{}})
+	if err := p.RestartAll(context.Background()); !errors.Is(err, ErrNoSupervisor) {
+		t.Errorf("RestartAll without supervisor = %v, want ErrNoSupervisor", err)
 	}
 }
 

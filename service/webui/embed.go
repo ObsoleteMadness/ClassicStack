@@ -26,6 +26,12 @@ func (s *Server) staticHandler() http.Handler {
 	}
 	fileServer := http.FileServer(http.FS(sub))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Embedded files carry a zero modtime, so http.FileServer emits no
+		// useful Last-Modified/ETag and browsers may cache them indefinitely.
+		// After a binary upgrade that leaves a stale app.js running against a
+		// fresh index.html (the two fall out of lockstep). Tell the browser to
+		// always revalidate the SPA shell so the assets stay consistent.
+		w.Header().Set("Cache-Control", "no-cache")
 		if _, err := fs.Stat(sub, trimLeadingSlash(r.URL.Path)); err != nil && r.URL.Path != "/" {
 			// Unknown path: serve the SPA shell.
 			r2 := new(http.Request)

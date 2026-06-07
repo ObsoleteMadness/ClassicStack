@@ -99,6 +99,27 @@ These filters apply only in pcap mode.
 
 ## Transport and service sections
 
+### [Router]
+
+Declares which transports the AppleTalk router binds to. An enabled transport
+that is **not** bound runs *standalone*: it still comes up and receives frames
+(and can be captured), but it is not part of the AppleTalk router — no RTMP/ZIP
+and no inter-port forwarding. This lets you run, say, TashTalk on its own
+segment without it joining the router.
+
+| Key | Default | Notes |
+|---|---|---|
+| ports | (empty) | Transport section names the router binds to (`"LToUdp"`, `"TashTalk"`, `"EtherTalk"`). Empty (or section omitted) binds every enabled transport; a non-empty list binds only those named, so any enabled-but-unlisted transport runs standalone. |
+
+```toml
+[Router]
+ports = ["LToUdp", "EtherTalk"]   # TashTalk, if enabled, runs standalone
+```
+
+The dashboard shows each port's `routed: on/off` so you can see at a glance
+which transports are part of the router. The same allow-list is editable from
+the web UI via the "Attach to AppleTalk router" checkbox on each transport.
+
 ### [LToUdp]
 
 | Key | Default | Notes |

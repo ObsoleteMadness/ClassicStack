@@ -1,5 +1,7 @@
 package config
 
+import "strings"
+
 // Model is the in-memory, mutable, serialisable representation of the whole
 // ClassicStack configuration. It is the source of truth the management
 // plane stages edits against and writes back to server.toml. Field names
@@ -13,6 +15,7 @@ package config
 // packages' own config structs.
 type Model struct {
 	Logging   LoggingModel   `toml:"Logging" json:"Logging"`
+	Router    RouterModel    `toml:"Router" json:"Router"`
 	Bridge    BridgeModel    `toml:"Bridge" json:"Bridge"`
 	LToUDP    LToUDPModel    `toml:"LToUdp" json:"LToUdp"`
 	TashTalk  TashTalkModel  `toml:"TashTalk" json:"TashTalk"`
@@ -53,6 +56,42 @@ type InterfaceModel struct {
 // inherit unless they define their own. It is an InterfaceModel; the alias
 // keeps the [Bridge] section name and TOML keys unchanged.
 type BridgeModel = InterfaceModel
+
+// RouterModel is the [Router] section. It declares which transports the
+// AppleTalk router binds to. Ports lists the transport section names
+// ("LToUdp", "TashTalk", "EtherTalk") the router participates in; an enabled
+// transport that is NOT listed runs standalone (it comes up and receives but is
+// not part of the router — no RTMP/ZIP, no inter-port forwarding). An empty/
+// unset Ports means "bind every enabled transport", which is the sensible
+// default — a config that omits [Router] gets the full router it expects.
+type RouterModel struct {
+	Ports []string `toml:"ports,omitempty" json:"ports,omitempty"`
+}
+
+// Canonical [Router].ports transport names. These match the TOML section names
+// so a config author lists the same identifier they configure the transport
+// under.
+const (
+	RouterPortLToUDP    = "LToUdp"
+	RouterPortTashTalk  = "TashTalk"
+	RouterPortEtherTalk = "EtherTalk"
+)
+
+// BindsPort reports whether the router should attach the named transport. With
+// an empty Ports list every enabled transport attaches (the default); otherwise
+// only listed transports attach. Matching is case-insensitive so "ethertalk"
+// and "EtherTalk" are equivalent.
+func (r RouterModel) BindsPort(name string) bool {
+	if len(r.Ports) == 0 {
+		return true
+	}
+	for _, p := range r.Ports {
+		if strings.EqualFold(strings.TrimSpace(p), name) {
+			return true
+		}
+	}
+	return false
+}
 
 // LToUDPModel is the [LToUdp] section.
 type LToUDPModel struct {

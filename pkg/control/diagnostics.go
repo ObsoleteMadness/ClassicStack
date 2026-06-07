@@ -15,6 +15,21 @@ type NetworkInfo struct {
 	Port       string `json:"port"`
 }
 
+// RTMPEntry is one routing-table entry reported by RTMPTable. State is the
+// RTMP aging state ("good" | "suspect" | "bad" | "worst") — RTMP's notion of an
+// entry's age, advanced on each aging tick and reset when the route is heard
+// again. Distance 0 means a directly-connected network reached via Port; for
+// learned networks NextNetwork/NextNode is the next-hop router.
+type RTMPEntry struct {
+	NetworkMin  uint16 `json:"network_min"`
+	NetworkMax  uint16 `json:"network_max"`
+	Distance    uint8  `json:"distance"`
+	Port        string `json:"port"`
+	NextNetwork uint16 `json:"next_network"`
+	NextNode    uint8  `json:"next_node"`
+	State       string `json:"state"`
+}
+
 // EchoResult is the outcome of an AEP (AppleTalk Echo Protocol) probe.
 type EchoResult struct {
 	Network uint16 `json:"network"`
@@ -63,6 +78,9 @@ type Diagnostics interface {
 	ZIPEnumerate(ctx context.Context) ([]ZoneInfo, error)
 	// DDPEnumerate lists networks/nodes from the routing table.
 	DDPEnumerate(ctx context.Context) ([]NetworkInfo, error)
+	// RTMPTable returns the full RTMP routing table including each entry's
+	// aging state.
+	RTMPTable(ctx context.Context) ([]RTMPEntry, error)
 	// SMBBrowse returns the SMB/NetBIOS browse list of servers. Only
 	// available in SMB-enabled builds.
 	SMBBrowse(ctx context.Context) ([]ServerInfo, error)

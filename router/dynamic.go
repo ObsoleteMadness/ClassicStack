@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"slices"
 
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
 	"github.com/ObsoleteMadness/ClassicStack/port"
@@ -68,6 +69,42 @@ func (r *Router) AddPort(_ context.Context, p port.Port) error {
 // router stops advertising and forwarding to them.
 func (r *Router) RemovePort(p port.Port) error {
 	netlog.Info("%s removing port %T", r.ShortString(), p)
+	r.DetachPort(p)
+	return p.Stop()
+}
+
+// AttachStartedPort adds an already-started port to the active port set and
+// binds the LLAP link manager to it, without starting the port. It is the
+// membership-only counterpart to AddPort: the port's own lifecycle owner (the
+// supervisor's port hook) has already brought the port up, so the router only
+// needs to begin routing through it. Idempotent: a port already in the set is
+// not added twice. RTMP's periodic advertisement picks up the port's networks
+// and zones from its next cycle.
+func (r *Router) AttachStartedPort(p port.Port) {
+	netlog.Info("%s attaching started port %T", r.ShortString(), p)
+	r.bindPortLLAP(p)
+	r.membership.Lock()
+	defer r.membership.Unlock()
+	if slices.Contains(r.Ports, p) {
+		return
+	}
+	r.Ports = append(r.Ports, p)
+}
+
+// HasPort reports whether p is currently in the active port set.
+func (r *Router) HasPort(p port.Port) bool {
+	r.membership.RLock()
+	defer r.membership.RUnlock()
+	return slices.Contains(r.Ports, p)
+}
+
+// DetachPort removes p from the active port set and withdraws every route and
+// zone reachable through it, without stopping the port. It is the
+// membership-only counterpart to RemovePort: the port keeps running (its
+// frames simply stop being routed) while its lifecycle owner decides whether
+// to also stop it. Detaching a port the router does not hold is a no-op.
+func (r *Router) DetachPort(p port.Port) {
+	netlog.Info("%s detaching port %T", r.ShortString(), p)
 	r.membership.Lock()
 	for i, pt := range r.Ports {
 		if pt == p {
@@ -76,10 +113,7 @@ func (r *Router) RemovePort(p port.Port) error {
 		}
 	}
 	r.membership.Unlock()
-
-	// Withdraw routes/zones for the port before stopping it so dispatch no
-	// longer selects it as a next hop.
+	// Withdraw routes/zones for the port so dispatch no longer selects it as a
+	// next hop.
 	r.RoutingTable.RemoveEntriesForPort(p)
-
-	return p.Stop()
 }

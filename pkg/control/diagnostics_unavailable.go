@@ -29,6 +29,10 @@ func (unavailableDiagnostics) DDPEnumerate(context.Context) ([]NetworkInfo, erro
 	return nil, ErrDiagUnavailable
 }
 
+func (unavailableDiagnostics) RTMPTable(context.Context) ([]RTMPEntry, error) {
+	return nil, ErrDiagUnavailable
+}
+
 func (unavailableDiagnostics) SMBBrowse(context.Context) ([]ServerInfo, error) {
 	return nil, ErrDiagUnavailable
 }

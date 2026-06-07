@@ -22,6 +22,7 @@ func (m *Model) Clone() *Model {
 	}
 	cp := *m // shallow copy of all value fields
 
+	cp.Router.Ports = cloneStrings(m.Router.Ports)
 	cp.IPXGW.Bindings = cloneStrings(m.IPXGW.Bindings)
 	cp.NetBIOS.Transports = cloneStrings(m.NetBIOS.Transports)
 

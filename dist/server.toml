@@ -1,3 +1,10 @@
+[Bridge]
+# Shared raw-link settings used by EtherTalk, MacIP, IPX, and NetBEUI.
+mode = "pcap"                   # pcap, tap, or tun
+device = ""                     # PCap device name. Use -list-pcap-devices to see candidates.
+hw_address = "DE:AD:BE:EF:CA:FE" # host/bridge MAC used by raw-link consumers
+bridge_mode = "auto"            # auto, ethernet, or wifi frame adaptation mode
+
 [LToUdp]
 # LocalTalk over UDP Settings (used by Mini vMac UDP builds and SNOW emu)
 enabled = true                  # Enable LToUDP - true for on, false for off
@@ -11,15 +18,11 @@ seed_network = 2
 seed_zone = "TashTalk Network"
 
 [EtherTalk]
-# EtherTalk is a pcap-based network bridge
-backend = "pcap"                # supported: pcap, tap, tun. Leave blank to disable.
-device = ""                     # PCap device name. Use -list-pcap-devices to see candidates.
-hw_address = "DE:AD:BE:EF:CA:FE"
+# EtherTalk is a pcap-based network bridge (link/device live in [Bridge]).
+bridge_host_mac = ""            # optional host adapter MAC for Wi-Fi bridge shim. Defaults to hw_address when blank.
 seed_network_min = 3
 seed_network_max = 5
 seed_zone = "EtherTalk Network"
-bridge_mode = "auto"            # auto (default), ethernet, or wifi
-bridge_host_mac = ""
 
 [MacIP]
 # MacIP Gateway Settings. Allows TCP over DDP.
@@ -40,18 +43,60 @@ zone = "EtherTalk Network"
 protocols = "ddp,tcp"
 binding = ":548"
 extension_map = "extmap.conf"
+cnid_backend = "sqlite"
+appledouble_mode = "modern"
 
 # AFP Volume Configuration — each volume gets an [AFP.Volumes.<key>] section.
 [AFP.Volumes.Default]
 name = "Welcome"
 path = "./Sample Volume"
-read_only = true
 rebuild_desktop_db = true
 
 [AFP.Volumes.Shared]
 name = "Shared"
 path = "./shared"
 rebuild_desktop_db = false
+
+[IPX]
+# IPX raw-link transport. Carries NetBIOS (and the MacIPX gateway). Blank
+# interface reuses the auto-detected [Bridge] device.
+enabled = true
+interface = ""                  # blank: reuse [Bridge] device
+framing = "ethernet_ii"         # ethernet_ii|raw_802_3|llc|snap
+internal_network = ""           # 8 hex digits; blank: 00000001
+
+[NetBEUI]
+# NetBEUI raw-link transport. Carries NetBIOS over LLC frames. Blank interface
+# reuses the auto-detected [Bridge] device.
+enabled = true
+interface = ""                  # blank: reuse [Bridge] device
+
+[NetBIOS]
+# NetBIOS session layer. Runs over the listed transports; netbeui and ipx are
+# the detachable raw-link transports configured above.
+enabled = true
+transports = ["netbeui", "ipx"]
+
+[SMB]
+# SMB/CIFS file server, served over NetBIOS (the netbeui + ipx transports).
+enabled = true
+server_name = "CLASSICSTACK"
+workgroup = "WORKGROUP"
+guest_ok = true
+
+# Each SMB share gets an [SMB.Volumes.<key>] section.
+[SMB.Volumes.Shared]
+name = "Shared"
+path = "./SMB"
+fs_type = "local_fs"
+read_only = false
+
+[WebUI]
+# Management web UI: dashboard + configuration editor. Requires a binary built
+# with -tags webui (included in -tags all).
+enabled = true                  # serve the web UI
+bind = "127.0.0.1:8080"         # IP:PORT to listen on; loopback by default
+tls = false                     # serve plain HTTP (no TLS)
 
 [Logging]
 level = "warn"

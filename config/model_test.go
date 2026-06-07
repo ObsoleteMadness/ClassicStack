@@ -107,3 +107,52 @@ func TestSaveNoBackupWhenAbsent(t *testing.T) {
 		t.Errorf("config not written: %v", err)
 	}
 }
+
+func TestRouterBindsPort(t *testing.T) {
+	// Empty list binds everything (the default).
+	empty := RouterModel{}
+	for _, name := range []string{RouterPortLToUDP, RouterPortTashTalk, RouterPortEtherTalk} {
+		if !empty.BindsPort(name) {
+			t.Errorf("empty Ports: BindsPort(%q) = false, want true", name)
+		}
+	}
+
+	// A non-empty list binds only the named transports; matching is
+	// case-insensitive and whitespace-tolerant.
+	r := RouterModel{Ports: []string{"LToUdp", " ethertalk "}}
+	if !r.BindsPort(RouterPortLToUDP) {
+		t.Errorf("BindsPort(LToUdp) = false, want true")
+	}
+	if !r.BindsPort(RouterPortEtherTalk) {
+		t.Errorf("BindsPort(EtherTalk) = false, want true (case-insensitive)")
+	}
+	if r.BindsPort(RouterPortTashTalk) {
+		t.Errorf("BindsPort(TashTalk) = true, want false (not listed)")
+	}
+}
+
+func TestRouterPortsTOMLRoundTrip(t *testing.T) {
+	m := Defaults()
+	m.Router.Ports = []string{RouterPortLToUDP, RouterPortEtherTalk}
+
+	data, err := m.ToTOML()
+	if err != nil {
+		t.Fatalf("ToTOML: %v", err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "server.toml")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	src, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := FromSource(src)
+	if got.Router.BindsPort(RouterPortTashTalk) {
+		t.Errorf("after round-trip TashTalk still bound; Ports=%v", got.Router.Ports)
+	}
+	if !got.Router.BindsPort(RouterPortLToUDP) || !got.Router.BindsPort(RouterPortEtherTalk) {
+		t.Errorf("after round-trip lost a bound port; Ports=%v", got.Router.Ports)
+	}
+}

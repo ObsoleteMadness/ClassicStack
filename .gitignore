@@ -48,3 +48,5 @@ go.work.sum
 .captures/
 captures/
 
+server.toml.[0-9]*
+

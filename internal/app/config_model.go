@@ -42,6 +42,12 @@ func appConfigFromModel(m *config.Model) (appConfig, error) {
 		SeedNetwork: m.TashTalk.SeedNetwork,
 		SeedZone:    m.TashTalk.SeedZone,
 	}
+	// Router attachment lives in [Router].ports: an empty list binds every
+	// enabled transport (the historical default); a non-empty list binds only
+	// the named transports, so an enabled-but-unlisted one runs standalone.
+	cfg.LToUDPAttachRouter = m.Router.BindsPort(config.RouterPortLToUDP)
+	cfg.TashTalkAttachRouter = m.Router.BindsPort(config.RouterPortTashTalk)
+	cfg.EtherTalkAttachRouter = m.Router.BindsPort(config.RouterPortEtherTalk)
 	cfg.EtherTalk = ethertalk.Config{
 		BridgeHostMAC:  m.EtherTalk.BridgeHostMAC,
 		Filter:         m.EtherTalk.Filter,
@@ -199,6 +205,8 @@ func modelFromAppConfig(cfg appConfig) *config.Model {
 	m.EtherTalk.DesiredNetwork = cfg.EtherTalk.DesiredNetwork
 	m.EtherTalk.DesiredNode = cfg.EtherTalk.DesiredNode
 
+	m.Router.Ports = routerPortsModel(cfg)
+
 	m.Capture.LocalTalk = cfg.Capture.LocalTalk
 	m.Capture.EtherTalk = cfg.Capture.EtherTalk
 	m.Capture.IPX = cfg.Capture.IPX
@@ -278,6 +286,41 @@ func orDefault(v, def string) string {
 		return def
 	}
 	return v
+}
+
+// routerPortsModel projects router attachment back into [Router].ports. It
+// returns nil (the key stays absent) when every *configured* transport is
+// attached, so a stack with the default full router serialises no [Router]
+// section. When at least one configured transport is detached it emits the
+// explicit allow-list of the attached, configured transports so the round-trip
+// is faithful.
+func routerPortsModel(cfg appConfig) []string {
+	type entry struct {
+		name       string
+		configured bool
+		attached   bool
+	}
+	entries := []entry{
+		{config.RouterPortLToUDP, cfg.LToUDP.Enabled, cfg.LToUDPAttachRouter},
+		{config.RouterPortTashTalk, cfg.TashTalk.Port != "", cfg.TashTalkAttachRouter},
+		{config.RouterPortEtherTalk, cfg.EtherTalk.Device != "", cfg.EtherTalkAttachRouter},
+	}
+	anyDetached := false
+	var attached []string
+	for _, e := range entries {
+		if !e.configured {
+			continue
+		}
+		if e.attached {
+			attached = append(attached, e.name)
+		} else {
+			anyDetached = true
+		}
+	}
+	if !anyDetached {
+		return nil
+	}
+	return attached
 }
 
 func splitColon(s string) []string {

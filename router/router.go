@@ -146,7 +146,67 @@ func (r *Router) deliver(datagram ddp.Datagram, rxPort port.Port) {
 }
 
 func (r *Router) Start(ctx context.Context) error {
-	services, ports := r.snapshotMembership()
+	if err := r.startLLAPServices(ctx); err != nil {
+		return err
+	}
+	_, ports := r.snapshotMembership()
+	for _, p := range ports {
+		netlog.Info("starting %T...", p)
+		if err := p.Start(r); err != nil {
+			return err
+		}
+	}
+	netlog.Info("all ports started!")
+	return r.startNonLLAPServices(ctx)
+}
+
+func (r *Router) Stop() error {
+	errs := r.stopServices()
+	_, ports := r.snapshotMembership()
+	for _, p := range ports {
+		netlog.Info("stopping %T...", p)
+		if err := p.Stop(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	netlog.Info("all ports stopped!")
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
+// StartServices starts only the router's DDP service set (LLAP first, so the
+// LocalTalk link manager is live before the rest), leaving port lifecycle to
+// the ports' own owners. It is the service-only counterpart to Start, used by
+// the supervisor's router hook so the router can be stopped and started while
+// its ports keep running. Already-attached ports are (re)bound to the LLAP
+// link manager so LocalTalk ports route again after a router restart.
+func (r *Router) StartServices(ctx context.Context) error {
+	if err := r.startLLAPServices(ctx); err != nil {
+		return err
+	}
+	// Re-bind any ports already in the set to the freshly started LLAP manager.
+	_, ports := r.snapshotMembership()
+	for _, p := range ports {
+		r.bindPortLLAP(p)
+	}
+	return r.startNonLLAPServices(ctx)
+}
+
+// StopServices stops only the router's DDP service set, leaving the ports
+// running. It is the service-only counterpart to Stop.
+func (r *Router) StopServices() error {
+	if errs := r.stopServices(); len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
+// startLLAPServices starts the LLAP service(s) ahead of ports and other
+// services: LocalTalk-style ports bind to its link manager at Start.
+func (r *Router) startLLAPServices(ctx context.Context) error {
+	services, _ := r.snapshotMembership()
 	for _, s := range services {
 		if _, ok := s.(*llap.Service); !ok {
 			continue
@@ -156,13 +216,13 @@ func (r *Router) Start(ctx context.Context) error {
 			return err
 		}
 	}
-	for _, p := range ports {
-		netlog.Info("starting %T...", p)
-		if err := p.Start(r); err != nil {
-			return err
-		}
-	}
-	netlog.Info("all ports started!")
+	return nil
+}
+
+// startNonLLAPServices starts every service except LLAP (which
+// startLLAPServices brings up first).
+func (r *Router) startNonLLAPServices(ctx context.Context) error {
+	services, _ := r.snapshotMembership()
 	for _, s := range services {
 		if _, ok := s.(*llap.Service); ok {
 			continue
@@ -176,8 +236,10 @@ func (r *Router) Start(ctx context.Context) error {
 	return nil
 }
 
-func (r *Router) Stop() error {
-	services, ports := r.snapshotMembership()
+// stopServices stops every service, collecting (not returning early on)
+// errors so a single failing Stop cannot strand the rest.
+func (r *Router) stopServices() []error {
+	services, _ := r.snapshotMembership()
 	var errs []error
 	for _, s := range services {
 		netlog.Info("stopping %T...", s)
@@ -186,17 +248,7 @@ func (r *Router) Stop() error {
 		}
 	}
 	netlog.Info("all services stopped!")
-	for _, p := range ports {
-		netlog.Info("stopping %T...", p)
-		if err := p.Stop(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	netlog.Info("all ports stopped!")
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-	return nil
+	return errs
 }
 
 // snapshotMembership returns copies of the current service and port slices
@@ -378,6 +430,12 @@ func (r *Router) RoutingEntries() []struct {
 		}{Entry: asServiceEntry(item.Entry), Bad: item.Bad})
 	}
 	return out
+}
+
+// RTMPSnapshot returns the full routing table with each entry's RTMP aging
+// state, for read-only diagnostics (the management UI's RTMP table view).
+func (r *Router) RTMPSnapshot() []RoutingTableSnapshotEntry {
+	return r.RoutingTable.Snapshot()
 }
 
 func (r *Router) RoutingConsider(entry *service.RouteEntry) bool {

@@ -24,6 +24,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/config/download", s.handleDownload)
 	s.mux.HandleFunc("/api/extmap", s.handleExtMap)
 	s.mux.HandleFunc("/api/services/", s.handleServiceAction)
+	s.mux.HandleFunc("/api/restart-all", s.handleRestartAll)
 	s.mux.HandleFunc("/api/stats/stream", s.handleStatsStream)
 	s.mux.HandleFunc("/api/logs", s.handleLogHistory)
 	s.mux.HandleFunc("/api/logs/stream", s.handleLogStream)
@@ -150,6 +151,24 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/toml")
 	w.Header().Set("Content-Disposition", `attachment; filename="server.toml"`)
 	_, _ = w.Write(data)
+}
+
+// handleRestartAll handles POST /api/restart-all: restart the whole stack
+// (all ports, the router, and every hook) without a configuration change.
+func (s *Server) handleRestartAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, errMethod)
+		return
+	}
+	if s.opts.Plane == nil {
+		writeError(w, http.StatusServiceUnavailable, errNoPlane)
+		return
+	}
+	if err := s.opts.Plane.RestartAll(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "action": "restart-all"})
 }
 
 // handleServiceAction handles POST /api/services/{name}/restart.

@@ -69,6 +69,20 @@ main { padding: 1rem; }
   padding: 0.9rem;
 }
 .card h3 { margin: 0 0 0.4rem; display: flex; align-items: center; gap: 0.5rem; }
+.card h3 .card-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* Per-card configuration cog. Sits at the right of the card header. */
+.cog {
+  border: none;
+  background: transparent;
+  padding: 0.1rem 0.3rem;
+  font-size: 1rem;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 6px;
+}
+.cog:hover { color: var(--accent); background: var(--bg); }
 
 .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; background: var(--off); }
 .dot.running { background: var(--ok); }
@@ -93,6 +107,9 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .kv b { color: #1c1c22; font-weight: 600; }
 
 .card .metric { font-variant-numeric: tabular-nums; }
+/* Collapse the live-stats line on cards that publish no traffic counters,
+   so it adds no stray spacing while staying always-on for ports. */
+.card .metric:empty { display: none; }
 
 .card-actions { display: flex; gap: 0.4rem; margin-top: 0.6rem; }
 .card-actions button { margin-top: 0; }
@@ -176,6 +193,7 @@ button {
   cursor: pointer;
 }
 button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+button.danger { background: #6e1f1f; color: #fff; border-color: #8a2a2a; }
 
 .status-line {
   margin-top: 0.8rem;
@@ -189,6 +207,72 @@ button.primary { background: var(--accent); color: var(--accent-text); border-co
 
 .diag-tools { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
 .diag-tools .aep input { width: 70px; }
+
+/* ---- per-service config modal ---- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(20, 22, 28, 0.55);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 3rem 1rem;
+  overflow-y: auto;
+}
+/* `.modal-overlay` and the generic `.hidden` are both single-class selectors,
+   so the one declared later wins on equal specificity. As `.modal-overlay`
+   (display:flex) comes after `.hidden` (display:none), the modal would stay
+   visible when hidden. This two-class rule has higher specificity and keeps it
+   hidden. */
+.modal-overlay.hidden { display: none; }
+.modal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: min(640px, 100%);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.9rem 1.1rem;
+  border-bottom: 1px solid var(--border);
+}
+.modal-head h2 { margin: 0; font-size: 1.05rem; flex: 1; }
+.modal-close {
+  border: none;
+  background: transparent;
+  font-size: 1.1rem;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0.2rem 0.4rem;
+  border-radius: 6px;
+}
+.modal-close:hover { color: #1c1c22; background: var(--bg); }
+.modal-note {
+  margin: 0.9rem 1.1rem 0;
+  background: #fff7e6;
+  border: 1px solid #f0d28a;
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  font-size: 0.85rem;
+}
+.modal-body { padding: 0.4rem 1.1rem 0; }
+.modal-body .config-panel:last-child { margin-bottom: 0.4rem; }
+#modal-status { margin: 0.4rem 1.1rem 0; }
+#modal-status:empty { display: none; }
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  padding: 0.9rem 1.1rem;
+  border-top: 1px solid var(--border);
+}
 
 /* ---- extension-map editor ---- */
 .extmap { margin-top: 1.4rem; border-top: 1px solid #243042; padding-top: 1rem; }

@@ -142,7 +142,7 @@ func TestPromoteUnitToHook(t *testing.T) {
 		Properties: map[string]string{"zone": "MyZone"},
 	})
 	s := &Supervisor{reg: reg}
-	s.promoteUnitToHook("AFP", true)
+	s.promoteUnitToHook("AFP", true, []string{"Router"})
 
 	u := unitByName(reg, "AFP")
 	if u.Kind != status.KindHook {
@@ -153,6 +153,9 @@ func TestPromoteUnitToHook(t *testing.T) {
 	}
 	if u.Binding != ":548" || u.Properties["zone"] != "MyZone" {
 		t.Fatalf("promotion lost detail: binding=%q props=%v", u.Binding, u.Properties)
+	}
+	if len(u.DependsOn) != 1 || u.DependsOn[0] != "Router" {
+		t.Fatalf("DependsOn = %v, want [Router]", u.DependsOn)
 	}
 }
 

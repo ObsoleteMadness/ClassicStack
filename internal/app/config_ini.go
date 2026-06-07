@@ -31,6 +31,14 @@ type appConfig struct {
 	EtherTalk ethertalk.Config
 	Capture   capture.Config
 
+	// Per-transport router attachment. When true (the default) the transport's
+	// port joins the AppleTalk router (RTMP/ZIP, inter-port forwarding); when
+	// false the port runs standalone — it comes up and receives, but is not part
+	// of the router.
+	LToUDPAttachRouter    bool
+	TashTalkAttachRouter  bool
+	EtherTalkAttachRouter bool
+
 	// Per-protocol effective interfaces. Each defaults to the shared Bridge
 	// and is overridden when the protocol defines its own [<Section>.Custom]
 	// interface. buildHooks passes these (not the raw Bridge) into the
@@ -99,6 +107,11 @@ func defaultAppConfig() appConfig {
 		EtherTalk: ethertalk.DefaultConfig(),
 		Capture:   capture.DefaultConfig(),
 
+		// Transports join the AppleTalk router by default; standalone is opt-in.
+		LToUDPAttachRouter:    true,
+		TashTalkAttachRouter:  true,
+		EtherTalkAttachRouter: true,
+
 		MacIPSubnet: "192.168.100.0/24",
 
 		IPXFraming:        "ethernet_ii",
@@ -156,6 +169,18 @@ func resolveAppConfig(src config.Source) (appConfig, error) {
 		return cfg, err
 	}
 	syncBridgeToEtherTalk(&cfg)
+
+	// [Router].ports declares which transports the AppleTalk router binds to.
+	// An empty/absent list binds every enabled transport; a non-empty list
+	// binds only the named ones, so an enabled-but-unlisted transport runs
+	// standalone.
+	var rm config.RouterModel
+	if k.Exists("Router.ports") {
+		rm.Ports = k.Strings("Router.ports")
+	}
+	cfg.LToUDPAttachRouter = rm.BindsPort(config.RouterPortLToUDP)
+	cfg.TashTalkAttachRouter = rm.BindsPort(config.RouterPortTashTalk)
+	cfg.EtherTalkAttachRouter = rm.BindsPort(config.RouterPortEtherTalk)
 
 	cfg.MacIPEnabled = boolWithDefault(k, "MacIP.enabled", cfg.MacIPEnabled)
 	mode := strings.ToLower(stringWithDefault(k, "MacIP.mode", ""))
