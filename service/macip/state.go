@@ -45,6 +45,38 @@ func (p *ipPool) saveToFile(path string) {
 	}
 }
 
+// poolStats holds live counts for the dashboard.
+type poolStats struct {
+	activeLeases int // non-expired static + DHCP leases
+	sessions     int // active ASP-pinned sessions
+}
+
+// stats returns live counts of leases and pinned sessions.
+func (p *ipPool) stats() poolStats {
+	cutoff := time.Now().Add(-leaseDuration)
+	var ps poolStats
+
+	p.mu.Lock()
+	for i := 1; i < len(p.entries); i++ {
+		e := &p.entries[i]
+		if e.used && !e.lastSeen.Before(cutoff) {
+			ps.activeLeases++
+		}
+	}
+	ps.sessions = len(p.pinBySession)
+	p.mu.Unlock()
+
+	p.dhcpMu.Lock()
+	for atKey := range p.dhcpByAT {
+		if !p.dhcpSeen[atKey].Before(cutoff) {
+			ps.activeLeases++
+		}
+	}
+	p.dhcpMu.Unlock()
+
+	return ps
+}
+
 // snapshot returns a point-in-time copy of all non-expired leases.
 func (p *ipPool) snapshot() savedState {
 	cutoff := time.Now().Add(-leaseDuration)
@@ -90,6 +122,8 @@ func (p *ipPool) loadFromFile(path string) {
 	if path == "" {
 		return
 	}
+	// #nosec G304 -- path is the operator-configured lease-state file, not
+	// untrusted external input.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {

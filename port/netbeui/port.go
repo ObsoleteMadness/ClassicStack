@@ -19,6 +19,7 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/capture"
 	"github.com/ObsoleteMadness/ClassicStack/netlog"
+	"github.com/ObsoleteMadness/ClassicStack/port"
 	"github.com/ObsoleteMadness/ClassicStack/port/rawlink"
 	"github.com/ObsoleteMadness/ClassicStack/protocol/netbeui"
 )
@@ -102,50 +103,117 @@ type llcConn struct {
 	nR     uint8 // expected next from remote (N(R) we put in our ACKs)
 }
 
+// LinkFactory opens a fresh rawlink for the port, called once per Start.
+// See ipx.LinkFactory: a libpcap-backed link must hand back a freshly
+// opened handle each time so the port can be stopped and restarted.
+type LinkFactory func() (rawlink.RawLink, error)
+
 type portImpl struct {
-	link rawlink.RawLink
+	openLink LinkFactory
 
 	mu     sync.RWMutex
 	src    [6]byte
 	hasSrc bool
 	cb     DeliveryCallback
 	cs     capture.Sink
+	obs    port.TrafficObserver
+	link   rawlink.RawLink // current rawlink; nil while stopped.
 
 	connsMu sync.RWMutex
 	conns   map[[6]byte]*llcConn
 
+	// lifeMu guards the Start/Stop lifecycle. Channels and stopOnce are
+	// recreated on each Start so the port survives a Stop/Start cycle.
+	lifeMu     sync.Mutex
+	running    bool
 	stopOnce   sync.Once
 	readerStop chan struct{}
 	readerDone chan struct{}
 }
 
-// NewPort returns a NetBEUI port bound to link. Start must be called
-// before inbound frames are delivered.
+// NewPort returns a NetBEUI port bound to link. The link is reused across
+// restarts, so this constructor suits in-process links; for a libpcap link
+// that must reopen on restart use NewPortWithLinkFactory. Start must be
+// called before inbound frames are delivered.
 func NewPort(link rawlink.RawLink) Port {
+	return NewPortWithLinkFactory(func() (rawlink.RawLink, error) { return link, nil })
+}
+
+// NewPortWithLinkFactory builds a restartable NetBEUI port that opens a
+// fresh rawlink from open on every Start and closes it on every Stop.
+func NewPortWithLinkFactory(open LinkFactory) Port {
 	return &portImpl{
-		link:       link,
-		conns:      make(map[[6]byte]*llcConn),
-		readerStop: make(chan struct{}),
-		readerDone: make(chan struct{}),
+		openLink: open,
+		conns:    make(map[[6]byte]*llcConn),
 	}
 }
 
+// currentLink returns the active rawlink, or nil if the port is stopped.
+func (p *portImpl) currentLink() rawlink.RawLink {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.link
+}
+
+// writeFrame sends out on the active link, returning ErrClosed if the port
+// is stopped. All outbound paths funnel through here so none touch a freed
+// handle after Stop.
+func (p *portImpl) writeFrame(out []byte) error {
+	link := p.currentLink()
+	if link == nil {
+		return rawlink.ErrClosed
+	}
+	return link.WriteFrame(out)
+}
+
 func (p *portImpl) Start() error {
-	if fl, ok := p.link.(rawlink.FilterableLink); ok {
+	p.lifeMu.Lock()
+	defer p.lifeMu.Unlock()
+	if p.running {
+		return nil
+	}
+
+	link, err := p.openLink()
+	if err != nil {
+		return err
+	}
+	if fl, ok := link.(rawlink.FilterableLink); ok {
 		if err := fl.SetFilter(NetBEUIBPFFilter); err != nil {
 			netlog.Warn("[NetBEUI] could not set BPF filter: %v", err)
 		}
 	}
-	go p.readLoop()
+
+	p.readerStop = make(chan struct{})
+	p.readerDone = make(chan struct{})
+	p.stopOnce = sync.Once{}
+
+	p.mu.Lock()
+	p.link = link
+	p.mu.Unlock()
+
+	p.running = true
+	go p.readLoop(link, p.readerStop, p.readerDone)
 	return nil
 }
 
 func (p *portImpl) Stop() error {
+	p.lifeMu.Lock()
+	defer p.lifeMu.Unlock()
+	if !p.running {
+		return nil
+	}
 	p.stopOnce.Do(func() {
 		close(p.readerStop)
 		<-p.readerDone
-		_ = p.link.Close()
+		p.mu.Lock()
+		link := p.link
+		p.link = nil
+		p.mu.Unlock()
+		if link != nil {
+			_ = link.Close()
+		}
 	})
+	p.running = false
 	return nil
 }
 
@@ -166,6 +234,27 @@ func (p *portImpl) SetCaptureSink(sink capture.Sink) {
 	p.mu.Lock()
 	p.cs = sink
 	p.mu.Unlock()
+}
+
+// SetTrafficObserver installs an observer notified of each NBF frame sent or
+// received, for dashboard throughput metrics. It is an optional method the
+// supervisor type-asserts, not part of the Port interface, so test fakes need
+// not implement it.
+func (p *portImpl) SetTrafficObserver(obs port.TrafficObserver) {
+	p.mu.Lock()
+	p.obs = obs
+	p.mu.Unlock()
+}
+
+// observeTraffic reports one frame's direction and byte size to the installed
+// observer, if any.
+func (p *portImpl) observeTraffic(dir port.Direction, bytes int) {
+	p.mu.RLock()
+	obs := p.obs
+	p.mu.RUnlock()
+	if obs != nil {
+		obs(dir, bytes)
+	}
 }
 
 // LLC unnumbered frame control values.
@@ -193,14 +282,14 @@ func (p *portImpl) sendLLCUA(dstMAC [6]byte) {
 	copy(out[6:12], src[:])
 	out[12] = 0x00
 	out[13] = llcLen
-	out[14] = 0xF0       // DSAP
-	out[15] = 0xF1       // SSAP with C/R = response
+	out[14] = 0xF0          // DSAP
+	out[15] = 0xF1          // SSAP with C/R = response
 	out[16] = llcControlUAF // UA with F=1
 	p.mu.RLock()
 	sink := p.cs
 	p.mu.RUnlock()
 	capture.Write(sink, time.Now(), out)
-	if err := p.link.WriteFrame(out); err != nil {
+	if err := p.writeFrame(out); err != nil {
 		netlog.Warn("[NetBEUI] LLC UA send error: %v", err)
 	}
 }
@@ -229,7 +318,7 @@ func (p *portImpl) sendLLCRR(dstMAC [6]byte, nR uint8) {
 	sink := p.cs
 	p.mu.RUnlock()
 	capture.Write(sink, time.Now(), out)
-	if err := p.link.WriteFrame(out); err != nil {
+	if err := p.writeFrame(out); err != nil {
 		netlog.Warn("[NetBEUI] LLC RR send error: %v", err)
 	}
 }
@@ -269,7 +358,7 @@ func (p *portImpl) sendIFrame(dstMAC [6]byte, body []byte, conn *llcConn) error 
 	sink := p.cs
 	p.mu.RUnlock()
 	capture.Write(sink, time.Now(), out)
-	return p.link.WriteFrame(out)
+	return p.writeFrame(out)
 }
 
 // sendUI transmits body as an LLC UI (unnumbered information) frame to dstMAC.
@@ -297,7 +386,7 @@ func (p *portImpl) sendUI(dstMAC [6]byte, body []byte) error {
 	sink := p.cs
 	p.mu.RUnlock()
 	capture.Write(sink, time.Now(), out)
-	return p.link.WriteFrame(out)
+	return p.writeFrame(out)
 }
 
 func (p *portImpl) Send(dstMAC [6]byte, frame *netbeui.Frame) error {
@@ -305,6 +394,7 @@ func (p *portImpl) Send(dstMAC [6]byte, frame *netbeui.Frame) error {
 	if err != nil {
 		return err
 	}
+	p.observeTraffic(port.Tx, len(body))
 	// Session-layer commands (SESSION_INITIALIZE, DATA_*, SESSION_CONFIRM, etc.)
 	// use LLC Type-2 I-framing when a connection is established. Non-session
 	// frames (NAME_RECOGNIZED, ADD_NAME_RESPONSE, DATAGRAM, etc.) always use
@@ -328,18 +418,23 @@ func (p *portImpl) SendBroadcast(frame *netbeui.Frame) error {
 // already discarded everything that isn't an 802.3 NetBIOS LLC frame;
 // software then strips the variable-length LLC header and decodes the
 // NBF body.
-func (p *portImpl) readLoop() {
-	defer close(p.readerDone)
+func (p *portImpl) readLoop(link rawlink.RawLink, stop, done chan struct{}) {
+	defer close(done)
 	for {
 		select {
-		case <-p.readerStop:
+		case <-stop:
 			return
 		default:
 		}
-		frame, err := p.link.ReadFrame()
+		frame, err := link.ReadFrame()
 		if err != nil {
 			if errors.Is(err, rawlink.ErrTimeout) {
 				continue
+			}
+			if errors.Is(err, rawlink.ErrClosed) {
+				// Link closed out from under us; stop reading rather than
+				// spin on a permanently-failing handle.
+				return
 			}
 			netlog.Warn("[NetBEUI] read error: %v", err)
 			continue
@@ -430,6 +525,7 @@ func (p *portImpl) handleFrame(raw []byte) {
 			if err != nil {
 				return
 			}
+			p.observeTraffic(port.Rx, len(nbfPayload))
 			cb(srcMAC, dstMAC, decoded)
 		}
 		return
@@ -490,6 +586,7 @@ func (p *portImpl) handleFrame(raw []byte) {
 		if err != nil {
 			return
 		}
+		p.observeTraffic(port.Rx, len(nbfPayload))
 		cb(srcMAC, dstMAC, decoded)
 	}
 }

@@ -76,6 +76,32 @@ type Port struct {
 
 	wg   sync.WaitGroup
 	stop chan struct{}
+
+	obsMu      sync.RWMutex
+	trafficObs port.TrafficObserver
+}
+
+// ddpHeaderBytes is the DDP long-header overhead added to a datagram's data
+// length to estimate on-wire bytes for traffic metering.
+const ddpHeaderBytes = 13
+
+// SetTrafficObserver installs an observer notified of each datagram sent or
+// received, for dashboard throughput metrics (port.TrafficMetered).
+func (p *Port) SetTrafficObserver(obs port.TrafficObserver) {
+	p.obsMu.Lock()
+	p.trafficObs = obs
+	p.obsMu.Unlock()
+}
+
+// observeTraffic reports one datagram's direction and estimated wire size to
+// the installed observer, if any.
+func (p *Port) observeTraffic(dir port.Direction, d ddp.Datagram) {
+	p.obsMu.RLock()
+	obs := p.trafficObs
+	p.obsMu.RUnlock()
+	if obs != nil {
+		obs(dir, len(d.Data)+ddpHeaderBytes)
+	}
 }
 
 func New(hwAddr []byte, seedNetworkMin, seedNetworkMax, desiredNetwork uint16, desiredNode uint8, seedZoneNames [][]byte) *Port {
@@ -499,12 +525,14 @@ func (p *Port) InboundFrame(frame []byte) {
 			bytes.Equal(dstMAC, elapBroadcast) ||
 			(bytes.Equal(dstMAC[0:5], elapMCprefix) && dstMAC[5] <= 0xFC) {
 			netlog.LogDatagramInbound(p.Network(), p.Node(), d, p)
+			p.observeTraffic(port.Rx, d)
 			p.router.Inbound(d, p)
 		}
 	}
 }
 
 func (p *Port) Unicast(network uint16, node uint8, d ddp.Datagram) {
+	p.observeTraffic(port.Tx, d)
 	netlog.LogDatagramUnicast(network, node, d, p)
 	key := [2]uint16{network, uint16(node)}
 	p.tableMu.Lock()
@@ -526,6 +554,7 @@ func (p *Port) Unicast(network uint16, node uint8, d ddp.Datagram) {
 }
 
 func (p *Port) Broadcast(d ddp.Datagram) {
+	p.observeTraffic(port.Tx, d)
 	if d.DestinationNetwork != 0 || d.DestinationNode != 0xFF {
 		d.DestinationNetwork = 0
 		d.DestinationNode = 0xFF
@@ -535,6 +564,7 @@ func (p *Port) Broadcast(d ddp.Datagram) {
 }
 
 func (p *Port) Multicast(zoneName []byte, d ddp.Datagram) {
+	p.observeTraffic(port.Tx, d)
 	netlog.LogDatagramMulticast(zoneName, d, p)
 	// Use the EtherTalk-wide broadcast (09:00:07:FF:FF:FF) rather than the
 	// zone-specific multicast.  All Phase 2 nodes must accept this address, whereas

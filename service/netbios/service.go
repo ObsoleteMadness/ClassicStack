@@ -95,33 +95,70 @@ type NameService interface {
 	Release(name string) error
 }
 
+// namedTransport pairs a Transport with the operator-facing name the
+// supervisor binds it under (e.g. "ipx", "netbeui"), so transports can be
+// added and removed at runtime as their underlying protocol is started or
+// stopped from the UI.
+type namedTransport struct {
+	name string
+	t    Transport
+}
+
 // Service composes a set of transports under a common NetBIOS name.
 type Service struct {
 	serverName string
 	scopeID    string
-	transports []Transport
+	transports []namedTransport
 	names      map[protocol.Name]struct{}
 
 	mu      sync.Mutex
 	started bool
+	ctx     context.Context // start context, captured in Start for late AddTransport
 	handler CommandHandler
 }
 
 // NewService creates a NetBIOS service whose name layer is reachable
 // over the given transports. transports may be empty for a name-only
-// service that does not accept incoming sessions.
+// service that does not accept incoming sessions. Transports passed here
+// are bound under positional names ("t0", "t1", …); callers that need
+// removable, named transports should pass nil and use AddTransport.
 func NewService(serverName, scopeID string, transports []Transport) *Service {
 	defaultNames := map[protocol.Name]struct{}{}
 	if serverName != "" {
 		defaultNames[protocol.NewName(serverName, protocol.NameTypeFileServer)] = struct{}{}
 		defaultNames[protocol.NewName(serverName, protocol.NameTypeWorkstation)] = struct{}{}
 	}
+	named := make([]namedTransport, 0, len(transports))
+	for i, t := range transports {
+		named = append(named, namedTransport{name: fmt.Sprintf("t%d", i), t: t})
+	}
 	return &Service{
 		serverName: serverName,
 		scopeID:    scopeID,
-		transports: transports,
+		transports: named,
 		names:      defaultNames,
 	}
+}
+
+// transportList returns a snapshot of the current Transport values, dropping
+// the names. Callers must not hold s.mu (it takes the lock).
+func (s *Service) transportList() []Transport {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Transport, 0, len(s.transports))
+	for _, nt := range s.transports {
+		out = append(out, nt.t)
+	}
+	return out
+}
+
+// snapshotNames returns the registered NetBIOS names. Callers must hold s.mu.
+func (s *Service) snapshotNamesLocked() []protocol.Name {
+	names := make([]protocol.Name, 0, len(s.names))
+	for n := range s.names {
+		names = append(names, n)
+	}
+	return names
 }
 
 // SetCommandHandler installs an inbound-command handler (typically an
@@ -130,8 +167,8 @@ func NewService(serverName, scopeID string, transports []Transport) *Service {
 func (s *Service) SetCommandHandler(h CommandHandler) {
 	s.mu.Lock()
 	s.handler = h
-	for _, t := range s.transports {
-		t.SetCommandHandler(h)
+	for _, nt := range s.transports {
+		nt.t.SetCommandHandler(h)
 	}
 	s.mu.Unlock()
 }
@@ -145,11 +182,12 @@ func (s *Service) Start(ctx context.Context) error {
 		return nil
 	}
 	s.started = true
-	transports := append([]Transport(nil), s.transports...)
-	names := make([]protocol.Name, 0, len(s.names))
-	for n := range s.names {
-		names = append(names, n)
+	s.ctx = ctx
+	transports := make([]Transport, 0, len(s.transports))
+	for _, nt := range s.transports {
+		transports = append(transports, nt.t)
 	}
+	names := s.snapshotNamesLocked()
 	s.mu.Unlock()
 	for i, t := range transports {
 		if err := t.Start(ctx); err != nil {
@@ -186,7 +224,10 @@ func (s *Service) Stop() error {
 		return nil
 	}
 	s.started = false
-	transports := append([]Transport(nil), s.transports...)
+	transports := make([]Transport, 0, len(s.transports))
+	for _, nt := range s.transports {
+		transports = append(transports, nt.t)
+	}
 	s.mu.Unlock()
 	for _, t := range transports {
 		_ = t.Stop()
@@ -194,13 +235,97 @@ func (s *Service) Stop() error {
 	return nil
 }
 
+// AddTransport binds t under name. If the service is already started, t is
+// wired with the current command handler, started, and given the registered
+// names — so a transport whose underlying protocol comes up after NetBIOS
+// (e.g. NetBEUI started from the UI) joins the live service. Re-adding an
+// existing name replaces the prior transport (the old one is left as-is;
+// callers RemoveTransport first if they need it stopped).
+func (s *Service) AddTransport(name string, t Transport) error {
+	if t == nil {
+		return fmt.Errorf("netbios: nil transport for %q", name)
+	}
+	s.mu.Lock()
+	// Replace any existing binding with the same name, stopping the old
+	// transport so it does not leak its goroutine/socket registrations.
+	var replaced Transport
+	for i, nt := range s.transports {
+		if nt.name == name {
+			replaced = nt.t
+			s.transports[i].t = t
+			goto bind
+		}
+	}
+	s.transports = append(s.transports, namedTransport{name: name, t: t})
+bind:
+	handler := s.handler
+	started := s.started
+	ctx := s.ctx
+	names := s.snapshotNamesLocked()
+	s.mu.Unlock()
+
+	if replaced != nil && replaced != t {
+		_ = replaced.Stop()
+	}
+
+	if handler != nil {
+		t.SetCommandHandler(handler)
+	}
+	if !started {
+		return nil
+	}
+	if err := t.Start(ctx); err != nil {
+		return fmt.Errorf("netbios: start transport %q: %w", name, err)
+	}
+	for _, n := range names {
+		if err := t.SendName(n); err != nil && !errors.Is(err, ErrNotImplemented) {
+			return fmt.Errorf("netbios: register name %q on %q: %w", n.String(), name, err)
+		}
+	}
+	return nil
+}
+
+// RemoveTransport stops and unbinds the transport registered under name.
+// It is idempotent: removing an unknown name is a no-op. The rest of the
+// service (other transports, the name layer) keeps running, so stopping one
+// underlying protocol detaches only its binding.
+func (s *Service) RemoveTransport(name string) error {
+	s.mu.Lock()
+	var found Transport
+	kept := s.transports[:0]
+	for _, nt := range s.transports {
+		if nt.name == name && found == nil {
+			found = nt.t
+			continue
+		}
+		kept = append(kept, nt)
+	}
+	s.transports = kept
+	s.mu.Unlock()
+
+	if found == nil {
+		return nil
+	}
+	return found.Stop()
+}
+
+// Transports returns the names of the currently bound transports, in bind
+// order, for status reporting.
+func (s *Service) Transports() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.transports))
+	for _, nt := range s.transports {
+		out = append(out, nt.name)
+	}
+	return out
+}
+
 // SendDatagram broadcasts a NetBIOS datagram through every active
 // transport. If one or more transports fail, the first error is
 // returned after attempting all sends.
 func (s *Service) SendDatagram(d *protocol.Datagram) error {
-	s.mu.Lock()
-	transports := append([]Transport(nil), s.transports...)
-	s.mu.Unlock()
+	transports := s.transportList()
 
 	var firstErr error
 	for _, t := range transports {
@@ -219,9 +344,7 @@ func (s *Service) SendDatagram(d *protocol.Datagram) error {
 // delivery. ErrNotImplemented is returned when no configured
 // transport exposes directed routing.
 func (s *Service) SendDirectedDatagram(d *protocol.Datagram, remote DatagramEndpoint) error {
-	s.mu.Lock()
-	transports := append([]Transport(nil), s.transports...)
-	s.mu.Unlock()
+	transports := s.transportList()
 
 	var firstErr error
 	attempted := false
@@ -259,7 +382,10 @@ func (s *Service) Register(name string) error {
 	}
 	s.names[n] = struct{}{}
 	started := s.started
-	transports := append([]Transport(nil), s.transports...)
+	transports := make([]Transport, 0, len(s.transports))
+	for _, nt := range s.transports {
+		transports = append(transports, nt.t)
+	}
 	s.mu.Unlock()
 
 	if !started {

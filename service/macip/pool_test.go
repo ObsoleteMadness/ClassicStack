@@ -22,6 +22,37 @@ func TestIPPoolRejectsInvalidATEndpointOnAssign(t *testing.T) {
 	}
 }
 
+// TestIPPoolStatsAndSnapshot verifies the live-count and lease-list views used
+// by the dashboard and the leases diagnostics: an assigned static lease and a
+// relayed DHCP lease are both counted and reported.
+func TestIPPoolStatsAndSnapshot(t *testing.T) {
+	p := newIPPool(net.ParseIP("192.168.100.0"), net.CIDRMask(24, 32))
+
+	if _, err := p.assign(nil, 1, 10); err != nil {
+		t.Fatalf("assign static: %v", err)
+	}
+	p.registerDHCP(net.ParseIP("192.168.100.77"), 2, 20)
+
+	ps := p.stats()
+	if ps.activeLeases != 2 {
+		t.Fatalf("activeLeases = %d, want 2 (1 static + 1 dhcp)", ps.activeLeases)
+	}
+	if ps.sessions != 0 {
+		t.Fatalf("sessions = %d, want 0", ps.sessions)
+	}
+
+	// A pinned ASP session is counted.
+	p.pinSessionLease(1, 10, 5)
+	if ps := p.stats(); ps.sessions != 1 {
+		t.Fatalf("sessions after pin = %d, want 1", ps.sessions)
+	}
+
+	st := p.snapshot()
+	if len(st.Static) != 1 || len(st.DHCP) != 1 {
+		t.Fatalf("snapshot static/dhcp = %d/%d, want 1/1", len(st.Static), len(st.DHCP))
+	}
+}
+
 func TestIPPoolIgnoresInvalidDHCPRegistrations(t *testing.T) {
 	p := newIPPool(net.ParseIP("192.168.100.0"), net.CIDRMask(24, 32))
 	ip := net.ParseIP("192.168.100.50")

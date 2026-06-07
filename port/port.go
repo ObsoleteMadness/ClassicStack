@@ -22,6 +22,30 @@ type Port interface {
 	ExtendedNetwork() bool
 }
 
+// Direction labels a metered traffic observation as received or transmitted.
+type Direction int
+
+const (
+	// Rx is traffic received by the port (handed up to the router).
+	Rx Direction = iota
+	// Tx is traffic the port sent (unicast/broadcast/multicast).
+	Tx
+)
+
+// TrafficObserver is notified of each datagram a port sends or receives, with
+// the on-wire byte estimate, so a front-end can derive per-port throughput.
+// It must be safe for concurrent use and fast (it runs on the data path).
+type TrafficObserver func(dir Direction, bytes int)
+
+// TrafficMetered is the optional interface a port implements to report rx/tx
+// traffic. The supervisor injects an observer that publishes per-port metrics;
+// ports that do not implement it simply report no throughput. Keeping it out
+// of the core Port interface means transports that never need metering (test
+// ports, future raw transports) need no stub.
+type TrafficMetered interface {
+	SetTrafficObserver(obs TrafficObserver)
+}
+
 // BridgeConfigurable is implemented by ports that participate in an
 // Ethernet-style bridge and need operator control over bridge mode and
 // host-MAC synthesis. It is optional — callers type-assert on a Port to

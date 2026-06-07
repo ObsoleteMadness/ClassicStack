@@ -48,27 +48,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libpcap-dev
 
-      - name: go vet
-        run: go vet ./...
-
       - name: Race-enabled tests
         run: go test -tags all -race -count=1 ./...
 
+      # golangci-lint runs via its dedicated action (caching, problem matchers)
+      # rather than from quality.sh, so it can hook into the GitHub UI; the
+      # script tolerates it being absent so a local run still covers vet/vuln/
+      # gosec. The vet + govulncheck + gosec gates are shared with local
+      # development via scripts/ci/quality.sh / `make quality`.
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v8
         with:
           version: latest
           args: --build-tags=all
 
-      - name: govulncheck
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck -tags all ./...
-
-      - name: gosec (untrusted-input paths)
-        run: |
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
-          gosec -tags all ./service/macip/... ./service/macgarden/... ./service/afpfs/macgarden/...
+      - name: Quality gates (vet + govulncheck + gosec)
+        shell: bash
+        env:
+          SKIP_LINT: "1" # golangci-lint already ran via its action above
+        run: bash scripts/ci/quality.sh
 
   build-tags:
     name: Build-tag matrix

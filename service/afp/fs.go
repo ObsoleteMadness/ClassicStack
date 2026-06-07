@@ -54,6 +54,14 @@ func registeredFSNames() []string {
 	return slices.Sorted(maps.Keys(fsRegistry))
 }
 
+// RegisteredFSTypes returns the filesystem-type names registered in this
+// build (e.g. "local_fs", plus "macgarden" when built with that tag). It is
+// the exported view of the FS registry for UI/config consumers that need to
+// offer an fs_type choice.
+func RegisteredFSTypes() []string {
+	return registeredFSNames()
+}
+
 type FileSystem interface {
 	ReadDir(path string) ([]fs.DirEntry, error)
 	Stat(path string) (fs.FileInfo, error)

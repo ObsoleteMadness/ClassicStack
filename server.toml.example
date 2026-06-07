@@ -5,6 +5,16 @@ device = '\\Device\\NPF_{1DFDAA9C-7DD4-40F8-B6D4-9298C273D654}'
 hw_address = "DE:AD:BE:EF:CA:FE" # host/bridge MAC used by raw-link consumers
 bridge_mode = "auto"           # auto, ethernet, or wifi frame adaptation mode
 
+[Router]
+# Which transports the AppleTalk router binds to. List the transport section
+# names ("LToUdp", "TashTalk", "EtherTalk") the router should participate in.
+# An enabled transport that is NOT listed runs standalone: it still comes up and
+# receives (and can be captured), but it is not part of the AppleTalk router —
+# no RTMP/ZIP and no inter-port forwarding. Leave ports empty (or omit this
+# whole section) to bind every enabled transport, which is the default.
+#   ports = ["LToUdp", "EtherTalk"]   # TashTalk would then run standalone
+ports = []
+
 [LToUdp]
 # LocalTalk over UDP Settings (used by Mini vMac UDP builds and SNOW emu)
 enabled = true                 # Enable LToUDP - true for on, false for off
@@ -132,3 +142,14 @@ snaplen = 65535                # per-frame snap length
 # [VFSBus]
 # subscriber_buffer = 256
 # drop_warn_interval = "30s"
+
+# [WebUI]
+# Management web UI: a dashboard showing per-service status/statistics and a
+# configuration editor. Requires a binary built with -tags webui (included in
+# -tags all). Saving from the UI rewrites this file and removes comments,
+# backing up the previous version to server.toml.NNNN first.
+# enabled = false
+# bind = "127.0.0.1:8080"          # IP:PORT to listen on; loopback by default
+# tls = true                       # serve HTTPS; self-signed when no cert/key given
+# cert_pem = ""                    # path to PEM certificate; blank: self-signed
+# key_pem = ""                     # path to PEM private key; blank: self-signed

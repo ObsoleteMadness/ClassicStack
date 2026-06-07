@@ -8,6 +8,10 @@
 *.so
 *.dylib
 
+# Locally built command binaries (extensionless on Unix)
+/classicstack
+/classicstackd
+
 # Test binary, built with `go test -c`
 *.test
 
@@ -43,4 +47,6 @@ go.work.sum
 
 .captures/
 captures/
+
+server.toml.[0-9]*
 

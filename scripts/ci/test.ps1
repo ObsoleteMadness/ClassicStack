@@ -9,6 +9,7 @@ $tagSets = @(
     'afp sqlite_cnid'
     'all'
     'ipx netbeui smb'
+    'webui'
 )
 
 foreach ($tags in $tagSets) {

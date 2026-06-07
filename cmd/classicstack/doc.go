@@ -8,8 +8,11 @@ flags and an optional TOML file; build tags (afp, macgarden, macip,
 sqlite_cnid) gate the optional subsystems so a router-only binary
 shrinks accordingly.
 
-This package is the wiring layer only — protocol logic lives under
-protocol/, link-layer transports under port/, and stateful services
-under service/.
+This package is a thin entry point: it holds the link-time build vars and
+hands off to internal/app, which owns the run-core (flag/TOML parsing, the
+Supervisor, and all service wiring) shared with the service/daemon wrappers
+(cmd/classicstack-svc, cmd/classicstackd). Protocol logic lives under
+protocol/, link-layer transports under port/, and stateful services under
+service/.
 */
 package main

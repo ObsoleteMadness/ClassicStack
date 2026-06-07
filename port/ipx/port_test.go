@@ -142,6 +142,86 @@ func TestIPXEthernetIIRoundTrip(t *testing.T) {
 	}
 }
 
+// TestIPXPortRestart exercises the UI stop/start lifecycle that previously
+// crashed: the first cycle ran fine, the second panicked with "close of
+// closed channel" because the read-loop channels were closed once and never
+// recreated. With NewPortWithLinkFactory each Start opens a fresh link and
+// resets the channels, so repeated Stop/Start must work and deliver frames.
+func TestIPXPortRestart(t *testing.T) {
+	var mu sync.Mutex
+	var links []*fakeRawLink
+	open := func() (rawlink.RawLink, error) {
+		l := newFakeRawLink()
+		mu.Lock()
+		links = append(links, l)
+		mu.Unlock()
+		return l, nil
+	}
+	p := NewPortWithLinkFactory(open, FramingEthernetII)
+	defer p.Stop()
+
+	delivered := make(chan *protocol.Datagram, 4)
+	p.SetDeliveryCallback(func(d *protocol.Datagram) { delivered <- d })
+
+	for cycle := range 3 {
+		if err := p.Start(); err != nil {
+			t.Fatalf("cycle %d Start: %v", cycle, err)
+		}
+		mu.Lock()
+		link := links[len(links)-1]
+		mu.Unlock()
+
+		link.Push(buildEthernetIIIPX(makeIPXBytes(t, []byte("hi"))))
+		select {
+		case got := <-delivered:
+			if string(got.Payload) != "hi" {
+				t.Fatalf("cycle %d payload: got %q want %q", cycle, got.Payload, "hi")
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("cycle %d: no delivery", cycle)
+		}
+
+		if err := p.Stop(); err != nil {
+			t.Fatalf("cycle %d Stop: %v", cycle, err)
+		}
+	}
+
+	mu.Lock()
+	n := len(links)
+	mu.Unlock()
+	if n != 3 {
+		t.Fatalf("link factory called %d times, want 3 (one fresh link per Start)", n)
+	}
+}
+
+// TestIPXPortDoubleStartStop verifies Start and Stop are individually
+// idempotent: a redundant Start does not spawn a second reader, and a
+// redundant Stop does not close an already-closed channel.
+func TestIPXPortDoubleStartStop(t *testing.T) {
+	calls := 0
+	open := func() (rawlink.RawLink, error) {
+		calls++
+		return newFakeRawLink(), nil
+	}
+	p := NewPortWithLinkFactory(open, FramingEthernetII)
+
+	if err := p.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := p.Start(); err != nil { // redundant
+		t.Fatalf("second Start: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("link opened %d times across redundant Start, want 1", calls)
+	}
+	if err := p.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := p.Stop(); err != nil { // redundant; must not panic
+		t.Fatalf("second Stop: %v", err)
+	}
+}
+
 func TestIPXRaw8023Decoded(t *testing.T) {
 	link := newFakeRawLink()
 	p := NewPort(link)

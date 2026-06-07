@@ -63,7 +63,8 @@ func (s *RIPService) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop cancels the broadcaster and waits for it to exit.
+// Stop cancels the broadcaster, waits for it to exit, and releases the
+// RIP socket so the service can be started again.
 func (s *RIPService) Stop() error {
 	s.mu.Lock()
 	cancel := s.cancel
@@ -76,6 +77,7 @@ func (s *RIPService) Stop() error {
 	if done != nil {
 		<-done
 	}
+	s.router.UnregisterSocket(RIPSocket)
 	return nil
 }
 

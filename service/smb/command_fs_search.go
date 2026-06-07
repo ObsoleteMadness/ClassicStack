@@ -283,9 +283,9 @@ func formatSearchFileName(name string) []byte {
 	if ext != "" {
 		out[n] = '.'
 		n++
-		n += copy(out[n:], ext)
+		copy(out[n:], ext)
 	}
-	// Bytes n..12 are already zero from make().
+	// Remaining bytes are already zero from make().
 	return out
 }
 
@@ -473,7 +473,6 @@ func dosTimeDate(t time.Time) uint32 {
 	dosDate := uint16(t.Day()) | (uint16(t.Month()) << 5) | (uint16(year-1980) << 9)
 	return uint32(dosTime) | (uint32(dosDate) << 16)
 }
-
 
 func parseTreeConnectShareName(req []byte) (string, bool) {
 	bytesArea, ok := smbBytesArea(req)

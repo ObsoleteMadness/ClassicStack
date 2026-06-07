@@ -110,6 +110,33 @@ func waitForSend(t *testing.T, port *recordingPort, n int) {
 	t.Fatalf("waited for %d sends, only got %d", n, len(port.sent))
 }
 
+// TestTransportRestart reproduces the UI stop/start path that failed with
+// "ipx: socket already registered": Stop must release the IPX sockets so a
+// subsequent Start can re-register them. A zero name skips the name claim so
+// the test is deterministic.
+func TestTransportRestart(t *testing.T) {
+	r, _, sap := setupTransport(t)
+	var zeroName netbiosproto.Name
+	tr := NewTransport(r, sap, zeroName)
+
+	for cycle := range 3 {
+		if err := tr.Start(context.Background()); err != nil {
+			t.Fatalf("cycle %d Start: %v", cycle, err)
+		}
+		if err := tr.Stop(); err != nil {
+			t.Fatalf("cycle %d Stop: %v", cycle, err)
+		}
+	}
+
+	// After the final Stop the sockets must be free: a fresh registration
+	// of every NB-IPX socket should succeed.
+	for _, sock := range Sockets {
+		if err := r.RegisterSocket(sock, tr.(*transport)); err != nil {
+			t.Fatalf("socket %02x%02x still registered after Stop: %v", sock[0], sock[1], err)
+		}
+	}
+}
+
 func TestUncontestedNameClaimRegistersWithSAP(t *testing.T) {
 	r, port, sap := setupTransport(t)
 	name := netbiosproto.NewName("CLASSICSTACK", netbiosproto.NameTypeFileServer)

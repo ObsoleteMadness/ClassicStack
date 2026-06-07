@@ -10,6 +10,30 @@ import (
 	routeripx "github.com/ObsoleteMadness/ClassicStack/router/ipx"
 )
 
+// TestRIPSAPRestartReleasesSockets verifies the RIP and SAP services free
+// their router sockets on Stop, so a Stop/Start cycle (the UI restart path)
+// does not fail with "ipx: socket already registered".
+func TestRIPSAPRestartReleasesSockets(t *testing.T) {
+	r, _ := setupRIPRouter(t)
+	rip := NewRIPService(r)
+	sap := NewSAPService(r)
+
+	for cycle := range 3 {
+		if err := rip.Start(context.Background()); err != nil {
+			t.Fatalf("cycle %d RIP Start: %v", cycle, err)
+		}
+		if err := sap.Start(context.Background()); err != nil {
+			t.Fatalf("cycle %d SAP Start: %v", cycle, err)
+		}
+		if err := rip.Stop(); err != nil {
+			t.Fatalf("cycle %d RIP Stop: %v", cycle, err)
+		}
+		if err := sap.Stop(); err != nil {
+			t.Fatalf("cycle %d SAP Stop: %v", cycle, err)
+		}
+	}
+}
+
 func TestSAPRegisterFillsIdentityFromRouter(t *testing.T) {
 	r, _ := setupRIPRouter(t) // reuses helpers from rip_test.go
 	svc := NewSAPService(r)
@@ -237,11 +261,11 @@ func TestSAPPeriodicBroadcast(t *testing.T) {
 	}
 	defer svc.Stop()
 
-	waitForSend(t, port, 1)        // startup
+	waitForSend(t, port, 1) // startup
 	tickCh <- time.Now()
-	waitForSend(t, port, 2)        // tick 1
+	waitForSend(t, port, 2) // tick 1
 	tickCh <- time.Now()
-	waitForSend(t, port, 3)        // tick 2
+	waitForSend(t, port, 3) // tick 2
 
 	port.mu.Lock()
 	defer port.mu.Unlock()

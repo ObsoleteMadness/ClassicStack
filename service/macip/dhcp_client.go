@@ -138,6 +138,8 @@ func fabricateMACForAT(atNet uint16, atNode uint8) net.HardwareAddr {
 // the given AppleTalk node. If preferredIP is non-nil it is sent as option 50.
 // Returns nil if DHCP fails, times out, the service stops, or ctx is cancelled.
 func (c *dhcpClient) RequestIP(ctx context.Context, atNet uint16, atNode uint8, preferredIP net.IP) *dhcpResult {
+	// #nosec G404 -- the DHCP transaction ID just needs to be unpredictable
+	// enough to correlate replies on a trusted LAN, not cryptographically random.
 	xid := rand.Uint32()
 	fabMAC := fabricateMACForAT(atNet, atNode)
 	p := &pendingDHCP{

@@ -52,6 +52,30 @@ type Port struct {
 	sendFrameFunc   func(frame []byte) error
 	linkManager     LinkManager
 	captureSink     capture.Sink
+	trafficObs      port.TrafficObserver
+}
+
+// ddpHeaderBytes is the DDP long-header overhead added to a datagram's data
+// length to estimate on-wire bytes for traffic metering.
+const ddpHeaderBytes = 13
+
+// SetTrafficObserver installs an observer notified of each datagram sent or
+// received, for dashboard throughput metrics (port.TrafficMetered).
+func (p *Port) SetTrafficObserver(obs port.TrafficObserver) {
+	p.mu.Lock()
+	p.trafficObs = obs
+	p.mu.Unlock()
+}
+
+// observeTraffic reports one datagram's direction and estimated wire size to
+// the installed observer, if any.
+func (p *Port) observeTraffic(dir port.Direction, d ddp.Datagram) {
+	p.mu.Lock()
+	obs := p.trafficObs
+	p.mu.Unlock()
+	if obs != nil {
+		obs(dir, len(d.Data)+ddpHeaderBytes)
+	}
 }
 
 // SetCaptureSink installs (or clears, if nil) a pcap-style capture
@@ -339,6 +363,7 @@ func (p *Port) InboundFrame(frame []byte) {
 			netlog.Debug("%s failed to parse short-header AppleTalk datagram from LocalTalk frame: %v", p.ShortString(), err)
 		} else {
 			netlog.LogDatagramInbound(p.Network(), p.Node(), d, p)
+			p.observeTraffic(port.Rx, d)
 			p.router.Inbound(d, p)
 		}
 	case llapAppleTalkLongHeader:
@@ -347,6 +372,7 @@ func (p *Port) InboundFrame(frame []byte) {
 			netlog.Debug("%s failed to parse long-header AppleTalk datagram from LocalTalk frame: %v", p.ShortString(), err)
 		} else {
 			netlog.LogDatagramInbound(p.Network(), p.Node(), d, p)
+			p.observeTraffic(port.Rx, d)
 			p.router.Inbound(d, p)
 		}
 	case llapENQ:
@@ -372,6 +398,7 @@ func (p *Port) InboundFrame(frame []byte) {
 }
 
 func (p *Port) Unicast(network uint16, node uint8, d ddp.Datagram) {
+	p.observeTraffic(port.Tx, d)
 	if p.linkManager != nil {
 		p.linkManager.TransmitUnicast(p, network, node, d)
 		return
@@ -397,6 +424,7 @@ func (p *Port) Unicast(network uint16, node uint8, d ddp.Datagram) {
 }
 
 func (p *Port) Broadcast(d ddp.Datagram) {
+	p.observeTraffic(port.Tx, d)
 	if p.linkManager != nil {
 		p.linkManager.TransmitBroadcast(p, d)
 		return

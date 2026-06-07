@@ -145,6 +145,47 @@ func (t *RoutingTable) MarkBad(networkMin, networkMax uint16) bool {
 	return true
 }
 
+// RemoveEntriesForPort withdraws every routing-table entry reachable via p
+// — both the port's directly-connected networks and any remote networks
+// learned through it — and drops their zone associations. It is called when
+// a port is removed at runtime (e.g. the operator disables LToUDP) so the
+// router stops advertising and routing to networks that no longer have a
+// backing interface. It mirrors the cleanup SetPortRange/Age already do for
+// a single entry, applied across all of p's entries at once.
+func (t *RoutingTable) RemoveEntriesForPort(p port.Port) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// Collect the distinct entries owned by p first; entryByKey is the
+	// authoritative set and dedupes the per-network fan-out.
+	var removed []*RoutingTableEntry
+	for k, e := range t.entryByKey {
+		if e.Port != p {
+			continue
+		}
+		netlog.Debug("%s removing entry for port %s: %+v", t.router.ShortString(), p.ShortString(), *e)
+		delete(t.stateByKey, k)
+		delete(t.entryByKey, k)
+		removed = append(removed, e)
+	}
+
+	// Drop the per-network index entries pointing at any removed entry.
+	for n, e := range t.entryByNetwork {
+		if e.Port == p {
+			delete(t.entryByNetwork, n)
+		}
+	}
+
+	// Withdraw the corresponding zone associations.
+	for _, e := range removed {
+		nmax := e.NetworkMax
+		if err := t.router.ZoneInformationTable.RemoveNetworks(e.NetworkMin, &nmax); err != nil {
+			netlog.Warn("%s couldn't remove networks from zone information table: %v",
+				t.router.ShortString(), err)
+		}
+	}
+}
+
 func (t *RoutingTable) Age() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -174,6 +215,45 @@ func (t *RoutingTable) Age() {
 			}
 		}
 	}
+}
+
+// stateName maps an internal RTMP aging state to a human label. RTMP routers
+// age entries through Good → Suspect → Bad → (removed) on successive aging
+// ticks; receiving the route again resets it to Good. This validity state is
+// RTMP's notion of an entry's "age" — there is no wall-clock timestamp.
+func stateName(s int) string {
+	switch s {
+	case stateGood:
+		return "good"
+	case stateSus:
+		return "suspect"
+	case stateBad:
+		return "bad"
+	case stateWorst:
+		return "worst"
+	default:
+		return "unknown"
+	}
+}
+
+// RoutingTableSnapshotEntry is one routing-table entry plus its RTMP aging
+// state, for read-only diagnostics.
+type RoutingTableSnapshotEntry struct {
+	Entry *RoutingTableEntry
+	State string // RTMP aging state: good | suspect | bad | worst
+}
+
+// Snapshot returns every distinct routing-table entry with its RTMP aging
+// state. Directly-connected entries (Distance 0) are always "good"; learned
+// entries carry the state the aging machine has reached.
+func (t *RoutingTable) Snapshot() []RoutingTableSnapshotEntry {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	out := make([]RoutingTableSnapshotEntry, 0, len(t.entryByKey))
+	for k, e := range t.entryByKey {
+		out = append(out, RoutingTableSnapshotEntry{Entry: e, State: stateName(t.stateByKey[k])})
+	}
+	return out
 }
 
 func (t *RoutingTable) Entries() []struct {
