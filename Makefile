@@ -21,7 +21,8 @@ GOSEC_PKG       := github.com/securego/gosec/v2/cmd/gosec@latest
 # the CI Quality job exactly.
 GOSEC_PKGS := ./service/macip/... ./service/macgarden/... ./service/afpfs/macgarden/...
 
-.PHONY: build build-svc test test-race test-tags lint quality vet vuln gosec fuzz clean
+.PHONY: build build-svc test test-race test-tags lint quality vet vuln gosec fuzz clean \
+        harness archtest tinygo-gate
 
 build: build-svc
 	go build -tags "$(TAGS)" -o classicstack ./cmd/classicstack
@@ -69,6 +70,27 @@ fuzz:
 	  go test -tags all -run=^$$ -fuzz=. -fuzztime=20s ./$$dir/... || exit 1; \
 	done
 
+# --- Phase 1 (refactor) harness gates -------------------------------------
+# The greenfield core/adapter/compose rings have their own guardrails, kept
+# separate from the legacy targets above. See .refactor/01-PHASE-harness.md.
+
+# harness runs the same gates as the Refactor Harness CI job: build (default +
+# tags=all), vet of the new rings, the import-graph archtest, and the core/
+# unit tests (which grow as B*/C*/E* land).
+harness:
+	bash scripts/ci/harness.sh
+
+# archtest is the import-graph dependency rule (§1) in isolation, for a quick
+# local check after touching a core/ import.
+archtest:
+	go test -count=1 ./core/internal/archtest/...
+
+# tinygo-gate runs the TinyGo amd64 build gates (linux + windows). Requires
+# tinygo on PATH; CI installs it. This is how the no-reflection /
+# no-forbidden-import discipline is verified without ESP32 hardware.
+tinygo-gate:
+	bash scripts/ci/tinygo-gate.sh
+
 clean:
-	rm -f classicstack classicstack.exe classicstackd classicstack-svc.exe
+	rm -f classicstack classicstack.exe classicstackd classicstack-svc.exe cs-tinygo.exe
 	rm -rf out dist

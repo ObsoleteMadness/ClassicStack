@@ -1,0 +1,61 @@
+name: Refactor Harness CI
+
+# Phase 1 (greenfield) gates for the new core/adapter/compose rings. See
+# .refactor/01-PHASE-harness.md step A4. Runs alongside the legacy PR CI; the
+# two are independent until the cmd cutover in Phase 2.
+
+on:
+  push:
+    branches:
+      - feature/refactor
+  pull_request:
+    branches:
+      - main
+      - master
+      - feature/refactor
+
+permissions:
+  contents: read
+
+jobs:
+  harness:
+    name: Harness gates (build + vet + archtest + core tests)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install libpcap headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpcap-dev
+
+      - name: Run harness gates
+        shell: bash
+        run: bash scripts/ci/harness.sh
+
+  tinygo:
+    name: TinyGo amd64 gates (linux + windows)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Setup TinyGo
+        uses: acifani/setup-tinygo@v2
+        with:
+          tinygo-version: "0.34.0"
+
+      - name: Run TinyGo amd64 build gates
+        shell: bash
+        run: bash scripts/ci/tinygo-gate.sh
