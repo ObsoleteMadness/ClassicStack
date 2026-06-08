@@ -35,7 +35,7 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 ### Group C — Harness (depends on Group B)
 | # | Task | Deps | Owner | Status |
 |---|------|------|-------|--------|
-| C1 | `compose/registry`: name→factory, build-tag `init()` (§8) | B1,B6 | | ⬜ |
+| C1 | `compose/registry`: name→factory, build-tag `init()` (§8) | B1,B6 | claude | ✅ |
 | C2 | `compose/supervisor`: DAG, ordered start/stop, StateChanged publish (§3/§11) | B1,B3,C1 | | ⬜ |
 | C3 | Supervisor addressed `Reconfigure`+notify (no diff) + Attachable side-effects (§11) | C2,B1,B6 | | ⬜ |
 | C4 | `compose` stats/rate subscriber on telemetry bus (§5) | B3,C2 | | ⬜ |
