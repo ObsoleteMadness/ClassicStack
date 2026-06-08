@@ -1,0 +1,661 @@
+package fs
+
+import (
+	"errors"
+	"io"
+	"io/fs"
+	"os"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/ObsoleteMadness/ClassicStack/core/bus"
+	"github.com/ObsoleteMadness/ClassicStack/core/metastore"
+)
+
+// File is a per-open-handle. Implementations must not retain p past Write/WriteAt.
+type File interface {
+	ReadAt(p []byte, off int64) (int, error)
+	WriteAt(p []byte, off int64) (int, error)
+	Truncate(size int64) error
+	Stat() (fs.FileInfo, error)
+	Sync() error
+	Close() error
+}
+
+// FileSystem is the cross-service backend contract.
+type FileSystem interface {
+	ReadDir(path string) ([]fs.DirEntry, error)
+	Stat(path string) (fs.FileInfo, error)
+	DiskUsage(path string) (total, free uint64, err error)
+	CreateDir(path string) error
+	CreateFile(path string) (File, error)
+	OpenFile(path string, flag int) (File, error)
+	Remove(path string) error
+	Rename(old, new string) error
+	ShortName(path string) (string, error)
+	MediumName(path string) (string, error)
+	Capabilities() Capabilities
+}
+
+type Capabilities struct {
+	CatSearch, ChildCount, ReadDirRange, DirAttributes, ReadOnly bool
+}
+
+type ForkType uint8
+
+const (
+	DataFork ForkType = iota
+	ResourceFork
+)
+
+type ForkEngine interface {
+	OpenFork(path string, fork ForkType, flag int) (File, error)
+	ForkLen(path string, fork ForkType) (int64, error)
+	ReadFinderInfo(path string) (info [32]byte, ok bool, err error)
+	WriteFinderInfo(path string, info [32]byte) error
+	ReadComment(path string) (c []byte, ok bool)
+	WriteComment(path string, c []byte) error
+	MoveMetadata(old, new string) error
+	DeleteMetadata(path string) error
+}
+
+type ForkFS interface {
+	FileSystem
+	ForkEngine
+}
+
+type NameKind uint8
+
+const (
+	ShortName NameKind = iota
+	MediumName
+)
+
+type NameEngine interface {
+	Bind(dir, long string, kind NameKind) string
+	ToLong(dir, derived string, kind NameKind) (string, bool)
+}
+
+type StoredName []byte
+
+type FilenameCodec interface {
+	Decode(wire []byte) (StoredName, error)
+	Encode(stored StoredName) (wire []byte, err error)
+	Profile() FilenameProfile
+}
+
+type FilenameProfile struct {
+	WireCharset  string
+	StoreCharset string
+	MaxElement   int
+	Validate     func(elem StoredName) error
+}
+
+var ErrUnrepresentable = errors.New("fs: filename not representable in store charset")
+
+type ShareSpec struct {
+	Name          string
+	FSType        string
+	ForkBackend   string
+	FilenameCodec string
+	NameEngine    string
+	Metastore     string
+	ReadOnly      bool
+	Extra         map[string]any
+}
+
+type Factory func(ShareSpec, bus.Bus, metastore.Store) (FileSystem, error)
+
+var (
+	fsFactoryMu sync.RWMutex
+	fsFactories = map[string]Factory{}
+)
+
+func RegisterFS(fsType string, f Factory) {
+	fsFactoryMu.Lock()
+	defer fsFactoryMu.Unlock()
+	fsFactories[strings.ToLower(fsType)] = f
+}
+
+func lookupFactory(fsType string) (Factory, bool) {
+	fsFactoryMu.RLock()
+	defer fsFactoryMu.RUnlock()
+	f, ok := fsFactories[strings.ToLower(fsType)]
+	return f, ok
+}
+
+// BuildShare assembles one per-share stack and validates key compatibility pairs.
+func BuildShare(spec ShareSpec, b bus.Bus) (ForkFS, error) {
+	spec = withDefaults(spec)
+	if err := validateShareSpec(spec); err != nil {
+		return nil, err
+	}
+
+	if b == nil {
+		b = NewBus(0)
+	}
+
+	store, err := metastore.Open(spec.Metastore, "")
+	if err != nil {
+		return nil, err
+	}
+
+	f, ok := lookupFactory(spec.FSType)
+	if !ok {
+		return nil, errors.New("fs: unknown fs type")
+	}
+	base, err := f(spec, b, store)
+	if err != nil {
+		return nil, err
+	}
+
+	codec, err := codecByName(spec.FilenameCodec)
+	if err != nil {
+		return nil, err
+	}
+	nameEngine, err := nameEngineByName(spec.NameEngine)
+	if err != nil {
+		return nil, err
+	}
+	forkEngine, err := forkEngineByName(spec.ForkBackend)
+	if err != nil {
+		return nil, err
+	}
+
+	return &shareFS{FileSystem: base, ForkEngine: forkEngine, codec: codec, names: nameEngine}, nil
+}
+
+func withDefaults(spec ShareSpec) ShareSpec {
+	if spec.FSType == "" {
+		spec.FSType = "memfs"
+	}
+	if spec.ForkBackend == "" {
+		spec.ForkBackend = "appledouble"
+	}
+	if spec.FilenameCodec == "" {
+		spec.FilenameCodec = "identity"
+	}
+	if spec.NameEngine == "" {
+		spec.NameEngine = "passthrough"
+	}
+	if spec.Metastore == "" {
+		spec.Metastore = "mem"
+	}
+	return spec
+}
+
+func validateShareSpec(spec ShareSpec) error {
+	fsType := strings.ToLower(spec.FSType)
+	codec := strings.ToLower(spec.FilenameCodec)
+	fork := strings.ToLower(spec.ForkBackend)
+
+	if fsType == "hfs-image" && codec == "utf8" {
+		return errors.New("fs: hfs-image cannot be paired with utf8 filename codec")
+	}
+	if fsType == "zipfs" && spec.ReadOnly && fork != "appledouble" {
+		return errors.New("fs: read-only zipfs requires appledouble fork backend")
+	}
+	return nil
+}
+
+type shareFS struct {
+	FileSystem
+	ForkEngine
+	codec FilenameCodec
+	names NameEngine
+}
+
+// ShortName and MediumName are delegated to the share's NameEngine placeholder.
+func (s *shareFS) ShortName(path string) (string, error) {
+	return s.names.Bind("", path, ShortName), nil
+}
+
+func (s *shareFS) MediumName(path string) (string, error) {
+	return s.names.Bind("", path, MediumName), nil
+}
+
+// Codec exposes the share codec for adapter wiring/tests.
+func (s *shareFS) Codec() FilenameCodec { return s.codec }
+
+// NewIdentityFilenameCodec returns a strict identity codec with a POSIX-bytes validator.
+func NewIdentityFilenameCodec() FilenameCodec {
+	profile := FilenameProfile{
+		WireCharset:  "identity",
+		StoreCharset: "posix-bytes",
+		Validate:     validatePOSIXElement,
+	}
+	return identityCodec{profile: profile}
+}
+
+type identityCodec struct {
+	profile FilenameProfile
+}
+
+func (c identityCodec) Decode(wire []byte) (StoredName, error) {
+	stored := StoredName(append([]byte(nil), wire...))
+	if c.profile.MaxElement > 0 && len(stored) > c.profile.MaxElement {
+		return nil, ErrUnrepresentable
+	}
+	if c.profile.Validate != nil {
+		if err := c.profile.Validate(stored); err != nil {
+			return nil, ErrUnrepresentable
+		}
+	}
+	return stored, nil
+}
+
+func (c identityCodec) Encode(stored StoredName) ([]byte, error) {
+	if c.profile.MaxElement > 0 && len(stored) > c.profile.MaxElement {
+		return nil, ErrUnrepresentable
+	}
+	if c.profile.Validate != nil {
+		if err := c.profile.Validate(stored); err != nil {
+			return nil, ErrUnrepresentable
+		}
+	}
+	return append([]byte(nil), stored...), nil
+}
+
+func (c identityCodec) Profile() FilenameProfile { return c.profile }
+
+func validatePOSIXElement(elem StoredName) error {
+	if len(elem) == 0 {
+		return nil
+	}
+	for _, b := range elem {
+		if b == 0 || b == '/' {
+			return ErrUnrepresentable
+		}
+	}
+	return nil
+}
+
+func codecByName(name string) (FilenameCodec, error) {
+	switch strings.ToLower(name) {
+	case "identity", "utf8", "macroman-utf8", "macroman-native":
+		return NewIdentityFilenameCodec(), nil
+	default:
+		return nil, errors.New("fs: unknown filename codec")
+	}
+}
+
+// NewNullForkEngine returns a metadata no-op fork implementation for placeholder shares.
+func NewNullForkEngine() ForkEngine { return nullForkEngine{} }
+
+type nullForkEngine struct{}
+
+func (nullForkEngine) OpenFork(path string, fork ForkType, flag int) (File, error) {
+	_ = path
+	_ = fork
+	_ = flag
+	return nil, fs.ErrNotExist
+}
+
+func (nullForkEngine) ForkLen(path string, fork ForkType) (int64, error) {
+	_ = path
+	_ = fork
+	return 0, nil
+}
+
+func (nullForkEngine) ReadFinderInfo(path string) (info [32]byte, ok bool, err error) {
+	_ = path
+	return [32]byte{}, false, nil
+}
+
+func (nullForkEngine) WriteFinderInfo(path string, info [32]byte) error {
+	_ = path
+	_ = info
+	return nil
+}
+
+func (nullForkEngine) ReadComment(path string) (c []byte, ok bool) {
+	_ = path
+	return nil, false
+}
+
+func (nullForkEngine) WriteComment(path string, c []byte) error {
+	_ = path
+	_ = c
+	return nil
+}
+
+func (nullForkEngine) MoveMetadata(old, new string) error {
+	_ = old
+	_ = new
+	return nil
+}
+
+func (nullForkEngine) DeleteMetadata(path string) error {
+	_ = path
+	return nil
+}
+
+func forkEngineByName(name string) (ForkEngine, error) {
+	switch strings.ToLower(name) {
+	case "appledouble", "ads", "xattr", "native", "auto":
+		return NewNullForkEngine(), nil
+	default:
+		return nil, errors.New("fs: unknown fork backend")
+	}
+}
+
+// NewPassthroughNameEngine returns a placeholder name engine that preserves names.
+func NewPassthroughNameEngine() NameEngine {
+	return passthroughNameEngine{}
+}
+
+type passthroughNameEngine struct{}
+
+func (passthroughNameEngine) Bind(dir, long string, kind NameKind) string {
+	_ = dir
+	_ = kind
+	return long
+}
+
+func (passthroughNameEngine) ToLong(dir, derived string, kind NameKind) (string, bool) {
+	_ = dir
+	_ = kind
+	return derived, true
+}
+
+func nameEngineByName(name string) (NameEngine, error) {
+	switch strings.ToLower(name) {
+	case "passthrough", "":
+		return NewPassthroughNameEngine(), nil
+	default:
+		return nil, errors.New("fs: unknown name engine")
+	}
+}
+
+type memFS struct {
+	mu   sync.RWMutex
+	data map[string][]byte
+	dirs map[string]struct{}
+}
+
+func newMemFS(spec ShareSpec) FileSystem {
+	m := &memFS{
+		data: make(map[string][]byte),
+		dirs: map[string]struct{}{"": {}},
+	}
+	if spec.ReadOnly {
+		return &readOnlyFS{inner: m}
+	}
+	return m
+}
+
+type readOnlyFS struct{ inner *memFS }
+
+func (r *readOnlyFS) ReadDir(path string) ([]fs.DirEntry, error) { return r.inner.ReadDir(path) }
+func (r *readOnlyFS) Stat(path string) (fs.FileInfo, error)      { return r.inner.Stat(path) }
+func (r *readOnlyFS) DiskUsage(path string) (uint64, uint64, error) {
+	return r.inner.DiskUsage(path)
+}
+func (r *readOnlyFS) CreateDir(path string) error          { return fs.ErrPermission }
+func (r *readOnlyFS) CreateFile(path string) (File, error) { return nil, fs.ErrPermission }
+func (r *readOnlyFS) OpenFile(path string, flag int) (File, error) {
+	return r.inner.OpenFile(path, flag)
+}
+func (r *readOnlyFS) Remove(path string) error               { return fs.ErrPermission }
+func (r *readOnlyFS) Rename(old, new string) error           { return fs.ErrPermission }
+func (r *readOnlyFS) ShortName(path string) (string, error)  { return r.inner.ShortName(path) }
+func (r *readOnlyFS) MediumName(path string) (string, error) { return r.inner.MediumName(path) }
+func (r *readOnlyFS) Capabilities() Capabilities {
+	c := r.inner.Capabilities()
+	c.ReadOnly = true
+	return c
+}
+
+func (m *memFS) ReadDir(path string) ([]fs.DirEntry, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, ok := m.dirs[path]; !ok {
+		return nil, fs.ErrNotExist
+	}
+	out := make([]fs.DirEntry, 0)
+	prefix := path
+	if prefix != "" {
+		prefix += "/"
+	}
+	seen := map[string]struct{}{}
+	for p := range m.dirs {
+		if !strings.HasPrefix(p, prefix) || p == path {
+			continue
+		}
+		next := strings.TrimPrefix(p, prefix)
+		if strings.Contains(next, "/") {
+			next = strings.Split(next, "/")[0]
+		}
+		if _, ok := seen[next]; ok {
+			continue
+		}
+		seen[next] = struct{}{}
+		out = append(out, memDirEntry{name: next, dir: true})
+	}
+	for p, b := range m.data {
+		if !strings.HasPrefix(p, prefix) {
+			continue
+		}
+		next := strings.TrimPrefix(p, prefix)
+		if strings.Contains(next, "/") {
+			next = strings.Split(next, "/")[0]
+		}
+		if _, ok := seen[next]; ok {
+			continue
+		}
+		seen[next] = struct{}{}
+		out = append(out, memDirEntry{name: next, dir: false, size: int64(len(b))})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name() < out[j].Name() })
+	return out, nil
+}
+
+func (m *memFS) Stat(path string) (fs.FileInfo, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, ok := m.dirs[path]; ok {
+		return memFileInfo{name: baseName(path), dir: true}, nil
+	}
+	if b, ok := m.data[path]; ok {
+		return memFileInfo{name: baseName(path), size: int64(len(b))}, nil
+	}
+	return nil, fs.ErrNotExist
+}
+
+func (m *memFS) DiskUsage(path string) (total, free uint64, err error) {
+	_ = path
+	return 0, 0, nil
+}
+
+func (m *memFS) CreateDir(path string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dirs[path] = struct{}{}
+	return nil
+}
+
+func (m *memFS) CreateFile(path string) (File, error) {
+	m.mu.Lock()
+	m.data[path] = nil
+	m.mu.Unlock()
+	return m.OpenFile(path, os.O_RDWR)
+}
+
+func (m *memFS) OpenFile(path string, flag int) (File, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.data[path]; !ok {
+		if flag&os.O_CREATE == 0 {
+			return nil, fs.ErrNotExist
+		}
+		m.data[path] = nil
+	}
+	return &memFile{fs: m, path: path}, nil
+}
+
+func (m *memFS) Remove(path string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.data, path)
+	delete(m.dirs, path)
+	return nil
+}
+
+func (m *memFS) Rename(old, new string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if b, ok := m.data[old]; ok {
+		m.data[new] = b
+		delete(m.data, old)
+		return nil
+	}
+	if _, ok := m.dirs[old]; ok {
+		m.dirs[new] = struct{}{}
+		delete(m.dirs, old)
+		return nil
+	}
+	return fs.ErrNotExist
+}
+
+func (m *memFS) ShortName(path string) (string, error) { return path, nil }
+
+func (m *memFS) MediumName(path string) (string, error) { return path, nil }
+
+func (m *memFS) Capabilities() Capabilities {
+	return Capabilities{ChildCount: true}
+}
+
+type memFile struct {
+	fs     *memFS
+	path   string
+	closed bool
+}
+
+func (f *memFile) ReadAt(p []byte, off int64) (int, error) {
+	f.fs.mu.RLock()
+	defer f.fs.mu.RUnlock()
+	if f.closed {
+		return 0, fs.ErrClosed
+	}
+	b, ok := f.fs.data[f.path]
+	if !ok {
+		return 0, fs.ErrNotExist
+	}
+	if off >= int64(len(b)) {
+		return 0, io.EOF
+	}
+	n := copy(p, b[off:])
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func (f *memFile) WriteAt(p []byte, off int64) (int, error) {
+	f.fs.mu.Lock()
+	defer f.fs.mu.Unlock()
+	if f.closed {
+		return 0, fs.ErrClosed
+	}
+	b := f.fs.data[f.path]
+	need := int(off) + len(p)
+	if need > len(b) {
+		nb := make([]byte, need)
+		copy(nb, b)
+		b = nb
+	}
+	copy(b[off:], p)
+	f.fs.data[f.path] = b
+	return len(p), nil
+}
+
+func (f *memFile) Truncate(size int64) error {
+	f.fs.mu.Lock()
+	defer f.fs.mu.Unlock()
+	if f.closed {
+		return fs.ErrClosed
+	}
+	if size < 0 {
+		return fs.ErrInvalid
+	}
+	b := f.fs.data[f.path]
+	if int(size) <= len(b) {
+		f.fs.data[f.path] = append([]byte(nil), b[:size]...)
+		return nil
+	}
+	nb := make([]byte, size)
+	copy(nb, b)
+	f.fs.data[f.path] = nb
+	return nil
+}
+
+func (f *memFile) Stat() (fs.FileInfo, error) {
+	f.fs.mu.RLock()
+	defer f.fs.mu.RUnlock()
+	b, ok := f.fs.data[f.path]
+	if !ok {
+		return nil, fs.ErrNotExist
+	}
+	return memFileInfo{name: baseName(f.path), size: int64(len(b))}, nil
+}
+
+func (f *memFile) Sync() error { return nil }
+
+func (f *memFile) Close() error {
+	f.closed = true
+	return nil
+}
+
+type memFileInfo struct {
+	name string
+	size int64
+	dir  bool
+}
+
+func (m memFileInfo) Name() string { return m.name }
+func (m memFileInfo) Size() int64  { return m.size }
+func (m memFileInfo) Mode() fs.FileMode {
+	if m.dir {
+		return fs.ModeDir | 0o755
+	}
+	return 0o644
+}
+func (m memFileInfo) ModTime() time.Time { return time.Time{} }
+func (m memFileInfo) IsDir() bool        { return m.dir }
+func (m memFileInfo) Sys() any           { return nil }
+
+type memDirEntry struct {
+	name string
+	dir  bool
+	size int64
+}
+
+func (d memDirEntry) Name() string { return d.name }
+func (d memDirEntry) IsDir() bool  { return d.dir }
+func (d memDirEntry) Type() fs.FileMode {
+	if d.dir {
+		return fs.ModeDir
+	}
+	return 0
+}
+func (d memDirEntry) Info() (fs.FileInfo, error) {
+	return memFileInfo{name: d.name, size: d.size, dir: d.dir}, nil
+}
+
+func baseName(path string) string {
+	if path == "" {
+		return ""
+	}
+	parts := strings.Split(path, "/")
+	return parts[len(parts)-1]
+}
+
+func init() {
+	RegisterFS("memfs", func(spec ShareSpec, b bus.Bus, store metastore.Store) (FileSystem, error) {
+		_ = b
+		_ = store
+		return newMemFS(spec), nil
+	})
+}
