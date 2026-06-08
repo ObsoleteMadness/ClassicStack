@@ -1,0 +1,154 @@
+package supervisor
+
+import (
+	"context"
+	"reflect"
+	"sync"
+	"testing"
+
+	"github.com/ObsoleteMadness/ClassicStack/core/bus"
+	"github.com/ObsoleteMadness/ClassicStack/core/config"
+)
+
+// recordingComponent appends its name to a shared log on Start/Stop so tests can assert order.
+type recordingComponent struct {
+	name string
+	log  *orderLog
+}
+
+func (c *recordingComponent) Name() string { return c.name }
+func (c *recordingComponent) Start(context.Context) error {
+	c.log.add("start:" + c.name)
+	return nil
+}
+func (c *recordingComponent) Stop(context.Context) error {
+	c.log.add("stop:" + c.name)
+	return nil
+}
+
+type orderLog struct {
+	mu  sync.Mutex
+	seq []string
+}
+
+func (l *orderLog) add(s string) {
+	l.mu.Lock()
+	l.seq = append(l.seq, s)
+	l.mu.Unlock()
+}
+
+func TestStartStopOrdering(t *testing.T) {
+	log := &orderLog{}
+	s := New(config.NewModel(), nil)
+
+	// DAG: router depends on port; afp depends on router. Expect start port->router->afp.
+	s.Add(&recordingComponent{name: "port", log: log}, nil)
+	s.Add(&recordingComponent{name: "router", log: log}, []string{"port"})
+	s.Add(&recordingComponent{name: "afp", log: log}, []string{"router"})
+
+	if err := s.StartAll(context.Background()); err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+	wantStart := []string{"start:port", "start:router", "start:afp"}
+	if !reflect.DeepEqual(log.seq, wantStart) {
+		t.Fatalf("start order = %v, want %v", log.seq, wantStart)
+	}
+
+	log.seq = nil
+	if err := s.StopAll(context.Background()); err != nil {
+		t.Fatalf("StopAll: %v", err)
+	}
+	wantStop := []string{"stop:afp", "stop:router", "stop:port"}
+	if !reflect.DeepEqual(log.seq, wantStop) {
+		t.Fatalf("stop order = %v, want %v", log.seq, wantStop)
+	}
+}
+
+func TestStateChangedPublished(t *testing.T) {
+	telemetry := bus.New(16)
+	ch, cancel := telemetry.Subscribe(bus.TopicState)
+	defer cancel()
+
+	s := New(config.NewModel(), telemetry)
+	s.Add(&recordingComponent{name: "port", log: &orderLog{}}, nil)
+
+	if err := s.StartAll(context.Background()); err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+	ev := (<-ch).(bus.StateChanged)
+	if ev.Component != "port" || ev.From != stateStopped || ev.To != stateRunning {
+		t.Fatalf("start transition = %+v, want port stopped->running", ev)
+	}
+
+	if err := s.StopAll(context.Background()); err != nil {
+		t.Fatalf("StopAll: %v", err)
+	}
+	ev = (<-ch).(bus.StateChanged)
+	if ev.Component != "port" || ev.From != stateRunning || ev.To != stateStopped {
+		t.Fatalf("stop transition = %+v, want port running->stopped", ev)
+	}
+}
+
+func TestStartIdempotent(t *testing.T) {
+	log := &orderLog{}
+	s := New(config.NewModel(), nil)
+	s.Add(&recordingComponent{name: "port", log: log}, nil)
+
+	if err := s.StartAll(context.Background()); err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+	if err := s.StartAll(context.Background()); err != nil {
+		t.Fatalf("second StartAll: %v", err)
+	}
+	// Only one Start should have fired (idempotent).
+	if got := len(log.seq); got != 1 {
+		t.Fatalf("expected 1 start, got %d (%v)", got, log.seq)
+	}
+}
+
+func TestPerNameStartBringsUpDeps(t *testing.T) {
+	log := &orderLog{}
+	s := New(config.NewModel(), nil)
+	s.Add(&recordingComponent{name: "port", log: log}, nil)
+	s.Add(&recordingComponent{name: "router", log: log}, []string{"port"})
+	s.Add(&recordingComponent{name: "afp", log: log}, []string{"router"})
+
+	// Starting afp alone must bring up port then router first.
+	if err := s.Start(context.Background(), "afp"); err != nil {
+		t.Fatalf("Start(afp): %v", err)
+	}
+	want := []string{"start:port", "start:router", "start:afp"}
+	if !reflect.DeepEqual(log.seq, want) {
+		t.Fatalf("per-name start order = %v, want %v", log.seq, want)
+	}
+}
+
+func TestPerNameStopTakesDownDependents(t *testing.T) {
+	log := &orderLog{}
+	s := New(config.NewModel(), nil)
+	s.Add(&recordingComponent{name: "port", log: log}, nil)
+	s.Add(&recordingComponent{name: "router", log: log}, []string{"port"})
+	s.Add(&recordingComponent{name: "afp", log: log}, []string{"router"})
+	if err := s.StartAll(context.Background()); err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+	log.seq = nil
+
+	// Stopping port must take down its dependents (afp, router) first.
+	if err := s.Stop(context.Background(), "port"); err != nil {
+		t.Fatalf("Stop(port): %v", err)
+	}
+	want := []string{"stop:afp", "stop:router", "stop:port"}
+	if !reflect.DeepEqual(log.seq, want) {
+		t.Fatalf("per-name stop order = %v, want %v", log.seq, want)
+	}
+}
+
+func TestCycleDetected(t *testing.T) {
+	s := New(config.NewModel(), nil)
+	s.Add(&recordingComponent{name: "a", log: &orderLog{}}, []string{"b"})
+	s.Add(&recordingComponent{name: "b", log: &orderLog{}}, []string{"a"})
+	if err := s.StartAll(context.Background()); err == nil {
+		t.Fatalf("expected cycle error, got nil")
+	}
+}
