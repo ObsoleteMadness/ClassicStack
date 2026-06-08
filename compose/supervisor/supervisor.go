@@ -25,10 +25,17 @@ const (
 // does not own.
 var ErrUnknownComponent = errors.New("supervisor: unknown component")
 
+// Rebuilder reconstructs a component from the (already-updated) shared model. The supervisor
+// calls it during a restart-driven Reconfigure (§11a step 4: "rebuild from section"). A nil
+// rebuilder means the live instance is reused across restart (fine for components whose state
+// is not config-derived, e.g. Phase 1 placeholders).
+type Rebuilder func(m *config.Model) (component.Component, error)
+
 // node is one managed component plus its hard dependency edges and current run state.
 type node struct {
 	c         component.Component
-	dependsOn []string // names that must be running before this starts (and stop after it)
+	dependsOn []string  // names that must be running before this starts (and stop after it)
+	rebuild   Rebuilder // optional; reconstructs c from the model during a Reconfigure restart
 	running   bool
 }
 
@@ -70,6 +77,19 @@ func (s *Supervisor) Add(c component.Component, dependsOn []string) {
 	}
 	edges := append([]string(nil), dependsOn...)
 	s.nodes[name] = &node{c: c, dependsOn: edges}
+}
+
+// AddBuildable is Add plus a Rebuilder so a restart-driven Reconfigure can reconstruct the
+// component from the updated model (§11a). Re-adding a name replaces the prior node.
+func (s *Supervisor) AddBuildable(c component.Component, dependsOn []string, rebuild Rebuilder) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	name := c.Name()
+	if _, exists := s.nodes[name]; !exists {
+		s.order = append(s.order, name)
+	}
+	edges := append([]string(nil), dependsOn...)
+	s.nodes[name] = &node{c: c, dependsOn: edges, rebuild: rebuild}
 }
 
 // StartAll brings every component up in dependency order (topological), publishing a
@@ -301,10 +321,95 @@ func (s *Supervisor) Restart(ctx context.Context, name string) error {
 	return s.startTreeLocked(ctx, name)
 }
 
-// Reconfigure is fully implemented in C3 (addressed reconfigure + notify). Defined here so the
-// control.Supervisor interface is satisfied from C2 onward.
+// Reconfigure applies a new section to ONE named component and cascades a restart to dependents
+// only as far as each cannot absorb it live. ADDRESSED, not diffed (§11a): there is NO model
+// comparison pass — the caller names the component, we update its section and ask it (and, in
+// turn, each dependent) whether it can hot-apply.
+//
+// Algorithm (§11a):
+//  1. model.Set(section)                       update the shared model section
+//  2. if Configurable: ApplyConfig(section)
+//     nil            -> live; publish StateChanged(running->reconfigured); stop here
+//     ErrNeedsRestart-> fall through to restart
+//     other error    -> real failure, return it
+//  3. restart: Stop; rebuild from model; Start (each publishes its own StateChanged)
+//  4. for each hard dependent: Reconfigure-notify (the dependent answers the same question;
+//     the cascade stops wherever a dependent hot-applies). Attachable bindings (§11d) are
+//     re-run by Stop/Start as side effects and are NOT dependents, so never enter the cascade.
 func (s *Supervisor) Reconfigure(ctx context.Context, name string, section config.Section) error {
-	return errors.New("supervisor: Reconfigure not yet implemented (C3)")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if section != nil {
+		s.model.Set(section)
+	}
+	return s.reconfigureLocked(ctx, name, section)
+}
+
+// reconfigureLocked is the addressed reconfigure for one component plus the dependent cascade.
+// Caller holds mu. `section` is the component's own section for the head call; dependents are
+// notified with nil (they re-resolve from the already-updated model).
+func (s *Supervisor) reconfigureLocked(ctx context.Context, name string, section config.Section) error {
+	n := s.nodes[name]
+	if n == nil {
+		return fmt.Errorf("%w: %s", ErrUnknownComponent, name)
+	}
+
+	if cfg, ok := n.c.(component.Configurable); ok {
+		err := cfg.ApplyConfig(section)
+		switch {
+		case err == nil:
+			// Hot-applied live: no restart, and the cascade STOPS here for this node's subtree.
+			if n.running {
+				s.publish(name, stateRunning, stateReconfigured)
+			}
+			return nil
+		case errors.Is(err, component.ErrNeedsRestart):
+			// fall through to restart + notify dependents
+		default:
+			return fmt.Errorf("reconfigure %s: %w", name, err)
+		}
+	}
+
+	// Restart this node (§11a step 3), then notify dependents (step 4).
+	if err := s.restartNodeLocked(ctx, n, name); err != nil {
+		return err
+	}
+	for _, dep := range s.dependents(name) {
+		// Dependents re-resolve their own section from the model; pass nil so a Configurable
+		// dependent's ApplyConfig sees "re-evaluate from model", and the cascade can stop there.
+		var depSection config.Section
+		if ds, ok := s.model.Get(dep); ok {
+			depSection = ds
+		}
+		if err := s.reconfigureLocked(ctx, dep, depSection); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// restartNodeLocked stops the node, rebuilds it from the model if a Rebuilder is set, then
+// starts it. Caller holds mu. Stop/Start publish their own StateChanged transitions.
+func (s *Supervisor) restartNodeLocked(ctx context.Context, n *node, name string) error {
+	wasRunning := n.running
+	if err := s.stopNodeLocked(ctx, name); err != nil {
+		return err
+	}
+	if n.rebuild != nil {
+		c, err := n.rebuild(s.model)
+		if err != nil {
+			return fmt.Errorf("rebuild %s: %w", name, err)
+		}
+		if c != nil {
+			n.c = c
+		}
+	}
+	if wasRunning {
+		if err := s.startNodeLocked(ctx, name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Status reports a snapshot Unit per managed component for the dashboard.
