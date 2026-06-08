@@ -21,15 +21,15 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 ### Group B — Core interfaces (✋ parallel once A1 done)
 | # | Task | Deps | Owner | Status |
 |---|------|------|-------|--------|
-| B1 | `core/component`: Component + capability ifaces (§3) | A1 | | ⬜ |
+| B1 | `core/component`: Component + capability ifaces (§3) | A1 | claude | ✅ |
 | B2 | `core/link`: FrameLink/DatagramLink + decorator surface + framing contract (§2) | A1 (soft B7) | | ⬜ |
-| B3 | `core/bus`: bus primitive + telemetry events, topic-scoped (§5) | A1 | | ⬜ |
+| B3 | `core/bus`: bus primitive + telemetry events, topic-scoped (§5) | A1 | claude | ✅ |
 | B4 | `core/fs` bus: FS-mutation instance of the B3 primitive (§5/§10c) | B3 | | ⬜ |
 | B5 | `core/log`: scoped Logger, typed Field, Sink, ring/stderr sinks (§6) | A1,A3,B3 | | ⬜ |
-| B6 | `core/config`: Model + SectionSchema registry + Codec/Store ifaces (§4) | A1 | | ⬜ |
-| B7 | `core/protocol/ddp`: real Datagram codec (+ stub siblings) (§2/§12) | A1 | | ⬜ |
+| B6 | `core/config`: Model + SectionSchema registry + Codec/Store ifaces (§4) | A1 | claude | ✅ |
+| B7 | `core/protocol/ddp`: real Datagram codec (+ stub siblings) (§2/§12) | A1 | claude | ✅ |
 | B8 | `core/fs`: FileSystem/File/ForkEngine/ForkFS/NameEngine/**FilenameCodec** + per-share params; lift `core/encoding` (§9/§10a/§10a-bis) | A1,B4,B6 | | ⬜ |
-| B9 | `core/metastore`: Store iface + `mem` snapshot impl (§9a) | A1 | | ⬜ |
+| B9 | `core/metastore`: Store iface + `mem` snapshot impl (§9a) | A1 | claude | ✅ |
 | B10 | `core/control`: Plane contract (methods + Subscribe) + Supervisor/Diagnostics ifaces (§7) | A1,B3,B6 | | ⬜ |
 
 ### Group C — Harness (depends on Group B)
@@ -61,6 +61,12 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 
 **Phase 1 DoD:** see exit criteria in [01-PHASE-harness.md](01-PHASE-harness.md).
 
+> **core/ errata — `encoding/binary` is forbidden:** it transitively imports
+> `reflect`, so the archtest gate rejects any core/ package that imports it. Hand-roll
+> big-endian helpers instead (see `core/protocol/ddp` `appendBE16`/`be16` and
+> `core/metastore` `putBE32`/`be32`). `encoding/binary` is now an explicit entry in the
+> archtest forbidden list. B2/B5/B8 do byte work — they must follow the same pattern.
+>
 > **A4 errata:** on modern TinyGo (verified 0.41.1), the stdlib coverage is broad
 > enough that `net/http`/`reflect` imports do **not** fail the TinyGo build. The
 > forbidden-import / no-reflection allowlist is therefore enforced by the **archtest

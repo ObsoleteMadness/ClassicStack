@@ -35,7 +35,7 @@ agents or people working in parallel.
 
 ## Status
 
-- Phase 1: in progress — Group A (skeleton & guardrails) complete (A1–A4)
+- Phase 1: in progress — Group A complete (A1–A4); Group B wave 3 complete (B1/B3/B6/B7/B9)
 - Phase 2: not started
 
 See [TODO.md](TODO.md) for per-step status.
