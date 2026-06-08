@@ -78,10 +78,13 @@ type Sink interface {
 }
 
 type logger struct {
-	scope string
-	min   Level
-	sinks []Sink
-	bound []Field
+	mu      sync.Mutex
+	scope   string
+	min     Level
+	sinks   []Sink
+	bound   []Field
+	scratch Record
+	buf     [8]Field
 }
 
 func New(scope string, min Level, sinks ...Sink) Logger {
@@ -139,16 +142,37 @@ func (l *logger) Log2(lvl Level, msg string, f1, f2 Field) {
 }
 
 func (l *logger) emit(lvl Level, msg string, fields []Field) {
-	rec := Record{Scope: l.scope, Level: lvl, Msg: msg, Time: time.Now()}
+	l.mu.Lock()
+	rec := &l.scratch
+	rec.Scope = l.scope
+	rec.Level = lvl
+	rec.Msg = msg
+	rec.Time = time.Now()
 	sz := len(l.bound) + len(fields)
 	if sz > 0 {
-		rec.Fields = make([]Field, 0, sz)
-		rec.Fields = append(rec.Fields, l.bound...)
-		rec.Fields = append(rec.Fields, fields...)
+		if sz <= len(l.buf) {
+			idx := 0
+			for _, f := range l.bound {
+				l.buf[idx] = f
+				idx++
+			}
+			for _, f := range fields {
+				l.buf[idx] = f
+				idx++
+			}
+			rec.Fields = l.buf[:idx]
+		} else {
+			rec.Fields = make([]Field, 0, sz)
+			rec.Fields = append(rec.Fields, l.bound...)
+			rec.Fields = append(rec.Fields, fields...)
+		}
+	} else {
+		rec.Fields = nil
 	}
 	for _, s := range l.sinks {
-		s.Write(rec)
+		s.Write(*rec)
 	}
+	l.mu.Unlock()
 }
 
 type ringSink struct {

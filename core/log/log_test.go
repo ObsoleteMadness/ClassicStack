@@ -14,6 +14,18 @@ func (s *collectSink) Write(rec Record) {
 
 func (s *collectSink) Close() error { return nil }
 
+type lastSink struct {
+	count int
+	last  Record
+}
+
+func (s *lastSink) Write(rec Record) {
+	s.count++
+	s.last = rec
+}
+
+func (s *lastSink) Close() error { return nil }
+
 func TestWithScopesAndFields(t *testing.T) {
 	s := &collectSink{}
 	root := New("afp", Info, s)
@@ -68,8 +80,8 @@ func TestEnabledFastPathNoAllocWhenDisabled(t *testing.T) {
 }
 
 func TestFixedArityNoAllocWhenEnabled(t *testing.T) {
-	// No sinks means an enabled hot-path call exits before building any heap-backed slices.
-	l := New("svc", Debug)
+	sink := &lastSink{}
+	l := New("svc", Debug, sink)
 
 	a0 := testing.AllocsPerRun(1000, func() {
 		l.Log0(Info, "m")
@@ -83,6 +95,9 @@ func TestFixedArityNoAllocWhenEnabled(t *testing.T) {
 
 	if a0 != 0 || a1 != 0 || a2 != 0 {
 		t.Fatalf("fixed-arity allocs: Log0=%v Log1=%v Log2=%v; want all 0", a0, a1, a2)
+	}
+	if sink.count == 0 {
+		t.Fatal("expected sink to receive records")
 	}
 }
 
