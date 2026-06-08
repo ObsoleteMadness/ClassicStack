@@ -15,22 +15,23 @@ const corePrefix = "github.com/ObsoleteMadness/ClassicStack/core/"
 // the no-reflection rule. Adding to this allowlist (i.e. removing an entry)
 // requires a comment and a reviewer — do not silently exempt a package.
 var forbidden = map[string]string{
-	"net/http":              "control front-ends are adapters, not core",
-	"reflect":               "no-reflection rule (TinyGo + allocation discipline)",
-	"encoding/json":         "JSON is an adapter concern (config/control codecs)",
-	"log/slog":              "core/log is the logging contract; slog is an adapter sink",
-	"database/sql":          "sqlite/SQL metastore is an adapter",
-	"github.com/google/gopacket":         "capture/link backends are adapters",
-	"github.com/knadh/koanf/v2":          "config codecs (koanf/toml) are adapters",
-	"modernc.org/sqlite":                 "sqlite metastore is an adapter",
+	"net/http":                   "control front-ends are adapters, not core",
+	"reflect":                    "no-reflection rule (TinyGo + allocation discipline)",
+	"encoding/json":              "JSON is an adapter concern (config/control codecs)",
+	"log/slog":                   "core/log is the logging contract; slog is an adapter sink",
+	"database/sql":               "sqlite/SQL metastore is an adapter",
+	"encoding/binary":            "transitively imports reflect; hand-roll big-endian in core (see core/protocol/ddp)",
+	"github.com/google/gopacket": "capture/link backends are adapters",
+	"github.com/knadh/koanf/v2":  "config codecs (koanf/toml) are adapters",
+	"modernc.org/sqlite":         "sqlite metastore is an adapter",
 }
 
 // forbiddenPrefixes catches families of packages by import-path prefix (e.g.
 // every koanf or gopacket subpackage, every pcap binding).
 var forbiddenPrefixes = map[string]string{
-	"github.com/knadh/koanf":      "config codecs (koanf/toml) are adapters",
-	"github.com/google/gopacket":  "capture/link backends are adapters",
-	"modernc.org/sqlite":          "sqlite metastore is an adapter",
+	"github.com/knadh/koanf":     "config codecs (koanf/toml) are adapters",
+	"github.com/google/gopacket": "capture/link backends are adapters",
+	"modernc.org/sqlite":         "sqlite metastore is an adapter",
 }
 
 // goListPkg is the subset of `go list -json` output we consume.
