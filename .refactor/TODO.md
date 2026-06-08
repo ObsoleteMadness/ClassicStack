@@ -38,7 +38,7 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 | C1 | `compose/registry`: name→factory, build-tag `init()` (§8) | B1,B6 | claude | ✅ |
 | C2 | `compose/supervisor`: DAG, ordered start/stop, StateChanged publish (§3/§11) | B1,B3,C1 | claude | ✅ |
 | C3 | Supervisor addressed `Reconfigure`+notify (no diff) + Attachable side-effects (§11) | C2,B1,B6 | claude | ✅ |
-| C4 | `compose` stats/rate subscriber on telemetry bus (§5) | B3,C2 | | ⬜ |
+| C4 | `compose` stats/rate subscriber on telemetry bus (§5) | B3,C2 | claude | ✅ |
 
 ### Group D — Placeholders (depends on B + C)
 | # | Task | Deps | Owner | Status |
@@ -56,7 +56,7 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 | E1 | Component conformance harness (Start/Stop idempotency, capabilities) | B1,C2 | | ⬜ |
 | E2 | Bus conformance + back-pressure tests (reused by B3/B4) | B3,B4 | | ⬜ |
 | E3 | Multi-front-end parity test (inproc vs http **vs ubus** over same Plane) | B10,D4,D5,D6 | | ⬜ |
-| E4 | Reconfigure-and-notify test (asserts no model-diff) | C3 | | ⬜ |
+| E4 | Reconfigure-and-notify test (asserts no model-diff) | C3 | claude | ✅ |
 | E5 | Wire all tests into CI (incl. TinyGo amd64 gates + UCI/TOML round-trips) | A4,D6,E1–E4 | | ⬜ |
 
 **Phase 1 DoD:** see exit criteria in [01-PHASE-harness.md](01-PHASE-harness.md).
