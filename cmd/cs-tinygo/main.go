@@ -3,6 +3,31 @@ package main
 import (
 	"github.com/ObsoleteMadness/ClassicStack/core/buf"
 	_ "github.com/ObsoleteMadness/ClassicStack/core/component"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/link" // M1: decorators must stay TinyGo-clean
+
+	// M2: every protocol codec must stay TinyGo-clean (stdlib only, no reflect),
+	// so the embedded target can encode/decode wire formats.
+	_ "github.com/ObsoleteMadness/ClassicStack/core/protocol/asp"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/protocol/atp"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/protocol/ddp"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/protocol/nbp"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbeui"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbios"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/protocol/pap"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/protocol/smb"
+
+	// M3: the real ports (read loop + framing demux + router delivery) must stay
+	// TinyGo-clean so an embedded build can move frames.
+	_ "github.com/ObsoleteMadness/ClassicStack/core/port/ethertalk"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/port/ipx"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/port/localtalk"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/port/netbeui"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/router"
+
+	// M1: the pure-Go pcapfile capture writer is required to be TinyGo-safe (§6f)
+	// so non-pcap/embedded links can still emit a Wireshark-openable file.
+	_ "github.com/ObsoleteMadness/ClassicStack/adapter/capture/pcapfile"
 )
 
 // main references the TinyGo-safe core subset so the gate has real code to

@@ -43,21 +43,21 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 ### Group D — Placeholders (depends on B + C)
 | # | Task | Deps | Owner | Status |
 |---|------|------|-------|--------|
-| D1 | Placeholder ports (ethertalk/localtalk/ipx/netbeui) | B1,B2,C1–C3 | | ⬜ |
-| D2 | Placeholder router w/ Attach/Detach membership (§3) | B1,B2,D1 | | ⬜ |
-| D3 | Placeholder services (afp/smb/netbios/macip) | B1,B8,B9 | | ⬜ |
-| D4 | Minimal real adapters: inmem link, toml codec, file store, inproc control | B2,B6,B10 | | ⬜ |
-| D5 | Assembly + runnable `cmd/classicstack-ng` (boots all-placeholder stack) | C*,D1–D4 | | ⬜ |
-| D6 | **OpenWRT seam: `adapter/config/uci` + `adapter/store/uci` + `adapter/control/ubus` (ubus.sock) + procd/init.d sketch** (§4,§7) | B6,B10,D4,D5 | | ⬜ |
+| D1 | Placeholder ports (ethertalk/localtalk/ipx/netbeui) | B1,B2,C1–C3 | claude | ✅ |
+| D2 | Placeholder router w/ Attach/Detach membership (§3) | B1,B2,D1 | claude | ✅ |
+| D3 | Placeholder services (afp/smb/netbios/macip) | B1,B8,B9 | claude | ✅ |
+| D4 | Minimal real adapters: inmem link, toml codec, file store, inproc control | B2,B6,B10 | claude | ✅ |
+| D5 | Assembly + runnable `cmd/classicstack-ng` (boots all-placeholder stack) | C*,D1–D4 | claude | ✅ |
+| D6 | **OpenWRT seam: `adapter/config/uci` + `adapter/store/uci` + `adapter/control/ubus` (ubus.sock) + procd/init.d sketch** (§4,§7) | B6,B10,D4,D5 | claude | ✅ |
 
 ### Group E — Test harness for the structure
 | # | Task | Deps | Owner | Status |
 |---|------|------|-------|--------|
-| E1 | Component conformance harness (Start/Stop idempotency, capabilities) | B1,C2 | | ⬜ |
-| E2 | Bus conformance + back-pressure tests (reused by B3/B4) | B3,B4 | | ⬜ |
-| E3 | Multi-front-end parity test (inproc vs http **vs ubus** over same Plane) | B10,D4,D5,D6 | | ⬜ |
+| E1 | Component conformance harness (Start/Stop idempotency, capabilities) | B1,C2 | claude | ✅ |
+| E2 | Bus conformance + back-pressure tests (reused by B3/B4) | B3,B4 | claude | ✅ |
+| E3 | Multi-front-end parity test (inproc vs http **vs ubus** over same Plane) | B10,D4,D5,D6 | claude | ✅ |
 | E4 | Reconfigure-and-notify test (asserts no model-diff) | C3 | claude | ✅ |
-| E5 | Wire all tests into CI (incl. TinyGo amd64 gates + UCI/TOML round-trips) | A4,D6,E1–E4 | | ⬜ |
+| E5 | Wire all tests into CI (incl. TinyGo amd64 gates + UCI/TOML round-trips) | A4,D6,E1–E4 | claude | ✅ |
 
 **Phase 1 DoD:** see exit criteria in [01-PHASE-harness.md](01-PHASE-harness.md).
 
@@ -81,9 +81,9 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 
 | # | Task | Deps | Owner | Status |
 |---|------|------|-------|--------|
-| M1 | Link adapters: pcap/tap/ppp/slip/kerneldp/driversnet + decorators | Phase 1 | | ⬜ |
-| M2 | Protocol codecs (atp/asp/pap/nbp/ipx/netbeui/smb/netbios) + capture-replay | M1 | | ⬜ |
-| M3 | Real ports (ethertalk/localtalk/ipx/netbeui) over real links | M1,M2 | | ⬜ |
+| M1 | Link adapters: pcap/tap/ppp/slip/kerneldp/driversnet + decorators | Phase 1 | claude | ✅ |
+| M2 | Protocol codecs (atp/asp/pap/nbp/ipx/netbeui/smb/netbios) + capture-replay | M1 | claude | ✅ |
+| M3 | Real ports (ethertalk/localtalk/ipx/netbeui) over real links | M1,M2 | claude | ✅ |
 | M4 | Router + tables (event membership) + ZIP/RTMP + ipx/netbeui routers | M3 | | ⬜ |
 | M5 | DDP services (MacIP/IPXGW/AEP/NBP) + stats publish | M4 | | ⬜ |
 | M6 | Storage seam: unified FS, metastore, fork engines (SFM/Netatalk interop), name engines, **filename codecs** (MacRoman/reserved, from path_codec.go) | Phase 1 (B8/B9) | | ⬜ |
@@ -94,6 +94,82 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 | T1 | Client tools `cmd/csecho`, `cmd/csnetsend` (protocol-reuse proof) | M2 | | ⬜ |
 
 **Phase 2 DoD:** see exit criteria in [02-PHASE-migration.md](02-PHASE-migration.md).
+
+> **M1 notes (what landed / deferred):**
+> - **Landed:** real `core/link` decorators (`Filter`/`Dedup`/`Bridge`+`BridgeWiFi`, ported
+>   from `port/rawlink/bridge_link.go`, stdlib-only/reflection-free, archtest-clean);
+>   `adapter/link/pcap` (libpcap FrameLink, gated behind `-tags pcap`; no-pcap stub otherwise,
+>   so default + TinyGo builds carry no cgo); `adapter/link/framing` (Ethernet/SNAP DDP
+>   FrameLink→DatagramLink seam); both capture writers behind `core/link.CaptureSink` —
+>   `adapter/capture/pcapfile` (**pure-Go, stdlib-only, TinyGo-gated**) and
+>   `adapter/capture/libpcap` (gopacket/pcapgo). The TinyGo amd64 gates now import `core/link`
+>   + `pcapfile` so their TinyGo-safety is verified, not assumed.
+> - **Stubs (clearly marked, return `ErrNotImplemented`):** `adapter/link/{tap,ppp,slip,kerneldp,driversnet}`.
+>   `kerneldp` returns a `DatagramLink` (AF_APPLETALK); the rest return `FrameLink`.
+> - **Deferred within M1 → M3:** AARP address-resolution / node-claim in the framing adapter
+>   (encode/decode are real; outbound goes to the AppleTalk broadcast MAC, inbound AARP frames
+>   are skipped — marked `TODO(M3)`). Real TAP/PPP/SLIP/kerneldp/driversnet I/O lands with the
+>   ports (M3).
+> - **Deferred → cmd cutover (M10):** the §6f "delete the traffic-log plumbing" cannot run while
+>   `internal/app`/`pkg/metrics` are still live; it's done as those are removed at cutover.
+> - **Drive-by fix:** `adapter/link/inmem` `Pair` shared one `sync.Once` so closing both ends no
+>   longer double-closes the shared done channel (panic).
+
+> **M2 notes (what landed / deferred):**
+> - **Landed:** real codecs in `core/protocol/{atp,asp,nbp,ipx,netbeui,netbios,smb,pap}`, all
+>   stdlib-only/reflection-free (hand-rolled BE/LE helpers — no `encoding/binary`/`binutil` in
+>   core). DDP was already done in B7. Each replaces its `doc.go` stub. Append-style `Encode(dst)`
+>   where it suited (atp/ipx/smb); each protocol's natural API kept where the legacy one was
+>   already clean (nbp/netbeui/netbios).
+> - **Capture-replay (decode→re-encode byte-identical against `/captures`):** `ipx` (ipx.pcap
+>   frame 1, RIP broadcast), `netbeui` (netbeui.pcap frame 1, ADD_NAME_QUERY "CLASSICSTACK"),
+>   `smb` (ipx.pcap frame 14, SMB_COM_TRANSACTION header). `atp`/`asp`/`nbp`/`netbios` use
+>   golden-vector + round-trip tests (no standalone capture; they ride inside DDP/IPX frames).
+> - **SMB scope:** M2 delivers the 32-byte SMB1 **header** codec + command/dialect/status consts
+>   (incl. the [MS-CIFS] Reserved field at offset 22). Per-command param/data blocks stay in
+>   `service/smb` until the file-services rebuild (M7), which will sit on this header.
+> - **NetBIOS scope:** wire codecs only (name/datagram/session-packet + NBIPX/NMPI). The generic
+>   `SessionTable[Remote]` (sync/atomic/generics service state) stays in legacy `protocol/netbios`
+>   until M7 — it is session state, not a wire codec.
+> - **PAP:** no legacy source and no current consumer; written fresh from Inside AppleTalk Ch. 10
+>   (ATP-UserData header codec). Spec-derived, not capture-observed — flagged for `spec/errata.md`
+>   if a real client deviates. Enables a future print service without inventing wire format later.
+> - **TinyGo gates** now blank-import all 8 codecs — embedded wire encode/decode is verified clean.
+> - **Not deleted yet:** legacy `protocol/*` packages stay until their consumers (services/router)
+>   migrate (M3–M7); deletion happens per-subsystem as parity is proven, per the strangler recipe.
+
+> **M3 notes (what landed / deferred):**
+> - **Design check first:** §3 says "a port = Component + `router.RoutedPort`" and AppleTalk ports
+>   "speak DDP to `router.Inbound`". An earlier draft used a generic `core/port.Sink` — wrong
+>   shape; deleted. The port now delivers via `router.Inbound(d, self)`. `core/router` imports
+>   only component/log/ddp, so `core/port → core/router` is cycle-free. Added the missing
+>   `Multicast(zoneName, d)` to `router.RoutedPort` (§3 lists it).
+> - **Two real port bases (core, stdlib-only, archtest- + TinyGo-clean):**
+>   - `core/port/internal/runport` — AppleTalk ports: a `link.DatagramLink` read loop delivering
+>     to `router.Inbound`, real frame/byte counters, `Metered` observer, `Unicast/Broadcast/
+>     Multicast`, `SetAddress` (network/node for M4 routes), Stop→Start (link reopened per Start
+>     via a `LinkFactory`), and `Configurable` (iface change → `ErrNeedsRestart`).
+>   - `core/port/internal/frameport` — IPX/NetBEUI ports (§3: "speak frames to their own
+>     mini-routers"): a `link.FrameLink` read loop with inbound dedup (FNV-1a, 25 ms window /
+>     100 ms TTL, matching legacy), metering, counters, `Send`, same lifecycle/Configurable.
+> - **Real ports:** `ethertalk` + `localtalk` (embed runport; take an injected `FrameLink` +
+>   `link.Framer` since core can't import the `adapter/link/framing` seam — compose injects it).
+>   `ipx` + `netbeui` (embed frameport; own `DeliveryCallback` + `Send`, decode the Ethernet/LLC
+>   encapsulation inline). IPX accepts Ethernet II 0x8137 + raw 802.3 + 802.2 LLC (0xE0); NetBEUI
+>   does the UI-frame path (0xF0F003).
+> - **Tested (the M3 "done when"):** inbound decode→deliver, outbound encapsulation + metering,
+>   dedup, Stop→Start restartability, and Reconfigure for each port, via in-test fake links/router
+>   (core tests stay core-only — no adapter import). Both TinyGo amd64 gates now blank-import the
+>   four ports + `core/router`.
+> - **Deferred:** AARP/node-claim (EtherTalk) and LLAP ENQ/ACK claim (LocalTalk) stay in the
+>   framing/link adapters — `SetAddress` records a completed claim; zone→multicast-MAC mapping is
+>   M4 (router/ZIP). NetBEUI LLC **Type-2** connection state machine (SABME/UA/I-frame/DISC) is
+>   session-layer → M7 (NetBIOS service); the M3 port is UI-frame only. The IPX/NetBEUI
+>   **mini-routers** themselves are M4. Registry factories still build ports inert (nil link) —
+>   real device-link injection is the cmd/compose cutover (M8/M10).
+> - **Removed:** `core/port/internal/portbase` (the Phase-1 inert placeholder base) — fully
+>   replaced by runport/frameport; its four port `doc.go` stubs deleted (package docs now live in
+>   each port's main file). Legacy `port/*` packages stay until M4 wires their mini-routers.
 
 ---
 
