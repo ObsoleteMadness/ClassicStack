@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
+	"github.com/ObsoleteMadness/ClassicStack/core/encoding"
 	"github.com/ObsoleteMadness/ClassicStack/core/metastore"
 )
 
@@ -80,20 +81,49 @@ type NameEngine interface {
 
 type StoredName []byte
 
+// WireEncoding identifies the charset of filename bytes on the client wire.
+type WireEncoding uint8
+
+const (
+	WireMacRoman WireEncoding = iota
+	WireUTF8
+	WireANSI
+	WireUTF16
+)
+
+func (e WireEncoding) String() string {
+	switch e {
+	case WireMacRoman:
+		return "macroman"
+	case WireUTF8:
+		return "utf8"
+	case WireANSI:
+		return "ansi"
+	case WireUTF16:
+		return "utf16"
+	default:
+		return "unknown"
+	}
+}
+
 type FilenameCodec interface {
-	Decode(wire []byte) (StoredName, error)
-	Encode(stored StoredName) (wire []byte, err error)
+	Decode(wire []byte, src WireEncoding) (StoredName, error)
+	Encode(stored StoredName, dst WireEncoding) (wire []byte, err error)
+	Wire() []WireEncoding
 	Profile() FilenameProfile
 }
 
 type FilenameProfile struct {
-	WireCharset  string
+	Wire         []WireEncoding
 	StoreCharset string
 	MaxElement   int
 	Validate     func(elem StoredName) error
 }
 
-var ErrUnrepresentable = errors.New("fs: filename not representable in store charset")
+var (
+	ErrUnrepresentable = errors.New("fs: filename not representable in store charset")
+	ErrWireUnsupported = errors.New("fs: wire encoding not supported by codec")
+)
 
 type ShareSpec struct {
 	Name          string
@@ -222,7 +252,7 @@ func (s *shareFS) Codec() FilenameCodec { return s.codec }
 // NewIdentityFilenameCodec returns a strict identity codec with a POSIX-bytes validator.
 func NewIdentityFilenameCodec() FilenameCodec {
 	profile := FilenameProfile{
-		WireCharset:  "identity",
+		Wire:         []WireEncoding{WireMacRoman, WireUTF8, WireANSI, WireUTF16},
 		StoreCharset: "posix-bytes",
 		Validate:     validatePOSIXElement,
 	}
@@ -233,7 +263,17 @@ type identityCodec struct {
 	profile FilenameProfile
 }
 
-func (c identityCodec) Decode(wire []byte) (StoredName, error) {
+func (c identityCodec) Decode(wire []byte, src WireEncoding) (StoredName, error) {
+	supported := false
+	for _, w := range c.profile.Wire {
+		if w == src {
+			supported = true
+			break
+		}
+	}
+	if !supported {
+		return nil, ErrWireUnsupported
+	}
 	stored := StoredName(append([]byte(nil), wire...))
 	if c.profile.MaxElement > 0 && len(stored) > c.profile.MaxElement {
 		return nil, ErrUnrepresentable
@@ -246,7 +286,48 @@ func (c identityCodec) Decode(wire []byte) (StoredName, error) {
 	return stored, nil
 }
 
-func (c identityCodec) Encode(stored StoredName) ([]byte, error) {
+func (c identityCodec) Encode(stored StoredName, dst WireEncoding) ([]byte, error) {
+	supported := false
+	for _, w := range c.profile.Wire {
+		if w == dst {
+			supported = true
+			break
+		}
+	}
+	if !supported {
+		return nil, ErrWireUnsupported
+	}
+	return append([]byte(nil), stored...), nil
+}
+
+func (c identityCodec) Wire() []WireEncoding     { return c.profile.Wire }
+func (c identityCodec) Profile() FilenameProfile { return c.profile }
+
+// NewMacRomanUTF8FilenameCodec returns a codec that transcodes between WireMacRoman/WireUTF8 and a UTF-8 store.
+func NewMacRomanUTF8FilenameCodec() FilenameCodec {
+	profile := FilenameProfile{
+		Wire:         []WireEncoding{WireMacRoman, WireUTF8},
+		StoreCharset: "utf8",
+		Validate:     validatePOSIXElement,
+	}
+	return macromanUTF8Codec{profile: profile}
+}
+
+type macromanUTF8Codec struct {
+	profile FilenameProfile
+}
+
+func (c macromanUTF8Codec) Decode(wire []byte, src WireEncoding) (StoredName, error) {
+	var utf8Str string
+	switch src {
+	case WireUTF8:
+		utf8Str = string(wire)
+	case WireMacRoman:
+		utf8Str = encoding.MacRomanToUTF8(wire)
+	default:
+		return nil, ErrWireUnsupported
+	}
+	stored := StoredName(utf8Str)
 	if c.profile.MaxElement > 0 && len(stored) > c.profile.MaxElement {
 		return nil, ErrUnrepresentable
 	}
@@ -255,10 +336,26 @@ func (c identityCodec) Encode(stored StoredName) ([]byte, error) {
 			return nil, ErrUnrepresentable
 		}
 	}
-	return append([]byte(nil), stored...), nil
+	return stored, nil
 }
 
-func (c identityCodec) Profile() FilenameProfile { return c.profile }
+func (c macromanUTF8Codec) Encode(stored StoredName, dst WireEncoding) ([]byte, error) {
+	switch dst {
+	case WireUTF8:
+		return append([]byte(nil), stored...), nil
+	case WireMacRoman:
+		b, err := encoding.UTF8ToMacRoman(string(stored))
+		if err != nil {
+			return nil, ErrUnrepresentable
+		}
+		return b, nil
+	default:
+		return nil, ErrWireUnsupported
+	}
+}
+
+func (c macromanUTF8Codec) Wire() []WireEncoding     { return c.profile.Wire }
+func (c macromanUTF8Codec) Profile() FilenameProfile { return c.profile }
 
 func validatePOSIXElement(elem StoredName) error {
 	if len(elem) == 0 {
@@ -274,8 +371,19 @@ func validatePOSIXElement(elem StoredName) error {
 
 func codecByName(name string) (FilenameCodec, error) {
 	switch strings.ToLower(name) {
-	case "identity", "utf8", "macroman-utf8", "macroman-native":
+	case "identity":
 		return NewIdentityFilenameCodec(), nil
+	case "utf8":
+		return NewIdentityFilenameCodec(), nil
+	case "macroman-utf8":
+		return NewMacRomanUTF8FilenameCodec(), nil
+	case "macroman-native":
+		profile := FilenameProfile{
+			Wire:         []WireEncoding{WireMacRoman},
+			StoreCharset: "macroman",
+			Validate:     validatePOSIXElement,
+		}
+		return identityCodec{profile: profile}, nil
 	default:
 		return nil, errors.New("fs: unknown filename codec")
 	}

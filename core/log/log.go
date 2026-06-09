@@ -4,14 +4,19 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type Level uint8
 
 const (
-	// Debug is the most verbose log level.
-	Debug Level = iota
+	// Trace is the most verbose level: per-request/per-element protocol & service narration
+	// (e.g. "AFP FPOpenFork path=…"). Raw wire bytes are NOT logged here — they go to a pcap
+	// capture (see core/link CaptureSink); Trace is for the human-readable protocol event.
+	Trace Level = iota
+	// Debug is verbose diagnostic logging.
+	Debug
 	// Info is the normal informational log level.
 	Info
 	// Warn reports a recoverable problem.
@@ -19,6 +24,26 @@ const (
 	// Error reports a failed operation.
 	Error
 )
+
+// LevelVar is a threshold that can be changed at runtime (e.g. the control plane setting
+// "AFP=debug, everything else=info", §6b). A sink holds a *LevelVar so verbosity retunes live
+// without rebuilding loggers or sinks. The zero value is Debug (emit everything).
+type LevelVar struct {
+	v atomic.Uint32
+}
+
+// NewLevelVar returns a LevelVar initialised to min.
+func NewLevelVar(min Level) *LevelVar {
+	lv := &LevelVar{}
+	lv.Set(min)
+	return lv
+}
+
+// Set updates the threshold; safe for concurrent use.
+func (v *LevelVar) Set(min Level) { v.v.Store(uint32(min)) }
+
+// Level reports the current threshold; safe for concurrent use.
+func (v *LevelVar) Level() Level { return Level(v.v.Load()) }
 
 // Field is a typed key/value (no interface{} boxing).
 type Field struct {
@@ -89,10 +114,15 @@ type Record struct {
 	Time   time.Time
 }
 
-// Sink consumes finished log records.
+// Sink consumes finished log records. The level threshold lives at this boundary, not at
+// logger construction: a sink emits only records at/above its own min level and drops the
+// rest, so the same logger can feed a debug ring-buffer and an info-only stderr at once (§6b).
 type Sink interface {
-	// Write delivers one record to the sink.
+	// Write delivers one record to the sink. The sink itself enforces its threshold.
 	Write(rec Record)
+	// Min reports the sink's current threshold so a logger's Enabled() guard can fold across
+	// all sinks (the cheap hot-path check: build no fields if no sink would emit the level).
+	Min() Level
 	// Close releases sink resources.
 	Close() error
 }
@@ -100,24 +130,23 @@ type Sink interface {
 type logger struct {
 	mu      sync.Mutex
 	scope   string
-	min     Level
 	sinks   []Sink
 	bound   []Field
 	scratch Record
 	buf     [8]Field
 }
 
-// New builds a root logger writing to the supplied sinks.
-func New(scope string, min Level, sinks ...Sink) Logger {
+// New builds a root logger writing to the supplied sinks. The per-call lvl on Log/Log0/Log1/
+// Log2 is the record's level; the threshold that decides what is emitted lives on each sink.
+func New(scope string, sinks ...Sink) Logger {
 	cp := append([]Sink(nil), sinks...)
-	return &logger{scope: scope, min: min, sinks: cp}
+	return &logger{scope: scope, sinks: cp}
 }
 
 // With returns a child logger that appends additional bound fields.
 func (l *logger) With(fields ...Field) Logger {
 	child := &logger{
 		scope: l.scope,
-		min:   l.min,
 		sinks: l.sinks,
 	}
 	if len(l.bound) == 0 && len(fields) == 0 {
@@ -129,9 +158,15 @@ func (l *logger) With(fields ...Field) Logger {
 	return child
 }
 
-// Enabled reports whether the supplied level meets the logger threshold.
+// Enabled reports whether ANY sink would emit at the supplied level. Hot paths call this
+// before building fields so a level no sink wants costs nothing.
 func (l *logger) Enabled(lvl Level) bool {
-	return lvl >= l.min
+	for _, s := range l.sinks {
+		if lvl >= s.Min() {
+			return true
+		}
+	}
+	return false
 }
 
 // Log writes one record with variadic fields.
@@ -198,13 +233,16 @@ func (l *logger) emit(lvl Level, msg string, fields []Field) {
 		rec.Fields = nil
 	}
 	for _, s := range l.sinks {
-		s.Write(*rec)
+		if lvl >= s.Min() {
+			s.Write(*rec)
+		}
 	}
 	l.mu.Unlock()
 }
 
 type ringSink struct {
 	mu       sync.Mutex
+	min      *LevelVar
 	buf      []Record
 	next     int
 	wrapped  bool
@@ -212,12 +250,21 @@ type ringSink struct {
 	capacity int
 }
 
-// NewRingSink builds an in-memory tail sink with the requested capacity.
-func NewRingSink(capacity int) Sink {
+// NewRingSink builds an in-memory tail sink with the requested capacity. min is the threshold
+// (a *LevelVar so it retunes live); a nil min emits every level.
+func NewRingSink(capacity int, min *LevelVar) Sink {
 	if capacity <= 0 {
 		capacity = 1
 	}
-	return &ringSink{buf: make([]Record, capacity), capacity: capacity}
+	return &ringSink{min: min, buf: make([]Record, capacity), capacity: capacity}
+}
+
+// Min reports the sink's current threshold (Debug when unset).
+func (s *ringSink) Min() Level {
+	if s.min == nil {
+		return Debug
+	}
+	return s.min.Level()
 }
 
 // Write stores the newest record in the ring buffer.
@@ -260,12 +307,22 @@ func (s *ringSink) records() []Record {
 }
 
 type stderrSink struct {
-	mu sync.Mutex
+	mu  sync.Mutex
+	min *LevelVar
 }
 
-// NewStderrSink builds a sink that renders records to standard error.
-func NewStderrSink() Sink {
-	return &stderrSink{}
+// NewStderrSink builds a sink that renders records to standard error. min is the threshold
+// (a *LevelVar so it retunes live); a nil min emits every level.
+func NewStderrSink(min *LevelVar) Sink {
+	return &stderrSink{min: min}
+}
+
+// Min reports the sink's current threshold (Debug when unset).
+func (s *stderrSink) Min() Level {
+	if s.min == nil {
+		return Debug
+	}
+	return s.min.Level()
 }
 
 // Write renders one record to standard error.
@@ -302,6 +359,8 @@ func (s *stderrSink) Close() error { return nil }
 // levelString converts a level to its textual form.
 func levelString(lvl Level) string {
 	switch lvl {
+	case Trace:
+		return "trace"
 	case Debug:
 		return "debug"
 	case Info:

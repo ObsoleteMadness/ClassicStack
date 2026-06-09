@@ -18,11 +18,7 @@ go vet ./core/... ./adapter/... ./compose/...
 echo "=== archtest: import-graph dependency rule (A2) ==="
 go test -count=1 ./core/internal/archtest/...
 
-# As more of Phase 1 lands, add the structure tests here:
-#   go test -count=1 ./core/... ./compose/...      # B*/C*/E* unit + conformance
-#   (DDP round-trip B7, bus conformance E2, reconfigure-and-notify E4, parity E3)
-
-echo "=== core unit tests (grows with B*/C*/E*) ==="
-go test -count=1 ./core/... ./compose/...
+echo "=== new architecture unit and conformance tests (with tags) ==="
+go test -count=1 -tags all ./core/... ./compose/... ./adapter/...
 
 echo "harness.sh: OK"

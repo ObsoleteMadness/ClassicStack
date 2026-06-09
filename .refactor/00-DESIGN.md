@@ -433,7 +433,7 @@ call site, and it propagates to every record automatically.
 ```go
 // core/log
 type Level uint8
-const ( Debug Level = iota; Info; Warn; Error )
+const ( Trace Level = iota; Debug; Info; Warn; Error ) // Trace = per-request protocol narration
 
 // Field is a typed key/value — NO reflection, NO interface{} value boxing on the hot path.
 type Field struct {
@@ -450,9 +450,16 @@ func Bool(k string, v bool) Field { ... }
 
 type Logger interface {
     With(fields ...Field) Logger          // returns a child logger with bound fields
-    Log(lvl Level, msg string, fields ...Field)
+    Log(lvl Level, msg string, fields ...Field) // level is PER CALL, not fixed at construction
     Enabled(lvl Level) bool               // cheap guard so disabled levels allocate nothing
 }
+
+// The level THRESHOLD lives at the sink boundary, not at logger construction — so it is
+// runtime-settable (§6b) and per-sink (a debug ring + an info-only stderr off one logger).
+func New(scope string, sinks ...Sink) Logger        // no level arg
+type LevelVar struct{ /* atomic */ }                // a threshold a sink holds, retuned live
+func NewStderrSink(min *LevelVar) Sink              // nil min ⇒ emit all
+func NewRingSink(capacity int, min *LevelVar) Sink
 ```
 
 `Logger.With(Str("volume","Media"))` gives AFP a per-volume child without re-tagging. Scope
@@ -461,10 +468,15 @@ created — so filtering by service is a field match, uniform with everything el
 
 ### 6b. Levels, and a cheap disabled-path
 
-Standard `Debug/Info/Warn/Error`. Per-scope level thresholds are config (so a UI can set
-"AFP=debug, everything else=info"). The `Enabled(lvl)` guard lets hot paths skip building
-fields entirely when the level is off — important on embedded, where an unguarded
-debug-string format in a read loop is pure waste.
+`Trace/Debug/Info/Warn/Error`. **`Trace`** is per-request protocol/service narration — e.g.
+"AFP `FPOpenFork` path=…", "DDP datagram dest=…" — the human-readable *event*, never the raw
+wire bytes (those go to a pcap capture, §6f). The **level is chosen per call** on `Log`; the
+**threshold lives at the sink** as a `*LevelVar`, so a UI can set "AFP=debug, everything
+else=info" *at runtime* (the control plane calls `LevelVar.Set`) without rebuilding any logger,
+and one logger can feed several sinks at different thresholds. `Enabled(lvl)` folds across the
+sinks (true iff some sink would emit at `lvl`) so a hot path skips building fields entirely when
+no sink wants the level — important on embedded, where an unguarded format in a read loop is
+pure waste.
 
 ### 6c. Multiple sinks behind one interface
 
@@ -517,6 +529,43 @@ Rule: the variadic `Log(...Field)` is for cold/setup paths; **data-path loops us
 fixed-arity form, always behind an `Enabled(lvl)` guard** so a disabled level builds no fields
 at all. Keep the arity set small (0–2 covers the packet paths); add more only when a real call
 site needs it. Verified by an `AllocsPerRun == 0` test on the hot-path methods (Verification).
+
+### 6f. Wire visibility is pcap, not a log — and the traffic log is deleted
+
+There are **two distinct concerns**, and only the first is "logging":
+
+1. **Application/protocol logging** (this section) — `scope` (afp/ddp/smb…), `level`
+   (trace…error), `time`, and a text message with typed fields. A protocol/service *event*
+   worth narrating — "AFP `FPOpenFork` path=…", "ZIP zone reply", an auth failure — is just a
+   `Trace`/`Debug` log line. It never carries raw frame bytes.
+2. **Wire capture** — the actual decoded packet / command / request / response stream. This is
+   **not** a logging problem and we will **not** reinvent a structured "protocol log" for it.
+   The right primitive already exists — a **pcap file** — and the whole ecosystem
+   (Wireshark/tshark) already decodes pcap better than we ever would. So wire visibility is
+   **pcap-only**: capture raw frames + timestamps to a pcap file and decode offline. No
+   second decode path, no structured-protocol-log sink, no embedded dissectors in core.
+
+**Capture is always available, independent of the link backend.** It is the frame-altitude
+`CaptureSink` decorator (§2): `Capture(inner, sink)` tees frames to a `CaptureSink`, and a
+pcap-file writer is that sink. Two writer adapters implement one `CaptureSink` interface:
+
+- `adapter/capture/libpcap` — when the pcap link adapter is in use, tee via libpcap's own
+  dumper (native, nanosecond timestamps).
+- `adapter/capture/pcapfile` — a **pure-Go, stdlib-only, TinyGo-safe** pcap-file writer for
+  every non-pcap backend (TAP, raw Ethernet on ESP32, the TashTalk tty, the in-mem link). We
+  frame the bytes and write the pcap record header ourselves, so an embedded or container
+  build with no libpcap **still produces a Wireshark-openable capture.**
+
+Core ships only the `CaptureSink` interface and the `Capture` decorator; both writers are
+adapters (libpcap is a heavy dep behind its tag; the pure-Go writer is light enough to link
+anywhere). The capture toggle and rolling/size policy are per-port config and control-plane
+operations (start/stop capture, download the file).
+
+**The old "traffic log" is removed, not redesigned.** It was redundant the moment capture is
+always-on: the *bytes* live in the pcap, and *throughput/volume* is already `StatSample`
+counters on the telemetry bus (§5, rates computed by the stats subscriber). There is no third
+"traffic" mechanism — `pcap` for content, `StatSample` for rate, `Trace` log for narrated
+events. (Migration: delete the existing traffic-log plumbing; see [02](02-PHASE-migration.md).)
 
 ## 7. Control plane — contract in core, transport in adapters
 
@@ -824,18 +873,33 @@ interface, composed onto the FS like the fork and name engines:
 // inversion-trap note below.
 type StoredName []byte
 
+// WireEncoding is the client wire charset for ONE request — a PER-CALL argument, because one
+// share serves several client versions at once and the charset is negotiated per request
+// (AFP pathType: ShortName/LongName=MacRoman, UTF8Name=UTF8; SMB: legacy=ANSI, NT=UTF16LE).
+// Typed enum (not a string) to stay reflection-free (§1/§6); extend for new charsets.
+type WireEncoding uint8
+const (
+    WireMacRoman WireEncoding = iota // AFP kFPShortName / kFPLongName
+    WireUTF8                         // AFP kFPUTF8Name; SMB POSIX extension
+    WireANSI                         // SMB legacy / DOS code page (OEM)
+    WireUTF16                        // SMB NT Unicode (UTF-16LE)
+)
+
 type FilenameCodec interface {
-    // Decode: client wire bytes → store-native bytes, validated for this backend's profile.
-    //   e.g. MacRoman → UTF-8 NFC (POSIX host); MacRoman→MacRoman (HFS image, no transcode);
-    //   escape store-reserved chars into reversible ASCII tokens. ErrUnrepresentable when the
-    //   name cannot be legally stored (→ protocol "illegal name", never a mangled path).
-    Decode(wire []byte) (StoredName, error)
-    // Encode: store-native bytes → client wire bytes (the exact inverse of Decode).
-    Encode(stored StoredName) (wire []byte, err error)
+    // Decode: client wire bytes in `src` charset → store-native bytes, validated for this
+    //   backend's profile. e.g. MacRoman → UTF-8 NFC (POSIX host); MacRoman→MacRoman (HFS
+    //   image, no transcode); escape store-reserved chars into reversible ASCII tokens.
+    //   ErrUnrepresentable when the name cannot be legally stored (→ protocol "illegal name",
+    //   never a mangled path); ErrWireUnsupported when `src` is not in Wire().
+    Decode(wire []byte, src WireEncoding) (StoredName, error)
+    // Encode: store-native bytes → client wire bytes in `dst` charset (inverse of Decode).
+    Encode(stored StoredName, dst WireEncoding) (wire []byte, err error)
+    Wire() []WireEncoding                    // wire charsets this codec can transcode
     Profile() FilenameProfile
 }
 type FilenameProfile struct {
-    WireCharset, StoreCharset string       // e.g. "macroman" → "utf8" | "posix-bytes" | "fat"
+    Wire []WireEncoding                      // client wire charsets accepted (per-call src/dst)
+    StoreCharset string                      // backend side: "utf8" | "posix-bytes" | "fat" | "macroman"
     MaxElement int                          // max element length in STORE bytes (0 = unbounded)
     Validate func(elem StoredName) error    // backend's legality check (POSIX: NUL+'/'; S3: url-safe; …)
 }
@@ -853,18 +917,34 @@ legal in `StoreCharset` (the `0xNN` scheme is ASCII so it survives UTF-8/FAT/hos
 unchanged). The `FileSystem` therefore operates on store-native names end-to-end; the codec is
 the single wire↔store boundary.
 
-The translation has two independent axes, both backend-dependent:
+The translation has three axes — two are backend-dependent (fixed per codec instance), the
+third is **client-version-dependent and varies per request**:
 
-1. **Charset.** Classic-Mac clients speak **MacRoman** (and a specific decomposed form);
-   a UTF-8 host fs wants **UTF-8 NFC**; an `hfs-image` backend wants **MacRoman bytes
-   natively** (no transcode at all); a future client charset (e.g. Shift-JIS for KanjiTalk)
-   is just another codec. Built on the existing `pkg/encoding` MacRoman↔UTF-8 tables — that
-   codec is *reused*, wrapped behind this interface, not reinvented.
-2. **Reserved-character policy.** The store's illegal set differs by backend: NTFS/Windows
-   host forbids `< > : " / \ | ? *` and control chars; POSIX only `/` and NUL; FAT adds its
-   own; an HFS/zip/S3 backend has yet another set. The codec escapes them reversibly (the
-   `0xNN` token scheme already in `path_codec.go`, generalised) so the round-trip is lossless
-   and the Mac sees its original name back.
+1. **Wire charset (per request, not per share).** A single share serves multiple client
+   protocol versions at once, and each request names its own wire charset, so the source
+   encoding is a **per-call argument** (`Decode(wire, src)` / `Encode(stored, dst)`), not a
+   property baked into the codec. **AFP** selects it with the path-type byte —
+   `kFPShortName`/`kFPLongName` carry **MacRoman**, `kFPUTF8Name` carries **UTF-8** — so the
+   same volume answers a System 7 client and an OS X client correctly. **SMB** selects it by
+   the negotiated dialect / per-request Unicode flag — legacy/DOS clients send an **ANSI/OEM
+   code page**, NT clients send **UTF-16LE**. The codec advertises the set it accepts via
+   `Wire()`; a request whose negotiated charset is outside that set fails with
+   `ErrWireUnsupported` rather than being mangled.
+2. **Store charset + reserved-character policy (per codec).** The store's charset and illegal
+   set differ by backend: NTFS/Windows host forbids `< > : " / \ | ? *` and control chars;
+   POSIX only `/` and NUL; FAT adds its own; an HFS/zip/S3 backend has yet another set; an
+   `hfs-image` backend wants **MacRoman bytes natively** (no transcode). The codec escapes
+   reserved chars reversibly (the `0xNN` token scheme already in `path_codec.go`, generalised)
+   so the round-trip is lossless and the Mac sees its original name back. Built on the existing
+   `pkg/encoding` MacRoman↔UTF-8 tables — *reused*, wrapped behind this interface, not
+   reinvented; a future client charset (e.g. Shift-JIS for KanjiTalk) is one more
+   `WireEncoding` constant the codec learns to transcode.
+
+Crucially, one codec instance owns the store-side policy (charset, reserved set, `Validate`)
+**once** and transcodes from/to whichever wire charset the service negotiated for that request.
+The earlier rejected alternatives — a codec instance per client charset, or a `runtime.GOOS`
+switch — would either duplicate the store policy across instances or fail to express a single
+host serving several charsets at once.
 
 Why per-share and codec-owned, not service-owned or `runtime.GOOS`-driven:
 
@@ -1124,6 +1204,8 @@ kernel socket / drivers-net ──implements──▶ DatagramLink   (no Framing
 
 consumed by:  ports/framers → FrameLink ;  router/services → DatagramLink
 capabilities: MediumReporter, FilterableLink  (optional, type-asserted on a FrameLink)
+CaptureSink ← Capture(FrameLink) tees frames; writers (adapters): capture/libpcap, capture/pcapfile(pure-Go)
+              wire visibility is pcap-only (§6f) — always available, even without libpcap
 ```
 
 ### Event buses (`core/bus` primitive, two instances)
@@ -1142,8 +1224,11 @@ bus.Bus (Publish/Subscribe(topics…))          ← ONE primitive (§5)
 ### Logging (`core/log`)
 ```
 Logger (With/Log/Enabled) ──fans Record to──▶ Sink…   (typed Field, no reflection)
+levels: Trace/Debug/Info/Warn/Error    level is PER-CALL; threshold is a *LevelVar on each SINK
+        (runtime-settable per scope §6b; Enabled folds across sinks)
 sinks (core): ring, stderr        sinks (adapter): syslog, journald, semihosting, bus-sink
 the bus-sink publishes bus.LogRecord onto the telemetry "log" topic — bus is ONE sink, not the mechanism
+wire bytes are NOT logged — they go to a pcap CaptureSink (§6f); the traffic log is deleted
 ```
 
 ### Config (`core/config`)
@@ -1161,7 +1246,7 @@ ForkFS = FileSystem + ForkEngine            ← what a file service actually hol
 FileSystem            ← RegisterFS(fsType, Factory): local/macgarden/hfs-image/fat-image/ftp/zip/s3/webdav
 ForkEngine            ← appledouble / ads(SFM) / xattr(Netatalk) / native(HFS)
 NameEngine            ← short(win/derive) / medium(netatalk)
-FilenameCodec         ← macroman-utf8 / macroman-native / utf8   (wire↔StoredName bytes; §10a-bis)
+FilenameCodec         ← macroman-utf8 / macroman-native / utf8   (per-call WireEncoding ↔ StoredName bytes; §10a-bis)
 metastore.Store       ← mem(default) / sqlite / ntfs-ads / xattr   (cnid/shortname/desktop)
 BuildShare(ShareSpec) validates fs_type × fork_backend × filename_codec × name × metastore
 ```
@@ -1217,6 +1302,8 @@ core/
 adapter/
   link/pcap   link/tap   link/ppp   link/slip       (build-tagged FrameLink backends)
   link/kerneldp  link/driversnet                     (DatagramLink: AF_APPLETALK, TinyGo/ESP-IDF)
+  capture/libpcap  capture/pcapfile                  (CaptureSink writers; pcapfile = pure-Go,
+                                                     TinyGo-safe — wire capture even w/o libpcap, §6f)
   log/syslog  log/file  log/journald  log/semihosting  (log sinks; SSE sink = bus → UI)
   config/toml config/uci                          (codecs)
   store/file  store/uci                            (config stores)

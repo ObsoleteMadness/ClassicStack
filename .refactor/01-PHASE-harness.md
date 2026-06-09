@@ -212,7 +212,10 @@ func Dedup(inner FrameLink, window /*time.Duration*/ int64) FrameLink // suppres
 func Capture(inner FrameLink, sink CaptureSink) FrameLink       // tee frames to a sink
 func Bridge(inner FrameLink, mode string) FrameLink            // Wi-Fi/bridged MAC rewrite
 
-// CaptureSink consumes tee'd frames (a pcap-file writer is an adapter implementing this).
+// CaptureSink consumes tee'd frames. Wire visibility is pcap-only (§6f): the writers are
+// adapters — capture/libpcap (libpcap dumper) and capture/pcapfile (pure-Go, stdlib-only,
+// TinyGo-safe) so non-pcap backends (TAP/esp32/tty/in-mem) still emit a Wireshark-openable
+// file. Core ships only this interface + the Capture decorator; no decode path lives in core.
 type CaptureSink interface {
     WriteFrame(tsUnixNano int64, f Frame)
     Close() error
@@ -337,7 +340,17 @@ package log
 import "time"
 
 type Level uint8
-const ( Debug Level = iota; Info; Warn; Error )
+// Trace = per-request protocol/service narration (e.g. AFP FPOpenFork path=…); NEVER raw wire
+// bytes — those go to a pcap CaptureSink (§6f). Trace is the most verbose level.
+const ( Trace Level = iota; Debug; Info; Warn; Error )
+
+// LevelVar is a runtime-settable threshold a SINK holds (atomic). The level a record is written
+// at is per-call (the lvl arg on Log*); the threshold deciding what a sink emits is here, so the
+// control plane can set "AFP=debug" live without rebuilding loggers/sinks (§6b). nil ⇒ emit all.
+type LevelVar struct{ /* atomic uint32 */ }
+func NewLevelVar(min Level) *LevelVar
+func (v *LevelVar) Set(min Level)
+func (v *LevelVar) Level() Level
 
 // Field is a typed key/value (no interface{} boxing → no reflection, no scalar alloc).
 type Field struct {
@@ -363,8 +376,8 @@ func Bool(k string, v bool) Field
 // fixed-arity helpers, and always guard with Enabled() first.
 type Logger interface {
     With(fields ...Field) Logger               // child logger; cold path (setup), variadic ok
-    Log(lvl Level, msg string, fields ...Field) // ergonomic; NOT for hot paths
-    Enabled(lvl Level) bool                     // cheap guard; check before building any field
+    Log(lvl Level, msg string, fields ...Field) // ergonomic; NOT for hot paths. lvl is PER CALL.
+    Enabled(lvl Level) bool                     // folds across sinks: true iff some sink emits lvl
 
     // Fixed-arity hot-path methods — NO variadic, NO slice, provably zero-alloc when the
     // level is enabled (and a no-op when not). Cover the common field shapes; add arities
@@ -383,25 +396,31 @@ type Record struct {
     Time   time.Time
 }
 
-// Sink consumes records. Implementations must be safe for concurrent Write.
+// Sink consumes records. Implementations must be safe for concurrent Write. The level
+// THRESHOLD lives here (Min), not on the logger — so it is per-sink and runtime-settable.
 type Sink interface {
-    Write(rec Record)
+    Write(rec Record)   // sink enforces its own threshold (drops records below Min)
+    Min() Level         // current threshold; logger.Enabled folds across all sinks' Min
     Close() error
 }
 
-// New builds a root logger writing to sinks at/above min level; scope sets the base tag.
-func New(scope string, min Level, sinks ...Sink) Logger
+// New builds a root logger writing to the sinks; scope sets the base tag. NO level arg — the
+// threshold is on each sink (a *LevelVar), so the record's level is the per-call lvl on Log*.
+func New(scope string, sinks ...Sink) Logger
 
 // Stdlib-only sinks live here; heavy sinks (syslog/journald/semihosting) are adapters,
-// and the bus sink (publishes bus.LogRecord) is an adapter too.
-func NewRingSink(capacity int) Sink   // in-memory tail for the UI
-func NewStderrSink() Sink
+// and the bus sink (publishes bus.LogRecord) is an adapter too. min is a *LevelVar (nil ⇒ all).
+func NewRingSink(capacity int, min *LevelVar) Sink   // in-memory tail for the UI
+func NewStderrSink(min *LevelVar) Sink
 ```
 
-- **Accept:** scoped logger tags records; `Enabled(Debug)==false` fast path has
-  `testing.AllocsPerRun == 0`; **the fixed-arity hot-path methods (`Log0/Log1/Log2`) have
-  `AllocsPerRun == 0` even when the level is ENABLED** (the variadic `Log` is allowed to
-  allocate); fan-out delivers to two sinks; `With` adds fields without mutating the parent.
+- **Accept:** scoped logger tags records; with a sink at `Warn`, `Enabled(Debug)==false` and
+  the disabled `Log` fast path has `testing.AllocsPerRun == 0`; **the fixed-arity hot-path
+  methods (`Log0/Log1/Log2`) have `AllocsPerRun == 0` even when the level is ENABLED** (the
+  variadic `Log` is allowed to allocate); fan-out delivers to two sinks; one logger feeding a
+  `Debug` sink + an `Info` sink emits a `Debug` record only to the former; a `LevelVar.Set`
+  flips `Enabled`/emission at runtime (the §6b retune); `With` adds fields without mutating the
+  parent.
 - **Must not:** import `slog`/`reflect`; call the variadic `Log` from any data-path loop.
 - **Deps:** A1, A3 (buffer sizing for formatting).
 
@@ -589,26 +608,51 @@ type NameEngine interface {
 // charset (e.g. the 0xNN tokens are ASCII, valid in UTF-8 and FAT alike).
 type StoredName []byte // the backend's on-disk native byte form of one path element
 
+// WireEncoding identifies the charset of filename bytes ON THE CLIENT WIRE for a single
+// request. The codec transcodes between this and its fixed StoreCharset. It is a PER-CALL
+// argument, not a per-codec property, because one share serves multiple client protocol
+// versions at once and the charset is negotiated per request: AFP path-type byte selects it
+// (kFPShortName/kFPLongName=MacRoman, kFPUTF8Name=UTF8); SMB selects it by dialect/Unicode
+// flag (legacy=ANSI codepage, NT=UTF16LE). Extend with new constants (e.g. WireShiftJIS for
+// KanjiTalk); it is a typed enum, never a free string, to stay reflection-free (§1/§6).
+type WireEncoding uint8
+const (
+    WireMacRoman WireEncoding = iota // AFP kFPShortName / kFPLongName
+    WireUTF8                         // AFP kFPUTF8Name; SMB POSIX extension
+    WireANSI                         // SMB legacy / DOS code page (OEM)
+    WireUTF16                        // SMB NT Unicode (UTF-16LE)
+)
+func (e WireEncoding) String() string
+
 type FilenameCodec interface {
-    // Decode: client wire bytes → store-native bytes, validated for THIS backend's profile.
-    // Returns ErrUnrepresentable when the wire name cannot be legally stored (caller maps it
-    // to the protocol's "illegal name" error rather than corrupting the path).
-    Decode(wire []byte) (StoredName, error)
-    // Encode: store-native bytes → client wire bytes (the exact inverse of Decode).
-    Encode(stored StoredName) (wire []byte, err error)
+    // Decode: client wire bytes in the `src` charset → store-native bytes, validated for THIS
+    // backend's profile. `src` is the per-request wire charset the service negotiated (AFP
+    // pathType, SMB dialect). Returns ErrUnrepresentable when the wire name cannot be legally
+    // stored (caller maps it to the protocol's "illegal name" error rather than corrupting the
+    // path) and ErrWireUnsupported when `src` is not in Wire().
+    Decode(wire []byte, src WireEncoding) (StoredName, error)
+    // Encode: store-native bytes → client wire bytes in the `dst` charset (the exact inverse
+    // of Decode for the same charset). Same error contract for an unsupported `dst`.
+    Encode(stored StoredName, dst WireEncoding) (wire []byte, err error)
+    // Wire reports the wire encodings this codec can transcode, so the service can fail a
+    // request whose negotiated charset the codec doesn't support rather than mangle a name.
+    Wire() []WireEncoding
     Profile() FilenameProfile
 }
 type FilenameProfile struct {
-    WireCharset  string // client side: "macroman", "utf8", …
-    StoreCharset string // backend side: "utf8", "posix-bytes", "fat", "url-safe", "macroman", …
-    MaxElement   int    // max element length in STORE bytes (0 = unbounded)
+    Wire         []WireEncoding // client wire charsets this codec accepts (per-call src/dst)
+    StoreCharset string         // backend side: "utf8", "posix-bytes", "fat", "url-safe", "macroman", …
+    MaxElement   int            // max element length in STORE bytes (0 = unbounded)
     // Validate reports whether a store-native element is legal for this backend. A POSIX
     // backend rejects only NUL and '/'; an S3 backend rejects URL/XML-unsafe bytes; a FAT
     // backend enforces 8.3/charset. The FileSystem MAY call this defensively before host I/O.
     // (Field, not method, so the profile stays a pure value; codecs set it.)
     Validate func(elem StoredName) error
 }
-var ErrUnrepresentable = errors.New("fs: filename not representable in store charset")
+var (
+    ErrUnrepresentable = errors.New("fs: filename not representable in store charset")
+    ErrWireUnsupported = errors.New("fs: wire encoding not supported by codec")
+)
 
 // --- Per-share assembly (§9d). Backend (FileSystem) + the three engines + metastore, chosen
 // --- by config; BuildShare validates the combination and rejects incompatible pairings.
@@ -634,8 +678,14 @@ func BuildShare(spec ShareSpec, b bus.Bus) (ForkFS, error) // validates fs_type�
     `StoredName`/`[]byte` rather than `string` — prefer that for backends like POSIX/S3 where a
     Go `string` is lossy; if kept `string` for ergonomics, the contract is "valid `StoreCharset`
     bytes only", enforced by `Profile.Validate`.)
-  - `Encode(Decode(wire)) == wire` for every legal wire name; an unrepresentable name returns
-    `ErrUnrepresentable` (→ protocol "illegal name"), **never** a silently mangled path.
+  - The **wire charset is a per-call argument**, not a per-codec property: a single codec
+    instance owns the store-side policy (reserved chars, `StoreCharset`, `Validate`) once and
+    transcodes from/to whichever `WireEncoding` the service negotiated for *that* request
+    (AFP pathType, SMB dialect). The codec advertises the set it accepts via `Wire()`.
+  - `Encode(Decode(wire, c), c) == wire` for every legal wire name **and every supported wire
+    charset `c` in `Wire()`**; an unrepresentable name returns `ErrUnrepresentable` (→ protocol
+    "illegal name"), **never** a silently mangled path; an unsupported `c` returns
+    `ErrWireUnsupported`.
   - Escape tokens must be legal in `StoreCharset` so they survive host I/O and Go's path
     routines (the `0xNN` scheme is ASCII for exactly this reason).
 - **Also:** create `core/encoding` (pure MacRoman↔UTF-8 tables, reflection-free) for the
@@ -644,8 +694,10 @@ func BuildShare(spec ShareSpec, b bus.Bus) (ForkFS, error) // validates fs_type�
 - **Accept:** a `memfs` `FileSystem` placeholder + the three placeholder engines satisfy the
   interfaces; `BuildShare` accepts a valid triple and **rejects** an invalid one (e.g.
   `hfs-image` × `utf8` codec, read-only `zipfs` × non-`appledouble` fork); a codec round-trip
-  test asserts `Encode(Decode(wire))==wire` and that an unrepresentable wire name (e.g. a
-  byte illegal in `StoreCharset`) returns `ErrUnrepresentable`.
+  test asserts `Encode(Decode(wire, c), c)==wire` for each `c` in `Wire()` (at least
+  `WireMacRoman` and `WireUTF8` through a `{macroman,utf8}→utf8-store` codec), that an
+  unrepresentable wire name (e.g. a byte illegal in `StoreCharset`) returns
+  `ErrUnrepresentable`, and that an unsupported `src`/`dst` returns `ErrWireUnsupported`.
 - **Deps:** A1, B3/B4 (bus), B6 (config/Section), B9 (metastore.Store).
 
 ### B9. Metastore interface (`core/metastore`) — §9a

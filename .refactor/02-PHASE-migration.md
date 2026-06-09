@@ -34,10 +34,20 @@ Each subsystem follows the same **strangler recipe**:
   decorators from §2; BPF strings live here, not in ports); TAP → `adapter/link/tap`;
   serial PPP/SLIP → `adapter/link/ppp`,`/slip`; kernel datagram → `adapter/link/kerneldp`
   (`AF_APPLETALK`); TinyGo/ESP → `adapter/link/driversnet`.
+- **Capture is pcap-only and always available (§6f):** the `Capture` decorator tees frames to a
+  `CaptureSink`; provide **two writer adapters** behind one interface — `adapter/capture/libpcap`
+  (libpcap dumper, used with the pcap link) and `adapter/capture/pcapfile` (**pure-Go, stdlib-only,
+  TinyGo-safe** .pcap writer) so TAP / ESP32-raw / TashTalk-tty / in-mem backends still emit a
+  Wireshark-openable file with no libpcap linked.
 - **Source:** today's `port/rawlink/*`, `capture/*`, `port/.../bridge_link.go`.
 - **Done when:** a port placeholder fed by `adapter/link/pcap` sees real frames; the
   `framing` adapter turns a pcap FrameLink into a DatagramLink; gopacket confined here
-  (archtest stays green).
+  (archtest stays green); a non-pcap link (e.g. TAP or in-mem) writes a valid pcap via
+  `capture/pcapfile` that `tshark -r` reads back.
+- **Delete the traffic log (§6f):** there is no separate "traffic"/byte-log mechanism — wire
+  content is the pcap capture, throughput is `StatSample` counters on the telemetry bus, and any
+  narrated protocol event is a `Trace`/`Debug` line. Remove the old traffic-log plumbing rather
+  than porting it (`pkg/metrics` traffic paths, per-port `TrafficMetered` byte-logging wiring).
 
 ## M2. Protocol codecs
 - **Migrate:** real `core/protocol/{atp,asp,pap,nbp,ipx,netbeui,smb,netbios}` codecs
@@ -81,10 +91,32 @@ Each subsystem follows the same **strangler recipe**:
 - **Interop (hard):** `fork/ads` = SFM stream names/encoding; `fork/xattr` = Netatalk EA
   layout (§9b). Document the AfpInfo + Netatalk-EA wire formats in `spec/`.
 - **Filename codec must be reversible + store-native:** `Decode` returns `fs.StoredName`
-  (backend-native bytes), not a Go `string`; `Encode(Decode(wire)) == wire` for MacRoman +
-  reserved chars (the `0xNN` token round-trip); unrepresentable names return `ErrUnrepresentable`
-  (→ protocol "illegal name"), never a mangled path; reserved set is backend-declared (POSIX
-  bytes vs NTFS vs FAT vs S3 url-safe), not `runtime.GOOS`.
+  (backend-native bytes), not a Go `string`; `Encode(Decode(wire, c), c) == wire` for each
+  supported wire charset `c` (MacRoman + reserved chars via the `0xNN` token round-trip);
+  unrepresentable names return `ErrUnrepresentable` (→ protocol "illegal name"), never a mangled
+  path; reserved set is backend-declared (POSIX bytes vs NTFS vs FAT vs S3 url-safe), not
+  `runtime.GOOS`.
+- **Wire charset is per request, threaded by the service:** the lifted `path_codec.go` no longer
+  hard-wires MacRoman — the AFP service maps the request path-type byte to a `fs.WireEncoding`
+  (`kFPShortName`/`kFPLongName`→`WireMacRoman`, `kFPUTF8Name`→`WireUTF8`) and passes it on every
+  `Decode`/`Encode` call; SMB maps its dialect/Unicode flag (legacy→`WireANSI`, NT→`WireUTF16`).
+  This preserves serving multiple client versions on one share. Carry the AFP pathType branch
+  that already exists at `service/afp/paths.go` (`resolvePath(..., pathType)`) through to the
+  codec call instead of the current fixed `encoding.MacRomanToUTF8`/`UTF8ToMacRoman`.
+- **New transcode paths beyond MacRoman↔UTF-8:** `core/encoding` (lifted `pkg/encoding`) today
+  only does MacRoman↔UTF-8. The new `WireEncoding` values need transcoders the codec adapters
+  must add:
+  - **`WireUTF16` (SMB NT):** UTF-16LE↔store. Handle the byte-pair framing, surrogate pairs,
+    an optional/leading BOM, and **odd-length input** (a truncated final unit → `ErrUnrepresentable`,
+    not a panic or silent drop). Prefer stdlib `unicode/utf16` + `unicode/utf8` (reflection-free,
+    TinyGo-safe) over a new dependency.
+  - **`WireANSI` (SMB legacy/DOS):** a code-page table (e.g. CP437/CP850/CP1252 — the SMB
+    negotiated OEM code page) ↔ store. Add the table(s) to `core/encoding` the same hand-written,
+    reflection-free way as the MacRoman table; the codec picks the page from the negotiated
+    dialect. Document the chosen default code page and any observed client quirks in `spec/`.
+  - Keep each transcoder behind the `FilenameCodec` so `Wire()` advertises only the charsets a
+    given codec actually implements — an adapter that hasn't added UTF-16 yet simply omits it
+    from `Wire()` and SMB NT requests fail loudly with `ErrWireUnsupported` rather than mangling.
 - **Done when:** an AFP/SMB volume reads/writes forks via the chosen engine; metadata round-trips
   through `pkg/appledouble` codec regardless of container; sqlite is droppable (mem default works);
   MacRoman/reserved-char filename round-trip tests pass (port `path_codec_test.go`/`enumerate_encoding_test.go`).

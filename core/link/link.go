@@ -2,6 +2,7 @@ package link
 
 import (
 	"errors"
+	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/ddp"
 )
@@ -50,32 +51,44 @@ type Framer interface {
 // FilterFunc reports whether a frame passes software filtering.
 type FilterFunc func(Frame) bool
 
-// Filter wraps inner with software-side filtering.
-// Phase 1 placeholder: returns inner unchanged.
-func Filter(inner FrameLink, pass FilterFunc) FrameLink {
-	_ = pass
-	return inner
+// Filter, Dedup, and Bridge decorator bodies live in decorators.go and
+// bridge.go respectively (Capture stays here, next to CaptureSink).
+
+type captureLink struct {
+	FrameLink
+	sink CaptureSink
 }
 
-// Dedup wraps inner with duplicate-suppression over a time window.
-// Phase 1 placeholder: returns inner unchanged.
-func Dedup(inner FrameLink, window int64) FrameLink {
-	_ = window
-	return inner
+func (c *captureLink) Read() (Frame, error) {
+	f, err := c.FrameLink.Read()
+	if err == nil && c.sink != nil && len(f) > 0 {
+		c.sink.WriteFrame(time.Now().UnixNano(), f)
+	}
+	return f, err
+}
+
+func (c *captureLink) Write(f Frame) error {
+	err := c.FrameLink.Write(f)
+	if err == nil && c.sink != nil && len(f) > 0 {
+		c.sink.WriteFrame(time.Now().UnixNano(), f)
+	}
+	return err
+}
+
+func (c *captureLink) Close() error {
+	err := c.FrameLink.Close()
+	if c.sink != nil {
+		_ = c.sink.Close()
+	}
+	return err
 }
 
 // Capture wraps inner with frame teeing into sink.
-// Phase 1 placeholder: returns inner unchanged.
 func Capture(inner FrameLink, sink CaptureSink) FrameLink {
-	_ = sink
-	return inner
-}
-
-// Bridge wraps inner with Wi-Fi/bridged MAC rewrite behavior.
-// Phase 1 placeholder: returns inner unchanged.
-func Bridge(inner FrameLink, mode string) FrameLink {
-	_ = mode
-	return inner
+	if sink == nil {
+		return inner
+	}
+	return &captureLink{FrameLink: inner, sink: sink}
 }
 
 // CaptureSink consumes tee'd frames.

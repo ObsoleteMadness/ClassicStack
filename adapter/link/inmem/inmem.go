@@ -13,7 +13,7 @@ import (
 type Link struct {
 	in   chan link.Frame // frames arriving for this end (peer writes here)
 	out  chan link.Frame // frames this end writes (peer reads here)
-	once sync.Once
+	once *sync.Once      // shared across a Pair so either end's Close is a safe no-op for the other
 	done chan struct{}
 }
 
@@ -26,8 +26,11 @@ func Pair(buffer int) (*Link, *Link) {
 	a2b := make(chan link.Frame, buffer)
 	b2a := make(chan link.Frame, buffer)
 	done := make(chan struct{})
-	a := &Link{in: b2a, out: a2b, done: done}
-	b := &Link{in: a2b, out: b2a, done: done}
+	// Share one *sync.Once so closing either end (or both) closes the shared
+	// done channel exactly once — Closing both ends must not double-close.
+	once := &sync.Once{}
+	a := &Link{in: b2a, out: a2b, done: done, once: once}
+	b := &Link{in: a2b, out: b2a, done: done, once: once}
 	return a, b
 }
 
@@ -38,7 +41,7 @@ func Loopback(buffer int) *Link {
 		buffer = 0
 	}
 	ch := make(chan link.Frame, buffer)
-	return &Link{in: ch, out: ch, done: make(chan struct{})}
+	return &Link{in: ch, out: ch, done: make(chan struct{}), once: &sync.Once{}}
 }
 
 // Read returns the next frame, ErrTimeout never (this link has no deadline), or
