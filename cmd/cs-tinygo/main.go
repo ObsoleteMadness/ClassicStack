@@ -11,6 +11,7 @@ import (
 	_ "github.com/ObsoleteMadness/ClassicStack/core/protocol/atp"
 	_ "github.com/ObsoleteMadness/ClassicStack/core/protocol/ddp"
 	_ "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/protocol/macipx"
 	_ "github.com/ObsoleteMadness/ClassicStack/core/protocol/nbp"
 	_ "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbeui"
 	_ "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbios"
@@ -33,6 +34,13 @@ import (
 	_ "github.com/ObsoleteMadness/ClassicStack/core/service/aep"
 	_ "github.com/ObsoleteMadness/ClassicStack/core/service/rtmp"
 	_ "github.com/ObsoleteMadness/ClassicStack/core/service/zip"
+
+	// M5: the DDP services (NBP name-information, MacIP gateway, IPX gateway)
+	// must stay TinyGo-clean so an embedded build can answer name lookups and
+	// gateway protocol requests.
+	_ "github.com/ObsoleteMadness/ClassicStack/core/service/ipxgw"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/service/macip"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/service/nbp"
 
 	// M1: the pure-Go pcapfile capture writer is required to be TinyGo-safe (§6f)
 	// so non-pcap/embedded links can still emit a Wireshark-openable file.

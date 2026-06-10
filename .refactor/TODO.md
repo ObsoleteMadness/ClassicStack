@@ -85,7 +85,7 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 | M2 | Protocol codecs (atp/asp/pap/nbp/ipx/netbeui/smb/netbios) + capture-replay | M1 | claude | ✅ |
 | M3 | Real ports (ethertalk/localtalk/ipx/netbeui) over real links | M1,M2 | claude | ✅ |
 | M4 | Router + tables (event membership) + ZIP/RTMP + ipx/netbeui routers | M3 | claude | ✅ |
-| M5 | DDP services (MacIP/IPXGW/AEP/NBP) + stats publish | M4 | | ⬜ |
+| M5 | DDP services (MacIP/IPXGW/AEP/NBP) + stats publish | M4 | claude | ✅ |
 | M6 | Storage seam: unified FS, metastore, fork engines (SFM/Netatalk interop), name engines, **filename codecs** (MacRoman/reserved, from path_codec.go) | Phase 1 (B8/B9) | | ⬜ |
 | M7 | File services AFP/SMB/NetBIOS over fs/metastore + Attachable transports | M6,M2 | | ⬜ |
 | M8 | Logging cutover + control front-ends (http, ubus) + config codecs (toml/uci) | M5,M7 | | ⬜ |
@@ -212,6 +212,48 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 >   yet); the EtherTalk port's `MulticastAddress` capability that ZIP GetNetInfo consults (lands
 >   with the EtherTalk multicast/AARP work). Legacy `router/*` + `service/{rtmp,zip,aep}` stay until
 >   the cutover proves parity, per the strangler recipe.
+
+> **M5 notes (what landed / deferred):**
+> - **NBP name-information service** (`core/service/nbp`): the stateful service riding the router
+>   on the NIS socket (2/DDP-2). Owns the registered-name table (`RegisterName`/`UnregisterName`,
+>   case-insensitive dedup) and answers BrRq / LkUp / Fwd — replying for local matches and
+>   resolving/multicasting/forwarding zone lookups via `ServiceRouter` (`RoutingTable().GetByNetwork`,
+>   `Zones().NetworksInZone`/`ZonesInNetworkRange`). Re-expressed from legacy
+>   `service/zip/name_information.go` against core surfaces (no `port.Port`/`netlog`). This is the
+>   shared dependency MacIP + IPXGW register their advertised names through.
+> - **MacIPX codec** (`core/protocol/macipx`): the M2-deferred gateway codec, lifted from legacy
+>   `protocol/macipx` and made reflection-free (sentinel errors, no `fmt`). Opcodes (Data/Listen/
+>   Register req+rsp), `AssignedNodeForDDP`, listen/register decode. Golden-vector tests use the
+>   spec example (req "00 02 00 00 00 01" → node 7a:00:00:00:01:01 → wire `23 00 02 …`).
+> - **IPX gateway** (`core/service/ipxgw`): the AppleTalk-side MACIPXGW counterpart, a real
+>   `router.Service` on socket 78. Handles register (0x20→0x23 via `rtr.Reply`), encapsulated IPX
+>   (0x00 → decode → inject into the M4 `core/router/ipx` mini-router), and listen (0x10). Inbound
+>   IPX addressed to an assigned node (or broadcast fan-out by listen-socket) is re-encapsulated and
+>   routed back over DDP. `SetIPXRouter` wires the mini-router (broadcast-handler + per-node claims).
+> - **MacIP gateway** (`core/service/macip`, replacing the D3 placeholder): the AppleTalk-facing
+>   transport — ATP config (TReq→TResp IP assignment, socket 72) + DDP-22 IP data. The IP-side
+>   network (raw Ethernet, NAT, DHCP relay, proxy ARP) is an **injected `IPEgress` adapter seam**, so
+>   core stays stdlib-only/reflection-free — **IPv4 is `[4]byte`, no `net` package**. Pool/lease
+>   tracking, pool↔pool direct delivery, and `RegisterExternalLease` (for adapter DHCP) live in core.
+> - **Stats (§5):** every service implements `component.Statful` — NBP (brrq/lkup/fwd/replies +
+>   registered_names gauge), IPXGW (registers/data_frames/listens/tunneled_in + clients gauge),
+>   MacIP (assigns/data_out/data_in/dropped + active_leases gauge). AEP was already done in M4. The
+>   compose stats subscriber (C4) publishes these as `bus.StatSample`, replacing `refreshMacIPStatus`
+>   et al.
+> - **Tested (the M5 "done when"):** NBP LkUp reply for a registered name + no-match-no-reply +
+>   register/unregister dedup; macipx golden vectors + multi-entry listen + misalignment; IPXGW
+>   register-reply node assignment, encapsulated-IPX forwarding into the mini-router, inbound-IPX
+>   tunnel back to a client; MacIP pool assign/reuse/range, ATP config assign reply, DDP-22→egress,
+>   egress→AppleTalk route. All via in-test fakes (core stays core-only). cs-tinygo blank-imports
+>   nbp/ipxgw/macip + protocol/macipx; archtest + harness + linux/windows amd64 cross-build green
+>   (TinyGo toolchain not installed locally — archtest enforces the reflection-free rule the TinyGo
+>   gate complements).
+> - **Deferred:** wiring the real services into the registry + supervisor is the cmd/compose cutover
+>   (M8/M10) — `reg_macip.go` keeps an inert placeholder (mirrors M4's unattached DDP services), and
+>   no `reg_nbp`/`reg_ipxgw` registry entries exist yet. The **IP-side egress adapter** (pcap raw
+>   Ethernet + OS-NAT + DHCP-relay + proxy-ARP + ICMP-to-gateway + IP fragmentation), and the ASP
+>   session lease-pinning hooks, land with the adapter/cutover work, not in core. Legacy
+>   `service/{macip,ipxgw}` + `service/zip/name_information.go` stay until cutover proves parity.
 
 ---
 
