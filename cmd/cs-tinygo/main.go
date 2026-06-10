@@ -23,7 +23,16 @@ import (
 	_ "github.com/ObsoleteMadness/ClassicStack/core/port/ipx"
 	_ "github.com/ObsoleteMadness/ClassicStack/core/port/localtalk"
 	_ "github.com/ObsoleteMadness/ClassicStack/core/port/netbeui"
+
+	// M4: the real router (routing/zone tables + membership), the IPX/NetBEUI mini-
+	// routers, and the DDP services (RTMP/ZIP/AEP) must stay TinyGo-clean so an
+	// embedded build can route and answer protocol requests.
 	_ "github.com/ObsoleteMadness/ClassicStack/core/router"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/router/ipx"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/router/netbeui"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/service/aep"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/service/rtmp"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/service/zip"
 
 	// M1: the pure-Go pcapfile capture writer is required to be TinyGo-safe (§6f)
 	// so non-pcap/embedded links can still emit a Wireshark-openable file.

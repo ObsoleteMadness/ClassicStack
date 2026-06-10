@@ -84,7 +84,7 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 | M1 | Link adapters: pcap/tap/ppp/slip/kerneldp/driversnet + decorators | Phase 1 | claude | ✅ |
 | M2 | Protocol codecs (atp/asp/pap/nbp/ipx/netbeui/smb/netbios) + capture-replay | M1 | claude | ✅ |
 | M3 | Real ports (ethertalk/localtalk/ipx/netbeui) over real links | M1,M2 | claude | ✅ |
-| M4 | Router + tables (event membership) + ZIP/RTMP + ipx/netbeui routers | M3 | | ⬜ |
+| M4 | Router + tables (event membership) + ZIP/RTMP + ipx/netbeui routers | M3 | claude | ✅ |
 | M5 | DDP services (MacIP/IPXGW/AEP/NBP) + stats publish | M4 | | ⬜ |
 | M6 | Storage seam: unified FS, metastore, fork engines (SFM/Netatalk interop), name engines, **filename codecs** (MacRoman/reserved, from path_codec.go) | Phase 1 (B8/B9) | | ⬜ |
 | M7 | File services AFP/SMB/NetBIOS over fs/metastore + Attachable transports | M6,M2 | | ⬜ |
@@ -170,6 +170,48 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > - **Removed:** `core/port/internal/portbase` (the Phase-1 inert placeholder base) — fully
 >   replaced by runport/frameport; its four port `doc.go` stubs deleted (package docs now live in
 >   each port's main file). Legacy `port/*` packages stay until M4 wires their mini-routers.
+
+> **M4 notes (what landed / deferred):**
+> - **Real AppleTalk router** (`core/router`, replacing the Phase-1 placeholder `RouterImpl`):
+>   owns the routing + zone tables, does `Inbound` (source/dest-network fill-in, local delivery by
+>   dest socket, forward via `Route`), `Route` (next-hop unicast/broadcast + 15-hop limit), and
+>   `Reply` (mirror src/dst, broadcast for non-local/startup-range sources). **Event-driven
+>   membership (§3):** `Attach` installs the port's directly-connected route; `Detach` withdraws
+>   every route + zone reachable through it **immediately** (no aging delay) via
+>   `RemoveEntriesForPort`. Service dispatch is a `Socket()→Service` map; `RegisterService`/
+>   `UnregisterService` mutate it. A `ServiceRouter` interface is the surface RTMP/ZIP/AEP consume
+>   (testable against a fake).
+> - **Routing table + ZIT** ported from legacy `router/{routing_table,zone_information_table}.go`,
+>   re-expressed for core: RTMP aging machine Good→Suspect→Bad→Worst→removed (directly-connected
+>   Distance-0 entries never age); `Consider`/`MarkBad`/`SetPortRange`/`Age`/`Snapshot`/`Entries`.
+>   Hand-built entry key (no `fmt.Sprintf` → reflection-free, §1). ZIT uses `core/encoding` for
+>   MacRoman case-folding — **added `MacRomanToUpper`/`MacRomanToLower` + the AppleTalk case tables
+>   to `core/encoding`** (the M6 `pkg/encoding` lift starts here).
+> - **DDP services** as `core/service` components riding the router (router injected at
+>   construction, not at Start — fits the `Component` lifecycle): `aep` (echo), `rtmp`
+>   (responding socket-1 service + sending timer + aging timer), `zip` (responding socket-6 service
+>   incl. ATP GetMyZone/GetZoneList/GetLocalZones + sending timer). `encoding/binary` replaced with
+>   hand-rolled `be16`; `netlog` replaced with `core/log` scoped warnings.
+> - **IPX + NetBEUI mini-routers** (§3: peers of the DDP router, not members — own address spaces):
+>   `core/router/ipx` ports the legacy `router/ipx` socket/node/broadcast dispatch (node-handler
+>   precedence, broadcast fan-out, addressed-to-us filter; on Ethernet the IPX node *is* the MAC, so
+>   `Send` resolves dst MAC from `DstNode`). `core/router/netbeui` is the new parallel: NBF UI-frame
+>   dispatch by destination NetBIOS name + broadcast handler, with session-command (0x14–0x1F)
+>   frames routed to a registered **session handler** — the LLC Type-2 connection machine stays M7.
+>   Both fed by the M3 frame ports via the ports' named callback types (so the concrete ports
+>   satisfy the mini-router `Port` interfaces exactly; compile-time asserted).
+> - **Tested (the M4 "done when"):** routing-table install/replace/aging/snapshot/withdraw; ZIT
+>   add/query/remove/overlap-reject; router Attach/Detach (immediate connected-route withdrawal),
+>   socket dispatch, Reply routing, network fill-in; RTMP range-request reply + RTMP-data route
+>   learning; ZIP GetMyZone reply + ZIP-reply zone commit; IPX socket/node/broadcast dispatch +
+>   foreign-drop + Send src/MAC fill; NetBEUI name/broadcast/session dispatch. All via in-test fakes
+>   (core stays core-only). Both TinyGo amd64 gates now blank-import `core/router/{ipx,netbeui}` +
+>   `core/service/{aep,rtmp,zip}`; archtest + full tagged harness green.
+> - **Deferred:** wiring the real router/services into the registry + supervisor (the cmd/compose
+>   cutover, M8/M10 — registry `reg_router.go` still builds the router but no services are attached
+>   yet); the EtherTalk port's `MulticastAddress` capability that ZIP GetNetInfo consults (lands
+>   with the EtherTalk multicast/AARP work). Legacy `router/*` + `service/{rtmp,zip,aep}` stay until
+>   the cutover proves parity, per the strangler recipe.
 
 ---
 

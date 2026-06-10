@@ -26,6 +26,13 @@ var macRomanToRune = [256]rune{
 
 var runeToMacRoman map[rune]byte
 
+// macRomanToUpper / macRomanToLower are the MacRoman case-fold tables. AppleTalk
+// compares names (zone names, NBP names) case-insensitively in MacRoman, where
+// the accented vowels case-fold to their accented capitals — a plain ASCII fold
+// is not enough. The fold pairs below match Apple's AppleTalk case table.
+var macRomanToUpper = [256]byte{}
+var macRomanToLower = [256]byte{}
+
 func init() {
 	runeToMacRoman = make(map[rune]byte, 256)
 	for i, r := range macRomanToRune {
@@ -33,6 +40,38 @@ func init() {
 			runeToMacRoman[r] = byte(i)
 		}
 	}
+
+	for i := range 256 {
+		macRomanToUpper[i] = byte(i)
+		macRomanToLower[i] = byte(i)
+	}
+	// The AppleTalk case-fold pairs (lower → upper), including the accented set.
+	atalkLower := []byte("abcdefghijklmnopqrstuvwxyz\x88\x8A\x8B\x8C\x8D\x8E\x96\x9A\x9B\x9F\xBE\xBF\xCF")
+	atalkUpper := []byte("ABCDEFGHIJKLMNOPQRSTUVWXYZ\xCB\x80\xCC\x81\x82\x83\x84\x85\xCD\x86\xAE\xAF\xCE")
+	for i := range atalkLower {
+		macRomanToUpper[atalkLower[i]] = atalkUpper[i]
+		macRomanToLower[atalkUpper[i]] = atalkLower[i]
+	}
+}
+
+// MacRomanToUpper returns a new slice with each MacRoman byte upper-cased per the
+// AppleTalk case-fold table. Used for case-insensitive zone/name comparison.
+func MacRomanToUpper(b []byte) []byte {
+	out := make([]byte, len(b))
+	for i, c := range b {
+		out[i] = macRomanToUpper[c]
+	}
+	return out
+}
+
+// MacRomanToLower returns a new slice with each MacRoman byte lower-cased per the
+// AppleTalk case-fold table.
+func MacRomanToLower(b []byte) []byte {
+	out := make([]byte, len(b))
+	for i, c := range b {
+		out[i] = macRomanToLower[c]
+	}
+	return out
 }
 
 // MacRomanToUTF8 converts MacRoman bytes to UTF-8 text via the static lookup table.
