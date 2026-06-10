@@ -259,6 +259,26 @@ aspSizeErr      = -1073   Command block exceeds aspMaxCmdSize
 
 ## Implementation Notes
 
+### Implementation (M7 dispatch spine)
+
+The ASP server lives in `core/service/afp` over the migrated `core/protocol/asp`
++ `core/protocol/atp` codecs:
+
+- `atp.go` — the ATP transaction responder: decodes inbound TReqs and splits a
+  reply into up to 8 sequenced TResp packets honouring the requester's bitmap,
+  sending each via `router.Reply` (which addresses it back to the originator and
+  sets the reply `SrcSocket` to the socket the client sent to).
+- `asp.go` — the session table (ids 1–255) and the SPFunction demux running the
+  responsibilities below. The spine uses **one DDP socket** (251) for both the
+  SLS exchanges and all per-session commands, demuxing by session id (the
+  single-socket model), so no dynamic SSS allocation is needed; the OpenSession
+  reply returns this same socket as the SSS.
+- `dispatch.go` + `handlers.go` — the AFP command demux and the starter command
+  set over the §9 Volumes (see [AFP_Connection_Flow.md](AFP_Connection_Flow.md)).
+
+The server-initiated two-phase ASPWrite data path (aspDataWrite/WriteContinue)
+and the periodic server→workstation tickle are not yet wired in this spine.
+
 ### Server responsibilities
 
 1. **OpenSession**: Reply with `(SSS, sessID, 0, 0)` in UserData. Store WSS from request byte 1.
