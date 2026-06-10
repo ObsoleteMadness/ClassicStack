@@ -1,0 +1,153 @@
+package fs
+
+import (
+	"strconv"
+	"strings"
+
+	"github.com/ObsoleteMadness/ClassicStack/core/metastore"
+)
+
+// derivedNameEngine maps long store names to derived short (8.3, for DOS/Windows
+// SMB clients) and medium (31-char, for classic AFP) names, persisting the
+// binding in the metastore so a derived name keeps mapping back to the same long
+// name across restarts. It is the real engine behind the "short"/"medium" share
+// NameEngine names, porting pkg/shortname's 8.3 derivation onto the metastore.
+type derivedNameEngine struct {
+	store metastore.Store
+}
+
+// NewDerivedNameEngine returns a name engine backed by store (nil → an
+// in-memory metastore, so the engine still works for placeholder shares).
+func NewDerivedNameEngine(store metastore.Store) NameEngine {
+	if store == nil {
+		store, _ = metastore.NewMem("")
+	}
+	return &derivedNameEngine{store: store}
+}
+
+// metastore key layout, prefixed so multiple name kinds share one store without
+// colliding:
+//
+//	"n/f/<kind>/<dir>/<long>"    -> derived   (forward: long  -> derived)
+//	"n/r/<kind>/<dir>/<derived>" -> long      (reverse: derived -> long)
+func fwdKey(kind NameKind, dir, long string) []byte {
+	return []byte("n/f/" + kindTag(kind) + "/" + dir + "/" + long)
+}
+
+func revKey(kind NameKind, dir, derived string) []byte {
+	return []byte("n/r/" + kindTag(kind) + "/" + dir + "/" + strings.ToUpper(derived))
+}
+
+func kindTag(kind NameKind) string {
+	if kind == MediumName {
+		return "m"
+	}
+	return "s"
+}
+
+// Bind returns the derived name for long in dir, allocating and persisting a
+// fresh one (with ~N / -N collision suffixes) the first time.
+func (e *derivedNameEngine) Bind(dir, long string, kind NameKind) string {
+	if existing, ok := e.store.Get(fwdKey(kind, dir, long)); ok {
+		return string(existing)
+	}
+
+	maxN := 1 << 16
+	for n := 1; n < maxN; n++ {
+		var cand string
+		if kind == MediumName {
+			cand = deriveMedium(long, n)
+		} else {
+			cand = derive83(long, n)
+		}
+		rk := revKey(kind, dir, cand)
+		if owner, taken := e.store.Get(rk); taken {
+			if string(owner) == long {
+				return cand // already ours
+			}
+			continue // collision with a different long name; try next suffix
+		}
+		_ = e.store.Put(fwdKey(kind, dir, long), []byte(cand))
+		_ = e.store.Put(rk, []byte(long))
+		return cand
+	}
+	return long
+}
+
+// ToLong reverses Bind: the long name a derived name maps to in dir.
+func (e *derivedNameEngine) ToLong(dir, derived string, kind NameKind) (string, bool) {
+	if v, ok := e.store.Get(revKey(kind, dir, derived)); ok {
+		return string(v), true
+	}
+	return derived, false
+}
+
+// --- 8.3 short-name derivation (ported from pkg/shortname) ---
+
+// derive83 produces a deterministic 8.3 candidate from long with collision
+// counter n (encoded as ~n). Uniqueness is the caller's responsibility.
+func derive83(long string, n int) string {
+	base, ext := splitExt(long)
+	base = sanitizeFAT(strings.ToUpper(base))
+	ext = sanitizeFAT(strings.ToUpper(ext))
+	if len(ext) > 3 {
+		ext = ext[:3]
+	}
+	suffix := "~" + strconv.Itoa(n)
+	keep := max(8-len(suffix), 1)
+	if len(base) > keep {
+		base = base[:keep]
+	}
+	if base == "" {
+		base = "FILE"
+		if len(base) > keep {
+			base = base[:keep]
+		}
+	}
+	out := base + suffix
+	if ext != "" {
+		out += "." + ext
+	}
+	return out
+}
+
+// deriveMedium produces a 31-character "medium" name (the classic AFP long-name
+// limit) from long, appending a "-n" suffix for collisions n > 1.
+func deriveMedium(long string, n int) string {
+	const limit = 31
+	name := long
+	suffix := ""
+	if n > 1 {
+		suffix = "-" + strconv.Itoa(n)
+	}
+	if len(name)+len(suffix) > limit {
+		name = name[:max(limit-len(suffix), 0)]
+	}
+	return name + suffix
+}
+
+func splitExt(name string) (base, ext string) {
+	idx := strings.LastIndex(name, ".")
+	if idx <= 0 || idx == len(name)-1 {
+		return name, ""
+	}
+	return name[:idx], name[idx+1:]
+}
+
+// sanitizeFAT strips characters illegal in FAT 8.3 short names. Intentionally
+// simple — the canonical Windows mapping is more elaborate.
+func sanitizeFAT(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '_' || r == '-' || r == '$' || r == '#' || r == '&' || r == '@' ||
+			r == '!' || r == '(' || r == ')' || r == '{' || r == '}' || r == '\'' || r == '`':
+			b.WriteRune(r)
+		default:
+			// Drop spaces, dots (handled), and anything else.
+		}
+	}
+	return b.String()
+}

@@ -51,6 +51,21 @@ func TestBuildShare_ValidAndInvalidCombinations(t *testing.T) {
 	if _, err := BuildShare(ShareSpec{FSType: "zipfs", ReadOnly: true, ForkBackend: "native"}, nil); err == nil {
 		t.Fatal("expected read-only zipfs x non-appledouble fork to be rejected")
 	}
+
+	// hfs-image with the macroman-native codec is the valid pairing.
+	if _, err := BuildShare(ShareSpec{FSType: "hfs-image", FilenameCodec: "macroman-native"}, nil); err != nil {
+		t.Fatalf("hfs-image x macroman-native rejected: %v", err)
+	}
+
+	// macroman-native codec cannot pair with the xattr (Unicode EA) fork backend.
+	if _, err := BuildShare(ShareSpec{FSType: "memfs", FilenameCodec: "macroman-native", ForkBackend: "xattr"}, nil); err == nil {
+		t.Fatal("expected macroman-native x xattr to be rejected")
+	}
+
+	// An unknown codec name fails at validation, before any component builds.
+	if _, err := BuildShare(ShareSpec{FSType: "memfs", FilenameCodec: "no-such-codec"}, nil); err == nil {
+		t.Fatal("expected unknown codec to be rejected")
+	}
 }
 
 func TestFilenameCodecRoundTripAndUnrepresentable(t *testing.T) {
@@ -69,9 +84,21 @@ func TestFilenameCodecRoundTripAndUnrepresentable(t *testing.T) {
 		t.Fatalf("roundtrip = %q, want %q", string(back), string(wire))
 	}
 
-	_, err = c.Decode([]byte("bad/name"), WireUTF8)
-	if !errors.Is(err, ErrUnrepresentable) {
-		t.Fatalf("Decode bad/name error = %v, want ErrUnrepresentable", err)
+	// A reserved char ('/') is now representable: the codec escapes it
+	// reversibly as a "0xNN" token rather than rejecting the name.
+	escaped, err := c.Decode([]byte("bad/name"), WireUTF8)
+	if err != nil {
+		t.Fatalf("Decode bad/name error = %v, want nil (reserved char escaped)", err)
+	}
+	if string(escaped) != "bad0x2Fname" {
+		t.Fatalf("escaped = %q, want %q", string(escaped), "bad0x2Fname")
+	}
+	unescaped, err := c.Encode(escaped, WireUTF8)
+	if err != nil {
+		t.Fatalf("Encode escaped error: %v", err)
+	}
+	if string(unescaped) != "bad/name" {
+		t.Fatalf("reserved-char roundtrip = %q, want %q", string(unescaped), "bad/name")
 	}
 
 	// Test macroman-utf8 codec

@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
-	"github.com/ObsoleteMadness/ClassicStack/core/encoding"
 	"github.com/ObsoleteMadness/ClassicStack/core/metastore"
 )
 
@@ -106,6 +105,9 @@ func (e WireEncoding) String() string {
 	}
 }
 
+// FilenameCodec converts a filename element between a client wire charset and the
+// share's store-native bytes. It is reversible: Encode(Decode(wire, c), c) == wire
+// for every charset c in Wire(). See codec.go for the implementations.
 type FilenameCodec interface {
 	Decode(wire []byte, src WireEncoding) (StoredName, error)
 	Encode(stored StoredName, dst WireEncoding) (wire []byte, err error)
@@ -113,10 +115,14 @@ type FilenameCodec interface {
 	Profile() FilenameProfile
 }
 
+// FilenameProfile describes what a codec advertises: the wire charsets it
+// implements, the store charset name, an optional max element length, the
+// backend-declared reserved-character set, and a final element validator.
 type FilenameProfile struct {
 	Wire         []WireEncoding
 	StoreCharset string
 	MaxElement   int
+	Reserved     ReservedSet
 	Validate     func(elem StoredName) error
 }
 
@@ -185,11 +191,11 @@ func BuildShare(spec ShareSpec, b bus.Bus) (ForkFS, error) {
 	if err != nil {
 		return nil, err
 	}
-	nameEngine, err := nameEngineByName(spec.NameEngine)
+	nameEngine, err := nameEngineByName(spec.NameEngine, store)
 	if err != nil {
 		return nil, err
 	}
-	forkEngine, err := forkEngineByName(spec.ForkBackend)
+	forkEngine, err := forkEngineByName(spec.ForkBackend, base)
 	if err != nil {
 		return nil, err
 	}
@@ -216,16 +222,38 @@ func withDefaults(spec ShareSpec) ShareSpec {
 	return spec
 }
 
+// validateShareSpec checks the fs_type × fork_backend × filename_codec triple is
+// a buildable combination before any component is constructed, so a bad share
+// config fails loudly at build time rather than mangling names at runtime.
 func validateShareSpec(spec ShareSpec) error {
 	fsType := strings.ToLower(spec.FSType)
-	codec := strings.ToLower(spec.FilenameCodec)
+	codecName := strings.ToLower(spec.FilenameCodec)
 	fork := strings.ToLower(spec.ForkBackend)
 
-	if fsType == "hfs-image" && codec == "utf8" {
-		return errors.New("fs: hfs-image cannot be paired with utf8 filename codec")
+	// The codec name must resolve, and its declared store charset must suit the
+	// fs type's on-disk charset.
+	codec, err := codecByName(spec.FilenameCodec)
+	if err != nil {
+		return err
 	}
+	storeCharset := codec.Profile().StoreCharset
+
+	// An HFS image stores MacRoman bytes natively; a UTF-8 store charset would
+	// double-encode names on disk.
+	if fsType == "hfs-image" && storeCharset != "macroman" {
+		return errors.New("fs: hfs-image requires a macroman-native filename codec")
+	}
+	// A read-only zip volume cannot host native/xattr/ads forks (nothing can be
+	// written), so resource forks must come from AppleDouble sidecars baked into
+	// the archive.
 	if fsType == "zipfs" && spec.ReadOnly && fork != "appledouble" {
 		return errors.New("fs: read-only zipfs requires appledouble fork backend")
+	}
+	// A native-charset codec only advertises MacRoman; pairing it with a backend
+	// that needs UTF-8/Unicode wire names (SMB) would fail every NT request, so
+	// reject the combination up front.
+	if codecName == "macroman-native" && fork == "xattr" {
+		return errors.New("fs: macroman-native codec is incompatible with the xattr fork backend")
 	}
 	return nil
 }
@@ -237,157 +265,20 @@ type shareFS struct {
 	names NameEngine
 }
 
-// ShortName and MediumName are delegated to the share's NameEngine placeholder.
+// ShortName and MediumName derive a per-directory short/medium name for the
+// final path element via the share's NameEngine.
 func (s *shareFS) ShortName(path string) (string, error) {
-	return s.names.Bind("", path, ShortName), nil
+	dir, base := splitPath(path)
+	return s.names.Bind(dir, base, ShortName), nil
 }
 
 func (s *shareFS) MediumName(path string) (string, error) {
-	return s.names.Bind("", path, MediumName), nil
+	dir, base := splitPath(path)
+	return s.names.Bind(dir, base, MediumName), nil
 }
 
 // Codec exposes the share codec for adapter wiring/tests.
 func (s *shareFS) Codec() FilenameCodec { return s.codec }
-
-// NewIdentityFilenameCodec returns a strict identity codec with a POSIX-bytes validator.
-func NewIdentityFilenameCodec() FilenameCodec {
-	profile := FilenameProfile{
-		Wire:         []WireEncoding{WireMacRoman, WireUTF8, WireANSI, WireUTF16},
-		StoreCharset: "posix-bytes",
-		Validate:     validatePOSIXElement,
-	}
-	return identityCodec{profile: profile}
-}
-
-type identityCodec struct {
-	profile FilenameProfile
-}
-
-func (c identityCodec) Decode(wire []byte, src WireEncoding) (StoredName, error) {
-	supported := false
-	for _, w := range c.profile.Wire {
-		if w == src {
-			supported = true
-			break
-		}
-	}
-	if !supported {
-		return nil, ErrWireUnsupported
-	}
-	stored := StoredName(append([]byte(nil), wire...))
-	if c.profile.MaxElement > 0 && len(stored) > c.profile.MaxElement {
-		return nil, ErrUnrepresentable
-	}
-	if c.profile.Validate != nil {
-		if err := c.profile.Validate(stored); err != nil {
-			return nil, ErrUnrepresentable
-		}
-	}
-	return stored, nil
-}
-
-func (c identityCodec) Encode(stored StoredName, dst WireEncoding) ([]byte, error) {
-	supported := false
-	for _, w := range c.profile.Wire {
-		if w == dst {
-			supported = true
-			break
-		}
-	}
-	if !supported {
-		return nil, ErrWireUnsupported
-	}
-	return append([]byte(nil), stored...), nil
-}
-
-func (c identityCodec) Wire() []WireEncoding     { return c.profile.Wire }
-func (c identityCodec) Profile() FilenameProfile { return c.profile }
-
-// NewMacRomanUTF8FilenameCodec returns a codec that transcodes between WireMacRoman/WireUTF8 and a UTF-8 store.
-func NewMacRomanUTF8FilenameCodec() FilenameCodec {
-	profile := FilenameProfile{
-		Wire:         []WireEncoding{WireMacRoman, WireUTF8},
-		StoreCharset: "utf8",
-		Validate:     validatePOSIXElement,
-	}
-	return macromanUTF8Codec{profile: profile}
-}
-
-type macromanUTF8Codec struct {
-	profile FilenameProfile
-}
-
-func (c macromanUTF8Codec) Decode(wire []byte, src WireEncoding) (StoredName, error) {
-	var utf8Str string
-	switch src {
-	case WireUTF8:
-		utf8Str = string(wire)
-	case WireMacRoman:
-		utf8Str = encoding.MacRomanToUTF8(wire)
-	default:
-		return nil, ErrWireUnsupported
-	}
-	stored := StoredName(utf8Str)
-	if c.profile.MaxElement > 0 && len(stored) > c.profile.MaxElement {
-		return nil, ErrUnrepresentable
-	}
-	if c.profile.Validate != nil {
-		if err := c.profile.Validate(stored); err != nil {
-			return nil, ErrUnrepresentable
-		}
-	}
-	return stored, nil
-}
-
-func (c macromanUTF8Codec) Encode(stored StoredName, dst WireEncoding) ([]byte, error) {
-	switch dst {
-	case WireUTF8:
-		return append([]byte(nil), stored...), nil
-	case WireMacRoman:
-		b, err := encoding.UTF8ToMacRoman(string(stored))
-		if err != nil {
-			return nil, ErrUnrepresentable
-		}
-		return b, nil
-	default:
-		return nil, ErrWireUnsupported
-	}
-}
-
-func (c macromanUTF8Codec) Wire() []WireEncoding     { return c.profile.Wire }
-func (c macromanUTF8Codec) Profile() FilenameProfile { return c.profile }
-
-func validatePOSIXElement(elem StoredName) error {
-	if len(elem) == 0 {
-		return nil
-	}
-	for _, b := range elem {
-		if b == 0 || b == '/' {
-			return ErrUnrepresentable
-		}
-	}
-	return nil
-}
-
-func codecByName(name string) (FilenameCodec, error) {
-	switch strings.ToLower(name) {
-	case "identity":
-		return NewIdentityFilenameCodec(), nil
-	case "utf8":
-		return NewIdentityFilenameCodec(), nil
-	case "macroman-utf8":
-		return NewMacRomanUTF8FilenameCodec(), nil
-	case "macroman-native":
-		profile := FilenameProfile{
-			Wire:         []WireEncoding{WireMacRoman},
-			StoreCharset: "macroman",
-			Validate:     validatePOSIXElement,
-		}
-		return identityCodec{profile: profile}, nil
-	default:
-		return nil, errors.New("fs: unknown filename codec")
-	}
-}
 
 // NewNullForkEngine returns a metadata no-op fork implementation for placeholder shares.
 func NewNullForkEngine() ForkEngine { return nullForkEngine{} }
@@ -440,15 +331,6 @@ func (nullForkEngine) DeleteMetadata(path string) error {
 	return nil
 }
 
-func forkEngineByName(name string) (ForkEngine, error) {
-	switch strings.ToLower(name) {
-	case "appledouble", "ads", "xattr", "native", "auto":
-		return NewNullForkEngine(), nil
-	default:
-		return nil, errors.New("fs: unknown fork backend")
-	}
-}
-
 // NewPassthroughNameEngine returns a placeholder name engine that preserves names.
 func NewPassthroughNameEngine() NameEngine {
 	return passthroughNameEngine{}
@@ -468,10 +350,13 @@ func (passthroughNameEngine) ToLong(dir, derived string, kind NameKind) (string,
 	return derived, true
 }
 
-func nameEngineByName(name string) (NameEngine, error) {
+func nameEngineByName(name string, store metastore.Store) (NameEngine, error) {
 	switch strings.ToLower(name) {
 	case "passthrough", "":
 		return NewPassthroughNameEngine(), nil
+	case "short", "medium":
+		// One engine serves both kinds; the kind is passed per call. See name.go.
+		return NewDerivedNameEngine(store), nil
 	default:
 		return nil, errors.New("fs: unknown name engine")
 	}
