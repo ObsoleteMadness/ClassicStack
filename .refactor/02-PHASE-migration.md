@@ -86,6 +86,16 @@ Each subsystem follows the same **strangler recipe**:
   default, `macroman-native`, `utf8`) — lifting `service/afp/path_codec.go` out of the service
   and `pkg/encoding` into `core/encoding`; the per-share build that validates
   `fs_type`×`fork_backend`×`filename_codec`.
+- **Backend params + schema:** `ShareSpec` carries a typed `Path` plus an `Extra map[string]any`
+  param bag; each factory declares its config schema via `RegisterFSWithParams(fsType, Factory,
+  Param{Key,Required,Secret,Doc}…)`, readable via `ParamsFor(fsType)`. `BuildShare` validates the
+  required params are present (and rejects unknown keys) before constructing the backend — an `ftp`
+  share missing `url`, or an `hfs-image` missing `partition`, fails loudly on Apply. `Secret`
+  params are redacted in logs/diagnostics. Port `local_fs` from `pkg/vfs` to a real `core/fs`
+  factory that reads `spec.Path` (the first real backend in the new registry; `memfs` stays for tests).
+- **`ForkFS.Rename`/`Remove` carry the metadata container:** fold `MoveMetadata` into `Rename` and
+  `DeleteMetadata` into `Remove` (delete metadata first) on the assembled `ForkFS`, so callers above
+  the FS make one correct call. The low-level metadata ops stay on `ForkEngine` for the engines/tests.
 - **Source:** `service/afp/fs.go`, `pkg/vfs`, `pkg/cnid`, `service/afp/appledouble_backend.go`,
   `service/afp/desktopdb.go`, `pkg/shortname`, `service/afp/path_codec.go`, `pkg/encoding`.
 - **Interop (hard):** `fork/ads` = SFM stream names/encoding; `fork/xattr` = Netatalk EA
@@ -118,26 +128,75 @@ Each subsystem follows the same **strangler recipe**:
     given codec actually implements — an adapter that hasn't added UTF-16 yet simply omits it
     from `Wire()` and SMB NT requests fail loudly with `ErrWireUnsupported` rather than mangling.
 - **Done when:** an AFP/SMB volume reads/writes forks via the chosen engine; metadata round-trips
-  through `pkg/appledouble` codec regardless of container; sqlite is droppable (mem default works);
+  through `pkg/appledouble` codec regardless of container; a `ForkFS.Rename`/`Remove` carries the
+  metadata container without the caller pairing the calls; `BuildShare` rejects a share missing a
+  required backend param (e.g. `ftp` without `url`) with a clear error and `ParamsFor` returns the
+  declared schema; `local_fs` builds from `spec.Path`; sqlite is droppable (mem default works);
   MacRoman/reserved-char filename round-trip tests pass (port `path_codec_test.go`/`enumerate_encoding_test.go`).
 
 ## M7. File services (AFP, SMB) + NetBIOS
 - **Migrate:** AFP, SMB, NetBIOS as real components. They consume **only** the §9 fs/metastore
   interfaces (lose all storage-layout knowledge) and the relevant transport. NetBIOS transports
   (IPX/NetBEUI) become `Attachable` bindings (§11d), not hard deps.
-- **Source:** `service/afp/*`, `service/smb/*`, `service/netbios/*`, `service/asp`, `service/dsi`.
+- **Shared share seam (`core/share`):** introduce a protocol-neutral, thin `share.Share` descriptor
+  (`Name`/`FS() fs.ForkFS`/`Config`/`ReadOnly`/`Description`/`Permissions`-stub/`Codec`) — it
+  *exposes* the FS, it does not mirror catalog ops (callers do `share.FS().Stat(p)`). AFP `Volume`
+  and SMB `Share` each HOLD a `*share.Share` and add only protocol concerns: wire path parsing
+  (`ResolvePath`/`EncodeName` via the codec), and for AFP the `metastore.CNIDStore` + a CNID rebind
+  *after* the metadata-carrying `FS().Rename`/`Remove`. `core/share` imports `core/fs` only.
+- **Dynamic share management (`share.Manager`, §11):** both services implement
+  `Shares()`/`AddShare(ShareSpec)`/`UpdateShare(name,ShareSpec)`/`RemoveShare(name)`, guarding their
+  share/volume slice with the service mutex. `AddShare` validates the spec via `BuildShare` (bad
+  triple/missing param fails before binding) and AFP allocates the volume id internally.
+  `RemoveShare` unpublishes the share (no new `FPOpenVol`/TreeConnect) but does **not** tear down
+  in-flight sessions — they ride their copied `*Volume` handle until the client closes it.
+  `UpdateShare` builds the new stack first, then swaps under the lock, preserving the AFP id.
+- **Command core vs. session transport (§3-bis):** each file service is a **pure command core**
+  (`dispatch(sess, block) → (reply, result)`, imports no `net`) plus session transports that
+  wrap it. The **in-core** transports stay in `core/`:
+  - AFP/ASP (DDP/ATP) — `core/service/afp` (the M7 spine: `asp.go` over `dispatchAFP`). Done.
+  - SMB-over-NetBIOS (IPX/NetBEUI datagram/session) — `core/service/smb` over the mini-routers.
+- **TCP/stream transports are build-tagged ADAPTERS, not core (§1/§3-bis):** because `net` is
+  forbidden in core (a netless Pico must still serve DDP), the TCP front-ends move out of
+  `core/`:
+  - `adapter/dsi` (`//go:build dsi || all`) — re-home `service/dsi/dsi.go`'s listener/accept
+    loop + 16-byte DSI framing onto the AFP command core's `CommandHandler` seam (replacing the
+    old `afp.CommandHandler`). Registers via `init()` (§8).
+  - `adapter/smbtcp` (`//go:build smbtcp || all`) — NBT `:139` / direct-TCP `:445` framing over
+    `net.Conn` onto the SMB command core.
+  - Each owns its `net.Listener`; binding is `host:port` via `component.Bindable`, default all
+    interfaces, restart-grade reconfigure (§11b). An `//go:build esp32` sibling does WiFi/`netdev`
+    bring-up before `net.Listen`. **Do NOT create `core/service/dsi`** — that would pull `net`
+    into core.
+- **Source:** `service/afp/*`, `service/smb/*`, `service/netbios/*`, `service/asp` → `core/`;
+  `service/dsi` → `adapter/dsi`.
 - **Done when:** a real client (Classic Mac / DOS / early Windows, or recorded exchange)
-  connects and transfers files; same-FS AFP+SMB coordinate via the FS bus (§10d); bug-for-bug
-  capture-replay tests pass.
+  connects and transfers files over **both** AFP/ASP (DDP) **and** AFP/DSI (TCP); same-FS
+  AFP+SMB coordinate via the FS bus (§10d); AFP `Volume` and SMB `Share` both hold a
+  `core/share.Share` and implement `share.Manager` (add/update/remove a share on a running
+  server, with `RemoveShare` leaving in-flight sessions intact); bug-for-bug capture-replay
+  tests pass; a netless TinyGo build (no `dsi`/`smbtcp` tag) still compiles and serves DDP.
 
 ## M8. Logging + control front-ends
 - **Migrate:** route all services' logging through `core/log` scoped loggers (drop ad-hoc
   `netlog`); real `adapter/control/http` (port the web UI/SPA over the Plane), then
   `adapter/control/ubus` (OpenWRT, §7); config codecs/stores: `adapter/config/toml`,
   `adapter/config/uci`, `adapter/store/file`, `adapter/store/uci`.
-- **Source:** `pkg/logbuf`, `pkg/metrics`, `service/webui/*`, `pkg/control/*`, `config/*`.
+- **Share config + Manager wiring (the M7c follow-on):** define the AFP/SMB volume
+  `core/config` sections (name/path/fs_type/fork_backend/filename_codec/read_only/description
+  + an `options` sub-map folded into `ShareSpec.Extra`), add the single
+  `config → []fs.ShareSpec` mapper both services' registry factories use to build their
+  initial shares, and drive the supervisor's addressed `Reconfigure` for an AFP/SMB section
+  through `share.Manager.AddShare/UpdateShare/RemoveShare` so a web-UI/UCI share edit takes
+  effect on Apply without a service restart. A `secret` param (password) is masked in the
+  rendered form (from `fs.ParamsFor`) and redacted in diagnostics. This consumes the
+  `share.Manager` contract M7c already shipped.
+- **Source:** `pkg/logbuf`, `pkg/metrics`, `service/webui/*`, `pkg/control/*`, `config/*`,
+  `internal/app/smb_shares.go` (+ AFP equivalent), `compose/registry/reg_afp.go`/`reg_smb.go`.
 - **Done when:** web UI drives the new Plane; ubus parity test passes on an OpenWRT target;
-  UCI round-trips the model.
+  UCI round-trips the model; a share added/updated/removed in the UI (or via `Reconfigure`)
+  binds/unbinds on a running AFP & SMB server through `share.Manager`, with the
+  `ParamsFor`-generated per-`fs_type` form supplying backend params and masking secrets.
 
 ## M9. Platform integration
 - **Migrate:** Windows service / launchd / systemd / procd wrappers to drive the new compose

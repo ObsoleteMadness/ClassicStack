@@ -67,6 +67,14 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > `core/metastore` `putBE32`/`be32`). `encoding/binary` is now an explicit entry in the
 > archtest forbidden list. B2/B5/B8 do byte work — they must follow the same pattern.
 >
+> **core/ errata — `net` is forbidden:** TCP listeners are not available on every embedded
+> target (a netless RP2040/Pico still serves DDP over raw Ethernet), so `net` must not enter
+> `core/`. Add `net` to the archtest forbidden list **when M7a/M7b land** (not before — no core
+> package imports it today). TCP/stream services live in `adapter/dsi` + `adapter/smbtcp` behind
+> the `dsi`/`smbtcp` tags, importing `net` at the adapter altitude over a pure core command core
+> (§1/§3-bis). `net`/`net/http` are equally permitted in `adapter/control/http` (web UI) — the
+> rule is "net in adapters, never in core," not "net only for TCP services."
+>
 > **A4 errata:** on modern TinyGo (verified 0.41.1), the stdlib coverage is broad
 > enough that `net/http`/`reflect` imports do **not** fail the TinyGo build. The
 > forbidden-import / no-reflection allowlist is therefore enforced by the **archtest
@@ -87,8 +95,13 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 | M4 | Router + tables (event membership) + ZIP/RTMP + ipx/netbeui routers | M3 | claude | ✅ |
 | M5 | DDP services (MacIP/IPXGW/AEP/NBP) + stats publish | M4 | claude | ✅ |
 | M6 | Storage seam: unified FS, metastore, fork engines (SFM/Netatalk interop), name engines, **filename codecs** (MacRoman/reserved, from path_codec.go) | Phase 1 (B8/B9) | | ⬜ |
-| M7 | File services AFP/SMB/NetBIOS over fs/metastore + Attachable transports | M6,M2 | | ⬜ |
+| M6a | `core/fs` `ShareSpec.Path`+`Extra` param bag + per-fs_type `Param` schema (`RegisterFSWithParams`/`ParamsFor`, `BuildShare` required-param validation); real `local_fs` factory from `spec.Path`; metadata-carrying `ForkFS.Rename`/`Remove` (§9/§9d) | M6 | | ⬜ |
+| M7 | File services AFP/SMB/NetBIOS over fs/metastore + Attachable transports (pure command cores; in-core ASP/NetBIOS transports) | M6,M2 | | ⬜ |
+| M7a | `adapter/dsi` (AFP-over-TCP `:548`): re-home `service/dsi` onto AFP command core's CommandHandler; `//go:build dsi`; net only here (§1/§3-bis) | M7 | | ⬜ |
+| M7b | `adapter/smbtcp` (SMB-over-TCP `:139`/`:445`) onto SMB command core; `//go:build smbtcp`; net only in adapter | M7 | | ⬜ |
+| M7c | `core/share`: thin Share descriptor (Name/FS/Config/ReadOnly/Description/Permissions-stub) + `Manager` CRUD; AFP `Volume` & SMB `Share` hold the shared Share; both services implement `share.Manager` (add/update/remove; RemoveShare keeps in-flight sessions) — contract + tests, supervisor wiring is M8a (§9d/§11) | M6a,M7 | | ⬜ |
 | M8 | Logging cutover + control front-ends (http, ubus) + config codecs (toml/uci) | M5,M7 | | ⬜ |
+| M8a | Share config + Manager wiring: AFP/SMB volume `core/config` sections + `config → []fs.ShareSpec` mapper (options→Extra) in the registry factories; supervisor `Reconfigure` for an AFP/SMB section drives `share.Manager` Add/Update/Remove; `ParamsFor`-generated per-fs_type form masks `secret` params (§9d/§11) | M7c,M8 | | ⬜ |
 | M9 | Platform integration (Windows svc / launchd / systemd / procd) | M8 | | ⬜ |
 | M10 | cmd cutover + delete `internal/app`/`*_disabled.go`; docs | M1–M9 | | ⬜ |
 | T1 | Client tools `cmd/csecho`, `cmd/csnetsend` (protocol-reuse proof) | M2 | | ⬜ |

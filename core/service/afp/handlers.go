@@ -161,10 +161,12 @@ func (s *Service) afpLogin(a *afpSession, args []byte) ([]byte, int32) {
 //
 // Reply: uint32 ServerTime, uint8 volCount, {uint8 flags, pstring name} × count.
 func (s *Service) afpGetSrvrParms() []byte {
-	out := make([]byte, 0, 5+16*len(s.volumes))
+	// Snapshot under the lock: the share.Manager can mutate s.volumes at runtime.
+	vols := s.Volumes()
+	out := make([]byte, 0, 5+16*len(vols))
 	out = putBE32(out, macTime(time.Now()))
-	out = append(out, byte(len(s.volumes)))
-	for _, v := range s.volumes {
+	out = append(out, byte(len(vols)))
+	for _, v := range vols {
 		out = append(out, 0) // flags: no password, no config info
 		out = putPString(out, []byte(v.Name()))
 	}
@@ -222,7 +224,7 @@ func (s *Service) afpOpenVol(a *afpSession, block []byte) ([]byte, int32) {
 // total bytes come from the share's DiskUsage (0/0 when the backend can't report).
 func packVolParams(out []byte, vol *Volume, bitmap uint16) []byte {
 	var total, free uint64
-	if t, f, err := vol.fsys.DiskUsage(""); err == nil {
+	if t, f, err := vol.FS().DiskUsage(""); err == nil {
 		total, free = t, f
 	}
 	if bitmap&volBitmapAttributes != 0 {

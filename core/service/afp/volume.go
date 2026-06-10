@@ -6,23 +6,23 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	"github.com/ObsoleteMadness/ClassicStack/core/metastore"
+	"github.com/ObsoleteMadness/ClassicStack/core/share"
 )
 
-// Volume is one AFP share re-expressed over the §9 storage seam. It binds a
-// fs.ForkFS (the FileSystem + ForkEngine the share was built with), the share's
-// FilenameCodec, and a metastore.CNIDStore — and nothing else. The volume holds
-// NO storage-layout knowledge: it never imports path/filepath, never branches on
-// runtime.GOOS, and never knows whether forks live in AppleDouble sidecars, NTFS
-// streams, or Netatalk EAs. Every catalog operation flows through the seam.
+// Volume is one AFP share: the AFP-facing id over a shared share.Share (the bound
+// fs.ForkFS + the config that built it) plus a metastore.CNIDStore for catalog
+// node ids. It holds NO storage-layout knowledge: it never imports path/filepath,
+// never branches on runtime.GOOS, and never knows whether forks live in
+// AppleDouble sidecars, NTFS streams, or Netatalk EAs — it reaches the filesystem
+// only through v.FS(). Its only additions over the shared share are the AFP id,
+// the CNID store, and the AFP wire-path codec threading.
 //
 // Store paths are always '/'-separated regardless of host (the FileSystem and
 // CNIDStore both use this convention); the codec's ReservedSet — not the volume —
 // decides which characters a given backend can hold.
 type Volume struct {
 	id    uint16
-	name  string
-	fsys  fs.ForkFS
-	codec fs.FilenameCodec
+	sh    *share.Share
 	cnids *metastore.CNIDStore
 }
 
@@ -36,15 +36,15 @@ type VolumeSpec struct {
 }
 
 // NewVolume builds one Volume from a spec by assembling the share stack through
-// fs.BuildShare (which validates the fs_type×fork_backend×filename_codec triple),
-// then binding a CNIDStore over the same metastore the share uses. The returned
-// volume consumes only seam interfaces from then on.
+// share.Build (which validates the fs_type×fork_backend×filename_codec triple and
+// the backend's required params), then binding a CNIDStore over the same metastore
+// kind the share uses.
 func NewVolume(spec VolumeSpec) (*Volume, error) {
-	share, err := fs.BuildShare(spec.Share, nil)
+	spec.Share.Name = spec.Name
+	sh, err := share.Build(spec.Share, nil)
 	if err != nil {
 		return nil, err
 	}
-	codec := codecOf(share)
 
 	// CNID tracking rides the same metastore kind the share declares, so a
 	// mem-snapshotted volume and a sqlite volume preserve CNIDs identically
@@ -57,31 +57,23 @@ func NewVolume(spec VolumeSpec) (*Volume, error) {
 	// The root directory always exists and owns the well-known root CNID.
 	cnids.EnsureReserved("", cnids.RootID())
 
-	return &Volume{
-		id:    spec.ID,
-		name:  spec.Name,
-		fsys:  share,
-		codec: codec,
-		cnids: cnids,
-	}, nil
+	return &Volume{id: spec.ID, sh: sh, cnids: cnids}, nil
 }
 
 // ID returns the AFP volume id.
 func (v *Volume) ID() uint16 { return v.id }
 
 // Name returns the volume's display name.
-func (v *Volume) Name() string { return v.name }
+func (v *Volume) Name() string { return v.sh.Name() }
 
-// codecOf reaches the FilenameCodec a built share carries, falling back to the
-// MacRoman↔UTF-8 default if the share doesn't expose one (it always does today).
-func codecOf(share fs.ForkFS) fs.FilenameCodec {
-	if c, ok := share.(fs.Coded); ok {
-		if codec := c.Codec(); codec != nil {
-			return codec
-		}
-	}
-	return fs.NewMacRomanUTF8FilenameCodec()
-}
+// FS returns the bound filesystem. AFP dispatch reaches catalog/fork operations
+// through it (v.FS().Stat(p), v.FS().OpenFork(p, fork, flag), v.FS().ReadDir(p),
+// v.FS().DiskUsage(p)); the FS carries fork metadata on Rename/Remove.
+func (v *Volume) FS() fs.ForkFS { return v.sh.FS() }
+
+// codec is the share's FilenameCodec, threaded per request with the AFP wire
+// charset (selected by the path-type byte).
+func (v *Volume) codec() fs.FilenameCodec { return v.sh.Codec() }
 
 // metastoreKind returns the metastore kind a share's CNID store should use,
 // defaulting to "mem" so the CNID registry works with no SQLite linked.
@@ -92,7 +84,7 @@ func metastoreKind(spec fs.ShareSpec) string {
 	return "mem"
 }
 
-// --- catalog operations, all over the seam ---
+// --- AFP-specific path/CNID operations; catalog ops are FS ops via v.FS() ---
 
 // ResolvePath walks an AFP pathname relative to parent and returns the store path
 // of the target. The pathname is null-separated CNode names (a leading null is
@@ -118,7 +110,7 @@ func (v *Volume) ResolvePath(parent, pathname string, pathType uint8) (string, e
 			cur = ascend(cur)
 			continue
 		}
-		stored, err := v.codec.Decode([]byte(el), wire)
+		stored, err := v.codec().Decode([]byte(el), wire)
 		if err != nil {
 			return "", err
 		}
@@ -138,7 +130,7 @@ func (v *Volume) ResolvePath(parent, pathname string, pathType uint8) (string, e
 // client's charset yields ErrUnrepresentable so the service can substitute or
 // fail loudly rather than emit garbage.
 func (v *Volume) EncodeName(stored string, pathType uint8) ([]byte, error) {
-	return v.codec.Encode(fs.StoredName(stored), wireFor(pathType))
+	return v.codec().Encode(fs.StoredName(stored), wireFor(pathType))
 }
 
 // CNID returns the catalog node id for a store path, allocating one on first
@@ -152,63 +144,40 @@ func (v *Volume) PathForCNID(cnid uint32) (string, bool) { return v.cnids.Path(c
 // Enumerate lists the children of a directory as store-native dir entries.
 // Catalog packing (encoding names back to the wire charset, attaching CNIDs and
 // fork lengths) is the caller's concern — done through EncodeName, CNID, and the
-// fork engine — so the volume stays free of protocol-packing knowledge.
+// fork engine — so the volume stays free of protocol-packing knowledge. It is a
+// thin pass to v.FS().ReadDir; the dispatch may equally call v.FS() directly.
 func (v *Volume) Enumerate(path string) ([]stdfs.DirEntry, error) {
-	return v.fsys.ReadDir(path)
+	return v.FS().ReadDir(path)
 }
 
-// Stat returns store-native metadata for a path.
-func (v *Volume) Stat(path string) (stdfs.FileInfo, error) { return v.fsys.Stat(path) }
-
-// OpenFork opens the data or resource fork of a file through the share's fork
-// engine — whichever container (AppleDouble, ads, xattr) the share was built
-// with. The volume neither knows nor cares which.
-func (v *Volume) OpenFork(path string, fork fs.ForkType, flag int) (fs.File, error) {
-	return v.fsys.OpenFork(path, fork, flag)
-}
+// Stat returns store-native metadata for a path (thin pass to v.FS().Stat).
+func (v *Volume) Stat(path string) (stdfs.FileInfo, error) { return v.FS().Stat(path) }
 
 // ForkLen reports a fork's length through the fork engine.
 func (v *Volume) ForkLen(path string, fork fs.ForkType) (int64, error) {
-	return v.fsys.ForkLen(path, fork)
+	return v.FS().ForkLen(path, fork)
 }
 
-// FinderInfo reads the 32-byte FinderInfo for a path through the fork engine.
-func (v *Volume) FinderInfo(path string) (info [32]byte, ok bool, err error) {
-	return v.fsys.ReadFinderInfo(path)
-}
-
-// SetFinderInfo writes the 32-byte FinderInfo through the fork engine.
-func (v *Volume) SetFinderInfo(path string, info [32]byte) error {
-	return v.fsys.WriteFinderInfo(path, info)
-}
-
-// Rename moves a path, carrying its metadata sidecar/stream and rebinding the
-// CNID subtree so node ids survive the move.
-func (v *Volume) Rename(old, new string) error {
-	if err := v.fsys.Rename(old, new); err != nil {
-		return err
-	}
-	if err := v.fsys.MoveMetadata(old, new); err != nil {
+// renamePath moves a path inside the volume and rebinds the CNID subtree so node
+// ids survive the move. The FS carries the metadata container with the data fork
+// (core/fs §9), so the only step AFP adds is the CNID rebind.
+func (v *Volume) renamePath(old, new string) error {
+	if err := v.FS().Rename(old, new); err != nil {
 		return err
 	}
 	v.cnids.Rebind(old, new)
 	return nil
 }
 
-// Remove deletes a path, its metadata, and its CNID subtree.
-func (v *Volume) Remove(path string) error {
-	if err := v.fsys.DeleteMetadata(path); err != nil {
-		return err
-	}
-	if err := v.fsys.Remove(path); err != nil {
+// removePath deletes a path inside the volume (data + metadata, via the FS) and
+// its CNID subtree.
+func (v *Volume) removePath(path string) error {
+	if err := v.FS().Remove(path); err != nil {
 		return err
 	}
 	v.cnids.Remove(path)
 	return nil
 }
-
-// Capabilities reports the optional behaviours the share's FileSystem supports.
-func (v *Volume) Capabilities() fs.Capabilities { return v.fsys.Capabilities() }
 
 // --- store-path helpers (no path/filepath: store paths are always '/'-joined) ---
 

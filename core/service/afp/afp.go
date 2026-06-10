@@ -21,15 +21,22 @@ package afp
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sync"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
+	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/atp"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/ddp"
 	"github.com/ObsoleteMadness/ClassicStack/core/router"
+	"github.com/ObsoleteMadness/ClassicStack/core/share"
 )
+
+// errVolumeIDsExhausted is returned by AddShare when the 16-bit AFP volume id
+// space has no free id left.
+var errVolumeIDsExhausted = errors.New("afp: volume id space exhausted")
 
 const (
 	// Name is the component name for the AFP service.
@@ -115,11 +122,19 @@ func (s *Service) Socket() uint8 {
 	return s.socket
 }
 
-// Volumes returns the bound volumes (diagnostics / catalog dispatch).
-func (s *Service) Volumes() []*Volume { return s.volumes }
+// Volumes returns a snapshot of the bound volumes (diagnostics / catalog
+// dispatch). The slice is copied under the lock because the share.Manager mutates
+// it on a running server.
+func (s *Service) Volumes() []*Volume {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]*Volume(nil), s.volumes...)
+}
 
 // VolumeByID returns the volume with the given AFP id, if bound.
 func (s *Service) VolumeByID(id uint16) (*Volume, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, v := range s.volumes {
 		if v.ID() == id {
 			return v, true
@@ -130,12 +145,99 @@ func (s *Service) VolumeByID(id uint16) (*Volume, bool) {
 
 // volumeByName returns the volume with the given display name, or nil.
 func (s *Service) volumeByName(name string) *Volume {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, v := range s.volumes {
 		if v.Name() == name {
 			return v
 		}
 	}
 	return nil
+}
+
+// --- share.Manager: dynamic add/update/remove on a running server ---
+
+// Shares lists the bound volumes for diagnostics/management.
+func (s *Service) Shares() []share.Info {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]share.Info, 0, len(s.volumes))
+	for _, v := range s.volumes {
+		out = append(out, share.InfoOf(v.sh))
+	}
+	return out
+}
+
+// AddShare builds and binds a new volume, allocating its AFP id internally. The
+// spec is validated by NewVolume (bad triple / missing param fails before binding);
+// a duplicate name is rejected.
+func (s *Service) AddShare(spec fs.ShareSpec) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, v := range s.volumes {
+		if v.Name() == spec.Name {
+			return share.ErrDuplicateShare
+		}
+	}
+	id := s.allocVolIDLocked()
+	if id == 0 {
+		return errVolumeIDsExhausted
+	}
+	v, err := NewVolume(VolumeSpec{ID: id, Name: spec.Name, Share: spec})
+	if err != nil {
+		return err
+	}
+	s.volumes = append(s.volumes, v)
+	return nil
+}
+
+// UpdateShare rebuilds a volume's stack (validating first, so a bad spec disrupts
+// nothing) and swaps it in, preserving the AFP id. Sessions holding the old volume
+// pointer ride it out until they close it.
+func (s *Service) UpdateShare(name string, spec fs.ShareSpec) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, v := range s.volumes {
+		if v.Name() == name {
+			rebuilt, err := NewVolume(VolumeSpec{ID: v.ID(), Name: spec.Name, Share: spec})
+			if err != nil {
+				return err
+			}
+			s.volumes[i] = rebuilt
+			return nil
+		}
+	}
+	return share.ErrNoSuchShare
+}
+
+// RemoveShare unpublishes a volume: a new FPOpenVol can no longer bind it, but a
+// session that already opened it keeps its copied *Volume handle until it closes
+// the volume (the FS/metastore are reclaimed when the last reference drops).
+func (s *Service) RemoveShare(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, v := range s.volumes {
+		if v.Name() == name {
+			s.volumes = append(s.volumes[:i], s.volumes[i+1:]...)
+			return nil
+		}
+	}
+	return share.ErrNoSuchShare
+}
+
+// allocVolIDLocked returns the lowest unused AFP volume id ≥ 1, or 0 if the
+// 16-bit id space is exhausted. Caller holds s.mu.
+func (s *Service) allocVolIDLocked() uint16 {
+	used := make(map[uint16]bool, len(s.volumes))
+	for _, v := range s.volumes {
+		used[v.ID()] = true
+	}
+	for id := uint16(1); id != 0; id++ {
+		if !used[id] {
+			return id
+		}
+	}
+	return 0
 }
 
 // serverInfo returns the advertised identity with defaults filled in.
@@ -220,4 +322,5 @@ func (s *Service) logf(msg string) {
 var (
 	_ component.Component = (*Service)(nil)
 	_ router.Service      = (*Service)(nil)
+	_ share.Manager       = (*Service)(nil)
 )

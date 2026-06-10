@@ -109,11 +109,32 @@ Dependencies point inward only. Nothing in an inner ring may import an outer rin
 ```
 
 **Core rule (enforceable):** packages under `core/` (or equivalent) may import only the
-standard library and each other. No `pcap`, no `koanf`, no `net/http`, no `gopacket`.
-A CI check greps core import graphs for forbidden packages (cheap, catches regressions).
+standard library and each other. No `pcap`, no `koanf`, no `net/http`, no `gopacket`, **and
+no `net`** (see the note below). A CI check greps core import graphs for forbidden packages
+(cheap, catches regressions).
+
+**Why `net` is forbidden in core (the TCP-services boundary).** `net` is *not* available on
+every embedded target: an ESP32-C3/S3 has WiFi + the `tinygo-org/net`+`netdev` stack and can
+run a TCP listener, but an RP2040 / Raspberry Pi Pico has **no net stack at all** — yet it can
+still drive a raw-Ethernet `FrameLink` and therefore speak DDP. If `net` types lived in core,
+core would stop compiling for the Pico-class target and break the embedded pillar. So TCP is a
+**capability some builds have and some don't** — exactly what the §8 build-tagged registry
+exists for. Stream/TCP services (AFP-over-DSI, SMB-over-TCP, a future HTTP proxy) are therefore
+**opt-in adapters** (`adapter/dsi` behind a `dsi` tag, `adapter/smbtcp` behind `smbtcp`) that
+import `net` at the *adapter* altitude, over a **pure command core that imports no `net`**
+(§3). Absent the tag the adapter is not compiled, the component is not registered, and the
+AppleTalk/DDP path is unaffected.
+
+`net` is not unique to TCP services — **any adapter may import it**: the web-UI front-end
+(`adapter/control/http`, §7) uses `net`/`net/http`, a future `net`-backed link adapter would
+too. The rule is precisely *"`net` lives in adapters, never in core,"* so a build that links
+none of those adapters (a netless embedded DDP-only build) carries no `net` at all, while a
+desktop build that wants the web UI and DSI links `net` through those adapters without core
+ever depending on it.
 
 This is what makes TinyGo viable: a TinyGo build links the core + only the adapters that
-compile under TinyGo (e.g. an in-memory or fd-based link, no libpcap).
+compile under TinyGo (e.g. an in-memory or fd-based link, no libpcap, and — on a netless
+target — no DSI/SMB-TCP).
 
 ### Two further core-wide rules (embedded discipline)
 
@@ -271,6 +292,56 @@ not need to know whether a component is a port, a service, or a bridged transpor
 We do **not** force DDP semantics onto IPX, nor frames onto AFP. The unification is at
 **lifecycle / config / stats / capability**, where the inconsistency actually hurts, not
 at the data path, where forcing uniformity creates awkward fits.
+
+There is a **third data-path shape** the datagram model doesn't cover: **stream/TCP services**
+(AFP-over-DSI on `:548`, SMB-over-TCP on `:139`/`:445`). These don't read datagrams from the
+router — they *listen* on a TCP port, *accept* connections, and serve a framed byte stream per
+connection. They are not `RoutedPort`, have **no `Socket()`, and are never router-`Attach`ed**;
+they are `Component` + `Bindable` (the bind address, §3-bis). Crucially, the listener and all
+`net` use live in an **adapter**, never in core (the §1 `net`-forbidden rule).
+
+### 3-bis. Command core vs. session transport (where TCP services sit)
+
+A file/print service is split into a **pure command core** and one-or-more **session
+transports** that wrap it:
+
+```
+ core/  (pure, no net — compiles on a netless Pico)   adapter/  (//go:build dsi)
+ ┌────────────────────────────────┐                   ┌─────────────────────────────────┐
+ │ afp command core               │◀── consumes ──────│ DSI server: net.Listener, accept │
+ │   dispatch(sess, block)        │   a small         │ loop, 16-byte DSI framing over   │
+ │     → (reply, result)          │   CommandHandler  │ net.Conn → core's CommandHandler │
+ │ in-core ASP transport (DDP/ATP)│   the core exposes│ init() registers it (§8 registry)│
+ └────────────────────────────────┘                   └─────────────────────────────────┘
+```
+
+- The **command core** (`dispatch(sess, block) → (reply, result)`) is transport-free and lives
+  in `core/service/afp` (and `core/service/smb`). It imports no `net`. *This already exists for
+  AFP*: the M7 spine's `dispatchAFP` is exactly this, with `asp.go` as one transport (DDP/ATP,
+  in core).
+- **Session transports** wrap the core for a specific wire:
+  - **ASP** (in core) — DDP/ATP datagram transport; needs no `net`, so it stays in `core/`.
+  - **DSI** (`adapter/dsi`, `//go:build dsi || all`) — owns the `net.Listener`, accept loop,
+    per-conn goroutines, and 16-byte DSI framing; maps DSI
+    `GetStatus/OpenSession/Command/Write/Tickle/CloseSession` onto the core `CommandHandler`.
+  - **SMB-over-TCP** (`adapter/smbtcp`, `//go:build smbtcp || all`) — NBT/`:139` or
+    direct-TCP/`:445` framing over `net.Conn` onto the SMB command core.
+
+The core exposes a small `CommandHandler`-style seam (mirroring today's
+`afp.CommandHandler.HandleCommand(block) → (reply, errCode)`) that the transport adapters
+consume, so the dependency points **adapter → core**, never the reverse. The decoupling needs
+**no new core interface and no `net` in core** — the §8 registry is the seam: the adapter
+`init()` registers the component; build without the tag → no adapter → core untouched.
+
+**Same code, three deployments** (the portability payoff):
+- *Netless embedded (Pico-class):* no `dsi`/`smbtcp` tag, no `net`; raw-Ethernet `FrameLink` →
+  DDP still serves AppleTalk.
+- *WiFi embedded (ESP32-C3/S3):* build with `dsi`/`smbtcp`; the adapter (or an `//go:build esp32`
+  sibling file in it) brings up WiFi/`netdev` (`espradio` + `net.UseNetdev(…)`) then `net.Listen`s
+  — the same `net.Listener` interface as desktop.
+- *Desktop/server:* the tag + stdlib `net.Listen`.
+The AFP/SMB command-core source is **identical** across all three; only which adapters are
+linked changes.
 
 ### Router membership becomes event-driven (user point on dynamism)
 
@@ -723,6 +794,16 @@ type ForkFS interface {
 }
 ```
 
+**`ForkFS.Rename`/`Remove` carry the metadata container.** The low-level
+`MoveMetadata`/`DeleteMetadata` stay on `ForkEngine` (the engines and their tests use
+them directly), but the assembled `ForkFS` folds them into its `Rename`/`Remove` so a
+single FS call moves/deletes the data fork *and* its sidecar/ADS/xattr together
+(`Remove` deletes metadata first, then the data). Callers above the FS — AFP, SMB —
+therefore never pair the two by hand; a protocol that needs an extra step on top (AFP's
+CNID rebind) layers it after the one FS call. This removes the identical
+`fsys.Rename`+`MoveMetadata` / `DeleteMetadata`+`fsys.Remove` pairing both file services
+used to duplicate.
+
 **The fork engine is a per-share config choice, not a backend-internal decision.** A share
 already declares its `fs_type` (§9c); it declares its **`fork_backend`** the same way, and
 the share-build wiring composes the chosen `ForkEngine` onto the `FileSystem` to produce a
@@ -809,10 +890,23 @@ backend at runtime; all are config the operator (and the UI) can see and pin:
   (host fs), `macroman-native` (HFS image), `utf8` (SMB-native), defaulting per `fs_type`.
 - **name engine** — short/medium derivation (§10a), defaulting per `fs_type`, pinnable.
 - **metastore** — CNID/shortname/desktop backing (§9a), defaulting to `mem`-snapshot.
+- **backend params** — the connection/location config a given `fs_type` needs. The near-
+  universal one is a typed **`Path`** on `ShareSpec` (host root / image file / archive);
+  everything else rides an **`Extra map[string]any`** carrier (never reflection-marshalled in
+  core): `ftp`/`webdav` need `url` + `username` + `password`; `hfs-image` needs `Path` +
+  `partition`; `s3` needs `bucket`/`region`/credentials; `local_fs` needs only `Path`;
+  `memfs`/`macgarden` need nothing. Each factory **declares a param schema** at registration —
+  `Param{Key, Required, Secret, Doc}` via `RegisterFSWithParams`, readable back via
+  `ParamsFor(fsType)` — so `BuildShare` validates required params are present (and rejects
+  unknown keys) *before* constructing the backend, and the UI generates a per-share form
+  (Path field + the backend's extras) from the schema. `Secret` params (passwords) are
+  redacted in logs/diagnostics and masked in the UI. The protocol services and `core/share`
+  never see these keys — backend config stays behind `core/fs`.
 
 The share-build **validates the combination** (e.g. `hfs-image` ⇒ `native` forks; read-only
-`zipfs` ⇒ `appledouble` only) and rejects incompatible pairings at config time, so a bad
-combo fails loudly on Apply rather than silently misbehaving at runtime. Because the whole
+`zipfs` ⇒ `appledouble` only) and **validates each backend's required params** (e.g. an `ftp`
+share missing `url`), rejecting incompatible or under-specified shares at config time, so a
+bad combo fails loudly on Apply rather than silently misbehaving at runtime. Because the whole
 contract is per-share config, a volume's on-disk behaviour is portable and reproducible
 across hosts (charter: adaptable + compatibility).
 
@@ -1191,9 +1285,13 @@ Component  (Name/Start/Stop)                     ← the universal lifecycle
   │    Enableable, Bindable, Statful, Configurable, Bridged, Metered, Attachable
   └─ implemented by: every port, router, service, transport (real + placeholder)
 
-A port      = Component + router.RoutedPort      (lifecycle + DDP data half)
-A service   = Component + (consumes DatagramLink and/or fs.ForkFS + metastore.Store)
-A transport = Component + component.Attachable    (soft-bound into NetBIOS, §11d)
+A port        = Component + router.RoutedPort      (lifecycle + DDP data half)
+A service      = Component + (consumes DatagramLink and/or fs.ForkFS + metastore.Store)
+A file service = the above + share.Manager  (AFP/SMB: own share.Share descriptors; add/remove/update §11)
+A transport    = Component + component.Attachable    (soft-bound into NetBIOS, §11d)
+A TCP service  = Component + Bindable (host:port); ADAPTER RING (§3-bis) — owns a net.Listener,
+                 wraps a pure core CommandHandler; build-tagged (dsi/smbtcp); NOT a RoutedPort,
+                 no Socket(), never router-Attach'd. net lives here, never in core.
 ```
 
 ### Link altitudes (`core/link`) — composition, not parallel hierarchies
@@ -1243,12 +1341,28 @@ consumed by: components (their Section at build/ApplyConfig); Plane (Config/Save
 ### Storage seam (`core/fs` + `core/metastore`) — per-share assembly (§9d)
 ```
 ForkFS = FileSystem + ForkEngine            ← what a file service actually holds
-FileSystem            ← RegisterFS(fsType, Factory): local/macgarden/hfs-image/fat-image/ftp/zip/s3/webdav
+                                              (Rename/Remove carry the metadata container; §9)
+FileSystem            ← RegisterFSWithParams(fsType, Factory, Param…): local/macgarden/hfs-image/fat-image/ftp/zip/s3/webdav
+Param{Key,Required,Secret,Doc}  ← per-fs_type config schema; ParamsFor(fsType) renders the UI form;
+                                  BuildShare validates required params (Path + Extra) before constructing
 ForkEngine            ← appledouble / ads(SFM) / xattr(Netatalk) / native(HFS)
 NameEngine            ← short(win/derive) / medium(netatalk)
 FilenameCodec         ← macroman-utf8 / macroman-native / utf8   (per-call WireEncoding ↔ StoredName bytes; §10a-bis)
 metastore.Store       ← mem(default) / sqlite / ntfs-ads / xattr   (cnid/shortname/desktop)
-BuildShare(ShareSpec) validates fs_type × fork_backend × filename_codec × name × metastore
+ShareSpec{ …, Path, Extra }  ← Path = host/image/archive root; Extra = backend params (url/user/pass/partition…)
+BuildShare(ShareSpec) validates fs_type × fork_backend × filename_codec × name × metastore × required-params
+```
+
+### Share seam (`core/share`) — protocol-neutral share descriptor + CRUD (§9d/§11)
+```
+share.Share  ← a THIN descriptor, NOT a catalog façade: Name / FS() fs.ForkFS / Config (the ShareSpec
+               that built it) / ReadOnly / Description / Permissions(stub) / Codec().
+               Exposes the FS — callers do share.FS().Stat(p); it re-wraps no fs ops.
+share.Manager ← Shares() / AddShare(ShareSpec) / UpdateShare(name,ShareSpec) / RemoveShare(name)
+               the dynamic-reconfigure contract both AFP & SMB implement (§11);
+               RemoveShare unpublishes (no new open) but lets in-flight sessions ride their handle.
+imports: core/fs ONLY (no metastore/net/reflect/sqlite). AFP Volume / SMB Share HOLD a *share.Share
+         and add only protocol concerns (wire path parse; AFP CNID rebind after FS Rename/Remove).
 ```
 
 ### Control (`core/control`) — one contract, many front-ends
@@ -1270,7 +1384,10 @@ stats collector   → telemetry "stats" subscriber → rates
 **Import-direction invariant (enforced by the A2 archtest):** `core/component` is imported by
 nearly everything and imports nothing but stdlib; `core/config` and `core/bus` are imported by
 `core/control` and components but never import them back; adapters import core, never vice
-versa; `compose` imports both. No core package imports pcap/gopacket/koanf/net-http/sqlite/reflect.
+versa; `compose` imports both. No core package imports
+pcap/gopacket/koanf/net-http/**net**/sqlite/reflect — `net`/`net/http` are permitted only in
+adapters (TCP services §3-bis: dsi/smbtcp; the web-UI front-end §7: control/http; any
+net-backed link), never in core.
 
 ---
 
@@ -1288,10 +1405,13 @@ core/
   port/       ethertalk ipx netbeui localtalk  (Component + frame codec; AARP/node-claim
               live in the framing adapter, so a kernel DatagramLink omits them)
   router/     appletalk router + tables + ZIP; ipx mini-router; netbeui
-  service/    afp asp dsi macip  (Component + protocol logic; consume DatagramLink; talk
-              ONLY to fs/metastore for storage)
+  service/    afp(+asp transport) smb macip  (Component + protocol logic; consume DatagramLink;
+              talk ONLY to fs/share/metastore for storage. Each file service is a PURE command core
+              + a CommandHandler seam — NO net here. DSI/SMB-TCP transports are adapters, §3-bis)
   fs/         FileSystem + ForkFS/ForkEngine + NameEngine + FilenameCodec interfaces,
-              Factory registry (the one seam AFP+SMB consume) + FS-domain event bus
+              Factory registry + per-fs_type Param schema (the one seam AFP+SMB consume) + FS-domain event bus
+  share/      thin share descriptor (Name/FS/Config/ReadOnly/Description/Permissions) + Manager
+              CRUD contract (add/update/remove/list) both AFP & SMB implement; imports core/fs only
   encoding/   MacRoman↔UTF-8 tables etc. (reused by FilenameCodec adapters; pure, no reflection)
   metastore/  Store interface for cnid/shortname/desktop (mem snapshot default)
   config/     Model (no tags), SectionSchema registry, validation, EffectiveInterface
@@ -1302,6 +1422,11 @@ core/
 adapter/
   link/pcap   link/tap   link/ppp   link/slip       (build-tagged FrameLink backends)
   link/kerneldp  link/driversnet                     (DatagramLink: AF_APPLETALK, TinyGo/ESP-IDF)
+  dsi   smbtcp                                        (TCP stream transports, §3-bis; build-tagged
+                                                     dsi/smbtcp; own net.Listener + framing over a
+                                                     pure core CommandHandler. net lives in this
+                                                     adapter, not core; esp32 sibling does
+                                                     netdev/WiFi bring-up)
   capture/libpcap  capture/pcapfile                  (CaptureSink writers; pcapfile = pure-Go,
                                                      TinyGo-safe — wire capture even w/o libpcap, §6f)
   log/syslog  log/file  log/journald  log/semihosting  (log sinks; SSE sink = bus → UI)

@@ -201,7 +201,7 @@ func TestDispatch_LoginGetSrvrParmsOpenVolEnumerate(t *testing.T) {
 	vol := svc.Volumes()[0]
 	mustCreate(t, vol, "alpha.txt")
 	mustCreate(t, vol, "beta.txt")
-	if err := vol.fsys.CreateDir("subdir"); err != nil {
+	if err := vol.FS().CreateDir("subdir"); err != nil {
 		t.Fatalf("CreateDir: %v", err)
 	}
 
@@ -341,7 +341,7 @@ func be32(b []byte) uint32 {
 
 func mustCreate(t *testing.T, vol *Volume, path string) {
 	t.Helper()
-	f, err := vol.fsys.CreateFile(path)
+	f, err := vol.FS().CreateFile(path)
 	if err != nil {
 		t.Fatalf("CreateFile %q: %v", path, err)
 	}

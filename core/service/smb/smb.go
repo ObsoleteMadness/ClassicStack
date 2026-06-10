@@ -14,7 +14,9 @@ import (
 	"sync"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
+	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
+	"github.com/ObsoleteMadness/ClassicStack/core/share"
 )
 
 // Name is the component name for the SMB service.
@@ -56,17 +58,85 @@ func NewWithShares(logger log.Logger, specs ...ShareSpec) (*Service, error) {
 // Name returns the component name.
 func (s *Service) Name() string { return Name }
 
-// Shares returns the bound shares (diagnostics / tree-connect dispatch).
-func (s *Service) Shares() []*Share { return s.shares }
-
-// ShareByName returns the share with the given tree name, if bound.
+// ShareByName returns the share with the given tree name, if bound. Used by the
+// tree-connect dispatch; guarded because the Manager mutates the slice at runtime.
 func (s *Service) ShareByName(name string) (*Share, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.findShareLocked(name)
+}
+
+// findShareLocked returns the share of that name; caller holds s.mu.
+func (s *Service) findShareLocked(name string) (*Share, bool) {
 	for _, sh := range s.shares {
 		if sh.Name() == name {
 			return sh, true
 		}
 	}
 	return nil, false
+}
+
+// --- share.Manager: dynamic add/update/remove on a running server ---
+
+// Shares lists the bound shares for diagnostics/management.
+func (s *Service) Shares() []share.Info {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]share.Info, 0, len(s.shares))
+	for _, sh := range s.shares {
+		out = append(out, share.InfoOf(sh.sh))
+	}
+	return out
+}
+
+// AddShare builds and binds a new share. The spec is validated by share.Build
+// (bad triple / missing param fails before binding); a duplicate name is rejected.
+func (s *Service) AddShare(spec fs.ShareSpec) error {
+	built, err := share.Build(spec, nil)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.findShareLocked(spec.Name); ok {
+		return share.ErrDuplicateShare
+	}
+	s.shares = append(s.shares, newFromShare(built))
+	return nil
+}
+
+// UpdateShare rebuilds a share's stack (validating first, so a bad spec disrupts
+// nothing) and swaps it in. In-flight tree connects holding the old handle ride
+// it out until they disconnect.
+func (s *Service) UpdateShare(name string, spec fs.ShareSpec) error {
+	built, err := share.Build(spec, nil)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, sh := range s.shares {
+		if sh.Name() == name {
+			s.shares[i] = newFromShare(built)
+			return nil
+		}
+	}
+	return share.ErrNoSuchShare
+}
+
+// RemoveShare unpublishes a share: new tree connects can no longer bind it, but
+// in-flight sessions keep their copied handle until they disconnect (the FS is
+// reclaimed when the last reference drops).
+func (s *Service) RemoveShare(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, sh := range s.shares {
+		if sh.Name() == name {
+			s.shares = append(s.shares[:i], s.shares[i+1:]...)
+			return nil
+		}
+	}
+	return share.ErrNoSuchShare
 }
 
 // Start brings the service up. Idempotent (§3).
@@ -106,4 +176,5 @@ func (s *Service) logf(msg string) {
 // compile-time assertions.
 var (
 	_ component.Component = (*Service)(nil)
+	_ share.Manager       = (*Service)(nil)
 )

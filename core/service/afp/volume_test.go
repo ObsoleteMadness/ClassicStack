@@ -24,6 +24,40 @@ func newTestVolume(t *testing.T) *Volume {
 	return v
 }
 
+func TestVolume_RenamePath_CarriesMetadataAndRebindsCNID(t *testing.T) {
+	v := newTestVolume(t)
+
+	if _, err := v.FS().CreateFile("doc"); err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	if err := v.FS().WriteFinderInfo("doc", [32]byte{'F', 'I'}); err != nil {
+		t.Fatalf("WriteFinderInfo: %v", err)
+	}
+	cnid := v.CNID("doc")
+
+	if err := v.renamePath("doc", "moved"); err != nil {
+		t.Fatalf("renamePath: %v", err)
+	}
+	// The CNID followed the rename (same node id now maps to the new path).
+	if p, ok := v.PathForCNID(cnid); !ok || p != "moved" {
+		t.Fatalf("CNID after rename maps to %q (ok=%v), want moved", p, ok)
+	}
+	// FinderInfo followed via the metadata-carrying FS rename.
+	if info, ok, _ := v.FS().ReadFinderInfo("moved"); !ok || info[0] != 'F' {
+		t.Fatalf("FinderInfo did not follow rename: ok=%v", ok)
+	}
+
+	if err := v.removePath("moved"); err != nil {
+		t.Fatalf("removePath: %v", err)
+	}
+	if _, ok := v.PathForCNID(cnid); ok {
+		t.Fatal("CNID survived removePath")
+	}
+	if _, ok, _ := v.FS().ReadFinderInfo("moved"); ok {
+		t.Fatal("FinderInfo survived removePath")
+	}
+}
+
 func TestNewVolume_InvalidTripleFailsLoudly(t *testing.T) {
 	// hfs-image requires a macroman-native codec; pairing it with macroman-utf8
 	// must be rejected at build time, not mangled at runtime.

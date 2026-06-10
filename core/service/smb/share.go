@@ -1,27 +1,27 @@
 package smb
 
 import (
-	stdfs "io/fs"
 	"strings"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
+	"github.com/ObsoleteMadness/ClassicStack/core/share"
 )
 
-// Share is one SMB tree connect re-expressed over the §9 storage seam. Like the
-// AFP Volume, it binds a fs.ForkFS and the share's FilenameCodec and holds NO
-// storage-layout knowledge: it never imports path/filepath, never branches on
-// runtime.GOOS, and never knows which container (AppleDouble sidecar, NTFS ADS,
-// Netatalk EA) backs a resource fork. SMB wire paths are backslash-separated;
-// the share converts them to the seam's '/'-separated store paths and threads the
-// per-request wire charset (UTF-16 vs ANSI) into the codec.
+// Share is one SMB tree connect re-expressed over the §9 storage seam. It HOLDS a
+// shared share.Share (the bound fs.ForkFS + the config that built it) and adds
+// only the SMB-specific concern: converting backslash/UTF-16 wire paths to the
+// seam's '/'-separated store paths and threading the per-request wire charset
+// (UTF-16 vs ANSI) into the share's codec. It holds NO storage-layout knowledge —
+// it never imports path/filepath, never branches on runtime.GOOS, and reaches the
+// filesystem only through sh.FS().
 //
-// A same-FS AFP volume and SMB share built over one fs_type therefore see the
-// same forks and FinderInfo through the same ForkEngine — the basis for the
-// AFP+SMB coordination the M7 "Done when" calls for.
+// A same-fs_type AFP volume and SMB share see the same forks and FinderInfo
+// through the same ForkEngine — the basis for the AFP+SMB coordination M7 calls
+// for. Catalog operations (Stat/OpenFork/Rename/Remove…) are FS operations: the
+// dispatch calls sh.FS().X, and the FS carries fork metadata on Rename/Remove, so
+// SMB never pairs those calls itself.
 type Share struct {
-	name  string
-	fsys  fs.ForkFS
-	codec fs.FilenameCodec
+	sh *share.Share
 }
 
 // ShareSpec names an SMB share and the seam components to build it from.
@@ -30,30 +30,32 @@ type ShareSpec struct {
 	Share fs.ShareSpec
 }
 
-// NewShare builds one Share from a spec by assembling the share stack through
-// fs.BuildShare, which validates the fs_type×fork_backend×filename_codec triple.
+// NewShare builds one Share from a spec by assembling the share stack through the
+// shared share.Build, which validates the fs_type×fork_backend×filename_codec
+// triple and the backend's required params.
 func NewShare(spec ShareSpec) (*Share, error) {
-	built, err := fs.BuildShare(spec.Share, nil)
+	spec.Share.Name = spec.Name
+	built, err := share.Build(spec.Share, nil)
 	if err != nil {
 		return nil, err
 	}
-	return &Share{name: spec.Name, fsys: built, codec: codecOf(built)}, nil
+	return &Share{sh: built}, nil
 }
+
+// newFromShare wraps an already-built shared Share (used by the service Manager
+// when it has assembled the share itself).
+func newFromShare(s *share.Share) *Share { return &Share{sh: s} }
 
 // Name returns the share's tree name.
-func (sh *Share) Name() string { return sh.name }
+func (sh *Share) Name() string { return sh.sh.Name() }
 
-// codecOf reaches the FilenameCodec a built share carries, falling back to the
-// identity (POSIX-bytes) codec — which advertises every wire charset — if the
-// share doesn't expose one.
-func codecOf(built fs.ForkFS) fs.FilenameCodec {
-	if c, ok := built.(fs.Coded); ok {
-		if codec := c.Codec(); codec != nil {
-			return codec
-		}
-	}
-	return fs.NewIdentityFilenameCodec()
-}
+// FS returns the bound filesystem; the dispatch reaches files through it
+// (sh.FS().Stat(p), sh.FS().OpenFork(p, fork, flag), sh.FS().Rename/Remove which
+// carry fork metadata).
+func (sh *Share) FS() fs.ForkFS { return sh.sh.FS() }
+
+// codec is the share's FilenameCodec, threaded with the per-request wire charset.
+func (sh *Share) codec() fs.FilenameCodec { return sh.sh.Codec() }
 
 // ResolvePath converts an SMB wire path to a store path, decoding each element
 // from the request's wire charset — selected by the FLAGS2 Unicode bit via
@@ -72,7 +74,7 @@ func (sh *Share) ResolvePath(wirePath []byte, flags2 uint16) (string, error) {
 		if len(raw) == 0 {
 			continue
 		}
-		stored, err := sh.codec.Decode(raw, wire)
+		stored, err := sh.codec().Decode(raw, wire)
 		if err != nil {
 			return "", err
 		}
@@ -129,51 +131,11 @@ func splitUTF16Path(raw []byte) [][]byte {
 // EncodeName renders a store-native name back to the request's wire charset for
 // packing into a directory-listing or find reply.
 func (sh *Share) EncodeName(stored string, flags2 uint16) ([]byte, error) {
-	return sh.codec.Encode(fs.StoredName(stored), wireFor(flags2))
+	return sh.codec().Encode(fs.StoredName(stored), wireFor(flags2))
 }
 
-// --- catalog operations, all over the seam ---
-
-// List returns the children of a directory as store-native dir entries. Name
-// encoding back to the wire charset is the caller's concern (via EncodeName).
-func (sh *Share) List(path string) ([]stdfs.DirEntry, error) { return sh.fsys.ReadDir(path) }
-
-// Stat returns store-native metadata for a path.
-func (sh *Share) Stat(path string) (stdfs.FileInfo, error) { return sh.fsys.Stat(path) }
-
-// OpenData opens the data fork (the file itself) through the seam.
-func (sh *Share) OpenData(path string, flag int) (fs.File, error) {
-	return sh.fsys.OpenFork(path, fs.DataFork, flag)
-}
-
-// OpenResource opens the AFP_Resource stream / resource fork through the share's
-// fork engine — the same engine an AFP volume on this fs_type uses, so a fork
-// written by one protocol is visible to the other.
-func (sh *Share) OpenResource(path string, flag int) (fs.File, error) {
-	return sh.fsys.OpenFork(path, fs.ResourceFork, flag)
-}
-
-// FinderInfo reads the 32-byte FinderInfo (the AFP_AfpInfo payload on ads shares)
-// through the fork engine.
-func (sh *Share) FinderInfo(path string) (info [32]byte, ok bool, err error) {
-	return sh.fsys.ReadFinderInfo(path)
-}
-
-// Rename moves a path, carrying its metadata container.
-func (sh *Share) Rename(old, new string) error {
-	if err := sh.fsys.Rename(old, new); err != nil {
-		return err
-	}
-	return sh.fsys.MoveMetadata(old, new)
-}
-
-// Remove deletes a path and its metadata container.
-func (sh *Share) Remove(path string) error {
-	if err := sh.fsys.DeleteMetadata(path); err != nil {
-		return err
-	}
-	return sh.fsys.Remove(path)
-}
-
-// Capabilities reports the optional behaviours the share's FileSystem supports.
-func (sh *Share) Capabilities() fs.Capabilities { return sh.fsys.Capabilities() }
+// Catalog operations are FS operations: the dispatch reaches them through
+// sh.FS() — e.g. sh.FS().ReadDir(p), sh.FS().Stat(p),
+// sh.FS().OpenFork(p, fs.DataFork|fs.ResourceFork, flag),
+// sh.FS().ReadFinderInfo(p). The FS carries fork metadata on Rename/Remove
+// (core/fs §9), so SMB never pairs MoveMetadata/DeleteMetadata by hand.

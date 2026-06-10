@@ -146,34 +146,83 @@ type ShareSpec struct {
 	FilenameCodec string
 	NameEngine    string
 	Metastore     string
-	ReadOnly      bool
-	Extra         map[string]any
+	// Path is the near-universal backend location: the host directory for
+	// local_fs, the image file for hfs-image/fat-image, the archive for zipfs.
+	// Synthetic backends (memfs, macgarden) leave it empty.
+	Path     string
+	ReadOnly bool
+	// Extra carries backend-specific params a given fs_type documents and reads
+	// (e.g. ftp: "url"/"username"/"password"; hfs-image: "partition"). It is a
+	// plain carrier — never reflection-marshalled in core.
+	Extra map[string]any
 }
+
+// Param declares one config key a FileSystem factory consumes. The set for an
+// fs_type is registered alongside its Factory (RegisterFSWithParams) and read back
+// via ParamsFor, so BuildShare can validate required keys before constructing the
+// backend and a UI can render a per-share form. Secret keys (passwords) are masked
+// in the UI and redacted in logs/diagnostics.
+type Param struct {
+	Key      string
+	Required bool
+	Secret   bool
+	Doc      string
+}
+
+// PathKey is the reserved Param key naming the typed ShareSpec.Path field, so a
+// factory can mark its location param required (and the UI render it) without it
+// living in Extra.
+const PathKey = "path"
 
 type Factory func(ShareSpec, bus.Bus, metastore.Store) (FileSystem, error)
 
+type registeredFS struct {
+	factory Factory
+	params  []Param
+}
+
 var (
 	fsFactoryMu sync.RWMutex
-	fsFactories = map[string]Factory{}
+	fsFactories = map[string]registeredFS{}
 )
 
+// RegisterFS registers a FileSystem factory with no declared params (backends that
+// need no config, or whose validation is internal). Most real backends should use
+// RegisterFSWithParams so BuildShare can validate their required config.
 func RegisterFS(fsType string, f Factory) {
+	RegisterFSWithParams(fsType, f)
+}
+
+// RegisterFSWithParams registers a factory plus the config-param schema BuildShare
+// validates and ParamsFor exposes.
+func RegisterFSWithParams(fsType string, f Factory, params ...Param) {
 	fsFactoryMu.Lock()
 	defer fsFactoryMu.Unlock()
-	fsFactories[strings.ToLower(fsType)] = f
+	fsFactories[strings.ToLower(fsType)] = registeredFS{factory: f, params: params}
+}
+
+// ParamsFor returns the declared param schema for an fs_type (nil if the type is
+// unknown or declares none). The UI/config layer renders a per-share form from it.
+func ParamsFor(fsType string) []Param {
+	fsFactoryMu.RLock()
+	defer fsFactoryMu.RUnlock()
+	return fsFactories[strings.ToLower(fsType)].params
 }
 
 func lookupFactory(fsType string) (Factory, bool) {
 	fsFactoryMu.RLock()
 	defer fsFactoryMu.RUnlock()
-	f, ok := fsFactories[strings.ToLower(fsType)]
-	return f, ok
+	r, ok := fsFactories[strings.ToLower(fsType)]
+	return r.factory, ok
 }
 
 // BuildShare assembles one per-share stack and validates key compatibility pairs.
 func BuildShare(spec ShareSpec, b bus.Bus) (ForkFS, error) {
 	spec = withDefaults(spec)
 	if err := validateShareSpec(spec); err != nil {
+		return nil, err
+	}
+	if err := validateParams(spec); err != nil {
 		return nil, err
 	}
 
@@ -266,11 +315,64 @@ func validateShareSpec(spec ShareSpec) error {
 	return nil
 }
 
+// validateParams checks that every Required param the fs_type declares is present
+// (in the typed Path field for PathKey, or in Extra otherwise), so an
+// under-specified share — e.g. an ftp backend with no url — fails loudly on Apply
+// rather than at first request. Backends that declare no schema are unconstrained.
+func validateParams(spec ShareSpec) error {
+	for _, p := range ParamsFor(spec.FSType) {
+		if !p.Required {
+			continue
+		}
+		if p.Key == PathKey {
+			if strings.TrimSpace(spec.Path) == "" {
+				return errors.New("fs: " + spec.FSType + " share requires a path")
+			}
+			continue
+		}
+		if v, ok := spec.Extra[p.Key]; !ok || isEmptyParam(v) {
+			return errors.New("fs: " + spec.FSType + " share requires param " + p.Key)
+		}
+	}
+	return nil
+}
+
+// isEmptyParam reports whether a param value is effectively unset (nil, or a blank
+// string after trimming). Non-string params are taken as present once non-nil.
+func isEmptyParam(v any) bool {
+	if v == nil {
+		return true
+	}
+	if s, ok := v.(string); ok {
+		return strings.TrimSpace(s) == ""
+	}
+	return false
+}
+
 type shareFS struct {
 	FileSystem
 	ForkEngine
 	codec FilenameCodec
 	names NameEngine
+}
+
+// Rename moves a path and carries its metadata container in one call: the data
+// fork via the FileSystem, then the sidecar/ADS/xattr via the ForkEngine. Callers
+// above the FS therefore never pair Rename with MoveMetadata by hand (§9).
+func (s *shareFS) Rename(old, new string) error {
+	if err := s.FileSystem.Rename(old, new); err != nil {
+		return err
+	}
+	return s.ForkEngine.MoveMetadata(old, new)
+}
+
+// Remove deletes a path and its metadata container in one call, metadata first so
+// a failure leaves the data fork in place to retry against (§9).
+func (s *shareFS) Remove(path string) error {
+	if err := s.ForkEngine.DeleteMetadata(path); err != nil {
+		return err
+	}
+	return s.FileSystem.Remove(path)
 }
 
 // ShortName and MediumName derive a per-directory short/medium name for the
