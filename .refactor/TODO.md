@@ -94,12 +94,12 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 | M3 | Real ports (ethertalk/localtalk/ipx/netbeui) over real links | M1,M2 | claude | ✅ |
 | M4 | Router + tables (event membership) + ZIP/RTMP + ipx/netbeui routers | M3 | claude | ✅ |
 | M5 | DDP services (MacIP/IPXGW/AEP/NBP) + stats publish | M4 | claude | ✅ |
-| M6 | Storage seam: unified FS, metastore, fork engines (SFM/Netatalk interop), name engines, **filename codecs** (MacRoman/reserved, from path_codec.go) | Phase 1 (B8/B9) | | ⬜ |
-| M6a | `core/fs` `ShareSpec.Path`+`Extra` param bag + per-fs_type `Param` schema (`RegisterFSWithParams`/`ParamsFor`, `BuildShare` required-param validation); real `local_fs` factory from `spec.Path`; metadata-carrying `ForkFS.Rename`/`Remove` (§9/§9d) | M6 | | ⬜ |
-| M7 | File services AFP/SMB/NetBIOS over fs/metastore + Attachable transports (pure command cores; in-core ASP/NetBIOS transports) | M6,M2 | | ⬜ |
+| M6 | Storage seam: unified FS, metastore, fork engines (SFM/Netatalk interop), name engines, **filename codecs** (MacRoman/reserved, from path_codec.go) | Phase 1 (B8/B9) | claude | ✅ |
+| M6a | `core/fs` `ShareSpec.Path`+`Extra` param bag + per-fs_type `Param` schema (`RegisterFSWithParams`/`ParamsFor`, `BuildShare` required-param validation); real `local_fs` factory from `spec.Path`; metadata-carrying `ForkFS.Rename`/`Remove` (§9/§9d) | M6 | claude | ✅ |
+| M7 | File services AFP/SMB/NetBIOS over fs/metastore + Attachable transports (pure command cores; in-core ASP/NetBIOS transports) | M6,M2 | claude | 🟡 |
 | M7a | `adapter/dsi` (AFP-over-TCP `:548`): re-home `service/dsi` onto AFP command core's CommandHandler; `//go:build dsi`; net only here (§1/§3-bis) | M7 | | ⬜ |
 | M7b | `adapter/smbtcp` (SMB-over-TCP `:139`/`:445`) onto SMB command core; `//go:build smbtcp`; net only in adapter | M7 | | ⬜ |
-| M7c | `core/share`: thin Share descriptor (Name/FS/Config/ReadOnly/Description/Permissions-stub) + `Manager` CRUD; AFP `Volume` & SMB `Share` hold the shared Share; both services implement `share.Manager` (add/update/remove; RemoveShare keeps in-flight sessions) — contract + tests, supervisor wiring is M8a (§9d/§11) | M6a,M7 | | ⬜ |
+| M7c | `core/share`: thin Share descriptor (Name/FS/Config/ReadOnly/Description/Permissions-stub) + `Manager` CRUD; AFP `Volume` & SMB `Share` hold the shared Share; both services implement `share.Manager` (add/update/remove; RemoveShare keeps in-flight sessions) — contract + tests, supervisor wiring is M8a (§9d/§11) | M6a,M7 | claude | ✅ |
 | M8 | Logging cutover + control front-ends (http, ubus) + config codecs (toml/uci) | M5,M7 | | ⬜ |
 | M8a | Share config + Manager wiring: AFP/SMB volume `core/config` sections + `config → []fs.ShareSpec` mapper (options→Extra) in the registry factories; supervisor `Reconfigure` for an AFP/SMB section drives `share.Manager` Add/Update/Remove; `ParamsFor`-generated per-fs_type form masks `secret` params (§9d/§11) | M7c,M8 | | ⬜ |
 | M9 | Platform integration (Windows svc / launchd / systemd / procd) | M8 | | ⬜ |
@@ -267,6 +267,41 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 >   Ethernet + OS-NAT + DHCP-relay + proxy-ARP + ICMP-to-gateway + IP fragmentation), and the ASP
 >   session lease-pinning hooks, land with the adapter/cutover work, not in core. Legacy
 >   `service/{macip,ipxgw}` + `service/zip/name_information.go` stay until cutover proves parity.
+
+> **M6 / M6a notes (what landed / deferred):**
+> - **Storage seam (`core/fs`, commit `4301eee`):** the unified `FileSystem`/`File`/`ForkEngine`/
+>   `ForkFS`/`NameEngine`/`FilenameCodec` contract; `BuildShare` assembles the per-share stack and
+>   validates the `fs_type`×`fork_backend`×`filename_codec` triple; fork engines (`appledouble`,
+>   `ads`, `xattr`, `native`); `core/encoding` lifted from `pkg/encoding` (MacRoman↔UTF-8 +
+>   case tables added in M4); `core/metastore` CNID/shortname store (mem default, sqlite behind a
+>   tag). The metadata-carrying `ForkFS.Rename`/`Remove` (MoveMetadata/DeleteMetadata folded in) are
+>   on the assembled `shareFS` so callers make one correct call.
+> - **M6a param bag (commit `4301eee` + `local_fs` follow-on):** `ShareSpec.Path`+`Extra`;
+>   `RegisterFSWithParams`/`ParamsFor` per-fs_type `Param` schema; `BuildShare` validates required
+>   params (a share missing its declared `path`/`url` fails on Apply) and the codec/fork triple.
+>   The first **real** backend — `core/fs/local.go` `local_fs` — reads `spec.Path` as a host
+>   directory root, maps '/'-joined share-relative paths onto `os` with traversal protection
+>   (`ErrPathEscape`), and registers a required `path` Param. `memfs` stays for tests.
+> - **Deferred:** real `DiskUsage` (platform statfs/GetDiskFreeSpaceEx) on `local_fs` returns 0/0
+>   (unknown) for now — the OS adapter refines it later. Other backends (hfs-image, zipfs, ftp,
+>   macgarden) keep their declared schemas but real factories land as needed; only `memfs` + the new
+>   `local_fs` are wired today.
+
+> **M7 notes (in progress — slices landed):**
+> - **Slice 1 (`47da010`):** service shape — AFP `Volume`/SMB `Share`/NetBIOS over the fs/metastore
+>   seam (no storage-layout knowledge); per-request wire charset threading; real `ads` fork backend.
+> - **Slice 2 (`1a03dc4`):** real `xattr` fork backend (Netatalk EA layout, spec/16 §1c).
+> - **Slice 3 (`e1b0d97`):** AFP protocol-dispatch spine — ATP multi-packet responder, ASP session
+>   table (GetStatus/OpenSession/Tickle/Command), AFP command demux + starter set (GetSrvrInfo,
+>   Login guest/cleartext, GetSrvrParms, OpenVol/CloseVol, GetFileDirParms, Enumerate).
+> - **M7c (`2f26eb8`):** `core/share` thin Share descriptor + `Manager` CRUD; AFP `Volume` & SMB
+>   `Share` hold a `*share.Share`; both implement `share.Manager` (RemoveShare keeps in-flight
+>   sessions). Supervisor/config wiring is M8a.
+> - **Remaining M7:** fork I/O (FPRead/FPWrite/FPOpenFork), full file/dir bitmaps, desktop DB,
+>   two-phase ASPWrite; SMB/NetBIOS command engines onto the shares; same-FS AFP+SMB coordination
+>   via the FS bus (§10d); capture-replay vs `/captures/afp-*.pcap`; then delete legacy
+>   `service/{afp,smb,netbios}` per strangler step 5. TCP transports are M7a (`adapter/dsi`) / M7b
+>   (`adapter/smbtcp`).
 
 ---
 
