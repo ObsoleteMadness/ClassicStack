@@ -66,6 +66,14 @@ type ForkFS interface {
 	ForkEngine
 }
 
+// Coded is implemented by a built share that carries a FilenameCodec, so a file
+// service can thread its per-request wire charset (§2a) through Decode/Encode
+// without reaching past the FileSystem interface. BuildShare's result satisfies
+// it; type-assert the ForkFS to reach the codec.
+type Coded interface {
+	Codec() FilenameCodec
+}
+
 type NameKind uint8
 
 const (

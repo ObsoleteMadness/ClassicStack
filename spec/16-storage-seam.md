@@ -17,7 +17,7 @@ the resource-fork bytes — and differ only in the container:
 |---|---|---|
 | `appledouble` | `._name` AppleDouble v2 sidecar next to the file | **implemented** (`core/fs/fork.go`) |
 | `native` / `auto` | host-native fork (HFS+/APFS) | delegates to `appledouble` until per-platform support lands |
-| `ads` | NTFS alternate data stream (`name:AFP_Resource`, `name:AFP_AfpInfo`) — SFM layout | delegates to `appledouble` (M7 interop) |
+| `ads` | NTFS alternate data stream (`name:AFP_Resource`, `name:AFP_AfpInfo`) — SFM layout | **implemented** (`core/fs/fork_ads.go`) |
 | `xattr` | Netatalk extended-attribute layout | delegates to `appledouble` (M7 interop) |
 | `null` / `none` | discards metadata (placeholder shares) | implemented |
 
@@ -57,10 +57,19 @@ prodosInfo [6]byte
 reserved2  [6]byte
 ```
 
-The resource fork is the `AFP_Resource` stream. When `ads` lands it MUST emit
-this record so a name written by ClassicStack is readable by Windows SFM/SMB and
+The resource fork is the `AFP_Resource` stream. `core/fs/fork_ads.go` emits this
+record so a name written by ClassicStack is readable by Windows SFM/SMB and
 vice-versa; the FinderInfo bytes are identical to the AppleDouble FinderInfo
-entry, so only the container differs.
+entry, so only the container differs. Stream paths are addressed through the base
+`FileSystem` using the host `path:stream` syntax (`name:AFP_Resource`,
+`name:AFP_AfpInfo`); on a non-NTFS `FileSystem` these degrade to ordinary sidecar
+paths, which keeps the record handling testable without NTFS but means the
+on-disk *container* is host-native streams only when the base FileSystem maps
+`path:stream` to real ADS. The engine preserves `backupTime` and `prodosInfo` on
+a FinderInfo round-trip so a record written by Windows SFM is not clobbered, and
+treats a missing or wrong-signature `AFP_AfpInfo` stream as "no FinderInfo"
+rather than an error (SFM tolerance). The SFM ADS layout has no comment stream,
+so AFP comments are not persisted on `ads` shares.
 
 ### 1c. Netatalk EA layout (for the future `xattr` backend)
 

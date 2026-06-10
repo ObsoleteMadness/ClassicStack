@@ -11,17 +11,24 @@ import (
 )
 
 // forkEngineByName builds the fork backend named for a share over its base
-// FileSystem. "appledouble" is the real engine; "native"/"auto" fall back to it
-// (a true native/xattr/ads engine is host-specific and lands per-platform); the
-// null engine is available for placeholder shares that carry no metadata.
+// FileSystem. "appledouble" stores forks in "._name" sidecars; "ads" stores them
+// in NTFS alternate data streams (the SFM AFP_Resource / AFP_AfpInfo layout, M7
+// interop). "native"/"auto" fall back to AppleDouble until per-platform host-fork
+// support lands; "xattr" (Netatalk EA layout) still delegates to AppleDouble
+// pending its interop work. The null engine carries no metadata.
 func forkEngineByName(name string, base FileSystem) (ForkEngine, error) {
 	switch strings.ToLower(name) {
-	case "appledouble", "auto", "native", "ads", "xattr":
-		// ads/xattr/native delegate to the AppleDouble sidecar engine until the
-		// host-specific stream/EA backends land (M7 interop). They share the
-		// same on-the-wire AfpInfo + resource-fork bytes, only the container
-		// differs. See spec/16-storage-seam.md.
+	case "appledouble", "auto", "native", "xattr":
+		// xattr/native delegate to the AppleDouble sidecar engine until their
+		// host-specific EA / native-fork backends land. They share the same
+		// AfpInfo + resource-fork payload, only the container differs.
+		// See spec/16-storage-seam.md.
 		return newAppleDoubleForkEngine(base), nil
+	case "ads":
+		// Real NTFS-stream backend: resource fork in <name>:AFP_Resource, the
+		// 32-byte FinderInfo inside a 60-byte AfpInfo record in
+		// <name>:AFP_AfpInfo, so names interop with Windows SFM/SMB (§1b).
+		return newADSForkEngine(base), nil
 	case "null", "none":
 		return NewNullForkEngine(), nil
 	default:
