@@ -18,7 +18,7 @@ the resource-fork bytes — and differ only in the container:
 | `appledouble` | `._name` AppleDouble v2 sidecar next to the file | **implemented** (`core/fs/fork.go`) |
 | `native` / `auto` | host-native fork (HFS+/APFS) | delegates to `appledouble` until per-platform support lands |
 | `ads` | NTFS alternate data stream (`name:AFP_Resource`, `name:AFP_AfpInfo`) — SFM layout | **implemented** (`core/fs/fork_ads.go`) |
-| `xattr` | Netatalk extended-attribute layout | delegates to `appledouble` (M7 interop) |
+| `xattr` | Netatalk extended-attribute layout (`org.netatalk.Metadata`, `org.netatalk.ResourceFork`) | **implemented** (`core/fs/fork_xattr.go`) |
 | `null` / `none` | discards metadata (placeholder shares) | implemented |
 
 ### 1a. AppleDouble v2 sidecar (`core/appledouble`)
@@ -71,13 +71,35 @@ treats a missing or wrong-signature `AFP_AfpInfo` stream as "no FinderInfo"
 rather than an error (SFM tolerance). The SFM ADS layout has no comment stream,
 so AFP comments are not persisted on `ads` shares.
 
-### 1c. Netatalk EA layout (for the future `xattr` backend)
+### 1c. Netatalk EA layout (`core/fs/fork_xattr.go`)
 
-Netatalk's `ea` volume option stores each fork/metadata item as a host extended
-attribute (`user.org.netatalk.Metadata`, `user.org.netatalk.ResourceFork`). The
-metadata EA holds the same FinderInfo bytes plus Netatalk's `ad_entry` table.
-The `xattr` backend MUST read/write that EA layout so a ClassicStack share over
-an existing Netatalk volume sees the same forks.
+Netatalk's `ea = sys` volume option stores each fork/metadata item as a host
+extended attribute (`user.org.netatalk.Metadata`, `user.org.netatalk.ResourceFork`).
+`core/fs/fork_xattr.go` reads/writes that layout so a ClassicStack share over an
+existing Netatalk 3.x/4.x volume sees the same forks:
+
+- **`user.org.netatalk.Metadata`** — a fixed **402-byte** (`AD_DATASZ_EA`)
+  AppleDouble v2 *header*: the same magic/version/entry-table layout as a `._name`
+  sidecar (so FinderInfo and the comment round-trip byte-for-byte through the
+  `core/appledouble` codec), but with two differences: the 16-byte filler is
+  `"Netatalk        "` (space-padded) instead of zeros, and the resource-fork
+  `ad_entry` records the fork **length only** — the bytes are *out-of-line* in the
+  separate ResourceFork EA, so the blob is a pure metadata header padded to the
+  fixed size. Because the recorded length exceeds the blob, a generic AppleDouble
+  parser's bounds check skips that entry; the engine reads the length straight
+  from the entry table.
+- **`user.org.netatalk.ResourceFork`** — the raw resource-fork bytes.
+
+The engine addresses both EAs through the base `FileSystem` using a
+`"path\x00ea\x00<name>"` key (analogous to the `ads` engine's `path:stream`); on
+a host FileSystem that maps that key to a real extended attribute the container
+is a true xattr, and on any other FileSystem it degrades to an ordinary path key,
+keeping the record handling testable without an xattr-capable host. Writing the
+resource fork refreshes the Metadata EA's recorded length on Sync/Close so the
+two EAs stay in step (Netatalk's invariant). A missing or wrong-magic Metadata EA
+is treated as "no metadata" rather than an error (Netatalk tolerance). The
+`macroman-native` filename codec is rejected with `xattr` (validated in
+`BuildShare`), since a Netatalk EA volume serves UTF-8/Unicode wire names.
 
 ## 2. Filename codecs (`core/fs/codec.go`, `core/encoding`)
 

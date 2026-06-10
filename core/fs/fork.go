@@ -13,15 +13,16 @@ import (
 // forkEngineByName builds the fork backend named for a share over its base
 // FileSystem. "appledouble" stores forks in "._name" sidecars; "ads" stores them
 // in NTFS alternate data streams (the SFM AFP_Resource / AFP_AfpInfo layout, M7
-// interop). "native"/"auto" fall back to AppleDouble until per-platform host-fork
-// support lands; "xattr" (Netatalk EA layout) still delegates to AppleDouble
-// pending its interop work. The null engine carries no metadata.
+// interop); "xattr" stores them in the Netatalk extended-attribute layout
+// (org.netatalk.Metadata / org.netatalk.ResourceFork, §1c). "native"/"auto" fall
+// back to AppleDouble until per-platform host-fork support lands. The null engine
+// carries no metadata.
 func forkEngineByName(name string, base FileSystem) (ForkEngine, error) {
 	switch strings.ToLower(name) {
-	case "appledouble", "auto", "native", "xattr":
-		// xattr/native delegate to the AppleDouble sidecar engine until their
-		// host-specific EA / native-fork backends land. They share the same
-		// AfpInfo + resource-fork payload, only the container differs.
+	case "appledouble", "auto", "native":
+		// native delegates to the AppleDouble sidecar engine until per-platform
+		// host-native fork support lands; they share the same AfpInfo +
+		// resource-fork payload, only the container differs.
 		// See spec/16-storage-seam.md.
 		return newAppleDoubleForkEngine(base), nil
 	case "ads":
@@ -29,6 +30,11 @@ func forkEngineByName(name string, base FileSystem) (ForkEngine, error) {
 		// 32-byte FinderInfo inside a 60-byte AfpInfo record in
 		// <name>:AFP_AfpInfo, so names interop with Windows SFM/SMB (§1b).
 		return newADSForkEngine(base), nil
+	case "xattr":
+		// Real Netatalk extended-attribute backend: metadata in the 402-byte
+		// org.netatalk.Metadata EA, resource fork in org.netatalk.ResourceFork,
+		// so forks interop with a Netatalk "ea = sys" volume (§1c).
+		return newXattrForkEngine(base), nil
 	case "null", "none":
 		return NewNullForkEngine(), nil
 	default:
