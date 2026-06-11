@@ -323,8 +323,17 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 >   `parseATPResponse` decodes the inbound TResp the spine previously dropped. Zero-reqCount writes
 >   complete inline. `write_test.go` drives single-/multi-packet/zero-length writes over a recording
 >   port. Pure ASP/ATP transport — storage still touched only via the fork engine.
-> - **Remaining M7:** desktop DB (FPGetComment/FPAddIcon/…), CatSearch;
->   SMB/NetBIOS command engines onto the shares; same-FS AFP+SMB
+> - **Slice 8 (`14ed254`):** AFP Desktop database — FPOpenDT/FPCloseDT (per-session DTRefNum→volume
+>   table), FPGetComment/FPAddComment/FPRemoveComment (ride the fork seam via `v.FS().ReadComment`/
+>   `WriteComment`, so comments travel with the file's metadata container), FPAddIcon/FPGetIcon/
+>   FPGetIconInfo + FPAddAPPL/FPRemoveAPPL/FPGetAPPL (per-volume in-memory `desktopDB` for icons +
+>   APPL mappings — persistence is an adapter concern, like the mem metastore). FPAddIcon (cmd 192)
+>   arrives over the two-phase ASPWrite path (bitmap is bulk data): `writeDataCount`/`appendWriteData`
+>   now recognise the 20-byte FPAddIcon header alongside FPWrite's 12-byte one. `desktop_test.go`
+>   covers OpenDT/CloseDT, comment round-trip (+ item-not-found), the FPAddIcon two-phase path →
+>   GetIcon/GetIconInfo, and APPL round-trip. spec/errata "Desktop database persistence" documents the
+>   comment/icon split + path-encoding convention.
+> - **Remaining M7:** FPCatSearch; SMB/NetBIOS command engines onto the shares; same-FS AFP+SMB
 >   coordination via the FS bus (§10d); capture-replay vs `/captures/afp-*.pcap`; then delete legacy
 >   `service/{afp,smb,netbios}` per strangler step 5. TCP transports are M7a (`adapter/dsi`) / M7b
 >   (`adapter/smbtcp`).
