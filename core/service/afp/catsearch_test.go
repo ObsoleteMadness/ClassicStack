@@ -5,20 +5,17 @@ import (
 )
 
 // catSearchReq builds an FPCatSearch command block: a partial- or full-name
-// search over volID, resuming from cursorIndex (0 = new search), asking for up to
-// reqMatches results with the given file/dir result bitmaps. The spec1 record
+// search over volID, resuming from the 16-byte catalogPosition cursor (a zero
+// blob = new search), asking for up to reqMatches results with the given file/dir
+// result bitmaps. The cursor is the opaque token the server returned on the prior
+// page — the client (and this helper) round-trip it verbatim. The spec1 record
 // carries a single name field — a 2-byte offset pointer to a Pascal-string name
 // in its tail — which is the shape the Finder's "Find File" sends.
-func catSearchReq(volID uint16, reqMatches int, cursorIndex uint32, fileBitmap, dirBitmap uint16, partial bool, name string) []byte {
+func catSearchReq(volID uint16, reqMatches int, cursor [16]byte, fileBitmap, dirBitmap uint16, partial bool, name string) []byte {
 	b := []byte{cmdCatSearch, 0}
 	b = putBE16(b, volID)
 	b = putBE32(b, uint32(reqMatches))
 	b = putBE32(b, 0) // reserved
-	var cursor [16]byte
-	cursor[12] = byte(cursorIndex >> 24)
-	cursor[13] = byte(cursorIndex >> 16)
-	cursor[14] = byte(cursorIndex >> 8)
-	cursor[15] = byte(cursorIndex)
 	b = append(b, cursor[:]...)
 	b = putBE16(b, fileBitmap)
 	b = putBE16(b, dirBitmap)
@@ -97,7 +94,8 @@ func TestCatSearch_PartialNameAcrossTree(t *testing.T) {
 
 	sessID, volID := openVolForFork(t, svc, r)
 
-	req := catSearchReq(volID, 50, 0, fdBitmapLongName|fileBitmapFileNum, 0, true, "report")
+	var zero [16]byte
+	req := catSearchReq(volID, 50, zero, fdBitmapLongName|fileBitmapFileNum, 0, true, "report")
 	code, reply := sendCmd(t, svc, r, sessID, 9, req)
 	// Last page (all results fit) → kFPEOFErr per AFP/Netatalk convention.
 	if code != afpErrEOFErr && code != afpNoErr {
@@ -122,7 +120,8 @@ func TestCatSearch_FullNameExact(t *testing.T) {
 
 	sessID, volID := openVolForFork(t, svc, r)
 
-	req := catSearchReq(volID, 50, 0, fdBitmapLongName, 0, false /*full*/, "ALPHA.TXT")
+	var zero [16]byte
+	req := catSearchReq(volID, 50, zero, fdBitmapLongName, 0, false /*full*/, "ALPHA.TXT")
 	_, reply := sendCmd(t, svc, r, sessID, 9, req)
 	names := catSearchNames(t, reply)
 	if !contains(names, "alpha.txt") {
@@ -146,7 +145,8 @@ func TestCatSearch_Paged(t *testing.T) {
 	sessID, volID := openVolForFork(t, svc, r)
 
 	// Page 1: ask for 2 of the 3 "hit-" files.
-	req := catSearchReq(volID, 2, 0, fdBitmapLongName, 0, true, "hit-")
+	var zero [16]byte
+	req := catSearchReq(volID, 2, zero, fdBitmapLongName, 0, true, "hit-")
 	code, reply := sendCmd(t, svc, r, sessID, 9, req)
 	if code != afpNoErr {
 		t.Fatalf("CatSearch page 1 result = %d, want NoErr (more pages follow)", code)
@@ -155,13 +155,16 @@ func TestCatSearch_Paged(t *testing.T) {
 	if len(page1) != 2 {
 		t.Fatalf("CatSearch page 1 = %v, want 2 names", page1)
 	}
-	cursorIndex := be32(reply[12:16])
-	if cursorIndex == 0 {
-		t.Fatalf("CatSearch page 1 cursor index = 0, want a continuation index")
+	// The reply's 16-byte catalogPosition is the opaque continuation cursor; byte 0
+	// is the live-continuation flag. Round-trip the whole blob to resume.
+	var cursor [16]byte
+	copy(cursor[:], reply[0:16])
+	if cursor[0] == 0 {
+		t.Fatalf("CatSearch page 1 cursor = %v, want a continuation flag", cursor)
 	}
 
 	// Page 2: resume from the cursor; should get the remaining hit and finish.
-	req2 := catSearchReq(volID, 2, cursorIndex, fdBitmapLongName, 0, true, "hit-")
+	req2 := catSearchReq(volID, 2, cursor, fdBitmapLongName, 0, true, "hit-")
 	code, reply = sendCmd(t, svc, r, sessID, 10, req2)
 	if code != afpErrEOFErr {
 		t.Fatalf("CatSearch page 2 result = %d, want EOFErr (last page)", code)

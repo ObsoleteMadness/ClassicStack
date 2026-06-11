@@ -155,7 +155,15 @@ func (l *localFS) ShortName(path string) (string, error)  { return path, nil }
 func (l *localFS) MediumName(path string) (string, error) { return path, nil }
 
 func (l *localFS) Capabilities() Capabilities {
-	return Capabilities{ChildCount: true}
+	return Capabilities{ChildCount: true, CatSearch: true}
+}
+
+// CatSearch satisfies the optional CatSearcher capability with the default
+// predicate tree-walk over the host directory. local_fs is a plain hierarchical
+// store, so WalkCatSearch (which descends through the backend's own ReadDir, and
+// thus the traversal guard) is exactly right.
+func (l *localFS) CatSearch(crit CatSearchCriteria, cursor CatSearchCursor) ([]CatSearchResult, CatSearchCursor, error) {
+	return WalkCatSearch(l, crit, cursor)
 }
 
 // localFile wraps *os.File, which already satisfies positional ReadAt/WriteAt.

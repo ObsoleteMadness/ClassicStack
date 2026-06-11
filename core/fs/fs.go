@@ -390,6 +390,20 @@ func (s *shareFS) MediumName(path string) (string, error) {
 // Codec exposes the share codec for adapter wiring/tests.
 func (s *shareFS) Codec() FilenameCodec { return s.codec }
 
+// CatSearch forwards the optional catalog-search capability to the base
+// FileSystem when it implements CatSearcher, so the wrapping of the share stack
+// does not hide a backend's search support. A base that does not implement
+// CatSearcher leaves shareFS without the method, so a CatSearcher type-assertion
+// on the built share fails — the file service then reports "not supported", which
+// is the correct answer for a backend that declines CatSearch.
+func (s *shareFS) CatSearch(crit CatSearchCriteria, cursor CatSearchCursor) ([]CatSearchResult, CatSearchCursor, error) {
+	cs, ok := s.FileSystem.(CatSearcher)
+	if !ok {
+		return nil, nil, ErrCatSearchUnsupported
+	}
+	return cs.CatSearch(crit, cursor)
+}
+
 // NewNullForkEngine returns a metadata no-op fork implementation for placeholder shares.
 func NewNullForkEngine() ForkEngine { return nullForkEngine{} }
 
@@ -511,6 +525,12 @@ func (r *readOnlyFS) Capabilities() Capabilities {
 	return c
 }
 
+// CatSearch forwards to the inner memFS so a read-only memfs volume still
+// satisfies the search capability it advertises.
+func (r *readOnlyFS) CatSearch(crit CatSearchCriteria, cursor CatSearchCursor) ([]CatSearchResult, CatSearchCursor, error) {
+	return r.inner.CatSearch(crit, cursor)
+}
+
 func (m *memFS) ReadDir(path string) ([]fs.DirEntry, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -627,7 +647,14 @@ func (m *memFS) ShortName(path string) (string, error) { return path, nil }
 func (m *memFS) MediumName(path string) (string, error) { return path, nil }
 
 func (m *memFS) Capabilities() Capabilities {
-	return Capabilities{ChildCount: true}
+	return Capabilities{ChildCount: true, CatSearch: true}
+}
+
+// CatSearch satisfies the optional CatSearcher capability with the default
+// predicate tree-walk. memfs is a plain hierarchical store, so the shared
+// WalkCatSearch is exactly right; a synthetic backend would implement its own.
+func (m *memFS) CatSearch(crit CatSearchCriteria, cursor CatSearchCursor) ([]CatSearchResult, CatSearchCursor, error) {
+	return WalkCatSearch(m, crit, cursor)
 }
 
 type memFile struct {

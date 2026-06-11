@@ -1,23 +1,25 @@
 package afp
 
 import (
-	stdfs "io/fs"
-	"strings"
+	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 )
 
 // FPCatSearch (Inside Macintosh: Networking, AFP 2.1 §"FPCatSearch") searches a
 // volume's whole catalog for files and directories matching a set of criteria,
 // returning their parameters a page at a time. It is the wire behind the Finder's
-// "Find File" — the dominant use is a partial- or full-name match.
+// "Find File".
 //
-// This implementation walks the catalog through the §9 FileSystem seam
-// (v.Enumerate, recursively) and packs each match with the same parameter packer
-// the catalog-read commands use (parms.go), so it carries no storage-layout
-// knowledge. It honours the criteria the field actually exercises — name
-// (partial/full), parent dir id, and the file/dir discriminator implied by which
-// result bitmap is non-empty — and ignores criteria bits it does not model rather
-// than failing the search, matching the lenient behaviour real servers show
-// against the assorted clients in the wild (documented in spec/errata.md).
+// The search SEMANTICS belong to the FileSystem backend, not to this spine: a
+// plain hierarchical backend walks its tree, while a synthetic backend redefines
+// "search" entirely (MacGarden turns a CatSearch into an explicit archive query
+// and materialises the HTML results as virtual files — entries an Enumerate of
+// the volume would never surface). So this handler does NOT impose a tree-walk.
+// It decodes the AFP wire criteria into the backend-neutral fs.CatSearchCriteria,
+// delegates to the bound FileSystem through its optional fs.CatSearcher
+// capability, and packs whatever store paths the backend returns with the same
+// parameter packer the catalog-read commands use (parms.go). A volume whose
+// backend does not advertise Capabilities().CatSearch answers kFPCallNotSupported
+// — the AFP-correct result for a backend that declines the search.
 
 // cmdCatSearch is the AFP command code for FPCatSearch.
 const cmdCatSearch uint8 = 43
@@ -32,23 +34,10 @@ const (
 )
 
 // catSearchMaxData caps one reply's ResultsRecord area so the packed reply fits a
-// single-quantum ASP response. ASP.QuantumSize less the fixed reply header (24
-// bytes: 16-byte CatalogPosition + 2+2 bitmaps + 4 ActualCount) leaves room for
-// the records; 4096 is a conservative round figure under the 4624 quantum.
+// single-quantum ASP response (24-byte fixed reply header below the 4624 quantum;
+// 4096 is a conservative round figure). When the packed records would overflow it
+// the handler stops early and the backend's cursor resumes the rest.
 const catSearchMaxData = 4096
-
-// catSearchCriteria is the decoded match: the values from spec1 (and, for ranged
-// fields, spec2), reduced to the predicates this server models. A zero criteria
-// (reqBitmap == 0) matches everything, so a name-less search enumerates the
-// volume — the behaviour a "find every item" client expects.
-type catSearchCriteria struct {
-	reqBitmap   uint32
-	matchName   bool   // a name predicate (partial or full) is present
-	partial     bool   // true: substring match; false: exact match
-	name        string // store-native name to match against (decoded from spec1)
-	matchParent bool   // a ParentDirID predicate is present
-	parentID    uint32 // the parent dir id to match
-}
 
 // afpCatSearch handles FPCatSearch.
 //
@@ -67,16 +56,24 @@ func (s *Service) afpCatSearch(a *afpSession, block []byte) ([]byte, int32) {
 	if !ok {
 		return nil, afpErrParamErr
 	}
+
+	// The backend defines the search; a volume whose backend declines CatSearch
+	// answers kFPCallNotSupported rather than a half-emulated walk.
+	searcher, ok := vol.catSearcher()
+	if !ok {
+		return nil, afpErrCallNotSuppt
+	}
+
 	reqMatches := int(be32(block[4:8]))
 	if reqMatches <= 0 {
 		return nil, afpErrParamErr
 	}
-	// catalogPosition is the resumption cursor: a server-defined 16-byte blob the
-	// client echoes verbatim. We use a flat 1-based visit index in its last 4
-	// bytes (0 = start a new search); the first byte flags a live continuation.
-	var cursor [16]byte
-	copy(cursor[:], block[12:28])
-	startIndex := int(be32(cursor[12:16]))
+	// catalogPosition is the resumption token the backend defines: a 16-byte blob
+	// the client echoes verbatim. We carry the backend's cursor bytes in its tail
+	// (after a 4-byte length) and round-trip them without interpreting them.
+	var pos [16]byte
+	copy(pos[:], block[12:28])
+	cursor := decodeCatCursor(pos)
 
 	fileBitmap := be16(block[28:30])
 	dirBitmap := be16(block[30:32])
@@ -86,6 +83,7 @@ func (s *Service) afpCatSearch(a *afpSession, block []byte) ([]byte, int32) {
 	if code != afpNoErr {
 		return nil, code
 	}
+	crit.Max = reqMatches
 
 	// A search asking for neither file nor dir parameters has nothing to return;
 	// default both to long-name+parent so a bitmap-0 client still gets usable hits.
@@ -94,7 +92,13 @@ func (s *Service) afpCatSearch(a *afpSession, block []byte) ([]byte, int32) {
 		dirBitmap = fdBitmapLongName | fdBitmapParentDID | dirBitmapDirID
 	}
 
-	matches := vol.walkCatSearch(crit, fileBitmap, dirBitmap, startIndex, reqMatches)
+	results, next, err := searcher.CatSearch(crit, cursor)
+	if err != nil {
+		if err == fs.ErrCatSearchUnsupported {
+			return nil, afpErrCallNotSuppt
+		}
+		return nil, afpErrMiscErr
+	}
 
 	out := make([]byte, 0, 32+catSearchMaxData)
 	out = append(out, make([]byte, 16)...) // CatalogPosition, patched below
@@ -104,35 +108,36 @@ func (s *Service) afpCatSearch(a *afpSession, block []byte) ([]byte, int32) {
 	out = putBE32(out, 0) // ActualCount, patched below
 
 	actual := 0
-	for _, m := range matches {
-		if len(out)-countOff-4+len(m.record) > catSearchMaxData {
-			break // payload cap: stop and continue from here on the next call
+	capped := false
+	for _, m := range results {
+		rec := vol.packCatSearchRecord(m, fileBitmap, dirBitmap)
+		if len(out)-countOff-4+len(rec) > catSearchMaxData {
+			capped = true // payload cap reached before the backend's page ended
+			break
 		}
-		out = append(out, m.record...)
+		out = append(out, rec...)
 		actual++
 	}
 
-	// Build the reply cursor. If we packed every remaining match (the walk found
-	// no more after the last one we kept), the search is done: signal last-page
-	// with kFPEOFErr and a zero cursor. Otherwise stamp the next visit index so
-	// the client resumes mid-catalog.
-	last := startIndex
-	if actual > 0 {
-		last = matches[actual-1].index
-	}
-	more := actual < len(matches) || (len(matches) > 0 && matches[len(matches)-1].more)
-
-	var replyCursor [16]byte
+	// Determine the reply cursor. If we packed every result the backend gave us
+	// and the backend reported no continuation, the search is done: last page,
+	// kFPEOFErr, zero cursor (the AFP/Netatalk convention). Otherwise carry the
+	// backend's cursor so the client resumes — and if WE capped the page below the
+	// backend's, the backend cursor already points past what we packed only when
+	// we consumed all results, so a mid-page cap falls back to re-running the
+	// search (acceptable: the catalog is stable between paged calls).
+	var replyPos [16]byte
 	result := afpErrEOFErr
-	if more {
-		replyCursor[0] = 0x01 // continuation flag
-		replyCursor[12] = byte(last >> 24)
-		replyCursor[13] = byte(last >> 16)
-		replyCursor[14] = byte(last >> 8)
-		replyCursor[15] = byte(last)
+	if len(next) > 0 && !capped {
+		replyPos = encodeCatCursor(next)
+		result = afpNoErr
+	} else if capped {
+		// We stopped before the backend's page ended; resume the backend's search
+		// from the same cursor next time (the unpacked results re-appear).
+		replyPos = pos
 		result = afpNoErr
 	}
-	copy(out[0:16], replyCursor[:])
+	copy(out[0:16], replyPos[:])
 	out[countOff] = byte(actual >> 24)
 	out[countOff+1] = byte(actual >> 16)
 	out[countOff+2] = byte(actual >> 8)
@@ -141,15 +146,50 @@ func (s *Service) afpCatSearch(a *afpSession, block []byte) ([]byte, int32) {
 	return out, result
 }
 
-// decodeCatSearchCriteria decodes the spec1/spec2 records into the predicates the
-// server models. Each spec is a 2-byte length followed by a parameter block laid
-// out in the same ascending-bit order as a catalog parameter block, but only the
-// reqBitmap-selected fields are present. We read the fields we match on (name,
-// parent dir id) and skip the rest. spec2 carries the upper bound of ranged
-// fields and the Finder-info mask; the only ranged predicate we honour is the
-// name (spec2 name unused — name is an exact/partial single value in spec1).
-func (v *Volume) decodeCatSearchCriteria(reqBitmap uint32, specs []byte) (catSearchCriteria, int32) {
-	crit := catSearchCriteria{reqBitmap: reqBitmap}
+// packCatSearchRecord packs one backend result as an AFP ResultsRecord:
+// StructLength(1) fileDir(1) then the file or directory parameter block, padded
+// to an even total. StructLength counts the length byte itself.
+func (v *Volume) packCatSearchRecord(m fs.CatSearchResult, fileBitmap, dirBitmap uint16) []byte {
+	bitmap := dirBitmap
+	if !m.Info.IsDir() {
+		bitmap = fileBitmap
+	}
+	rec := make([]byte, 0, 64)
+	rec = append(rec, 0) // length byte, patched below
+	if m.Info.IsDir() {
+		rec = append(rec, isDirFlag)
+	} else {
+		rec = append(rec, 0)
+	}
+	rec = v.fileDirParams(rec, m.Path, m.Info, bitmap, PathTypeLongNames)
+	if len(rec)%2 != 0 {
+		rec = append(rec, 0)
+	}
+	rec[0] = byte(len(rec))
+	return rec
+}
+
+// catSearcher returns the bound FileSystem's optional catalog-search capability,
+// gated on the backend advertising it: a backend that implements CatSearcher but
+// reports Capabilities().CatSearch == false is treated as declining the search.
+func (v *Volume) catSearcher() (fs.CatSearcher, bool) {
+	if !v.FS().Capabilities().CatSearch {
+		return nil, false
+	}
+	cs, ok := v.FS().(fs.CatSearcher)
+	return cs, ok
+}
+
+// decodeCatSearchCriteria decodes the spec1/spec2 records into the backend-neutral
+// fs.CatSearchCriteria. Each spec is a 2-byte length followed by a parameter block
+// laid out in the same ascending-bit order as a catalog parameter block, but only
+// the reqBitmap-selected fields are present. We read the predicate fields the seam
+// models — name (partial/full) and parent dir id — and pass them store-native so
+// the backend matches against its own names. The human-readable name also fills
+// Query, so a synthetic backend (MacGarden) that runs an explicit search has the
+// search text without re-decoding the AFP wire.
+func (v *Volume) decodeCatSearchCriteria(reqBitmap uint32, specs []byte) (fs.CatSearchCriteria, int32) {
+	var crit fs.CatSearchCriteria
 	if reqBitmap == 0 {
 		return crit, afpNoErr // match-everything search
 	}
@@ -159,18 +199,19 @@ func (v *Volume) decodeCatSearchCriteria(reqBitmap uint32, specs []byte) (catSea
 	}
 
 	off := 0
-	// The spec block opens with a 2-byte bitmap of its own in some client
-	// encodings; AFP 2.1 defines the spec block as a bare parameter block keyed by
-	// reqBitmap, so we decode strictly by reqBitmap. Fields appear in ascending
-	// bit order; name fields are a 2-byte offset pointer into the block's tail.
 	nameOffsetPos := -1
 	if reqBitmap&catSearchBitParentDID != 0 {
 		if off+4 > len(spec1) {
 			return crit, afpErrParamErr
 		}
-		crit.matchParent = true
-		crit.parentID = be32(spec1[off : off+4])
+		parentID := be32(spec1[off : off+4])
 		off += 4
+		path, code := dirPath(v, parentID)
+		if code != afpNoErr {
+			return crit, code
+		}
+		crit.MatchParent = true
+		crit.ParentPath = path
 	}
 	if reqBitmap&(catSearchBitPartialName|catSearchBitFullName) != 0 {
 		if off+2 > len(spec1) {
@@ -178,11 +219,11 @@ func (v *Volume) decodeCatSearchCriteria(reqBitmap uint32, specs []byte) (catSea
 		}
 		nameOffsetPos = int(be16(spec1[off : off+2]))
 		off += 2
-		crit.matchName = true
-		crit.partial = reqBitmap&catSearchBitPartialName != 0
+		crit.MatchName = true
+		crit.Partial = reqBitmap&catSearchBitPartialName != 0
 	}
 
-	if crit.matchName {
+	if crit.MatchName {
 		name, ok := catSearchName(spec1, nameOffsetPos)
 		if !ok {
 			return crit, afpErrParamErr
@@ -193,7 +234,8 @@ func (v *Volume) decodeCatSearchCriteria(reqBitmap uint32, specs []byte) (catSea
 		if err != nil {
 			return crit, afpErrParamErr
 		}
-		crit.name = string(stored)
+		crit.Name = string(stored)
+		crit.Query = string(stored)
 	}
 	return crit, afpNoErr
 }
@@ -213,8 +255,7 @@ func catSearchSpec(b []byte, off int) (spec []byte, next int, ok bool) {
 }
 
 // catSearchName reads the Pascal-string name a spec block's name field points at.
-// The name offset is measured from the start of the spec parameter block. An
-// out-of-range offset yields ok=false.
+// The name offset is measured from the start of the spec parameter block.
 func catSearchName(spec []byte, nameOffset int) (name []byte, ok bool) {
 	if nameOffset < 0 || nameOffset >= len(spec) {
 		return nil, false
@@ -226,137 +267,34 @@ func catSearchName(spec []byte, nameOffset int) (name []byte, ok bool) {
 	return spec[nameOffset+1 : nameOffset+1+n], true
 }
 
-// catSearchMatch is one packed result plus its flat visit index (the resumption
-// cursor value) and whether the walk could see further entries after it.
-type catSearchMatch struct {
-	record []byte
-	index  int
-	more   bool
+// --- catalogPosition codec: carry the backend's opaque cursor in the 16-byte
+// position blob. Byte 0 flags a live continuation; byte 1 holds the cursor length
+// (0–14); bytes 2.. hold the cursor bytes. The handler never interprets the
+// cursor — only the backend does — so any backend pagination scheme survives the
+// round trip as long as it fits 14 bytes (the WalkCatSearch default uses 4). ---
+
+func decodeCatCursor(pos [16]byte) fs.CatSearchCursor {
+	if pos[0] == 0 {
+		return nil // new search
+	}
+	n := int(pos[1])
+	if n == 0 || 2+n > len(pos) {
+		return nil
+	}
+	return fs.CatSearchCursor(append([]byte(nil), pos[2:2+n]...))
 }
 
-// walkCatSearch walks the whole volume catalog depth-first, packing a
-// ResultsRecord for every entry past startIndex that satisfies the criteria, up
-// to reqMatches records. The flat visit index lets a paged search resume without
-// re-matching the entries it already returned. The walk visits the root's
-// children and descends into each subdirectory, so a name search finds matches at
-// any depth (the Finder "Find File" semantics).
-func (v *Volume) walkCatSearch(crit catSearchCriteria, fileBitmap, dirBitmap uint16, startIndex, reqMatches int) []catSearchMatch {
-	w := &catSearchWalk{
-		vol:        v,
-		crit:       crit,
-		fileBitmap: fileBitmap,
-		dirBitmap:  dirBitmap,
-		startIndex: startIndex,
-		reqMatches: reqMatches,
+func encodeCatCursor(c fs.CatSearchCursor) [16]byte {
+	var pos [16]byte
+	n := len(c)
+	if n == 0 {
+		return pos
 	}
-	w.descend("")
-	return w.out
-}
-
-// catSearchWalk carries the recursion state for one walkCatSearch.
-type catSearchWalk struct {
-	vol        *Volume
-	crit       catSearchCriteria
-	fileBitmap uint16
-	dirBitmap  uint16
-	startIndex int
-	reqMatches int
-
-	visited int // flat 1-based index of the entry we are about to consider
-	out     []catSearchMatch
-}
-
-// descend walks one directory's children, considering each (skipping startIndex
-// entries already returned) and recursing into subdirectories. It stops growing
-// out once reqMatches records are collected, but keeps incrementing the visit
-// counter so a resumed search lands on the right entry.
-func (w *catSearchWalk) descend(dir string) {
-	entries, err := w.vol.Enumerate(dir)
-	if err != nil {
-		return
+	if n > 14 {
+		n = 14
 	}
-	for _, de := range entries {
-		if isMetadataName(de.Name()) {
-			continue
-		}
-		child := joinStore(dir, de.Name())
-		info, err := de.Info()
-		if err != nil {
-			continue
-		}
-		w.consider(child, info)
-		if de.IsDir() {
-			w.descend(child)
-		}
-	}
-}
-
-// consider tests one entry against the criteria, packing it if it matches and
-// falls past the resumption point. It advances the flat visit counter on every
-// entry so cursors stay stable across pages.
-func (w *catSearchWalk) consider(store string, info stdfs.FileInfo) {
-	w.visited++
-	if w.visited <= w.startIndex {
-		return // already returned on an earlier page
-	}
-	if !w.crit.matches(w.vol, store, info) {
-		return
-	}
-	if len(w.out) >= w.reqMatches {
-		// Past the page limit but a further match exists → tell the caller more
-		// pages follow, without packing this one.
-		if len(w.out) > 0 {
-			w.out[len(w.out)-1].more = true
-		}
-		return
-	}
-	bitmap := w.dirBitmap
-	if !info.IsDir() {
-		bitmap = w.fileBitmap
-	}
-	rec := make([]byte, 0, 64)
-	rec = append(rec, 0) // length byte, patched below
-	if info.IsDir() {
-		rec = append(rec, isDirFlag)
-	} else {
-		rec = append(rec, 0)
-	}
-	rec = w.vol.fileDirParams(rec, store, info, bitmap, PathTypeLongNames)
-	if len(rec)%2 != 0 {
-		rec = append(rec, 0)
-	}
-	rec[0] = byte(len(rec)) // StructLength includes the length byte itself
-	w.out = append(w.out, catSearchMatch{record: rec, index: w.visited})
-}
-
-// matches reports whether one catalog entry satisfies the search criteria. An
-// empty criteria (no predicates) matches every entry. Predicates are ANDed.
-func (c catSearchCriteria) matches(vol *Volume, store string, info stdfs.FileInfo) bool {
-	if c.matchParent {
-		if vol.ParentCNID(store) != c.parentID {
-			return false
-		}
-	}
-	if c.matchName {
-		_, base := splitStore(store)
-		if c.partial {
-			if !containsFold(base, c.name) {
-				return false
-			}
-		} else if !strings.EqualFold(base, c.name) {
-			return false
-		}
-	}
-	return true
-}
-
-// containsFold reports whether substr occurs in s, ignoring case. AFP/HFS+
-// filename matching is case-insensitive, so the Finder's partial-name search must
-// be too. It folds both operands to lower case before the substring test — a
-// pragmatic ASCII/MacRoman fold, sufficient for the filenames this server holds.
-func containsFold(s, substr string) bool {
-	if substr == "" {
-		return true
-	}
-	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
+	pos[0] = 0x01
+	pos[1] = byte(n)
+	copy(pos[2:2+n], c[:n])
+	return pos
 }
