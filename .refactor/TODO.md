@@ -307,7 +307,14 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 >   FPOpenDir/FPCloseDir (dirID = CNID). `resolveCatalogPath` resolves dirID + relative pathname
 >   through the volume CNID store + FilenameCodec; storage reached only via `v.FS().CreateFile/
 >   CreateDir/Remove` and CNID-aware `v.renamePath/removePath`. `catalog_test.go` covers all five.
-> - **Remaining M7:** full file/dir bitmaps, desktop DB,
+> - **Slice 6 (`5a7e828`):** AFP full file/dir parameter bitmaps — `parms.go` packs the complete
+>   AFP 2.x parameter block (attributes, parent DID, create/mod/backup dates, 32-byte Finder info,
+>   long/short names as offset pointers into a trailing variable area, file-number/dir-id CNID,
+>   data/resource fork lengths, offspring count, owner/group, access rights) from the §9 seam.
+>   Volume gains FinderInfo/ShortName/ParentCNID; GetFileDirParms/Enumerate/OpenFork/GetForkParms all
+>   pack via `vol.fileDirParams`. Dates fixed onto the spec 2000-GMT epoch (legacy used 1904-local) —
+>   `spec/errata.md` "AFP catalog date epoch". `parms_test.go` checks every field at its bit offset.
+> - **Remaining M7:** desktop DB (FPGetComment/FPAddIcon/…), CatSearch;
 >   two-phase ASPWrite (large FPWrite); SMB/NetBIOS command engines onto the shares; same-FS AFP+SMB
 >   coordination via the FS bus (§10d); capture-replay vs `/captures/afp-*.pcap`; then delete legacy
 >   `service/{afp,smb,netbios}` per strangler step 5. TCP transports are M7a (`adapter/dsi`) / M7b
