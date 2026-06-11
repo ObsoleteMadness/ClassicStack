@@ -149,32 +149,41 @@ func (s *Service) afpRead(a *afpSession, block []byte) ([]byte, int32) {
 	return buf[:n], afpNoErr
 }
 
-// writeDataCount returns the FPWrite reqCount (the number of data bytes the
-// client intends to write) from an FPWrite command block, or 0 if the block is
-// not a well-formed FPWrite header. The ASP layer reads this in phase 1 of a
-// two-phase write to learn how many data bytes to pull from the workstation.
+// writeDataCount returns the number of bulk data bytes a two-phase-write command
+// will carry, plus the fixed header length that precedes them, or (0, 0) if the
+// block is not a well-formed two-phase-write header. The ASP layer reads this in
+// phase 1 to learn how many data bytes to pull from the workstation, and the
+// header length so it can splice the data back on afterwards (appendWriteData).
 //
-// FPWrite header: cmd(1) flag(1) forkRefNum(2) offset(4) reqCount(4).
-func writeDataCount(block []byte) int {
-	if len(block) < 12 || block[0] != cmdWrite {
-		return 0
+// Two commands ride the two-phase ASPWrite path:
+//   - FPWrite (33): header cmd(1) flag(1) forkRefNum(2) offset(4) reqCount(4) —
+//     12 bytes; data count is reqCount.
+//   - FPAddIcon (192): header cmd(1) pad(1) DTRefNum(2) creator(4) type(4)
+//     iconType(1) pad(1) tag(4) size(2) — 20 bytes; data count is size.
+func writeDataCount(block []byte) (count, headerLen int) {
+	switch {
+	case len(block) >= 12 && block[0] == cmdWrite:
+		n := int32(be32(block[8:12]))
+		if n < 0 {
+			return 0, 0
+		}
+		return int(n), 12
+	case len(block) >= 20 && block[0] == cmdAddIcon:
+		return int(be16(block[18:20])), 20
+	default:
+		return 0, 0
 	}
-	n := int32(be32(block[8:12]))
-	if n < 0 {
-		return 0
-	}
-	return int(n)
 }
 
-// appendWriteData reconstitutes a single-transaction FPWrite block from a
-// phase-1 FPWrite header and the data the workstation delivered in phase 2, so
-// the two-phase path reaches afpWrite (which reads its data inline from the
-// block) unchanged. The header is truncated to its 12 fixed bytes first in case
+// appendWriteData reconstitutes a single-transaction command block from a phase-1
+// header and the data the workstation delivered in phase 2, so the two-phase path
+// reaches the inline handler (afpWrite / afpAddIcon, which read their data from
+// the block) unchanged. The header is truncated to its fixed length first in case
 // the phase-1 aspWrite carried trailing bytes.
-func appendWriteData(header, data []byte) []byte {
+func appendWriteData(header []byte, headerLen int, data []byte) []byte {
 	h := header
-	if len(h) > 12 {
-		h = h[:12]
+	if len(h) > headerLen {
+		h = h[:headerLen]
 	}
 	out := make([]byte, 0, len(h)+len(data))
 	out = append(out, h...)

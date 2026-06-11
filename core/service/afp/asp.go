@@ -200,7 +200,7 @@ func (s *Service) handleWrite(req atpRequest) {
 	}
 	sess.lastRx = time.Now()
 
-	want := writeDataCount(pkt.CmdBlock)
+	want, hdrLen := writeDataCount(pkt.CmdBlock)
 	if want <= 0 {
 		// No data to fetch (zero-length FPWrite, or a non-write block): run it
 		// straight through the dispatcher and reply in one shot.
@@ -212,7 +212,7 @@ func (s *Service) handleWrite(req atpRequest) {
 		want = writeQuantum
 	}
 
-	pw := &pendingWrite{orig: req, sess: sess, cmdBlk: pkt.CmdBlock, want: want}
+	pw := &pendingWrite{orig: req, sess: sess, cmdBlk: pkt.CmdBlock, hdrLen: hdrLen, want: want}
 	tid := s.pendingWrites.add(pw)
 	s.sendDataWrite(req, sess, pkt.SeqNum, tid, want)
 }
@@ -270,7 +270,7 @@ func (s *Service) handleDataResponse(resp atpResponse) {
 	s.pendingWrites.remove(resp.transID)
 	pw.sess.lastRx = time.Now()
 
-	block := appendWriteData(pw.cmdBlk, pw.data)
+	block := appendWriteData(pw.cmdBlk, pw.hdrLen, pw.data)
 	reply, result := s.dispatchAFP(pw.sess, block)
 	pw.orig.respond(s.rtr, int32ToUserData(result), reply)
 }

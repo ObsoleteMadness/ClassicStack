@@ -3,6 +3,7 @@ package afp
 import (
 	stdfs "io/fs"
 	"strings"
+	"sync"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	"github.com/ObsoleteMadness/ClassicStack/core/metastore"
@@ -24,6 +25,9 @@ type Volume struct {
 	id    uint16
 	sh    *share.Share
 	cnids *metastore.CNIDStore
+
+	dtOnce sync.Once
+	dt     *desktopDB // lazily-built Desktop database (icons + APPL mappings)
 }
 
 // VolumeSpec names a share and the seam components to build it from. It mirrors
@@ -74,6 +78,18 @@ func (v *Volume) FS() fs.ForkFS { return v.sh.FS() }
 // codec is the share's FilenameCodec, threaded per request with the AFP wire
 // charset (selected by the path-type byte).
 func (v *Volume) codec() fs.FilenameCodec { return v.sh.Codec() }
+
+// ensureDesktop builds the volume's Desktop database on first FPOpenDT. The
+// database (icons + APPL mappings) is volume-scoped state shared by every session
+// that opens the Desktop, so it is created once and lives for the volume's life.
+func (v *Volume) ensureDesktop() { v.dtOnce.Do(func() { v.dt = newDesktopDB() }) }
+
+// desktop returns the volume's Desktop database, building it if a command reaches
+// it before FPOpenDT (defensive — the dispatch path always opens it first).
+func (v *Volume) desktop() *desktopDB {
+	v.ensureDesktop()
+	return v.dt
+}
 
 // metastoreKind returns the metastore kind a share's CNID store should use,
 // defaulting to "mem" so the CNID registry works with no SQLite linked.

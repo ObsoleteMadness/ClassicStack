@@ -38,7 +38,8 @@ const writeQuantum = asp.QuantumSize
 type pendingWrite struct {
 	orig   atpRequest // the phase-1 aspWrite TReq — phase 3 replies to this
 	sess   *session   // the ASP session the write belongs to
-	cmdBlk []byte     // the FPWrite command block (header) from phase 1
+	cmdBlk []byte     // the command block (FPWrite/FPAddIcon header) from phase 1
+	hdrLen int        // fixed header length to splice the data back onto
 	want   int        // bytes requested in the aspDataWrite (data is clamped to it)
 	data   []byte     // write data accumulated from TResp packets
 }

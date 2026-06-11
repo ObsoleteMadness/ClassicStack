@@ -12,9 +12,14 @@
 // FPEnumerate), catalog mutation (FPCreateFile, FPCreateDir, FPDelete, FPRename,
 // FPOpenDir/FPCloseDir — addressed dirID-relative through the volume's CNID
 // store), and fork I/O (FPOpenFork, FPRead, FPWrite, FPCloseFork,
-// FPFlush/FPFlushFork, FPGetForkParms) over the §9 fork engine — so a client can
-// create, rename, and delete catalog objects and round-trip fork bytes without
-// the spine holding any AppleDouble/stream/EA knowledge. The catalog reads pack
+// FPFlush/FPFlushFork, FPGetForkParms) over the §9 fork engine, and the Desktop
+// database (FPOpenDT/FPCloseDT, FPGetComment/FPAddComment/FPRemoveComment,
+// FPAddIcon/FPGetIcon/FPGetIconInfo, FPAddAPPL/FPRemoveAPPL/FPGetAPPL) — so a
+// client can create, rename, and delete catalog objects, round-trip fork bytes,
+// and store Finder comments/icons/application mappings without the spine holding
+// any AppleDouble/stream/EA knowledge. Comments ride the fork seam (they travel
+// with the file's metadata container); icons and APPL mappings are per-volume
+// Desktop state. The catalog reads pack
 // the full AFP 2.x file/directory parameter bitmaps (attributes, parent dir id,
 // create/modify/backup dates, 32-byte Finder info, long/short names, CNID
 // file-number/dir-id, data/resource fork lengths, offspring count, owner/group
@@ -315,7 +320,7 @@ func (s *Service) Start(ctx context.Context) error {
 		return nil
 	}
 	s.running = true
-	s.logf("AFP service started (dispatch spine: ASP session + catalog read/mutate + full file/dir bitmaps + fork I/O + two-phase write)")
+	s.logf("AFP service started (dispatch spine: ASP session + catalog read/mutate + full file/dir bitmaps + fork I/O + two-phase write + desktop DB)")
 	return nil
 }
 

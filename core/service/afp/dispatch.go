@@ -55,10 +55,11 @@ type afpSession struct {
 	loggedIn bool
 	openVols map[uint16]*Volume
 	forks    *forkTable
+	dt       *dtTable // Desktop reference numbers handed out by FPOpenDT
 }
 
 func newAFPSession() *afpSession {
-	return &afpSession{openVols: make(map[uint16]*Volume), forks: newForkTable()}
+	return &afpSession{openVols: make(map[uint16]*Volume), forks: newForkTable(), dt: newDTTable()}
 }
 
 // dispatchAFP decodes one AFP command block, runs the matching handler against
@@ -171,6 +172,58 @@ func (s *Service) dispatchAFP(sess *session, block []byte) (reply []byte, result
 			return nil, afpErrAccessDenied
 		}
 		return s.afpGetForkParms(a, block)
+	case cmdOpenDT:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpOpenDT(a, block)
+	case cmdCloseDT:
+		return s.afpCloseDT(a, block)
+	case cmdAddComment:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpAddComment(a, block)
+	case cmdRemoveComment:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpRemoveComment(a, block)
+	case cmdGetComment:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpGetComment(a, block)
+	case cmdAddIcon:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpAddIcon(a, block)
+	case cmdGetIcon:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpGetIcon(a, block)
+	case cmdGetIconInfo:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpGetIconInfo(a, block)
+	case cmdAddAPPL:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpAddAPPL(a, block)
+	case cmdRemoveAPPL:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpRemoveAPPL(a, block)
+	case cmdGetAPPL:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpGetAPPL(a, block)
 	default:
 		return nil, afpErrCallNotSuppt
 	}
