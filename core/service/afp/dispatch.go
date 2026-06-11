@@ -224,6 +224,11 @@ func (s *Service) dispatchAFP(sess *session, block []byte) (reply []byte, result
 			return nil, afpErrAccessDenied
 		}
 		return s.afpGetAPPL(a, block)
+	case cmdCatSearch:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpCatSearch(a, block)
 	default:
 		return nil, afpErrCallNotSuppt
 	}

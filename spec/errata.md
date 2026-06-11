@@ -60,3 +60,21 @@ This document records places where ClassicStack's wire behavior intentionally di
 **Path encoding note:** The catalog commands (FPCreateFile/…/FPAddAPPL/FPRemoveAPPL) resolve their pathname as the rest of the command block (`resolveCatalogPath` → null-separated CNode names). The comment commands carry a trailing field after the path (AddComment's comment), so they read the pathname as a length-prefixed Pascal string (`resolveDTPath` → `pString`) — the form the AFP wire uses for kFPLongName/kFPShortName paths. Both reach the same `Volume.ResolvePath`.
 
 **Where:** `core/service/afp/desktop.go` — `afpOpenDT`/`afpAddComment`/`afpAddIcon`/`afpAddAPPL` et al., `desktopDB`, `dtTable`; `core/service/afp/forkio.go` — `writeDataCount`/`appendWriteData`.
+
+### FPCatSearch over the FileSystem seam (Inside Macintosh: Networking, AFP 2.1 §"FPCatSearch")
+
+**Spec:** FPCatSearch (command **43**) searches a volume's whole catalog for files and directories matching a set of criteria expressed as two parameter blocks — *spec1* (the value / lower bound) and *spec2* (the upper bound of ranged fields, plus the Finder-info mask) — keyed by a `ReqBitMap`. It returns matches a page at a time, the client echoing an opaque 16-byte `CatalogPosition` cursor to resume.
+
+**What we do (refactored `core/service/afp`):** The spine has no on-disk catalog index, so it walks the live catalog through the §9 FileSystem seam (`v.Enumerate`, depth-first, descending into every subdirectory) and packs each match with the same `fileDirParams` packer the catalog-read commands use — so CatSearch holds no storage-layout knowledge. It honours the criteria the field actually exercises:
+
+- **PartialName** (`ReqBitMap` bit 0) → case-insensitive substring match; **FullName** (bit 1) → case-insensitive exact match. The Finder's "Find File" sends one of these; it is the dominant real use.
+- **ParentDirID** (bit 4) → match only entries whose parent CNID equals the spec1 value.
+- A **zero `ReqBitMap`** matches every entry (enumerate-the-volume), which is what a "find every item" client expects.
+
+Criteria bits the spine does not model (date ranges, fork lengths, Finder-info flag/mask, attribute ranges) are **ignored rather than rejected** — a lenient posture matching what real servers show against the assorted clients in the wild, and which never returns a false *negative* for the name search that dominates.
+
+**Cursor / paging:** The opaque `CatalogPosition` carries a flat 1-based visit index in its last 4 bytes (0 = new search) and a continuation flag in byte 0. A page returns up to `ReqMatches` records capped at ~4 KB of ResultsRecord data (one ASP quantum); if more matches remain the reply carries `NoErr` and the next index, otherwise `kFPEOFErr` and a zero cursor (the AFP/Netatalk last-page convention). Because the index is a stable depth-first visit count, a resumed search re-walks the tree but skips the entries already returned, so paging neither repeats nor drops matches as long as the catalog is unchanged between calls.
+
+**Divergence from the legacy port:** The old `service/afp/catsearch.go` delegated to a backend `FileSystem.CatSearch(volumeRoot, query, …)` that flattened the criteria to a single printable-substring query and required a backend `CatSearch` capability; the refactored spine decodes the real spec1/spec2 records itself and walks any backend (no capability flag needed), so a memfs/local_fs volume searches without a bespoke index.
+
+**Where:** `core/service/afp/catsearch.go` — `afpCatSearch`, `decodeCatSearchCriteria`, `walkCatSearch`/`catSearchWalk`.

@@ -19,7 +19,9 @@
 // and store Finder comments/icons/application mappings without the spine holding
 // any AppleDouble/stream/EA knowledge. Comments ride the fork seam (they travel
 // with the file's metadata container); icons and APPL mappings are per-volume
-// Desktop state. The catalog reads pack
+// Desktop state. FPCatSearch searches the whole catalog (descending through
+// subdirectories via the FileSystem seam) for partial/full name matches a page at
+// a time — the wire behind the Finder's "Find File". The catalog reads pack
 // the full AFP 2.x file/directory parameter bitmaps (attributes, parent dir id,
 // create/modify/backup dates, 32-byte Finder info, long/short names, CNID
 // file-number/dir-id, data/resource fork lengths, offspring count, owner/group
@@ -320,7 +322,7 @@ func (s *Service) Start(ctx context.Context) error {
 		return nil
 	}
 	s.running = true
-	s.logf("AFP service started (dispatch spine: ASP session + catalog read/mutate + full file/dir bitmaps + fork I/O + two-phase write + desktop DB)")
+	s.logf("AFP service started (dispatch spine: ASP session + catalog read/mutate + full file/dir bitmaps + fork I/O + two-phase write + desktop DB + catsearch)")
 	return nil
 }
 
