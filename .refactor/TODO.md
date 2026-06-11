@@ -297,9 +297,14 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > - **M7c (`2f26eb8`):** `core/share` thin Share descriptor + `Manager` CRUD; AFP `Volume` & SMB
 >   `Share` hold a `*share.Share`; both implement `share.Manager` (RemoveShare keeps in-flight
 >   sessions). Supervisor/config wiring is M8a.
-> - **Remaining M7:** fork I/O (FPRead/FPWrite/FPOpenFork), full file/dir bitmaps, desktop DB,
->   two-phase ASPWrite; SMB/NetBIOS command engines onto the shares; same-FS AFP+SMB coordination
->   via the FS bus (§10d); capture-replay vs `/captures/afp-*.pcap`; then delete legacy
+> - **Slice 4 (`e01e6f1`):** AFP fork I/O — per-session fork table + FPOpenFork/FPRead/FPWrite/
+>   FPCloseFork/FPFlush/FPFlushFork/FPGetForkParms over `v.FS().OpenFork` + positional I/O (no
+>   AppleDouble/stream/EA knowledge in the spine). Short/at-EOF read → bytes+kFPEOFErr; R/O-handle
+>   write → kFPAccessDenied; from-end write appends at live `ForkLen`; forks drained on CloseSession.
+>   ENOSPC left as an OS-adapter refinement (core stays syscall-free).
+> - **Remaining M7:** full file/dir bitmaps, FPOpenDir/FPCreate*/FPDelete/FPRename, desktop DB,
+>   two-phase ASPWrite (large FPWrite); SMB/NetBIOS command engines onto the shares; same-FS AFP+SMB
+>   coordination via the FS bus (§10d); capture-replay vs `/captures/afp-*.pcap`; then delete legacy
 >   `service/{afp,smb,netbios}` per strangler step 5. TCP transports are M7a (`adapter/dsi`) / M7b
 >   (`adapter/smbtcp`).
 
