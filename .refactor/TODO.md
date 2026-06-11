@@ -314,8 +314,17 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 >   Volume gains FinderInfo/ShortName/ParentCNID; GetFileDirParms/Enumerate/OpenFork/GetForkParms all
 >   pack via `vol.fileDirParams`. Dates fixed onto the spec 2000-GMT epoch (legacy used 1904-local) —
 >   `spec/errata.md` "AFP catalog date epoch". `parms_test.go` checks every field at its bit offset.
+> - **Slice 7 (`d595bd7`):** AFP two-phase ASPWrite data path — the server-initiated
+>   aspWrite→aspDataWrite→TResp→reply exchange (spec/10) so a large FPWrite carries its data over its
+>   own ATP transaction. `write.go` `pendingWriteTable` keyed by the tid the server stamps into the
+>   aspDataWrite TReq (WS echoes it in its TResp); `asp.go` `handleWrite` (phase 1: parse FPWrite
+>   reqCount, send aspDataWrite via the originating port's `Unicast`) + `handleDataResponse`
+>   (phase 2b→3: accumulate TResp data, run FPWrite on EOM, reply to the original aspWrite); `atp.go`
+>   `parseATPResponse` decodes the inbound TResp the spine previously dropped. Zero-reqCount writes
+>   complete inline. `write_test.go` drives single-/multi-packet/zero-length writes over a recording
+>   port. Pure ASP/ATP transport — storage still touched only via the fork engine.
 > - **Remaining M7:** desktop DB (FPGetComment/FPAddIcon/…), CatSearch;
->   two-phase ASPWrite (large FPWrite); SMB/NetBIOS command engines onto the shares; same-FS AFP+SMB
+>   SMB/NetBIOS command engines onto the shares; same-FS AFP+SMB
 >   coordination via the FS bus (§10d); capture-replay vs `/captures/afp-*.pcap`; then delete legacy
 >   `service/{afp,smb,netbios}` per strangler step 5. TCP transports are M7a (`adapter/dsi`) / M7b
 >   (`adapter/smbtcp`).
