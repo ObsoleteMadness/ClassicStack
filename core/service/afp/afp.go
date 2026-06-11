@@ -7,10 +7,13 @@
 //
 // As of M7 the protocol dispatch (DDP→ATP→ASP→AFP) is wired as a reviewable
 // spine: ASPGetStatus, OpenSession/CloseSession/Tickle, and an ASPCommand demux
-// to an AFP request dispatcher with a starter command set (FPGetSrvrInfo,
-// FPLogin, FPGetSrvrParms, FPOpenVol, FPGetFileDirParms, FPEnumerate) that proves
-// the Volume seam end-to-end. Further AFP commands, the two-phase ASPWrite data
-// path, and DSI/TCP transport land in follow-up slices.
+// to an AFP request dispatcher. The command set covers connection/catalog
+// (FPGetSrvrInfo, FPLogin, FPGetSrvrParms, FPOpenVol, FPGetFileDirParms,
+// FPEnumerate) and fork I/O (FPOpenFork, FPRead, FPWrite, FPCloseFork,
+// FPFlush/FPFlushFork, FPGetForkParms) over the §9 fork engine — so a client can
+// open a file's data or resource fork and round-trip bytes without the spine
+// holding any AppleDouble/stream/EA knowledge. Further AFP commands, the
+// two-phase ASPWrite data path, and DSI/TCP transport land in follow-up slices.
 //
 // Security posture: this is a compatibility server, not an authentication
 // server. The supported single-step UAMs ("No User Authent", "Cleartxt Passwrd")
@@ -293,7 +296,7 @@ func (s *Service) Start(ctx context.Context) error {
 		return nil
 	}
 	s.running = true
-	s.logf("AFP service started (dispatch spine: ASP session + starter AFP commands)")
+	s.logf("AFP service started (dispatch spine: ASP session + catalog + fork I/O)")
 	return nil
 }
 

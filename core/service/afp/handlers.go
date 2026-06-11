@@ -20,6 +20,10 @@ func putBE32(dst []byte, v uint32) []byte {
 
 func be16(b []byte) uint16 { return uint16(b[0])<<8 | uint16(b[1]) }
 
+func be32(b []byte) uint32 {
+	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
+}
+
 // putPString appends a Pascal string (1-byte length prefix + bytes, truncated to
 // 255). Names longer than 255 bytes cannot be represented on the AFP wire.
 func putPString(dst []byte, s []byte) []byte {

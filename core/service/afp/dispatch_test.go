@@ -335,10 +335,6 @@ func decodeEnumNames(t *testing.T, b []byte, count int) []string {
 
 func contains(ss []string, want string) bool { return slices.Contains(ss, want) }
 
-func be32(b []byte) uint32 {
-	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
-}
-
 func mustCreate(t *testing.T, vol *Volume, path string) {
 	t.Helper()
 	f, err := vol.FS().CreateFile(path)

@@ -135,9 +135,14 @@ func (s *Service) handleOpenSession(req atpRequest) {
 	req.respond(s.rtr, reply.MarshalUserData(), nil)
 }
 
-// handleCloseSession tears down the session and replies empty (UserData 0).
+// handleCloseSession tears down the session and replies empty (UserData 0). Any
+// forks the client left open are closed here so a client that disconnects without
+// FPCloseFork does not leak file handles.
 func (s *Service) handleCloseSession(req atpRequest) {
 	pkt := asp.ParseCloseSessPacket(req.userData)
+	if sess, ok := s.sessions.get(pkt.SessionID); ok && sess.afp != nil {
+		sess.afp.forks.closeAll()
+	}
 	s.sessions.close(pkt.SessionID)
 	req.respond(s.rtr, asp.CloseSessReplyUserData(), nil)
 }
