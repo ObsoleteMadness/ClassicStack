@@ -105,7 +105,7 @@ func (s *Service) afpOpenFork(a *afpSession, block []byte) ([]byte, int32) {
 	out := make([]byte, 0, 32)
 	out = putBE16(out, bitmap)
 	out = putBE16(out, ref)
-	out = packEntryParams(out, vol, store, info, bitmap, pathType)
+	out = vol.fileDirParams(out, store, info, bitmap, pathType)
 	return out, afpNoErr
 }
 
@@ -279,10 +279,10 @@ func (s *Service) afpGetForkParms(a *afpSession, block []byte) ([]byte, int32) {
 	}
 	out := make([]byte, 0, 32)
 	out = putBE16(out, bitmap)
-	// packEntryParams reads DataForkLen through the fork engine, so the length is
+	// fileDirParams reads the fork lengths through the fork engine, so they are
 	// already authoritative; pathType 0 keeps any LongName store-native (the only
 	// charset-free choice when there is no request path-type byte).
-	out = packEntryParams(out, h.vol, h.path, info, bitmap, 0)
+	out = h.vol.fileDirParams(out, h.path, info, bitmap, 0)
 	return out, afpNoErr
 }
 

@@ -14,8 +14,13 @@
 // store), and fork I/O (FPOpenFork, FPRead, FPWrite, FPCloseFork,
 // FPFlush/FPFlushFork, FPGetForkParms) over the §9 fork engine — so a client can
 // create, rename, and delete catalog objects and round-trip fork bytes without
-// the spine holding any AppleDouble/stream/EA knowledge. The two-phase ASPWrite
-// data path and DSI/TCP transport land in follow-up slices.
+// the spine holding any AppleDouble/stream/EA knowledge. The catalog reads pack
+// the full AFP 2.x file/directory parameter bitmaps (attributes, parent dir id,
+// create/modify/backup dates, 32-byte Finder info, long/short names, CNID
+// file-number/dir-id, data/resource fork lengths, offspring count, owner/group
+// and access rights) from the seam — dates on the 2000 GMT epoch (spec/errata
+// "AFP catalog date epoch"). The two-phase ASPWrite data path and DSI/TCP
+// transport land in follow-up slices.
 //
 // Security posture: this is a compatibility server, not an authentication
 // server. The supported single-step UAMs ("No User Authent", "Cleartxt Passwrd")
@@ -298,7 +303,7 @@ func (s *Service) Start(ctx context.Context) error {
 		return nil
 	}
 	s.running = true
-	s.logf("AFP service started (dispatch spine: ASP session + catalog read/mutate + fork I/O)")
+	s.logf("AFP service started (dispatch spine: ASP session + catalog read/mutate + full file/dir bitmaps + fork I/O)")
 	return nil
 }
 

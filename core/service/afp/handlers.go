@@ -5,8 +5,6 @@ import (
 	stdfs "io/fs"
 	"strings"
 	"time"
-
-	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 )
 
 // --- hand-rolled big-endian + Pascal-string helpers (core ring: no
@@ -55,6 +53,10 @@ var afpEpoch = time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)
 
 // macTime converts a wall-clock time to the signed 32-bit AFP timestamp.
 func macTime(t time.Time) uint32 { return uint32(int32(t.Sub(afpEpoch) / time.Second)) }
+
+// noBackupDate is the AFP "never backed up" sentinel date (0x80000000), used in
+// catalog and volume parameter replies when no backup time is tracked.
+const noBackupDate uint32 = 0x80000000
 
 // --- FPGetSrvrInfo (server-information block; spec/AFP_Connection_Flow §2). ---
 
@@ -244,7 +246,7 @@ func packVolParams(out []byte, vol *Volume, bitmap uint16) []byte {
 		out = putBE32(out, macTime(afpEpoch))
 	}
 	if bitmap&volBitmapBackupDate != 0 {
-		out = putBE32(out, 0x80000000) // "no backup date" sentinel
+		out = putBE32(out, noBackupDate)
 	}
 	if bitmap&volBitmapID != 0 {
 		out = putBE16(out, vol.ID())
@@ -273,25 +275,9 @@ func (s *Service) afpCloseVol(a *afpSession, block []byte) ([]byte, int32) {
 }
 
 // --- FPGetFileDirParms / FPEnumerate (catalog reads; spec/AFP_Connection_Flow
-// §7). These pack a deliberately small, faithful subset of the file/dir bitmaps —
-// enough to prove the Volume seam end-to-end — leaving the full bitmap surface to
-// a follow-up slice. ---
-
-// File/dir parameter bitmap bits actually packed by this spine (Inside
-// Macintosh: Networking, "File parameters" / "Directory parameters"). The full
-// bitmap surface (Finder info, dates, CNID, short name, access rights, …) lands
-// in a follow-up slice; this subset proves the Volume seam end-to-end:
-//   - LongName exercises the FilenameCodec Encode path (store → wire charset);
-//   - DataForkLen exercises the fork engine's ForkLen;
-//   - OffspringCount exercises Enumerate via the FileSystem.
-//
-// LongName shares bit 4 between the file and directory bitmaps; the data-fork
-// length (file, bit 9) and the offspring count (directory, bit 9) share bit 9.
-const (
-	fileDirBitmapLongName   uint16 = 1 << 4
-	fileBitmapDataForkLen   uint16 = 1 << 9
-	dirBitmapOffspringCount uint16 = 1 << 9
-)
+// §7). The requested file/dir parameters are packed by the volume's full
+// bitmap packer (parms.go), in ascending bit order with variable-length names in
+// a trailing area addressed by 2-byte offsets — the AFP 2.x parameter block. ---
 
 // isDirFlag is the high bit of the per-entry "file/dir" byte in an Enumerate
 // reply: set for a directory, clear for a file.
@@ -335,7 +321,7 @@ func (s *Service) afpGetFileDirParms(a *afpSession, block []byte) ([]byte, int32
 	} else {
 		out = append(out, 0, 0)
 	}
-	out = packEntryParams(out, vol, store, info, bitmap, pathType)
+	out = vol.fileDirParams(out, store, info, bitmap, pathType)
 	return out, afpNoErr
 }
 
@@ -404,7 +390,7 @@ func (s *Service) afpEnumerate(a *afpSession, block []byte) ([]byte, int32) {
 			isDir = isDirFlag
 		}
 		entry = append(entry, isDir, 0) // isDir + pad, after the length byte
-		entry = packEntryParams(entry, vol, childStore, info, bitmap, pathType)
+		entry = vol.fileDirParams(entry, childStore, info, bitmap, pathType)
 		// Each entry is prefixed by its own length byte (incl. the length byte)
 		// and padded to an even total length.
 		entryLen := len(entry) + 1
@@ -422,43 +408,6 @@ func (s *Service) afpEnumerate(a *afpSession, block []byte) ([]byte, int32) {
 	out[countOff] = byte(actual >> 8)
 	out[countOff+1] = byte(actual)
 	return out, afpNoErr
-}
-
-// packEntryParams appends the file/dir parameters named by bitmap for one catalog
-// entry, in ascending bit order. Only the spine's subset is packed (LongName,
-// DataForkLen for files / OffspringCount for directories); bits outside it are
-// silently omitted, so the client reads exactly what the returned bitmap
-// advertises. The name is encoded back to the request's wire charset through the
-// volume's FilenameCodec — an unrepresentable name is omitted rather than
-// mangled.
-func packEntryParams(out []byte, vol *Volume, store string, info stdfs.FileInfo, bitmap uint16, pathType uint8) []byte {
-	if bitmap&fileDirBitmapLongName != 0 {
-		_, base := splitStore(store)
-		if wire, err := vol.EncodeName(base, pathType); err == nil {
-			out = putPString(out, wire)
-		} else {
-			out = putPString(out, nil)
-		}
-	}
-	if info.IsDir() {
-		if bitmap&dirBitmapOffspringCount != 0 {
-			var count uint16
-			if kids, err := vol.Enumerate(store); err == nil {
-				for _, k := range kids {
-					if !isMetadataName(k.Name()) {
-						count++
-					}
-				}
-			}
-			out = putBE16(out, count)
-		}
-	} else {
-		if bitmap&fileBitmapDataForkLen != 0 {
-			n, _ := vol.ForkLen(store, fs.DataFork)
-			out = putBE32(out, uint32(n))
-		}
-	}
-	return out
 }
 
 // resolveBlockPath resolves the pathname starting at off in an AFP command block

@@ -243,8 +243,8 @@ func TestDispatch_LoginGetSrvrParmsOpenVolEnumerate(t *testing.T) {
 	enum := []byte{cmdEnumerate, 0}
 	enum = putBE16(enum, volID) // volID
 	enum = putBE32(enum, 2)     // dirID = root
-	enum = putBE16(enum, fileDirBitmapLongName|fileBitmapDataForkLen)
-	enum = putBE16(enum, fileDirBitmapLongName|dirBitmapOffspringCount)
+	enum = putBE16(enum, fdBitmapLongName|fileBitmapDataForkLen)
+	enum = putBE16(enum, fdBitmapLongName|dirBitmapOffspring)
 	enum = putBE16(enum, 10)               // reqCount
 	enum = putBE16(enum, 1)                // startIndex (1-based)
 	enum = putBE16(enum, 4624)             // maxReplySize
@@ -287,8 +287,8 @@ func TestDispatch_GetFileDirParms(t *testing.T) {
 	req := []byte{cmdGetFileDirParms, 0}
 	req = putBE16(req, volID)
 	req = putBE32(req, 2) // dirID root
-	req = putBE16(req, fileDirBitmapLongName|fileBitmapDataForkLen)
-	req = putBE16(req, fileDirBitmapLongName)
+	req = putBE16(req, fdBitmapLongName|fileBitmapDataForkLen)
+	req = putBE16(req, fdBitmapLongName)
 	req = append(req, PathTypeUTF8Names)
 	req = append(req, []byte("report.doc")...)
 	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 4), req)), from)
@@ -297,17 +297,21 @@ func TestDispatch_GetFileDirParms(t *testing.T) {
 		t.Fatalf("GetFileDirParms result = %d, want 0", got)
 	}
 	reply := respPayload(r.lastReply())
-	// reply = bitmap(2) isDir(1) pad(1) longName(pstring) dataForkLen(4)
+	// reply = bitmap(2) isDir(1) pad(1) <param block>. The param block holds the
+	// fixed fields in bit order — LongName's 2-byte offset, then DataForkLen(4) —
+	// followed by the variable area the LongName offset points into.
 	if reply[2]&isDirFlag != 0 {
 		t.Fatalf("report.doc reported as directory")
 	}
-	name, next, ok := pString(reply, 4)
-	if !ok || string(name) != "report.doc" {
-		t.Fatalf("GetFileDirParms name = %q, want report.doc", name)
-	}
-	dataLen := be32(reply[next : next+4])
+	params := reply[4:]
+	nameOff := int(be16(params[0:2]))
+	dataLen := be32(params[2:6])
 	if dataLen != 4 { // mustCreate wrote "data"
 		t.Fatalf("data-fork length = %d, want 4", dataLen)
+	}
+	name, _, ok := pString(params, nameOff)
+	if !ok || string(name) != "report.doc" {
+		t.Fatalf("GetFileDirParms name = %q, want report.doc", name)
 	}
 }
 
@@ -323,8 +327,13 @@ func decodeEnumNames(t *testing.T, b []byte, count int) []string {
 		}
 		entryLen := int(b[off])
 		entry := b[off+1 : off+entryLen]
-		// entry = isDir(1) pad(1) then params; first param is the LongName pstring.
-		name, _, ok := pString(entry, 2)
+		// entry = isDir(1) pad(1) then the parameter block. The block's first
+		// field (LongName is the lowest requested bit here) is a 2-byte offset,
+		// measured from the start of the parameter block, to the name pstring in
+		// the trailing variable area.
+		params := entry[2:]
+		nameOff := int(be16(params[0:2]))
+		name, _, ok := pString(params, nameOff)
 		if ok {
 			names = append(names, string(name))
 		}

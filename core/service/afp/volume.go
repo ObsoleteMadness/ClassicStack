@@ -141,6 +141,16 @@ func (v *Volume) CNID(path string) uint32 { return v.cnids.Ensure(path) }
 // PathForCNID reverses CNID: the store path a node id maps to.
 func (v *Volume) PathForCNID(cnid uint32) (string, bool) { return v.cnids.Path(cnid) }
 
+// ParentCNID returns the catalog node id of a path's parent directory. The
+// volume root's parent is the synthetic CNIDParentOfRoot (1), per AFP (Inside
+// Macintosh: Networking, "Directory parameters" — ParentDirID of the root is 1).
+func (v *Volume) ParentCNID(path string) uint32 {
+	if path == "" {
+		return metastore.CNIDParentOfRoot
+	}
+	return v.cnids.Ensure(ascend(path))
+}
+
 // Enumerate lists the children of a directory as store-native dir entries.
 // Catalog packing (encoding names back to the wire charset, attaching CNIDs and
 // fork lengths) is the caller's concern — done through EncodeName, CNID, and the
@@ -156,6 +166,31 @@ func (v *Volume) Stat(path string) (stdfs.FileInfo, error) { return v.FS().Stat(
 // ForkLen reports a fork's length through the fork engine.
 func (v *Volume) ForkLen(path string, fork fs.ForkType) (int64, error) {
 	return v.FS().ForkLen(path, fork)
+}
+
+// FinderInfo reads the 32-byte AFP Finder info (16-byte FInfo + 16-byte
+// FXInfo) for a path through the fork engine. A path with no stored Finder info
+// reports the zero record (ok == false), which the catalog packer emits as 32
+// zero bytes — the AFP convention for "no Finder info yet".
+func (v *Volume) FinderInfo(path string) (info [32]byte, ok bool) {
+	fi, present, err := v.FS().ReadFinderInfo(path)
+	if err != nil || !present {
+		return [32]byte{}, false
+	}
+	return fi, true
+}
+
+// ShortName returns the volume's 8.3-style short name for a path's final
+// element, derived through the share's NameEngine. The engine returns a store
+// path; the caller wants just the leaf for the wire, so the parent is trimmed.
+func (v *Volume) ShortName(path string) string {
+	n, err := v.FS().ShortName(path)
+	if err != nil || n == "" {
+		_, base := splitStore(path)
+		return base
+	}
+	_, base := splitStore(n)
+	return base
 }
 
 // renamePath moves a path inside the volume and rebinds the CNID subtree so node
