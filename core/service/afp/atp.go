@@ -24,9 +24,8 @@ type atpRequest struct {
 }
 
 // parseATPRequest decodes the ATP header from a DDP type-3 datagram and returns
-// the request if it is a TReq. Non-TReq packets (TResp/TRel, e.g. the
-// workstation's reply to a server tickle) return ok=false; the session layer
-// ignores them in this spine, which serves no server-initiated transactions yet.
+// the request if it is a TReq. Non-TReq packets (TResp/TRel) return ok=false;
+// TResp packets carrying two-phase-write data are handled via parseATPResponse.
 func parseATPRequest(d ddp.Datagram, from router.RoutedPort) (atpRequest, bool) {
 	h, err := atp.Decode(d.Data)
 	if err != nil {
@@ -43,6 +42,36 @@ func parseATPRequest(d ddp.Datagram, from router.RoutedPort) (atpRequest, bool) 
 		transID:  h.TransID,
 		userData: h.UserData,
 		payload:  d.Data[atp.HeaderSize:],
+	}, true
+}
+
+// atpResponse is one inbound ATP TResp packet, decoded for the two-phase-write
+// data path: the transaction id correlates it back to the aspDataWrite TReq the
+// server sent (the workstation echoes that id), seq is the response packet's
+// sequence number, eom marks the final packet of the message, and payload is the
+// write data the packet carries.
+type atpResponse struct {
+	transID uint16
+	seq     uint8
+	eom     bool
+	payload []byte
+}
+
+// parseATPResponse decodes a DDP type-3 datagram as an ATP TResp. Non-TResp
+// packets (TReq/TRel) return ok=false.
+func parseATPResponse(d ddp.Datagram) (atpResponse, bool) {
+	h, err := atp.Decode(d.Data)
+	if err != nil {
+		return atpResponse{}, false
+	}
+	if h.FuncCode() != atp.FuncTResp {
+		return atpResponse{}, false
+	}
+	return atpResponse{
+		transID: h.TransID,
+		seq:     h.Bitmap, // sequence number in a TResp
+		eom:     h.EOM(),
+		payload: d.Data[atp.HeaderSize:],
 	}, true
 }
 

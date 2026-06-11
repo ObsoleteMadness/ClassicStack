@@ -19,8 +19,10 @@
 // create/modify/backup dates, 32-byte Finder info, long/short names, CNID
 // file-number/dir-id, data/resource fork lengths, offspring count, owner/group
 // and access rights) from the seam — dates on the 2000 GMT epoch (spec/errata
-// "AFP catalog date epoch"). The two-phase ASPWrite data path and DSI/TCP
-// transport land in follow-up slices.
+// "AFP catalog date epoch"). Large FPWrites use the two-phase ASPWrite data path
+// (spec/10): the server answers an aspWrite by initiating an aspDataWrite TReq to
+// the workstation, collects the data from its TResp packets, then replies to the
+// original aspWrite. The DSI/TCP transport lands in a follow-up slice.
 //
 // Security posture: this is a compatibility server, not an authentication
 // server. The supported single-step UAMs ("No User Authent", "Cleartxt Passwrd")
@@ -71,11 +73,12 @@ var (
 // seam (fs.ForkFS + metastore.CNIDStore + FilenameCodec) and the ASP session
 // layer that drives them. The service holds no storage-layout knowledge itself.
 type Service struct {
-	logger   log.Logger
-	volumes  []*Volume
-	info     ServerInfo
-	socket   uint8
-	sessions *sessionTable
+	logger        log.Logger
+	volumes       []*Volume
+	info          ServerInfo
+	socket        uint8
+	sessions      *sessionTable
+	pendingWrites *pendingWriteTable
 
 	mu      sync.Mutex
 	rtr     router.ServiceRouter
@@ -86,7 +89,12 @@ type Service struct {
 // configured separately as the seam wiring matures). Kept for the compose
 // registry's zero-config constructor.
 func New(logger log.Logger) *Service {
-	return &Service{logger: logger, socket: defaultSocket, sessions: newSessionTable()}
+	return &Service{
+		logger:        logger,
+		socket:        defaultSocket,
+		sessions:      newSessionTable(),
+		pendingWrites: newPendingWriteTable(),
+	}
 }
 
 // NewWithVolumes builds the AFP service over a set of share specs, constructing
@@ -287,11 +295,15 @@ func (s *Service) Inbound(d ddp.Datagram, from router.RoutedPort) {
 	if d.DDPType != atp.DDPType {
 		return
 	}
-	req, ok := parseATPRequest(d, from)
-	if !ok {
+	if req, ok := parseATPRequest(d, from); ok {
+		s.handleASP(req)
 		return
 	}
-	s.handleASP(req)
+	// A TResp is the workstation answering the server-initiated aspDataWrite TReq
+	// with phase-2b write data; correlate it back to the pending write.
+	if resp, ok := parseATPResponse(d); ok {
+		s.handleDataResponse(resp)
+	}
 }
 
 // Start brings the service up. Idempotent (§3). The router must be bound first.
@@ -303,7 +315,7 @@ func (s *Service) Start(ctx context.Context) error {
 		return nil
 	}
 	s.running = true
-	s.logf("AFP service started (dispatch spine: ASP session + catalog read/mutate + full file/dir bitmaps + fork I/O)")
+	s.logf("AFP service started (dispatch spine: ASP session + catalog read/mutate + full file/dir bitmaps + fork I/O + two-phase write)")
 	return nil
 }
 

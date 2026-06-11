@@ -275,9 +275,15 @@ The ASP server lives in `core/service/afp` over the migrated `core/protocol/asp`
   reply returns this same socket as the SSS.
 - `dispatch.go` + `handlers.go` — the AFP command demux and the starter command
   set over the §9 Volumes (see [AFP_Connection_Flow.md](AFP_Connection_Flow.md)).
+- `write.go` — the two-phase ASPWrite data path: a `pendingWriteTable` keyed by
+  the transaction id the server stamps into the aspDataWrite TReq it sends, so
+  the workstation's TResp data correlates back to the in-flight FPWrite. `asp.go`
+  `handleWrite` runs phase 1 (parse the FPWrite reqCount, send the aspDataWrite),
+  `handleDataResponse` runs phase 2b→3 (accumulate TResp data by sequence, run
+  the FPWrite on EOM, reply to the original aspWrite). `atp.go` `parseATPResponse`
+  decodes the inbound TResp the spine previously dropped.
 
-The server-initiated two-phase ASPWrite data path (aspDataWrite/WriteContinue)
-and the periodic server→workstation tickle are not yet wired in this spine.
+The periodic server→workstation tickle is not yet wired in this spine.
 
 ### Server responsibilities
 

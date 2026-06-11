@@ -149,6 +149,38 @@ func (s *Service) afpRead(a *afpSession, block []byte) ([]byte, int32) {
 	return buf[:n], afpNoErr
 }
 
+// writeDataCount returns the FPWrite reqCount (the number of data bytes the
+// client intends to write) from an FPWrite command block, or 0 if the block is
+// not a well-formed FPWrite header. The ASP layer reads this in phase 1 of a
+// two-phase write to learn how many data bytes to pull from the workstation.
+//
+// FPWrite header: cmd(1) flag(1) forkRefNum(2) offset(4) reqCount(4).
+func writeDataCount(block []byte) int {
+	if len(block) < 12 || block[0] != cmdWrite {
+		return 0
+	}
+	n := int32(be32(block[8:12]))
+	if n < 0 {
+		return 0
+	}
+	return int(n)
+}
+
+// appendWriteData reconstitutes a single-transaction FPWrite block from a
+// phase-1 FPWrite header and the data the workstation delivered in phase 2, so
+// the two-phase path reaches afpWrite (which reads its data inline from the
+// block) unchanged. The header is truncated to its 12 fixed bytes first in case
+// the phase-1 aspWrite carried trailing bytes.
+func appendWriteData(header, data []byte) []byte {
+	h := header
+	if len(h) > 12 {
+		h = h[:12]
+	}
+	out := make([]byte, 0, len(h)+len(data))
+	out = append(out, h...)
+	return append(out, data...)
+}
+
 // afpWrite writes to an open fork.
 //
 // Request: cmd(1) flag(1) forkRefNum(2) offset(4) reqCount(4) data...
