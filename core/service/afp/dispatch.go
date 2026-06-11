@@ -4,8 +4,12 @@ package afp
 // summary"). Only the spine's starter set is enumerated; further commands land
 // in follow-up slices.
 const (
+	cmdCloseDir        uint8 = 3  // FPCloseDir
 	cmdCloseFork       uint8 = 4  // FPCloseFork
 	cmdCloseVol        uint8 = 2  // FPCloseVol
+	cmdCreateDir       uint8 = 6  // FPCreateDir
+	cmdCreateFile      uint8 = 7  // FPCreateFile
+	cmdDelete          uint8 = 8  // FPDelete
 	cmdEnumerate       uint8 = 9  // FPEnumerate
 	cmdFlush           uint8 = 10 // FPFlush
 	cmdFlushFork       uint8 = 11 // FPFlushFork
@@ -15,9 +19,11 @@ const (
 	cmdLogin           uint8 = 18 // FPLogin
 	cmdLoginCont       uint8 = 19 // FPLoginCont
 	cmdLogout          uint8 = 20 // FPLogout
+	cmdOpenDir         uint8 = 25 // FPOpenDir
 	cmdOpenFork        uint8 = 26 // FPOpenFork
 	cmdOpenVol         uint8 = 24 // FPOpenVol
 	cmdRead            uint8 = 27 // FPRead
+	cmdRename          uint8 = 28 // FPRename
 	cmdGetFileDirParms uint8 = 34 // FPGetFileDirParms
 	cmdWrite           uint8 = 33 // FPWrite
 )
@@ -25,16 +31,20 @@ const (
 // AFP result codes (kFP*; Inside Macintosh: Networking, "AFP result codes"). The
 // wire form is a signed 32-bit OSErr carried in the ASP/ATP reply UserData.
 const (
-	afpNoErr           int32 = 0
-	afpErrAccessDenied int32 = -5000 // kFPAccessDenied
-	afpErrBadUAM       int32 = -5002 // kFPBadUAM
-	afpErrBadVersNum   int32 = -5003 // kFPBadVersNum
-	afpErrDiskFull     int32 = -5008 // kFPDiskFull
-	afpErrEOFErr       int32 = -5009 // kFPEOFErr (read/write past end of fork)
-	afpErrMiscErr      int32 = -5014 // kFPMiscErr
-	afpErrObjectNotFnd int32 = -5018 // kFPObjectNotFound
-	afpErrParamErr     int32 = -5019 // kFPParamErr
-	afpErrCallNotSuppt int32 = -5024 // kFPCallNotSupported
+	afpNoErr            int32 = 0
+	afpErrAccessDenied  int32 = -5000 // kFPAccessDenied
+	afpErrCantMove      int32 = -5005 // kFPCantMove
+	afpErrBadUAM        int32 = -5002 // kFPBadUAM
+	afpErrBadVersNum    int32 = -5003 // kFPBadVersNum
+	afpErrDiskFull      int32 = -5008 // kFPDiskFull
+	afpErrEOFErr        int32 = -5009 // kFPEOFErr (read/write past end of fork)
+	afpErrMiscErr       int32 = -5014 // kFPMiscErr
+	afpErrObjectExists  int32 = -5017 // kFPObjectExists
+	afpErrObjectNotFnd  int32 = -5018 // kFPObjectNotFound
+	afpErrParamErr      int32 = -5019 // kFPParamErr
+	afpErrCallNotSuppt  int32 = -5024 // kFPCallNotSupported
+	afpErrObjectTypeErr int32 = -5025 // kFPObjectTypeErr
+	afpErrDirNotFound   int32 = -5029 // kFPDirNotFound
 )
 
 // afpSession is the per-ASP-session AFP state: whether the client has logged in,
@@ -102,6 +112,36 @@ func (s *Service) dispatchAFP(sess *session, block []byte) (reply []byte, result
 			return nil, afpErrAccessDenied
 		}
 		return s.afpGetFileDirParms(a, block)
+	case cmdCreateFile:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpCreateFile(a, block)
+	case cmdCreateDir:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpCreateDir(a, block)
+	case cmdDelete:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpDelete(a, block)
+	case cmdRename:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpRename(a, block)
+	case cmdOpenDir:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpOpenDir(a, block)
+	case cmdCloseDir:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpCloseDir(a, block)
 	case cmdOpenFork:
 		if !a.loggedIn {
 			return nil, afpErrAccessDenied
