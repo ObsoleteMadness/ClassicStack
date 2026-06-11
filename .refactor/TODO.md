@@ -302,7 +302,12 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 >   AppleDouble/stream/EA knowledge in the spine). Short/at-EOF read → bytes+kFPEOFErr; R/O-handle
 >   write → kFPAccessDenied; from-end write appends at live `ForkLen`; forks drained on CloseSession.
 >   ENOSPC left as an OS-adapter refinement (core stays syscall-free).
-> - **Remaining M7:** full file/dir bitmaps, FPOpenDir/FPCreate*/FPDelete/FPRename, desktop DB,
+> - **Slice 5 (`8922b9b`):** AFP catalog mutation — FPCreateFile (soft/hard), FPCreateDir (returns
+>   new dirID), FPDelete (file/empty dir; refuses root), FPRename (in-place leaf, CNID preserved),
+>   FPOpenDir/FPCloseDir (dirID = CNID). `resolveCatalogPath` resolves dirID + relative pathname
+>   through the volume CNID store + FilenameCodec; storage reached only via `v.FS().CreateFile/
+>   CreateDir/Remove` and CNID-aware `v.renamePath/removePath`. `catalog_test.go` covers all five.
+> - **Remaining M7:** full file/dir bitmaps, desktop DB,
 >   two-phase ASPWrite (large FPWrite); SMB/NetBIOS command engines onto the shares; same-FS AFP+SMB
 >   coordination via the FS bus (§10d); capture-replay vs `/captures/afp-*.pcap`; then delete legacy
 >   `service/{afp,smb,netbios}` per strangler step 5. TCP transports are M7a (`adapter/dsi`) / M7b
