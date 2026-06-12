@@ -2,8 +2,8 @@
 // (NBIPX) packet encoding. Wire-format only: no I/O, and the session table /
 // state machine lives in the service ring.
 //
-// Ring: CORE (stdlib only, reflection-free). Multi-byte helpers are hand-rolled
-// because encoding/binary transitively imports reflect.
+// Ring: CORE (stdlib only, reflection-free). Multi-byte integer codecs come from
+// core/binaryprimitives, because encoding/binary transitively imports reflect.
 package netbios
 
 import (

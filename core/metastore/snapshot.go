@@ -4,6 +4,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 )
 
 // Snapshot wire format (stdlib only; no encoding/binary → no reflect):
@@ -19,22 +21,14 @@ var snapshotMagic = [4]byte{'M', 'S', 'T', '1'}
 // ErrCorruptSnapshot is returned by load when the file is not a valid snapshot.
 var ErrCorruptSnapshot = errors.New("metastore: corrupt snapshot")
 
-func putBE32(dst []byte, v uint32) []byte {
-	return append(dst, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
-}
-
-func be32(b []byte) uint32 {
-	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
-}
-
 // save serialises the map to path atomically (temp file + rename). Caller holds at least RLock.
 func (s *memStore) save() error {
 	buf := make([]byte, 0, 4+len(s.m)*32)
 	buf = append(buf, snapshotMagic[:]...)
 	for k, v := range s.m {
-		buf = putBE32(buf, uint32(len(k)))
+		buf = bp.AppendBE32(buf, uint32(len(k)))
 		buf = append(buf, k...)
-		buf = putBE32(buf, uint32(len(v)))
+		buf = bp.AppendBE32(buf, uint32(len(v)))
 		buf = append(buf, v...)
 	}
 
@@ -96,7 +90,7 @@ func readField(b []byte, off int) (field []byte, next int, err error) {
 	if off+4 > len(b) {
 		return nil, 0, ErrCorruptSnapshot
 	}
-	n := int(be32(b[off:]))
+	n := int(bp.BE32(b[off:]))
 	off += 4
 	if n < 0 || off+n > len(b) {
 		return nil, 0, ErrCorruptSnapshot

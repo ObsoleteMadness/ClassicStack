@@ -2,6 +2,8 @@ package afp
 
 import (
 	"testing"
+
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 )
 
 // catSearchReq builds an FPCatSearch command block: a partial- or full-name
@@ -13,29 +15,29 @@ import (
 // in its tail — which is the shape the Finder's "Find File" sends.
 func catSearchReq(volID uint16, reqMatches int, cursor [16]byte, fileBitmap, dirBitmap uint16, partial bool, name string) []byte {
 	b := []byte{cmdCatSearch, 0}
-	b = putBE16(b, volID)
-	b = putBE32(b, uint32(reqMatches))
-	b = putBE32(b, 0) // reserved
+	b = bp.AppendBE16(b, volID)
+	b = bp.AppendBE32(b, uint32(reqMatches))
+	b = bp.AppendBE32(b, 0) // reserved
 	b = append(b, cursor[:]...)
-	b = putBE16(b, fileBitmap)
-	b = putBE16(b, dirBitmap)
+	b = bp.AppendBE16(b, fileBitmap)
+	b = bp.AppendBE16(b, dirBitmap)
 
 	reqBitmap := catSearchBitFullName
 	if partial {
 		reqBitmap = catSearchBitPartialName
 	}
-	b = putBE32(b, reqBitmap)
+	b = bp.AppendBE32(b, reqBitmap)
 
 	// spec1: a parameter block keyed by reqBitmap. With only the name bit set it is
 	// a 2-byte name-offset pointer followed by the Pascal-string name in the tail.
 	// The offset is measured from the start of the spec block: 2 (the pointer).
-	spec1 := putBE16(nil, 2)
+	spec1 := bp.AppendBE16(nil, 2)
 	spec1 = putPString(spec1, []byte(name))
-	b = putBE16(b, uint16(len(spec1)))
+	b = bp.AppendBE16(b, uint16(len(spec1)))
 	b = append(b, spec1...)
 
 	// spec2: empty (no ranged fields).
-	b = putBE16(b, 0)
+	b = bp.AppendBE16(b, 0)
 	return b
 }
 
@@ -51,7 +53,7 @@ func catSearchNames(t *testing.T, reply []byte) []string {
 	if len(reply) < 24 {
 		t.Fatalf("CatSearch reply too short: %d bytes", len(reply))
 	}
-	count := int(be32(reply[20:24]))
+	count := int(bp.BE32(reply[20:24]))
 	var names []string
 	off := 24
 	for range count {
@@ -67,7 +69,7 @@ func catSearchNames(t *testing.T, reply []byte) []string {
 		// The param block begins at rec[2] (after len+fileDir), and the offset is
 		// measured from there.
 		paramBlock := rec[2:]
-		nameOff := int(be16(paramBlock[0:2]))
+		nameOff := int(bp.BE16(paramBlock[0:2]))
 		if nameOff < len(paramBlock) {
 			n := int(paramBlock[nameOff])
 			if nameOff+1+n <= len(paramBlock) {

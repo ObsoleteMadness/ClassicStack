@@ -3,6 +3,8 @@ package afp
 import (
 	"testing"
 
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+
 	"github.com/ObsoleteMadness/ClassicStack/core/metastore"
 )
 
@@ -11,8 +13,8 @@ import (
 // Delete/OpenDir share.
 func catalogPath(cmd, flag uint8, volID uint16, dirID uint32, name string) []byte {
 	b := []byte{cmd, flag}
-	b = putBE16(b, volID)
-	b = putBE32(b, dirID)
+	b = bp.AppendBE16(b, volID)
+	b = bp.AppendBE32(b, dirID)
 	b = append(b, PathTypeUTF8Names)
 	b = append(b, []byte(name)...)
 	return b
@@ -57,7 +59,7 @@ func TestCatalog_CreateDirThenCreateFileInside(t *testing.T) {
 	if code != afpNoErr {
 		t.Fatalf("CreateDir result = %d, want 0", code)
 	}
-	dirID := be32(reply[0:4])
+	dirID := bp.BE32(reply[0:4])
 	if dirID == 0 || dirID == metastore.CNIDRoot {
 		t.Fatalf("CreateDir returned dirID %d, want a fresh id", dirID)
 	}
@@ -114,8 +116,8 @@ func TestCatalog_Rename(t *testing.T) {
 	cnidBefore := vol.CNID("old.txt")
 
 	rename := []byte{cmdRename, 0}
-	rename = putBE16(rename, volID)
-	rename = putBE32(rename, metastore.CNIDRoot)
+	rename = bp.AppendBE16(rename, volID)
+	rename = bp.AppendBE32(rename, metastore.CNIDRoot)
 	rename = append(rename, PathTypeUTF8Names)
 	rename = putPString(rename, []byte("old.txt"))
 	rename = append(rename, PathTypeUTF8Names)
@@ -137,8 +139,8 @@ func TestCatalog_Rename(t *testing.T) {
 	// Renaming onto an existing name is rejected.
 	mustCreate(t, vol, "taken.txt")
 	rename2 := []byte{cmdRename, 0}
-	rename2 = putBE16(rename2, volID)
-	rename2 = putBE32(rename2, metastore.CNIDRoot)
+	rename2 = bp.AppendBE16(rename2, volID)
+	rename2 = bp.AppendBE32(rename2, metastore.CNIDRoot)
 	rename2 = append(rename2, PathTypeUTF8Names)
 	rename2 = putPString(rename2, []byte("new.txt"))
 	rename2 = append(rename2, PathTypeUTF8Names)
@@ -164,7 +166,7 @@ func TestCatalog_OpenDir(t *testing.T) {
 	if code != afpNoErr {
 		t.Fatalf("OpenDir result = %d, want 0", code)
 	}
-	if got := be32(reply[0:4]); got != vol.CNID("Docs") {
+	if got := bp.BE32(reply[0:4]); got != vol.CNID("Docs") {
 		t.Fatalf("OpenDir dirID = %d, want %d", got, vol.CNID("Docs"))
 	}
 

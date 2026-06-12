@@ -3,6 +3,8 @@ package afp
 import (
 	"testing"
 
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/asp"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/atp"
@@ -29,19 +31,19 @@ func openForkRW(t *testing.T, svc *Service, r *fakeRouter, from *recordingPort, 
 
 	r.reset()
 	openVol := []byte{cmdOpenVol, 0}
-	openVol = putBE16(openVol, volBitmapID)
+	openVol = bp.AppendBE16(openVol, volBitmapID)
 	openVol = putPString(openVol, []byte("Share"))
 	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 3), openVol)), from)
 	if got := int32(respUserData(r.lastReply())); got != afpNoErr {
 		t.Fatalf("OpenVol result = %d, want 0", got)
 	}
-	volID := be16(respPayload(r.lastReply())[2:4])
+	volID := bp.BE16(respPayload(r.lastReply())[2:4])
 
 	openFork := []byte{cmdOpenFork, forkFlagData}
-	openFork = putBE16(openFork, volID)
-	openFork = putBE32(openFork, 2) // dirID root
-	openFork = putBE16(openFork, 0)
-	openFork = putBE16(openFork, accessRead|accessWrite)
+	openFork = bp.AppendBE16(openFork, volID)
+	openFork = bp.AppendBE32(openFork, 2) // dirID root
+	openFork = bp.AppendBE16(openFork, 0)
+	openFork = bp.AppendBE16(openFork, accessRead|accessWrite)
 	openFork = append(openFork, PathTypeUTF8Names)
 	openFork = append(openFork, []byte(path)...)
 	r.reset()
@@ -49,16 +51,16 @@ func openForkRW(t *testing.T, svc *Service, r *fakeRouter, from *recordingPort, 
 	if got := int32(respUserData(r.lastReply())); got != afpNoErr {
 		t.Fatalf("OpenFork result = %d, want 0", got)
 	}
-	return sessID, be16(respPayload(r.lastReply())[2:4])
+	return sessID, bp.BE16(respPayload(r.lastReply())[2:4])
 }
 
 // fpWriteHeader builds the 12-byte FPWrite header carried in a phase-1 aspWrite:
 // cmd(1) flag(1) forkRef(2) offset(4) reqCount(4), with no inline data.
 func fpWriteHeader(forkRef uint16, offset, reqCount uint32) []byte {
 	h := []byte{cmdWrite, 0x00}
-	h = putBE16(h, forkRef)
-	h = putBE32(h, offset)
-	h = putBE32(h, reqCount)
+	h = bp.AppendBE16(h, forkRef)
+	h = bp.AppendBE32(h, offset)
+	h = bp.AppendBE32(h, reqCount)
 	return h
 }
 
@@ -107,7 +109,7 @@ func TestTwoPhaseWrite_DataPath(t *testing.T) {
 	if s := uint16(dh.UserData); s != seq {
 		t.Errorf("aspDataWrite seq = %d, want %d", s, seq)
 	}
-	if bsz := be16(dw.Data[atp.HeaderSize:]); int(bsz) != len(payload) {
+	if bsz := bp.BE16(dw.Data[atp.HeaderSize:]); int(bsz) != len(payload) {
 		t.Errorf("aspDataWrite bufferSize = %d, want %d", bsz, len(payload))
 	}
 	// No phase-3 reply has been produced yet — the data has not arrived.
@@ -126,15 +128,15 @@ func TestTwoPhaseWrite_DataPath(t *testing.T) {
 	if got := int32(respUserData(r.lastReply())); got != afpNoErr {
 		t.Fatalf("two-phase write result = %d, want 0", got)
 	}
-	if last := be32(respPayload(r.lastReply())[0:4]); int(last) != len(payload) {
+	if last := bp.BE32(respPayload(r.lastReply())[0:4]); int(last) != len(payload) {
 		t.Fatalf("lastWritten = %d, want %d", last, len(payload))
 	}
 
 	// The data is readable from the fork.
 	read := []byte{cmdRead, 0x00}
-	read = putBE16(read, forkRef)
-	read = putBE32(read, 0)
-	read = putBE32(read, uint32(len(payload)))
+	read = bp.AppendBE16(read, forkRef)
+	read = bp.AppendBE32(read, 0)
+	read = bp.AppendBE32(read, uint32(len(payload)))
 	code, got := sendCmd(t, svc, r, sessID, 20, read)
 	if code != afpNoErr {
 		t.Fatalf("Read result = %d, want 0", code)
@@ -179,7 +181,7 @@ func TestTwoPhaseWrite_MultiPacketData(t *testing.T) {
 	if len(r.replies) != 1 {
 		t.Fatalf("phase-3 replies = %d, want 1", len(r.replies))
 	}
-	if last := be32(respPayload(r.lastReply())[0:4]); int(last) != len(payload) {
+	if last := bp.BE32(respPayload(r.lastReply())[0:4]); int(last) != len(payload) {
 		t.Fatalf("lastWritten = %d, want %d", last, len(payload))
 	}
 

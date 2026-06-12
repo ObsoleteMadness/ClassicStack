@@ -5,6 +5,8 @@ import (
 	"context"
 	"sync"
 
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/ddp"
 	"github.com/ObsoleteMadness/ClassicStack/core/router"
@@ -141,7 +143,7 @@ func (s *RespondingService) handle(d ddp.Datagram, rx router.RoutedPort) {
 func (s *RespondingService) handleReply(d ddp.Datagram) {
 	data := d.Data[2:]
 	for len(data) >= 3 {
-		nmin := be16(data[0:2])
+		nmin := bp.BE16(data[0:2])
 		l := int(data[2])
 		if len(data) < 3+l {
 			break
@@ -174,7 +176,7 @@ func (s *RespondingService) handleExtReply(d ddp.Datagram) {
 
 	var lastNmin uint16
 	for len(data) >= 3 {
-		nmin := be16(data[0:2])
+		nmin := bp.BE16(data[0:2])
 		l := int(data[2])
 		if len(data) < 3+l {
 			break
@@ -217,7 +219,7 @@ func (s *RespondingService) handleQuery(d ddp.Datagram, rx router.RoutedPort) {
 		return
 	}
 	for i := range nc {
-		req := be16(d.Data[2+i*2 : 4+i*2])
+		req := bp.BE16(d.Data[2+i*2 : 4+i*2])
 		entry, _ := s.rtr.RoutingTable().GetByNetwork(req)
 		if entry == nil {
 			continue
@@ -317,7 +319,7 @@ func (s *RespondingService) handleGetNetInfo(d ddp.Datagram, rx router.RoutedPor
 // handleGetMyZone answers the ATP GetMyZone transaction with the default zone of the source
 // network.
 func (s *RespondingService) handleGetMyZone(d ddp.Datagram, rx router.RoutedPort) {
-	tid := be16(d.Data[2:4])
+	tid := bp.BE16(d.Data[2:4])
 	entry, _ := s.rtr.RoutingTable().GetByNetwork(d.SrcNetwork)
 	if entry == nil {
 		return
@@ -339,8 +341,8 @@ func (s *RespondingService) handleGetMyZone(d ddp.Datagram, rx router.RoutedPort
 // handleGetZoneList answers the ATP GetZoneList / GetLocalZones transaction with a page of
 // zone names from the requested start index.
 func (s *RespondingService) handleGetZoneList(d ddp.Datagram, rx router.RoutedPort, local bool) {
-	tid := be16(d.Data[2:4])
-	startIndex := int(be16(d.Data[6:8])) // 1-relative
+	tid := bp.BE16(d.Data[2:4])
+	startIndex := int(bp.BE16(d.Data[6:8])) // 1-relative
 
 	var zones [][]byte
 	if local {

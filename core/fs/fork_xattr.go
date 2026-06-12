@@ -1,13 +1,13 @@
 package fs
 
 import (
-	"encoding/binary"
 	"errors"
 	"io"
 	stdfs "io/fs"
 	"os"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/appledouble"
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 )
 
 // xattrForkEngine stores resource forks and Finder metadata in the Netatalk
@@ -165,14 +165,14 @@ func patchResourceLen(hdr []byte, rsrcLen uint32) {
 	if len(hdr) < appledouble.HeaderSize {
 		return
 	}
-	numEntries := int(binary.BigEndian.Uint16(hdr[24:26]))
+	numEntries := int(bp.BE16(hdr[24:26]))
 	for i := range numEntries {
 		off := appledouble.HeaderSize + i*appledouble.EntrySize
 		if off+appledouble.EntrySize > len(hdr) {
 			return
 		}
-		if binary.BigEndian.Uint32(hdr[off:off+4]) == appledouble.EntryIDResourceFork {
-			binary.BigEndian.PutUint32(hdr[off+8:off+12], rsrcLen)
+		if bp.BE32(hdr[off:off+4]) == appledouble.EntryIDResourceFork {
+			bp.PutBE32(hdr[off+8:off+12], rsrcLen)
 			return
 		}
 	}
@@ -186,14 +186,14 @@ func resourceLenFromEntries(b []byte) uint32 {
 	if len(b) < appledouble.HeaderSize {
 		return 0
 	}
-	numEntries := int(binary.BigEndian.Uint16(b[24:26]))
+	numEntries := int(bp.BE16(b[24:26]))
 	for i := range numEntries {
 		off := appledouble.HeaderSize + i*appledouble.EntrySize
 		if off+appledouble.EntrySize > len(b) {
 			return 0
 		}
-		if binary.BigEndian.Uint32(b[off:off+4]) == appledouble.EntryIDResourceFork {
-			return binary.BigEndian.Uint32(b[off+8 : off+12])
+		if bp.BE32(b[off:off+4]) == appledouble.EntryIDResourceFork {
+			return bp.BE32(b[off+8 : off+12])
 		}
 	}
 	return 0
@@ -206,7 +206,7 @@ func parseMetadataEA(b []byte) (appledouble.Parsed, uint32, error) {
 	if len(b) < appledouble.HeaderSize {
 		return appledouble.Parsed{}, 0, errBadMetadataEA
 	}
-	if binary.BigEndian.Uint32(b[0:4]) != appledouble.Magic {
+	if bp.BE32(b[0:4]) != appledouble.Magic {
 		return appledouble.Parsed{}, 0, errBadMetadataEA
 	}
 	p, err := appledouble.Parse(b)

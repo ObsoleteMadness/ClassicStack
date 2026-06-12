@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/asp"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/atp"
@@ -222,18 +224,18 @@ func TestDispatch_LoginGetSrvrParmsOpenVolEnumerate(t *testing.T) {
 	// FPOpenVol "Share" with the ID bit requested.
 	r.reset()
 	openVol := []byte{cmdOpenVol, 0}
-	openVol = putBE16(openVol, volBitmapID|volBitmapName)
+	openVol = bp.AppendBE16(openVol, volBitmapID|volBitmapName)
 	openVol = putPString(openVol, []byte("Share"))
 	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 3), openVol)), from)
 	if got := int32(respUserData(r.lastReply())); got != afpNoErr {
 		t.Fatalf("OpenVol result = %d, want 0", got)
 	}
 	ovReply := respPayload(r.lastReply())
-	gotBitmap := be16(ovReply[0:2])
+	gotBitmap := bp.BE16(ovReply[0:2])
 	if gotBitmap&volBitmapID == 0 {
 		t.Fatalf("OpenVol reply bitmap %#x missing ID bit", gotBitmap)
 	}
-	volID := be16(ovReply[2:4]) // ID is the first param after the bitmap
+	volID := bp.BE16(ovReply[2:4]) // ID is the first param after the bitmap
 	if volID != vol.ID() {
 		t.Fatalf("OpenVol volID = %d, want %d", volID, vol.ID())
 	}
@@ -241,13 +243,13 @@ func TestDispatch_LoginGetSrvrParmsOpenVolEnumerate(t *testing.T) {
 	// FPEnumerate the volume root, requesting LongName + offspring/data lengths.
 	r.reset()
 	enum := []byte{cmdEnumerate, 0}
-	enum = putBE16(enum, volID) // volID
-	enum = putBE32(enum, 2)     // dirID = root
-	enum = putBE16(enum, fdBitmapLongName|fileBitmapDataForkLen)
-	enum = putBE16(enum, fdBitmapLongName|dirBitmapOffspring)
-	enum = putBE16(enum, 10)               // reqCount
-	enum = putBE16(enum, 1)                // startIndex (1-based)
-	enum = putBE16(enum, 4624)             // maxReplySize
+	enum = bp.AppendBE16(enum, volID) // volID
+	enum = bp.AppendBE32(enum, 2)     // dirID = root
+	enum = bp.AppendBE16(enum, fdBitmapLongName|fileBitmapDataForkLen)
+	enum = bp.AppendBE16(enum, fdBitmapLongName|dirBitmapOffspring)
+	enum = bp.AppendBE16(enum, 10)         // reqCount
+	enum = bp.AppendBE16(enum, 1)          // startIndex (1-based)
+	enum = bp.AppendBE16(enum, 4624)       // maxReplySize
 	enum = append(enum, PathTypeUTF8Names) // pathType
 	// empty pathname → the volume root
 	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 4), enum)), from)
@@ -255,7 +257,7 @@ func TestDispatch_LoginGetSrvrParmsOpenVolEnumerate(t *testing.T) {
 		t.Fatalf("Enumerate result = %d, want 0", got)
 	}
 	enReply := respPayload(r.lastReply())
-	actual := be16(enReply[4:6])
+	actual := bp.BE16(enReply[4:6])
 	if actual != 3 {
 		t.Fatalf("Enumerate actualCount = %d, want 3 (alpha.txt, beta.txt, subdir)", actual)
 	}
@@ -277,18 +279,18 @@ func TestDispatch_GetFileDirParms(t *testing.T) {
 	// Open the volume to get a handle into the session.
 	r.reset()
 	openVol := []byte{cmdOpenVol, 0}
-	openVol = putBE16(openVol, volBitmapID)
+	openVol = bp.AppendBE16(openVol, volBitmapID)
 	openVol = putPString(openVol, []byte("Share"))
 	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 3), openVol)), from)
-	volID := be16(respPayload(r.lastReply())[2:4])
+	volID := bp.BE16(respPayload(r.lastReply())[2:4])
 
 	// FPGetFileDirParms for "report.doc", asking for LongName + data-fork length.
 	r.reset()
 	req := []byte{cmdGetFileDirParms, 0}
-	req = putBE16(req, volID)
-	req = putBE32(req, 2) // dirID root
-	req = putBE16(req, fdBitmapLongName|fileBitmapDataForkLen)
-	req = putBE16(req, fdBitmapLongName)
+	req = bp.AppendBE16(req, volID)
+	req = bp.AppendBE32(req, 2) // dirID root
+	req = bp.AppendBE16(req, fdBitmapLongName|fileBitmapDataForkLen)
+	req = bp.AppendBE16(req, fdBitmapLongName)
 	req = append(req, PathTypeUTF8Names)
 	req = append(req, []byte("report.doc")...)
 	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 4), req)), from)
@@ -304,8 +306,8 @@ func TestDispatch_GetFileDirParms(t *testing.T) {
 		t.Fatalf("report.doc reported as directory")
 	}
 	params := reply[4:]
-	nameOff := int(be16(params[0:2]))
-	dataLen := be32(params[2:6])
+	nameOff := int(bp.BE16(params[0:2]))
+	dataLen := bp.BE32(params[2:6])
 	if dataLen != 4 { // mustCreate wrote "data"
 		t.Fatalf("data-fork length = %d, want 4", dataLen)
 	}
@@ -332,7 +334,7 @@ func decodeEnumNames(t *testing.T, b []byte, count int) []string {
 		// measured from the start of the parameter block, to the name pstring in
 		// the trailing variable area.
 		params := entry[2:]
-		nameOff := int(be16(params[0:2]))
+		nameOff := int(bp.BE16(params[0:2]))
 		name, _, ok := pString(params, nameOff)
 		if ok {
 			names = append(names, string(name))

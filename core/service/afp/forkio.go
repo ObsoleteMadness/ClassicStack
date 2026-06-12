@@ -6,6 +6,8 @@ import (
 	stdfs "io/fs"
 	"os"
 
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 )
 
@@ -50,12 +52,12 @@ func (s *Service) afpOpenFork(a *afpSession, block []byte) ([]byte, int32) {
 		return nil, afpErrParamErr
 	}
 	forkByte := block[1]
-	vol, ok := a.openVols[be16(block[2:4])]
+	vol, ok := a.openVols[bp.BE16(block[2:4])]
 	if !ok {
 		return nil, afpErrParamErr
 	}
-	bitmap := be16(block[8:10])
-	accessMode := be16(block[10:12])
+	bitmap := bp.BE16(block[8:10])
+	accessMode := bp.BE16(block[10:12])
 	pathType := block[12]
 	store, code := resolveBlockPath(vol, block, 13, pathType)
 	if code != afpNoErr {
@@ -103,8 +105,8 @@ func (s *Service) afpOpenFork(a *afpSession, block []byte) ([]byte, int32) {
 	}
 
 	out := make([]byte, 0, 32)
-	out = putBE16(out, bitmap)
-	out = putBE16(out, ref)
+	out = bp.AppendBE16(out, bitmap)
+	out = bp.AppendBE16(out, ref)
 	out = vol.fileDirParams(out, store, info, bitmap, pathType)
 	return out, afpNoErr
 }
@@ -122,12 +124,12 @@ func (s *Service) afpRead(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 12 {
 		return nil, afpErrParamErr
 	}
-	h, ok := a.forks.get(be16(block[2:4]))
+	h, ok := a.forks.get(bp.BE16(block[2:4]))
 	if !ok {
 		return nil, afpErrParamErr
 	}
-	offset := int64(int32(be32(block[4:8])))
-	reqCount := int64(int32(be32(block[8:12])))
+	offset := int64(int32(bp.BE32(block[4:8])))
+	reqCount := int64(int32(bp.BE32(block[8:12])))
 	if offset < 0 || reqCount < 0 {
 		return nil, afpErrParamErr
 	}
@@ -163,13 +165,13 @@ func (s *Service) afpRead(a *afpSession, block []byte) ([]byte, int32) {
 func writeDataCount(block []byte) (count, headerLen int) {
 	switch {
 	case len(block) >= 12 && block[0] == cmdWrite:
-		n := int32(be32(block[8:12]))
+		n := int32(bp.BE32(block[8:12]))
 		if n < 0 {
 			return 0, 0
 		}
 		return int(n), 12
 	case len(block) >= 20 && block[0] == cmdAddIcon:
-		return int(be16(block[18:20])), 20
+		return int(bp.BE16(block[18:20])), 20
 	default:
 		return 0, 0
 	}
@@ -199,7 +201,7 @@ func (s *Service) afpWrite(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 12 {
 		return nil, afpErrParamErr
 	}
-	h, ok := a.forks.get(be16(block[2:4]))
+	h, ok := a.forks.get(bp.BE16(block[2:4]))
 	if !ok {
 		return nil, afpErrParamErr
 	}
@@ -207,8 +209,8 @@ func (s *Service) afpWrite(a *afpSession, block []byte) ([]byte, int32) {
 		return nil, afpErrAccessDenied
 	}
 	fromEnd := block[1]&fromEndFlag != 0
-	offset := int64(int32(be32(block[4:8])))
-	reqCount := int64(int32(be32(block[8:12])))
+	offset := int64(int32(bp.BE32(block[4:8])))
+	reqCount := int64(int32(bp.BE32(block[8:12])))
 	if reqCount < 0 {
 		return nil, afpErrParamErr
 	}
@@ -233,7 +235,7 @@ func (s *Service) afpWrite(a *afpSession, block []byte) ([]byte, int32) {
 	}
 
 	lastWritten := offset + int64(len(data))
-	out := putBE32(make([]byte, 0, 4), uint32(int32(lastWritten)))
+	out := bp.AppendBE32(make([]byte, 0, 4), uint32(int32(lastWritten)))
 	return out, afpNoErr
 }
 
@@ -244,7 +246,7 @@ func (s *Service) afpCloseFork(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 4 {
 		return nil, afpErrParamErr
 	}
-	h, ok := a.forks.close(be16(block[2:4]))
+	h, ok := a.forks.close(bp.BE16(block[2:4]))
 	if !ok {
 		return nil, afpErrParamErr
 	}
@@ -262,7 +264,7 @@ func (s *Service) afpFlush(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 4 {
 		return nil, afpErrParamErr
 	}
-	vol, ok := a.openVols[be16(block[2:4])]
+	vol, ok := a.openVols[bp.BE16(block[2:4])]
 	if !ok {
 		return nil, afpErrParamErr
 	}
@@ -289,7 +291,7 @@ func (s *Service) afpFlushFork(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 4 {
 		return nil, afpErrParamErr
 	}
-	h, ok := a.forks.get(be16(block[2:4]))
+	h, ok := a.forks.get(bp.BE16(block[2:4]))
 	if !ok {
 		return nil, afpErrParamErr
 	}
@@ -309,17 +311,17 @@ func (s *Service) afpGetForkParms(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 6 {
 		return nil, afpErrParamErr
 	}
-	h, ok := a.forks.get(be16(block[2:4]))
+	h, ok := a.forks.get(bp.BE16(block[2:4]))
 	if !ok {
 		return nil, afpErrParamErr
 	}
-	bitmap := be16(block[4:6])
+	bitmap := bp.BE16(block[4:6])
 	info, err := h.vol.Stat(h.path)
 	if err != nil {
 		return nil, mapStatErr(err)
 	}
 	out := make([]byte, 0, 32)
-	out = putBE16(out, bitmap)
+	out = bp.AppendBE16(out, bitmap)
 	// fileDirParams reads the fork lengths through the fork engine, so they are
 	// already authoritative; pathType 0 keeps any LongName store-native (the only
 	// charset-free choice when there is no request path-type byte).

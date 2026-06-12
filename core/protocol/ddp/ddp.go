@@ -1,15 +1,10 @@
 package ddp
 
-import "errors"
+import (
+	"errors"
 
-// be16 / putBE16 / appendBE16 are hand-rolled big-endian helpers. We deliberately
-// avoid encoding/binary: it transitively imports reflect (for its Read/Write
-// reflection paths), which the core/ dependency rule forbids (§1 / archtest).
-func be16(b []byte) uint16 { return uint16(b[0])<<8 | uint16(b[1]) }
-
-func appendBE16(dst []byte, v uint16) []byte {
-	return append(dst, byte(v>>8), byte(v))
-}
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+)
 
 // MaxDataLength is the maximum DDP payload, per the AppleTalk spec (and matching
 // the legacy protocol/ddp implementation this codec mirrors on the wire).
@@ -77,8 +72,8 @@ func (d Datagram) Encode(dst []byte) ([]byte, error) {
 		uint8(length&0xFF),
 		0, 0, // checksum (disabled)
 	)
-	dst = appendBE16(dst, d.DestNetwork)
-	dst = appendBE16(dst, d.SrcNetwork)
+	dst = bp.AppendBE16(dst, d.DestNetwork)
+	dst = bp.AppendBE16(dst, d.SrcNetwork)
 	dst = append(dst,
 		d.DestNode,
 		d.SrcNode,
@@ -106,15 +101,15 @@ func Decode(b []byte) (Datagram, error) {
 	if length != len(b) || length > headerLen+MaxDataLength {
 		return Datagram{}, ErrBadLength
 	}
-	if sum := be16(b[2:4]); sum != 0 {
+	if sum := bp.BE16(b[2:4]); sum != 0 {
 		if got := checksum(b[4:]); got != sum {
 			return Datagram{}, ErrBadLength
 		}
 	}
 	return Datagram{
 		Hops:        hops,
-		DestNetwork: be16(b[4:6]),
-		SrcNetwork:  be16(b[6:8]),
+		DestNetwork: bp.BE16(b[4:6]),
+		SrcNetwork:  bp.BE16(b[6:8]),
 		DestNode:    b[8],
 		SrcNode:     b[9],
 		DestSocket:  b[10],

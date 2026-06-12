@@ -26,16 +26,11 @@
 // hand-rolled because encoding/binary transitively imports reflect.
 package netbeui
 
-import "errors"
+import (
+	"errors"
 
-// le16 / putLE16 are hand-rolled little-endian helpers (no encoding/binary in
-// core — it transitively imports reflect, §1 / archtest).
-func le16(b []byte) uint16 { return uint16(b[0]) | uint16(b[1])<<8 }
-
-func putLE16(b []byte, v uint16) {
-	b[0] = byte(v)
-	b[1] = byte(v >> 8)
-}
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+)
 
 // NBFDelimiter is the constant 0xEFFF "NBF" delimiter that follows the length
 // field in every NBF body.
@@ -96,13 +91,13 @@ func (f *Frame) Encode() ([]byte, error) {
 	b := make([]byte, total)
 
 	// Common prefix.
-	putLE16(b[0:2], uint16(total))
-	putLE16(b[2:4], NBFDelimiter)
+	bp.PutLE16(b[0:2], uint16(total))
+	bp.PutLE16(b[2:4], NBFDelimiter)
 	b[4] = f.Command
 	b[5] = f.Data1
-	putLE16(b[6:8], f.Data2)
-	putLE16(b[8:10], f.XmitCorrelator)
-	putLE16(b[10:12], f.RspCorrelator)
+	bp.PutLE16(b[6:8], f.Data2)
+	bp.PutLE16(b[8:10], f.XmitCorrelator)
+	bp.PutLE16(b[10:12], f.RspCorrelator)
 
 	if IsSessionCommand(f.Command) {
 		b[12] = f.DestNumber
@@ -125,7 +120,7 @@ func Decode(b []byte) (*Frame, error) {
 	if len(b) < commonPrefixLen {
 		return nil, ErrShortFrame
 	}
-	if le16(b[2:4]) != NBFDelimiter {
+	if bp.LE16(b[2:4]) != NBFDelimiter {
 		return nil, ErrBadDelimiter
 	}
 
@@ -141,9 +136,9 @@ func Decode(b []byte) (*Frame, error) {
 	f := &Frame{
 		Command:        cmd,
 		Data1:          b[5],
-		Data2:          le16(b[6:8]),
-		XmitCorrelator: le16(b[8:10]),
-		RspCorrelator:  le16(b[10:12]),
+		Data2:          bp.LE16(b[6:8]),
+		XmitCorrelator: bp.LE16(b[8:10]),
+		RspCorrelator:  bp.LE16(b[10:12]),
 	}
 	if IsSessionCommand(cmd) {
 		f.DestNumber = b[12]

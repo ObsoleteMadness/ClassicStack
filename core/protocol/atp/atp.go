@@ -4,8 +4,8 @@
 // at-least-once (ALO) and exactly-once (XO) delivery models. This package is
 // wire-format only — no I/O, no goroutines, no session state.
 //
-// Ring: CORE (stdlib only, reflection-free). Big-endian helpers are hand-rolled
-// because encoding/binary transitively imports reflect (see core/protocol/ddp).
+// Ring: CORE (stdlib only, reflection-free). Big-endian integer codecs come from
+// core/binaryprimitives, because encoding/binary transitively imports reflect.
 //
 // Reference: Inside Macintosh: Networking, Chapter 6.
 // https://dev.os9.ca/techpubs/mac/Networking/Networking-143.html#HEADING143-0
@@ -14,21 +14,9 @@ package atp
 import (
 	"errors"
 	"time"
+
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 )
-
-// be16 / appendBE16 / putBE32 are hand-rolled big-endian helpers (no
-// encoding/binary in core — it transitively imports reflect, §1 / archtest).
-func be16(b []byte) uint16 { return uint16(b[0])<<8 | uint16(b[1]) }
-
-func be32(b []byte) uint32 {
-	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
-}
-
-func appendBE16(dst []byte, v uint16) []byte { return append(dst, byte(v>>8), byte(v)) }
-
-func appendBE32(dst []byte, v uint32) []byte {
-	return append(dst, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
-}
 
 // ATP control bit masks.
 // Refer: https://dev.os9.ca/techpubs/mac/Networking/Networking-145.html#HEADING145-10
@@ -141,8 +129,8 @@ type Header struct {
 // caller controls allocation).
 func (h Header) Encode(dst []byte) []byte {
 	dst = append(dst, h.Control, h.Bitmap)
-	dst = appendBE16(dst, h.TransID)
-	dst = appendBE32(dst, h.UserData)
+	dst = bp.AppendBE16(dst, h.TransID)
+	dst = bp.AppendBE32(dst, h.UserData)
 	return dst
 }
 
@@ -155,7 +143,7 @@ func Decode(b []byte) (Header, error) {
 	return Header{
 		Control:  b[0],
 		Bitmap:   b[1],
-		TransID:  be16(b[2:4]),
-		UserData: be32(b[4:8]),
+		TransID:  bp.BE16(b[2:4]),
+		UserData: bp.BE32(b[4:8]),
 	}, nil
 }

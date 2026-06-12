@@ -3,6 +3,8 @@ package afp
 import (
 	stdfs "io/fs"
 
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 )
 
@@ -71,19 +73,19 @@ func (v *Volume) packFileParams(out []byte, store string, info stdfs.FileInfo, b
 	var names []byte // variable area, appended after the fixed fields
 
 	if bitmap&fdBitmapAttributes != 0 {
-		out = putBE16(out, 0) // no attribute flags surfaced yet
+		out = bp.AppendBE16(out, 0) // no attribute flags surfaced yet
 	}
 	if bitmap&fdBitmapParentDID != 0 {
-		out = putBE32(out, v.ParentCNID(store))
+		out = bp.AppendBE32(out, v.ParentCNID(store))
 	}
 	if bitmap&fdBitmapCreateDate != 0 {
-		out = putBE32(out, macTime(info.ModTime())) // no distinct create date in the seam
+		out = bp.AppendBE32(out, macTime(info.ModTime())) // no distinct create date in the seam
 	}
 	if bitmap&fdBitmapModDate != 0 {
-		out = putBE32(out, macTime(info.ModTime()))
+		out = bp.AppendBE32(out, macTime(info.ModTime()))
 	}
 	if bitmap&fdBitmapBackupDate != 0 {
-		out = putBE32(out, noBackupDate)
+		out = bp.AppendBE32(out, noBackupDate)
 	}
 	if bitmap&fdBitmapFinderInfo != 0 {
 		fi, _ := v.FinderInfo(store)
@@ -96,15 +98,15 @@ func (v *Volume) packFileParams(out []byte, store string, info stdfs.FileInfo, b
 		out, names = v.appendName(out, names, fixedSize, v.ShortName(store), pathType)
 	}
 	if bitmap&fileBitmapFileNum != 0 {
-		out = putBE32(out, v.CNID(store))
+		out = bp.AppendBE32(out, v.CNID(store))
 	}
 	if bitmap&fileBitmapDataForkLen != 0 {
 		n, _ := v.ForkLen(store, fs.DataFork)
-		out = putBE32(out, uint32(n))
+		out = bp.AppendBE32(out, uint32(n))
 	}
 	if bitmap&fileBitmapRsrcForkLen != 0 {
 		n, _ := v.ForkLen(store, fs.ResourceFork)
-		out = putBE32(out, uint32(n))
+		out = bp.AppendBE32(out, uint32(n))
 	}
 	if bitmap&fileBitmapProDOSInfo != 0 {
 		out = append(out, make([]byte, 6)...)
@@ -118,19 +120,19 @@ func (v *Volume) packDirParams(out []byte, store string, info stdfs.FileInfo, bi
 	var names []byte
 
 	if bitmap&fdBitmapAttributes != 0 {
-		out = putBE16(out, 0)
+		out = bp.AppendBE16(out, 0)
 	}
 	if bitmap&fdBitmapParentDID != 0 {
-		out = putBE32(out, v.ParentCNID(store))
+		out = bp.AppendBE32(out, v.ParentCNID(store))
 	}
 	if bitmap&fdBitmapCreateDate != 0 {
-		out = putBE32(out, macTime(info.ModTime()))
+		out = bp.AppendBE32(out, macTime(info.ModTime()))
 	}
 	if bitmap&fdBitmapModDate != 0 {
-		out = putBE32(out, macTime(info.ModTime()))
+		out = bp.AppendBE32(out, macTime(info.ModTime()))
 	}
 	if bitmap&fdBitmapBackupDate != 0 {
-		out = putBE32(out, noBackupDate)
+		out = bp.AppendBE32(out, noBackupDate)
 	}
 	if bitmap&fdBitmapFinderInfo != 0 {
 		fi, _ := v.FinderInfo(store)
@@ -143,23 +145,23 @@ func (v *Volume) packDirParams(out []byte, store string, info stdfs.FileInfo, bi
 		out, names = v.appendName(out, names, fixedSize, v.ShortName(store), pathType)
 	}
 	if bitmap&dirBitmapDirID != 0 {
-		out = putBE32(out, v.CNID(store))
+		out = bp.AppendBE32(out, v.CNID(store))
 	}
 	if bitmap&dirBitmapOffspring != 0 {
-		out = putBE16(out, v.offspringCount(store))
+		out = bp.AppendBE16(out, v.offspringCount(store))
 	}
 	if bitmap&dirBitmapOwnerID != 0 {
-		out = putBE32(out, 0)
+		out = bp.AppendBE32(out, 0)
 	}
 	if bitmap&dirBitmapGroupID != 0 {
-		out = putBE32(out, 0)
+		out = bp.AppendBE32(out, 0)
 	}
 	if bitmap&dirBitmapAccessRights != 0 {
 		rights := dirAccessRights
 		if v.FS().Capabilities().ReadOnly {
 			rights = dirAccessRightsReadOnly
 		}
-		out = putBE32(out, rights)
+		out = bp.AppendBE32(out, rights)
 	}
 	if bitmap&dirBitmapProDOSInfo != 0 {
 		out = append(out, make([]byte, 6)...)
@@ -174,7 +176,7 @@ func (v *Volume) packDirParams(out []byte, store string, info stdfs.FileInfo, bi
 // rather than mangled. Returns the grown fixed and variable buffers.
 func (v *Volume) appendName(out, names []byte, fixedSize int, name string, pathType uint8) (fixed, variable []byte) {
 	offset := uint16(fixedSize + len(names))
-	out = putBE16(out, offset)
+	out = bp.AppendBE16(out, offset)
 	if wire, err := v.EncodeName(name, pathType); err == nil {
 		names = putPString(names, wire)
 	} else {

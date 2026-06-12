@@ -1,6 +1,7 @@
 package afp
 
 import (
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 )
 
@@ -52,7 +53,7 @@ func (s *Service) afpCatSearch(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 36 {
 		return nil, afpErrParamErr
 	}
-	vol, ok := a.openVols[be16(block[2:4])]
+	vol, ok := a.openVols[bp.BE16(block[2:4])]
 	if !ok {
 		return nil, afpErrParamErr
 	}
@@ -64,7 +65,7 @@ func (s *Service) afpCatSearch(a *afpSession, block []byte) ([]byte, int32) {
 		return nil, afpErrCallNotSuppt
 	}
 
-	reqMatches := int(be32(block[4:8]))
+	reqMatches := int(bp.BE32(block[4:8]))
 	if reqMatches <= 0 {
 		return nil, afpErrParamErr
 	}
@@ -75,9 +76,9 @@ func (s *Service) afpCatSearch(a *afpSession, block []byte) ([]byte, int32) {
 	copy(pos[:], block[12:28])
 	cursor := decodeCatCursor(pos)
 
-	fileBitmap := be16(block[28:30])
-	dirBitmap := be16(block[30:32])
-	reqBitmap := be32(block[32:36])
+	fileBitmap := bp.BE16(block[28:30])
+	dirBitmap := bp.BE16(block[30:32])
+	reqBitmap := bp.BE32(block[32:36])
 
 	crit, code := vol.decodeCatSearchCriteria(reqBitmap, block[36:])
 	if code != afpNoErr {
@@ -102,10 +103,10 @@ func (s *Service) afpCatSearch(a *afpSession, block []byte) ([]byte, int32) {
 
 	out := make([]byte, 0, 32+catSearchMaxData)
 	out = append(out, make([]byte, 16)...) // CatalogPosition, patched below
-	out = putBE16(out, fileBitmap)
-	out = putBE16(out, dirBitmap)
+	out = bp.AppendBE16(out, fileBitmap)
+	out = bp.AppendBE16(out, dirBitmap)
 	countOff := len(out)
-	out = putBE32(out, 0) // ActualCount, patched below
+	out = bp.AppendBE32(out, 0) // ActualCount, patched below
 
 	actual := 0
 	capped := false
@@ -204,7 +205,7 @@ func (v *Volume) decodeCatSearchCriteria(reqBitmap uint32, specs []byte) (fs.Cat
 		if off+4 > len(spec1) {
 			return crit, afpErrParamErr
 		}
-		parentID := be32(spec1[off : off+4])
+		parentID := bp.BE32(spec1[off : off+4])
 		off += 4
 		path, code := dirPath(v, parentID)
 		if code != afpNoErr {
@@ -217,7 +218,7 @@ func (v *Volume) decodeCatSearchCriteria(reqBitmap uint32, specs []byte) (fs.Cat
 		if off+2 > len(spec1) {
 			return crit, afpErrParamErr
 		}
-		nameOffsetPos = int(be16(spec1[off : off+2]))
+		nameOffsetPos = int(bp.BE16(spec1[off : off+2]))
 		off += 2
 		crit.MatchName = true
 		crit.Partial = reqBitmap&catSearchBitPartialName != 0
@@ -246,7 +247,7 @@ func catSearchSpec(b []byte, off int) (spec []byte, next int, ok bool) {
 	if off+2 > len(b) {
 		return nil, off, false
 	}
-	n := int(be16(b[off : off+2]))
+	n := int(bp.BE16(b[off : off+2]))
 	off += 2
 	if off+n > len(b) {
 		return nil, off, false

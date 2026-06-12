@@ -1,6 +1,10 @@
 package netbios
 
-import "errors"
+import (
+	"errors"
+
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+)
 
 // NetBIOS-over-IPX (NBIPX) packet encoding.
 //
@@ -15,20 +19,6 @@ import "errors"
 //
 // The session-header constants and name-service packet shape are the same on
 // the wire whether the sender is OS/2 LAN Server, Win95, or NetWare-based.
-
-// le16 / be16 / putBE16 / putLE16 are hand-rolled (no encoding/binary in core).
-func be16(b []byte) uint16 { return uint16(b[0])<<8 | uint16(b[1]) }
-func le16(b []byte) uint16 { return uint16(b[0]) | uint16(b[1])<<8 }
-
-func putBE16(b []byte, v uint16) {
-	b[0] = byte(v >> 8)
-	b[1] = byte(v)
-}
-
-func putLE16(b []byte, v uint16) {
-	b[0] = byte(v)
-	b[1] = byte(v >> 8)
-}
 
 // IPXTypeNetBIOS is the IPX packet-type (0x14 = 20) for NBIPX broadcast
 // forwarding (name claim / query).
@@ -91,12 +81,12 @@ func EncodeSessionHeader(h *NBIPXSessionHeader) []byte {
 	out := make([]byte, NBIPXSessionHeaderLen)
 	out[0] = h.ConnCtrlFlag
 	out[1] = h.DataStreamType
-	putBE16(out[2:4], h.SourceConnID)
-	putBE16(out[4:6], h.DestConnID)
-	putBE16(out[6:8], h.SendSeq)
-	putBE16(out[8:10], h.TotalDataLen)
-	putBE16(out[10:12], h.Offset)
-	putBE16(out[12:14], h.DataLen)
+	bp.PutBE16(out[2:4], h.SourceConnID)
+	bp.PutBE16(out[4:6], h.DestConnID)
+	bp.PutBE16(out[6:8], h.SendSeq)
+	bp.PutBE16(out[8:10], h.TotalDataLen)
+	bp.PutBE16(out[10:12], h.Offset)
+	bp.PutBE16(out[12:14], h.DataLen)
 	out[14] = h.ConnCtrlByte
 	out[15] = h.Reserved
 	return out
@@ -110,12 +100,12 @@ func DecodeSessionHeader(b []byte) (*NBIPXSessionHeader, error) {
 	return &NBIPXSessionHeader{
 		ConnCtrlFlag:   b[0],
 		DataStreamType: b[1],
-		SourceConnID:   be16(b[2:4]),
-		DestConnID:     be16(b[4:6]),
-		SendSeq:        be16(b[6:8]),
-		TotalDataLen:   be16(b[8:10]),
-		Offset:         be16(b[10:12]),
-		DataLen:        be16(b[12:14]),
+		SourceConnID:   bp.BE16(b[2:4]),
+		DestConnID:     bp.BE16(b[4:6]),
+		SendSeq:        bp.BE16(b[6:8]),
+		TotalDataLen:   bp.BE16(b[8:10]),
+		Offset:         bp.BE16(b[10:12]),
+		DataLen:        bp.BE16(b[12:14]),
 		ConnCtrlByte:   b[14],
 		Reserved:       b[15],
 	}, nil
@@ -171,7 +161,7 @@ func EncodeNMPIPacket(p *NMPIPacket) []byte {
 	off++
 	out[off] = p.NameType
 	off++
-	putLE16(out[off:off+2], p.MessageID)
+	bp.PutLE16(out[off:off+2], p.MessageID)
 	off += 2
 	copy(out[off:off+NameLength], p.RequestedName[:])
 	off += NameLength
@@ -196,7 +186,7 @@ func DecodeNMPIPacket(b []byte) (*NMPIPacket, error) {
 	off++
 	p.NameType = b[off]
 	off++
-	p.MessageID = le16(b[off : off+2])
+	p.MessageID = bp.LE16(b[off : off+2])
 	off += 2
 	copy(p.RequestedName[:], b[off:off+NameLength])
 	off += NameLength

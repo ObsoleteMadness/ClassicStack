@@ -33,9 +33,6 @@ const (
 	NotifyNeighborDistance = 31
 )
 
-// be16 reads a big-endian uint16.
-func be16(b []byte) uint16 { return uint16(b[0])<<8 | uint16(b[1]) }
-
 // makeRoutingTableDatagramData builds the RTMP Data datagrams advertised over port p: a
 // header (p's network/node and own extended tuple) followed by neighbour tuples, split into
 // DDP-sized datagrams. splitHorizon omits routes learned via p itself.

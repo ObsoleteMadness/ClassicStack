@@ -2,6 +2,8 @@ package afp
 
 import (
 	"sync"
+
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 )
 
 // Desktop Database (Inside Macintosh: Networking, AFP 2.x §C "The Desktop
@@ -243,13 +245,13 @@ func (s *Service) afpOpenDT(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 4 {
 		return nil, afpErrParamErr
 	}
-	vol, ok := s.VolumeByID(be16(block[2:4]))
+	vol, ok := s.VolumeByID(bp.BE16(block[2:4]))
 	if !ok {
 		return nil, afpErrParamErr
 	}
 	vol.ensureDesktop()
 	ref := a.dt.open(vol)
-	return putBE16(nil, ref), afpNoErr
+	return bp.AppendBE16(nil, ref), afpNoErr
 }
 
 // afpCloseDT invalidates a Desktop reference number.
@@ -259,7 +261,7 @@ func (s *Service) afpCloseDT(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 4 {
 		return nil, afpErrParamErr
 	}
-	if !a.dt.close(be16(block[2:4])) {
+	if !a.dt.close(bp.BE16(block[2:4])) {
 		return nil, afpErrParamErr
 	}
 	return nil, afpNoErr
@@ -345,7 +347,7 @@ func (s *Service) afpAddIcon(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 20 {
 		return nil, afpErrParamErr
 	}
-	vol, ok := a.dt.lookup(be16(block[2:4]))
+	vol, ok := a.dt.lookup(bp.BE16(block[2:4]))
 	if !ok {
 		return nil, afpErrParamErr
 	}
@@ -353,8 +355,8 @@ func (s *Service) afpAddIcon(a *afpSession, block []byte) ([]byte, int32) {
 	copy(creator[:], block[4:8])
 	copy(fileType[:], block[8:12])
 	iconType := block[12]
-	tag := be32(block[14:18])
-	size := int(be16(block[18:20]))
+	tag := bp.BE32(block[14:18])
+	size := int(bp.BE16(block[18:20]))
 	bitmap := block[20:]
 	if len(bitmap) > size {
 		bitmap = bitmap[:size]
@@ -377,7 +379,7 @@ func (s *Service) afpGetIcon(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 16 {
 		return nil, afpErrParamErr
 	}
-	vol, ok := a.dt.lookup(be16(block[2:4]))
+	vol, ok := a.dt.lookup(bp.BE16(block[2:4]))
 	if !ok {
 		return nil, afpErrParamErr
 	}
@@ -385,7 +387,7 @@ func (s *Service) afpGetIcon(a *afpSession, block []byte) ([]byte, int32) {
 	copy(creator[:], block[4:8])
 	copy(fileType[:], block[8:12])
 	iconType := block[12]
-	length := int(be16(block[14:16]))
+	length := int(bp.BE16(block[14:16]))
 
 	entry, found := vol.desktop().getIcon(creator, fileType, iconType)
 	if !found {
@@ -411,23 +413,23 @@ func (s *Service) afpGetIconInfo(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 10 {
 		return nil, afpErrParamErr
 	}
-	vol, ok := a.dt.lookup(be16(block[2:4]))
+	vol, ok := a.dt.lookup(bp.BE16(block[2:4]))
 	if !ok {
 		return nil, afpErrParamErr
 	}
 	var creator [4]byte
 	copy(creator[:], block[4:8])
-	index := be16(block[8:10])
+	index := bp.BE16(block[8:10])
 
 	entry, fileType, iconType, found := vol.desktop().iconInfoByIndex(creator, index)
 	if !found {
 		return nil, afpErrItemNotFound
 	}
 	out := make([]byte, 0, 12)
-	out = putBE32(out, entry.tag)
+	out = bp.AppendBE32(out, entry.tag)
 	out = append(out, fileType[:]...)
 	out = append(out, iconType, 0) // iconType + pad
-	out = putBE16(out, uint16(len(entry.bitmap)))
+	out = bp.AppendBE16(out, uint16(len(entry.bitmap)))
 	return out, afpNoErr
 }
 
@@ -443,14 +445,14 @@ func (s *Service) afpAddAPPL(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 17 {
 		return nil, afpErrParamErr
 	}
-	vol, ok := a.dt.lookup(be16(block[2:4]))
+	vol, ok := a.dt.lookup(bp.BE16(block[2:4]))
 	if !ok {
 		return nil, afpErrParamErr
 	}
-	dirID := be32(block[4:8])
+	dirID := bp.BE32(block[4:8])
 	var creator [4]byte
 	copy(creator[:], block[8:12])
-	tag := be32(block[12:16])
+	tag := bp.BE32(block[12:16])
 	pathType := block[16]
 	store, code := resolveCatalogPath(vol, dirID, block, 17, pathType)
 	if code != afpNoErr {
@@ -475,11 +477,11 @@ func (s *Service) afpRemoveAPPL(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 13 {
 		return nil, afpErrParamErr
 	}
-	vol, ok := a.dt.lookup(be16(block[2:4]))
+	vol, ok := a.dt.lookup(bp.BE16(block[2:4]))
 	if !ok {
 		return nil, afpErrParamErr
 	}
-	dirID := be32(block[4:8])
+	dirID := bp.BE32(block[4:8])
 	var creator [4]byte
 	copy(creator[:], block[8:12])
 	pathType := block[12]
@@ -500,14 +502,14 @@ func (s *Service) afpGetAPPL(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 12 {
 		return nil, afpErrParamErr
 	}
-	vol, ok := a.dt.lookup(be16(block[2:4]))
+	vol, ok := a.dt.lookup(bp.BE16(block[2:4]))
 	if !ok {
 		return nil, afpErrParamErr
 	}
 	var creator [4]byte
 	copy(creator[:], block[4:8])
-	index := be16(block[8:10])
-	bitmap := be16(block[10:12])
+	index := bp.BE16(block[8:10])
+	bitmap := bp.BE16(block[10:12])
 
 	entry, found := vol.desktop().applByIndex(creator, index)
 	if !found {
@@ -519,8 +521,8 @@ func (s *Service) afpGetAPPL(a *afpSession, block []byte) ([]byte, int32) {
 	}
 
 	out := make([]byte, 0, 32)
-	out = putBE16(out, bitmap)
-	out = putBE32(out, entry.tag)
+	out = bp.AppendBE16(out, bitmap)
+	out = bp.AppendBE32(out, entry.tag)
 	// APPL entries are always files; pack the file half of the bitmap. pathType 0
 	// keeps any LongName store-native (the request carries no path-type byte).
 	out = vol.fileDirParams(out, entry.pathname, info, bitmap, 0)
@@ -537,11 +539,11 @@ func (s *Service) resolveDTPath(a *afpSession, block []byte) (*Volume, string, i
 	if len(block) < 9 {
 		return nil, "", 0, afpErrParamErr
 	}
-	vol, ok := a.dt.lookup(be16(block[2:4]))
+	vol, ok := a.dt.lookup(bp.BE16(block[2:4]))
 	if !ok {
 		return nil, "", 0, afpErrParamErr
 	}
-	dirID := be32(block[4:8])
+	dirID := bp.BE32(block[4:8])
 	pathType := block[8]
 	parent, code := dirPath(vol, dirID)
 	if code != afpNoErr {

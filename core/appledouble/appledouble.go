@@ -15,9 +15,10 @@
 package appledouble
 
 import (
-	"encoding/binary"
 	"io"
 	"path/filepath"
+
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 )
 
 // Magic and version numbers from the AppleDouble spec.
@@ -89,10 +90,10 @@ func Parse(b []byte) (Parsed, error) {
 	if len(b) < HeaderSize {
 		return out, io.ErrUnexpectedEOF
 	}
-	if binary.BigEndian.Uint32(b[0:4]) != Magic {
+	if bp.BE32(b[0:4]) != Magic {
 		return out, io.ErrUnexpectedEOF
 	}
-	numEntries := int(binary.BigEndian.Uint16(b[24:26]))
+	numEntries := int(bp.BE16(b[24:26]))
 	entriesStart := HeaderSize
 	entriesLen := numEntries * EntrySize
 	if len(b) < entriesStart+entriesLen {
@@ -101,9 +102,9 @@ func Parse(b []byte) (Parsed, error) {
 
 	for i := 0; i < numEntries; i++ {
 		off := entriesStart + i*EntrySize
-		id := binary.BigEndian.Uint32(b[off : off+4])
-		eOff := int(binary.BigEndian.Uint32(b[off+4 : off+8]))
-		eLen := int(binary.BigEndian.Uint32(b[off+8 : off+12]))
+		id := bp.BE32(b[off : off+4])
+		eOff := int(bp.BE32(b[off+4 : off+8]))
+		eLen := int(bp.BE32(b[off+8 : off+12]))
 		if eOff < 0 || eLen < 0 || eOff+eLen > len(b) {
 			continue
 		}
@@ -168,16 +169,16 @@ func Build(p Parsed, includeCommentEntry bool, commentLen uint32) []byte {
 	}
 	out := make([]byte, total)
 
-	binary.BigEndian.PutUint32(out[0:4], Magic)
-	binary.BigEndian.PutUint32(out[4:8], Version)
-	binary.BigEndian.PutUint16(out[24:26], uint16(numEntries))
+	bp.PutBE32(out[0:4], Magic)
+	bp.PutBE32(out[4:8], Version)
+	bp.PutBE16(out[24:26], uint16(numEntries))
 
 	entriesStart := HeaderSize
 	putEntry := func(i int, id, off, ln uint32) {
 		base := entriesStart + i*EntrySize
-		binary.BigEndian.PutUint32(out[base:base+4], id)
-		binary.BigEndian.PutUint32(out[base+4:base+8], off)
-		binary.BigEndian.PutUint32(out[base+8:base+12], ln)
+		bp.PutBE32(out[base:base+4], id)
+		bp.PutBE32(out[base+4:base+8], off)
+		bp.PutBE32(out[base+8:base+12], ln)
 	}
 
 	putEntry(0, EntryIDFinderInfo, finderOff, finderLen)

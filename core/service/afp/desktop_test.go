@@ -3,6 +3,8 @@ package afp
 import (
 	"testing"
 
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/asp"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/atp"
 )
@@ -14,12 +16,12 @@ func openDT(t *testing.T, svc *Service, r *fakeRouter) (sessID uint8, volID uint
 	sessID, volID = openVolForFork(t, svc, r)
 
 	openDT := []byte{cmdOpenDT, 0}
-	openDT = putBE16(openDT, volID)
+	openDT = bp.AppendBE16(openDT, volID)
 	code, reply := sendCmd(t, svc, r, sessID, 5, openDT)
 	if code != afpNoErr {
 		t.Fatalf("OpenDT result = %d, want 0", code)
 	}
-	dtRef = be16(reply[0:2])
+	dtRef = bp.BE16(reply[0:2])
 	if dtRef == 0 {
 		t.Fatalf("OpenDT returned DTRefNum 0, want non-zero")
 	}
@@ -30,8 +32,8 @@ func openDT(t *testing.T, svc *Service, r *fakeRouter) (sessID uint8, volID uint
 // for the comment commands.
 func commentPath(cmd uint8, dtRef uint16, dirID uint32, name string) []byte {
 	b := []byte{cmd, 0}
-	b = putBE16(b, dtRef)
-	b = putBE32(b, dirID)
+	b = bp.AppendBE16(b, dtRef)
+	b = bp.AppendBE32(b, dirID)
 	b = append(b, PathTypeUTF8Names)
 	b = putPString(b, []byte(name))
 	return b
@@ -44,7 +46,7 @@ func TestDesktop_OpenCloseDT(t *testing.T) {
 	sessID, _, dtRef := openDT(t, svc, r)
 
 	closeDT := []byte{cmdCloseDT, 0}
-	closeDT = putBE16(closeDT, dtRef)
+	closeDT = bp.AppendBE16(closeDT, dtRef)
 	code, _ := sendCmd(t, svc, r, sessID, 6, closeDT)
 	if code != afpNoErr {
 		t.Fatalf("CloseDT result = %d, want 0", code)
@@ -130,17 +132,17 @@ func TestDesktop_IconTwoPhaseAddGet(t *testing.T) {
 	// in + open vol + DT through `from` directly.
 	sessID := login(t, svc, r)
 	openVol := []byte{cmdOpenVol, 0}
-	openVol = putBE16(openVol, volBitmapID)
+	openVol = bp.AppendBE16(openVol, volBitmapID)
 	openVol = putPString(openVol, []byte("Share"))
 	r.reset()
 	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 3), openVol)), from)
-	volID := be16(respPayload(r.lastReply())[2:4])
+	volID := bp.BE16(respPayload(r.lastReply())[2:4])
 
 	openDT := []byte{cmdOpenDT, 0}
-	openDT = putBE16(openDT, volID)
+	openDT = bp.AppendBE16(openDT, volID)
 	r.reset()
 	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 4), openDT)), from)
-	dtRef := be16(respPayload(r.lastReply())[0:2])
+	dtRef := bp.BE16(respPayload(r.lastReply())[0:2])
 
 	creator := [4]byte{'A', 'P', 'P', 'L'}
 	fileType := [4]byte{'T', 'E', 'X', 'T'}
@@ -160,7 +162,7 @@ func TestDesktop_IconTwoPhaseAddGet(t *testing.T) {
 		t.Fatalf("FPAddIcon aspDataWrite TReqs = %d, want 1", len(from.sent))
 	}
 	dh, _ := atp.Decode(from.sent[0].Data)
-	if bsz := be16(from.sent[0].Data[atp.HeaderSize:]); int(bsz) != len(bitmap) {
+	if bsz := bp.BE16(from.sent[0].Data[atp.HeaderSize:]); int(bsz) != len(bitmap) {
 		t.Fatalf("aspDataWrite bufferSize = %d, want %d", bsz, len(bitmap))
 	}
 	if len(r.replies) != 0 {
@@ -178,11 +180,11 @@ func TestDesktop_IconTwoPhaseAddGet(t *testing.T) {
 
 	// FPGetIcon returns the stored bitmap.
 	getIcon := []byte{cmdGetIcon, 0}
-	getIcon = putBE16(getIcon, dtRef)
+	getIcon = bp.AppendBE16(getIcon, dtRef)
 	getIcon = append(getIcon, creator[:]...)
 	getIcon = append(getIcon, fileType[:]...)
 	getIcon = append(getIcon, iconType, 0)
-	getIcon = putBE16(getIcon, uint16(len(bitmap)))
+	getIcon = bp.AppendBE16(getIcon, uint16(len(bitmap)))
 	code, gotIcon := sendCmd(t, svc, r, sessID, 10, getIcon)
 	if code != afpNoErr {
 		t.Fatalf("GetIcon result = %d, want 0", code)
@@ -193,15 +195,15 @@ func TestDesktop_IconTwoPhaseAddGet(t *testing.T) {
 
 	// FPGetIconInfo (index 1) reports the tag, type, icon type, and size.
 	getInfo := []byte{cmdGetIconInfo, 0}
-	getInfo = putBE16(getInfo, dtRef)
+	getInfo = bp.AppendBE16(getInfo, dtRef)
 	getInfo = append(getInfo, creator[:]...)
-	getInfo = putBE16(getInfo, 1)
+	getInfo = bp.AppendBE16(getInfo, 1)
 	code, info := sendCmd(t, svc, r, sessID, 11, getInfo)
 	if code != afpNoErr {
 		t.Fatalf("GetIconInfo result = %d, want 0", code)
 	}
-	if be32(info[0:4]) != tag {
-		t.Errorf("GetIconInfo tag = %#x, want %#x", be32(info[0:4]), tag)
+	if bp.BE32(info[0:4]) != tag {
+		t.Errorf("GetIconInfo tag = %#x, want %#x", bp.BE32(info[0:4]), tag)
 	}
 	if string(info[4:8]) != string(fileType[:]) {
 		t.Errorf("GetIconInfo fileType = %q, want %q", info[4:8], fileType[:])
@@ -209,15 +211,15 @@ func TestDesktop_IconTwoPhaseAddGet(t *testing.T) {
 	if info[8] != iconType {
 		t.Errorf("GetIconInfo iconType = %d, want %d", info[8], iconType)
 	}
-	if sz := be16(info[10:12]); int(sz) != len(bitmap) {
+	if sz := bp.BE16(info[10:12]); int(sz) != len(bitmap) {
 		t.Errorf("GetIconInfo size = %d, want %d", sz, len(bitmap))
 	}
 
 	// A second icon index past the end reports item-not-found.
 	getInfo2 := []byte{cmdGetIconInfo, 0}
-	getInfo2 = putBE16(getInfo2, dtRef)
+	getInfo2 = bp.AppendBE16(getInfo2, dtRef)
 	getInfo2 = append(getInfo2, creator[:]...)
-	getInfo2 = putBE16(getInfo2, 2)
+	getInfo2 = bp.AppendBE16(getInfo2, 2)
 	if code, _ := sendCmd(t, svc, r, sessID, 12, getInfo2); code != afpErrItemNotFound {
 		t.Fatalf("GetIconInfo index 2 = %d, want %d", code, afpErrItemNotFound)
 	}
@@ -230,11 +232,11 @@ func TestDesktop_GetIconMissing(t *testing.T) {
 	sessID, _, dtRef := openDT(t, svc, r)
 
 	getIcon := []byte{cmdGetIcon, 0}
-	getIcon = putBE16(getIcon, dtRef)
+	getIcon = bp.AppendBE16(getIcon, dtRef)
 	getIcon = append(getIcon, 'X', 'X', 'X', 'X')
 	getIcon = append(getIcon, 'T', 'E', 'X', 'T')
 	getIcon = append(getIcon, 1, 0)
-	getIcon = putBE16(getIcon, 256)
+	getIcon = bp.AppendBE16(getIcon, 256)
 	if code, _ := sendCmd(t, svc, r, sessID, 6, getIcon); code != afpErrItemNotFound {
 		t.Fatalf("GetIcon (missing) = %d, want %d", code, afpErrItemNotFound)
 	}
@@ -254,10 +256,10 @@ func TestDesktop_APPLRoundTrip(t *testing.T) {
 
 	// FPAddAPPL: DTRefNum dirID creator tag pathType pstring(path).
 	add := []byte{cmdAddAPPL, 0}
-	add = putBE16(add, dtRef)
-	add = putBE32(add, 2) // dirID root
+	add = bp.AppendBE16(add, dtRef)
+	add = bp.AppendBE32(add, 2) // dirID root
 	add = append(add, creator[:]...)
-	add = putBE32(add, tag)
+	add = bp.AppendBE32(add, tag)
 	add = append(add, PathTypeUTF8Names)
 	add = append(add, []byte("TeachText")...) // resolveCatalogPath reads rest-of-block
 	if code, _ := sendCmd(t, svc, r, sessID, 6, add); code != afpNoErr {
@@ -266,23 +268,23 @@ func TestDesktop_APPLRoundTrip(t *testing.T) {
 
 	// FPGetAPPL index 0: bitmap echoed, tag returned, file params packed.
 	getAppl := []byte{cmdGetAPPL, 0}
-	getAppl = putBE16(getAppl, dtRef)
+	getAppl = bp.AppendBE16(getAppl, dtRef)
 	getAppl = append(getAppl, creator[:]...)
-	getAppl = putBE16(getAppl, 0) // index
-	getAppl = putBE16(getAppl, fdBitmapLongName)
+	getAppl = bp.AppendBE16(getAppl, 0) // index
+	getAppl = bp.AppendBE16(getAppl, fdBitmapLongName)
 	code, reply := sendCmd(t, svc, r, sessID, 7, getAppl)
 	if code != afpNoErr {
 		t.Fatalf("GetAPPL result = %d, want 0", code)
 	}
-	if be16(reply[0:2]) != fdBitmapLongName {
-		t.Errorf("GetAPPL bitmap = %#x, want %#x", be16(reply[0:2]), fdBitmapLongName)
+	if bp.BE16(reply[0:2]) != fdBitmapLongName {
+		t.Errorf("GetAPPL bitmap = %#x, want %#x", bp.BE16(reply[0:2]), fdBitmapLongName)
 	}
-	if be32(reply[2:6]) != tag {
-		t.Errorf("GetAPPL tag = %#x, want %#x", be32(reply[2:6]), tag)
+	if bp.BE32(reply[2:6]) != tag {
+		t.Errorf("GetAPPL tag = %#x, want %#x", bp.BE32(reply[2:6]), tag)
 	}
 	// The packed file params follow; the LongName offset points at "TeachText".
 	params := reply[6:]
-	nameOff := int(be16(params[0:2]))
+	nameOff := int(bp.BE16(params[0:2]))
 	name, _, ok := pString(params, nameOff)
 	if !ok || string(name) != "TeachText" {
 		t.Errorf("GetAPPL packed name = %q, want TeachText", name)
@@ -290,8 +292,8 @@ func TestDesktop_APPLRoundTrip(t *testing.T) {
 
 	// FPRemoveAPPL drops it; GetAPPL then reports item-not-found.
 	rem := []byte{cmdRemoveAPPL, 0}
-	rem = putBE16(rem, dtRef)
-	rem = putBE32(rem, 2)
+	rem = bp.AppendBE16(rem, dtRef)
+	rem = bp.AppendBE32(rem, 2)
 	rem = append(rem, creator[:]...)
 	rem = append(rem, PathTypeUTF8Names)
 	rem = append(rem, []byte("TeachText")...) // resolveCatalogPath reads rest-of-block
@@ -308,11 +310,11 @@ func TestDesktop_APPLRoundTrip(t *testing.T) {
 // tag(4) size(2), with no inline bitmap.
 func fpAddIconHeader(dtRef uint16, creator, fileType [4]byte, iconType uint8, tag uint32, size uint16) []byte {
 	h := []byte{cmdAddIcon, 0x00}
-	h = putBE16(h, dtRef)
+	h = bp.AppendBE16(h, dtRef)
 	h = append(h, creator[:]...)
 	h = append(h, fileType[:]...)
 	h = append(h, iconType, 0)
-	h = putBE32(h, tag)
-	h = putBE16(h, size)
+	h = bp.AppendBE32(h, tag)
+	h = bp.AppendBE16(h, size)
 	return h
 }

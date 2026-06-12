@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/ddp"
 	"github.com/ObsoleteMadness/ClassicStack/core/router"
 )
@@ -110,8 +111,8 @@ func TestGetMyZoneReply(t *testing.T) {
 	if d.Data[0] != (ATPFuncTResp | ATPEOM) {
 		t.Errorf("reply ctrl = 0x%02x, want TResp|EOM", d.Data[0])
 	}
-	if be16(d.Data[2:4]) != tid {
-		t.Errorf("reply tid = %d, want %d", be16(d.Data[2:4]), tid)
+	if bp.BE16(d.Data[2:4]) != tid {
+		t.Errorf("reply tid = %d, want %d", bp.BE16(d.Data[2:4]), tid)
 	}
 	zlen := int(d.Data[8])
 	if 9+zlen > len(d.Data) || string(d.Data[9:9+zlen]) != "Engineering" {

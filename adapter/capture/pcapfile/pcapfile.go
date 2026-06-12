@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sync"
 
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 )
 
@@ -85,10 +87,10 @@ func (s *Sink) WriteFrame(tsUnixNano int64, f link.Frame) {
 		return
 	}
 	var hdr [16]byte
-	putLE32(hdr[0:4], secs)
-	putLE32(hdr[4:8], usecs)
-	putLE32(hdr[8:12], uint32(len(data))) // incl_len (captured)
-	putLE32(hdr[12:16], uint32(len(f)))   // orig_len (on the wire)
+	bp.PutLE32(hdr[0:4], secs)
+	bp.PutLE32(hdr[4:8], usecs)
+	bp.PutLE32(hdr[8:12], uint32(len(data))) // incl_len (captured)
+	bp.PutLE32(hdr[12:16], uint32(len(f)))   // orig_len (on the wire)
 	if _, err := s.bw.Write(hdr[:]); err != nil {
 		return
 	}
@@ -118,28 +120,13 @@ func (s *Sink) Close() error {
 // microsecond magic).
 func writeGlobalHeader(w *bufio.Writer, snaplen, linktype uint32) error {
 	var h [24]byte
-	putLE32(h[0:4], magicMicros)
-	putLE16(h[4:6], 2)          // version major
-	putLE16(h[6:8], 4)          // version minor
-	putLE32(h[8:12], 0)         // thiszone (GMT)
-	putLE32(h[12:16], 0)        // sigfigs
-	putLE32(h[16:20], snaplen)  // snaplen
-	putLE32(h[20:24], linktype) // network (DLT)
+	bp.PutLE32(h[0:4], magicMicros)
+	bp.PutLE16(h[4:6], 2)          // version major
+	bp.PutLE16(h[6:8], 4)          // version minor
+	bp.PutLE32(h[8:12], 0)         // thiszone (GMT)
+	bp.PutLE32(h[12:16], 0)        // sigfigs
+	bp.PutLE32(h[16:20], snaplen)  // snaplen
+	bp.PutLE32(h[20:24], linktype) // network (DLT)
 	_, err := w.Write(h[:])
 	return err
-}
-
-// --- little-endian helpers (no encoding/binary -> keeps this TinyGo-safe and
-// --- free of the reflect transitive dep that gates core; harmless here too) ---
-
-func putLE16(b []byte, v uint16) {
-	b[0] = byte(v)
-	b[1] = byte(v >> 8)
-}
-
-func putLE32(b []byte, v uint32) {
-	b[0] = byte(v)
-	b[1] = byte(v >> 8)
-	b[2] = byte(v >> 16)
-	b[3] = byte(v >> 24)
 }

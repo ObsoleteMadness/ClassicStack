@@ -4,33 +4,17 @@
 // which builds on this header.
 //
 // Ring: CORE (stdlib only, reflection-free). SMB is little-endian on the wire;
-// LE helpers are hand-rolled because encoding/binary transitively imports
-// reflect.
+// LE integer codecs come from core/binaryprimitives, because encoding/binary
+// transitively imports reflect.
 //
 // Reference: [MS-CIFS] §2.2.3.1 (SMB Header).
 package smb
 
-import "errors"
+import (
+	"errors"
 
-// le16 / le32 / putLE16 / putLE32 are hand-rolled little-endian helpers (no
-// encoding/binary in core — it transitively imports reflect, §1 / archtest).
-func le16(b []byte) uint16 { return uint16(b[0]) | uint16(b[1])<<8 }
-
-func le32(b []byte) uint32 {
-	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
-}
-
-func putLE16(b []byte, v uint16) {
-	b[0] = byte(v)
-	b[1] = byte(v >> 8)
-}
-
-func putLE32(b []byte, v uint32) {
-	b[0] = byte(v)
-	b[1] = byte(v >> 8)
-	b[2] = byte(v >> 16)
-	b[3] = byte(v >> 24)
-}
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+)
 
 // HeaderLen is the fixed SMB1 header length in bytes ([MS-CIFS] §2.2.3.1).
 const HeaderLen = 32
@@ -150,16 +134,16 @@ func (h Header) Encode(dst []byte) []byte {
 	var b [HeaderLen]byte
 	copy(b[offProtocol:offProtocol+4], Protocol[:])
 	b[offCommand] = h.Command
-	putLE32(b[offStatus:offStatus+4], h.Status)
+	bp.PutLE32(b[offStatus:offStatus+4], h.Status)
 	b[offFlags] = h.Flags
-	putLE16(b[offFlags2:offFlags2+2], h.Flags2)
-	putLE16(b[offPIDHigh:offPIDHigh+2], h.PIDHigh)
+	bp.PutLE16(b[offFlags2:offFlags2+2], h.Flags2)
+	bp.PutLE16(b[offPIDHigh:offPIDHigh+2], h.PIDHigh)
 	copy(b[offSecurity:offSecurity+8], h.Security[:])
-	putLE16(b[offReserved:offReserved+2], h.Reserved)
-	putLE16(b[offTID:offTID+2], h.TID)
-	putLE16(b[offPIDLow:offPIDLow+2], h.PIDLow)
-	putLE16(b[offUID:offUID+2], h.UID)
-	putLE16(b[offMID:offMID+2], h.MID)
+	bp.PutLE16(b[offReserved:offReserved+2], h.Reserved)
+	bp.PutLE16(b[offTID:offTID+2], h.TID)
+	bp.PutLE16(b[offPIDLow:offPIDLow+2], h.PIDLow)
+	bp.PutLE16(b[offUID:offUID+2], h.UID)
+	bp.PutLE16(b[offMID:offMID+2], h.MID)
 	return append(dst, b[:]...)
 }
 
@@ -175,16 +159,16 @@ func DecodeHeader(b []byte) (Header, error) {
 	}
 	var h Header
 	h.Command = b[offCommand]
-	h.Status = le32(b[offStatus : offStatus+4])
+	h.Status = bp.LE32(b[offStatus : offStatus+4])
 	h.Flags = b[offFlags]
-	h.Flags2 = le16(b[offFlags2 : offFlags2+2])
-	h.PIDHigh = le16(b[offPIDHigh : offPIDHigh+2])
+	h.Flags2 = bp.LE16(b[offFlags2 : offFlags2+2])
+	h.PIDHigh = bp.LE16(b[offPIDHigh : offPIDHigh+2])
 	copy(h.Security[:], b[offSecurity:offSecurity+8])
-	h.Reserved = le16(b[offReserved : offReserved+2])
-	h.TID = le16(b[offTID : offTID+2])
-	h.PIDLow = le16(b[offPIDLow : offPIDLow+2])
-	h.UID = le16(b[offUID : offUID+2])
-	h.MID = le16(b[offMID : offMID+2])
+	h.Reserved = bp.LE16(b[offReserved : offReserved+2])
+	h.TID = bp.LE16(b[offTID : offTID+2])
+	h.PIDLow = bp.LE16(b[offPIDLow : offPIDLow+2])
+	h.UID = bp.LE16(b[offUID : offUID+2])
+	h.MID = bp.LE16(b[offMID : offMID+2])
 	return h, nil
 }
 

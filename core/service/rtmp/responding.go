@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/ddp"
 	"github.com/ObsoleteMadness/ClassicStack/core/router"
@@ -116,7 +118,7 @@ func (s *RespondingService) handleData(d ddp.Datagram, rx router.RoutedPort) {
 	if len(d.Data) < 4 {
 		return
 	}
-	senderNetwork := be16(d.Data[0:2])
+	senderNetwork := bp.BE16(d.Data[0:2])
 	if d.Data[2] != 8 {
 		return
 	}
@@ -129,11 +131,11 @@ func (s *RespondingService) handleData(d ddp.Datagram, rx router.RoutedPort) {
 		if len(data) < 6 {
 			return
 		}
-		senderNetworkMin = be16(data[0:2])
+		senderNetworkMin = bp.BE16(data[0:2])
 		if data[2] != 0x80 {
 			return
 		}
-		senderNetworkMax = be16(data[3:5])
+		senderNetworkMax = bp.BE16(data[3:5])
 		rtmpVersion = data[5]
 		data = data[6:] // skip the sender's own extended tuple before neighbour tuples
 	} else {
@@ -142,7 +144,7 @@ func (s *RespondingService) handleData(d ddp.Datagram, rx router.RoutedPort) {
 		}
 		senderNetworkMin = senderNetwork
 		senderNetworkMax = senderNetwork
-		if be16(data[0:2]) != 0 {
+		if bp.BE16(data[0:2]) != 0 {
 			return
 		}
 		rtmpVersion = data[2]
@@ -158,7 +160,7 @@ func (s *RespondingService) handleData(d ddp.Datagram, rx router.RoutedPort) {
 	rt := s.rtr.RoutingTable()
 	i := 0
 	for i+3 <= len(data) {
-		nmin := be16(data[i : i+2])
+		nmin := bp.BE16(data[i : i+2])
 		rd := data[i+2]
 		i += 3
 		extended := rd&0x80 != 0
@@ -168,7 +170,7 @@ func (s *RespondingService) handleData(d ddp.Datagram, rx router.RoutedPort) {
 			if i+3 > len(data) {
 				break
 			}
-			nmax = be16(data[i : i+2])
+			nmax = bp.BE16(data[i : i+2])
 			i += 3
 		}
 		if dist >= 15 {

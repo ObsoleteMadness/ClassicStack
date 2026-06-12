@@ -5,13 +5,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 )
 
 // This file holds the Bridge frame-altitude decorator (§2): Wi-Fi / bridged MAC
 // adaptation for shared-L2 consumers (MacIP/IPX/NetBEUI). Ported from the legacy
 // port/rawlink/bridge_link.go. Core is reflection-free AND may not import
-// encoding/binary (it pulls in reflect, archtest-gated), so the big/little-endian
-// helpers are hand-rolled below.
+// encoding/binary (it pulls in reflect, archtest-gated), so big/little-endian
+// integer codecs come from core/binaryprimitives.
 
 // BridgeMode selects how Bridge adapts frames between the wire and the
 // Ethernet form the ports expect.
@@ -225,7 +227,7 @@ func (l *bridgedLink) lookupVirtual(peerMAC []byte) []byte {
 	return out
 }
 
-// --- frame conversion (hand-rolled endianness; no encoding/binary in core) ---
+// --- frame conversion (endianness via core/binaryprimitives) ---
 
 func bridgeToEthernet(frame []byte) ([]byte, error) {
 	if len(frame) < 14 {
@@ -234,7 +236,7 @@ func bridgeToEthernet(frame []byte) ([]byte, error) {
 	if !looksLikeRadiotap(frame) {
 		return append([]byte(nil), frame...), nil
 	}
-	radiotapLen := int(leU16(frame[2:4]))
+	radiotapLen := int(bp.LE16(frame[2:4]))
 	if radiotapLen < 8 || radiotapLen >= len(frame) {
 		return nil, errors.New("link: invalid radiotap length")
 	}
@@ -243,7 +245,7 @@ func bridgeToEthernet(frame []byte) ([]byte, error) {
 		return nil, errors.New("link: wifi frame too short")
 	}
 
-	fc := leU16(wifi[0:2])
+	fc := bp.LE16(wifi[0:2])
 	if (fc>>2)&0x3 != 0x2 { // data frame
 		return nil, errors.New("link: not a data frame")
 	}
@@ -290,7 +292,7 @@ func bridgeToEthernet(frame []byte) ([]byte, error) {
 	out := make([]byte, 0, 14+len(payload))
 	out = append(out, dstMAC...)
 	out = append(out, srcMAC...)
-	out = appendBEU16(out, uint16(len(payload)))
+	out = bp.AppendBE16(out, uint16(len(payload)))
 	out = append(out, payload...)
 	return out, nil
 }
@@ -303,7 +305,7 @@ func bridgeToWiFi(ethernetFrame, hostMAC, bssid []byte) ([]byte, error) {
 		return nil, ErrBridgeBadMAC
 	}
 	dstMAC := ethernetFrame[0:6]
-	payloadLen := int(beU16(ethernetFrame[12:14]))
+	payloadLen := int(bp.BE16(ethernetFrame[12:14]))
 	if payloadLen < 0 || 14+payloadLen > len(ethernetFrame) {
 		return nil, errors.New("link: invalid ethernet payload length")
 	}
@@ -311,12 +313,12 @@ func bridgeToWiFi(ethernetFrame, hostMAC, bssid []byte) ([]byte, error) {
 
 	radiotap := []byte{0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00}
 	wifiHeader := make([]byte, 24)
-	putLEU16(wifiHeader[0:2], 0x0108) // FC: data, fromDS
-	putLEU16(wifiHeader[2:4], 0)      // duration
+	bp.PutLE16(wifiHeader[0:2], 0x0108) // FC: data, fromDS
+	bp.PutLE16(wifiHeader[2:4], 0)      // duration
 	copy(wifiHeader[4:10], bssid)
 	copy(wifiHeader[10:16], hostMAC)
 	copy(wifiHeader[16:22], dstMAC)
-	putLEU16(wifiHeader[22:24], 0) // seq ctl
+	bp.PutLE16(wifiHeader[22:24], 0) // seq ctl
 
 	out := make([]byte, 0, len(radiotap)+len(wifiHeader)+len(payload))
 	out = append(out, radiotap...)
@@ -329,17 +331,8 @@ func looksLikeRadiotap(frame []byte) bool {
 	if len(frame) < 8 || frame[0] != 0 {
 		return false
 	}
-	radiotapLen := int(leU16(frame[2:4]))
+	radiotapLen := int(bp.LE16(frame[2:4]))
 	return radiotapLen >= 8 && radiotapLen <= len(frame)
-}
-
-// --- small byte helpers (stdlib-free endianness) ---
-
-func leU16(b []byte) uint16       { return uint16(b[0]) | uint16(b[1])<<8 }
-func beU16(b []byte) uint16       { return uint16(b[0])<<8 | uint16(b[1]) }
-func putLEU16(b []byte, v uint16) { b[0] = byte(v); b[1] = byte(v >> 8) }
-func appendBEU16(dst []byte, v uint16) []byte {
-	return append(dst, byte(v>>8), byte(v))
 }
 
 func macEqual(a, b []byte) bool {

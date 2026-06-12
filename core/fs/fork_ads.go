@@ -1,11 +1,12 @@
 package fs
 
 import (
-	"encoding/binary"
 	"errors"
 	"io"
 	stdfs "io/fs"
 	"os"
+
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 )
 
 // adsForkEngine stores resource forks and Finder metadata in NTFS alternate data
@@ -71,10 +72,10 @@ type afpInfo struct {
 // encodeAfpInfo builds a canonical 60-byte AfpInfo record.
 func encodeAfpInfo(a afpInfo) []byte {
 	b := make([]byte, afpInfoSize)
-	binary.BigEndian.PutUint32(b[0:4], afpInfoSignature)
-	binary.BigEndian.PutUint32(b[4:8], afpInfoVersion)
+	bp.PutBE32(b[0:4], afpInfoSignature)
+	bp.PutBE32(b[4:8], afpInfoVersion)
 	// b[8:12] reserved1, b[12:16] backupTime.
-	binary.BigEndian.PutUint32(b[12:16], a.backupTime)
+	bp.PutBE32(b[12:16], a.backupTime)
 	copy(b[afpInfoFinderOff:afpInfoFinderOff+afpInfoFinderLen], a.finderInfo[:])
 	copy(b[48:54], a.prodosInfo[:])
 	// b[54:60] reserved2.
@@ -87,10 +88,10 @@ func parseAfpInfo(b []byte) (afpInfo, error) {
 	if len(b) < afpInfoSize {
 		return a, errBadAfpInfo
 	}
-	if binary.BigEndian.Uint32(b[0:4]) != afpInfoSignature {
+	if bp.BE32(b[0:4]) != afpInfoSignature {
 		return a, errBadAfpInfo
 	}
-	a.backupTime = binary.BigEndian.Uint32(b[12:16])
+	a.backupTime = bp.BE32(b[12:16])
 	copy(a.finderInfo[:], b[afpInfoFinderOff:afpInfoFinderOff+afpInfoFinderLen])
 	copy(a.prodosInfo[:], b[48:54])
 	return a, nil

@@ -3,6 +3,8 @@ package afp
 import (
 	"testing"
 
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+
 	"github.com/ObsoleteMadness/ClassicStack/core/metastore"
 )
 
@@ -39,17 +41,17 @@ func TestFileDirParams_FullFileBitmap(t *testing.T) {
 
 	// Fixed fields, in ascending bit order.
 	off := 0
-	if got := be16(block[off:]); got != 0 { // Attributes
+	if got := bp.BE16(block[off:]); got != 0 { // Attributes
 		t.Errorf("Attributes = %#04x, want 0", got)
 	}
 	off += 2
-	if got := be32(block[off:]); got != metastore.CNIDRoot { // ParentDID: parent is the volume root
+	if got := bp.BE32(block[off:]); got != metastore.CNIDRoot { // ParentDID: parent is the volume root
 		t.Errorf("ParentDID = %d, want %d", got, metastore.CNIDRoot)
 	}
 	off += 4
-	off += 4                                           // CreateDate (mod-time derived; value checked only for presence)
-	off += 4                                           // ModDate
-	if got := be32(block[off:]); got != noBackupDate { // BackupDate sentinel
+	off += 4                                              // CreateDate (mod-time derived; value checked only for presence)
+	off += 4                                              // ModDate
+	if got := bp.BE32(block[off:]); got != noBackupDate { // BackupDate sentinel
 		t.Errorf("BackupDate = %#08x, want %#08x", got, noBackupDate)
 	}
 	off += 4
@@ -59,19 +61,19 @@ func TestFileDirParams_FullFileBitmap(t *testing.T) {
 		t.Errorf("FinderInfo = %x, want %x", gotFinder, finder)
 	}
 	off += 32
-	longOff := int(be16(block[off:])) // LongName offset pointer
+	longOff := int(bp.BE16(block[off:])) // LongName offset pointer
 	off += 2
-	shortOff := int(be16(block[off:])) // ShortName offset pointer
+	shortOff := int(bp.BE16(block[off:])) // ShortName offset pointer
 	off += 2
-	if got := be32(block[off:]); got != wantCNID { // FileNum (CNID)
+	if got := bp.BE32(block[off:]); got != wantCNID { // FileNum (CNID)
 		t.Errorf("FileNum = %d, want %d", got, wantCNID)
 	}
 	off += 4
-	if got := be32(block[off:]); got != 4 { // DataForkLen
+	if got := bp.BE32(block[off:]); got != 4 { // DataForkLen
 		t.Errorf("DataForkLen = %d, want 4", got)
 	}
 	off += 4
-	if got := be32(block[off:]); got != 0 { // RsrcForkLen (no resource fork written)
+	if got := bp.BE32(block[off:]); got != 0 { // RsrcForkLen (no resource fork written)
 		t.Errorf("RsrcForkLen = %d, want 0", got)
 	}
 	off += 4
@@ -108,17 +110,17 @@ func TestFileDirParams_FullDirBitmap(t *testing.T) {
 	// ParentDID(4) + CreateDate(4) + ModDate(4) + BackupDate(4) + FinderInfo(32) +
 	// LongName offset(2) + ShortName offset(2) = 54.
 	off := 2 + 4 + 4 + 4 + 4 + 32 + 2 + 2
-	if got := be32(block[off:]); got != wantDirID { // DirID (own CNID)
+	if got := bp.BE32(block[off:]); got != wantDirID { // DirID (own CNID)
 		t.Errorf("DirID = %d, want %d", got, wantDirID)
 	}
 	off += 4
-	if got := be16(block[off:]); got != 2 { // OffspringCount (a.txt + b.txt)
+	if got := bp.BE16(block[off:]); got != 2 { // OffspringCount (a.txt + b.txt)
 		t.Errorf("OffspringCount = %d, want 2", got)
 	}
 	off += 2
 	off += 4 // OwnerID
 	off += 4 // GroupID
-	if got := be32(block[off:]); got != dirAccessRights {
+	if got := bp.BE32(block[off:]); got != dirAccessRights {
 		t.Errorf("AccessRights = %#08x, want %#08x", got, dirAccessRights)
 	}
 }
@@ -135,7 +137,7 @@ func TestFileDirParams_DataForkLenReflectsWrites(t *testing.T) {
 		t.Fatalf("Stat: %v", err)
 	}
 	block := vol.fileDirParams(nil, "grow.txt", info, fileBitmapDataForkLen, PathTypeUTF8Names)
-	if got := be32(block[0:4]); got != 4 {
+	if got := bp.BE32(block[0:4]); got != 4 {
 		t.Fatalf("DataForkLen = %d, want 4", got)
 	}
 }

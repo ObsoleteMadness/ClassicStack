@@ -3,8 +3,9 @@
 // GetZoneList / GetLocalZones, plus a sending service that queries for zones of networks the
 // zone information table does not yet know.
 //
-// Wire constants follow Inside Macintosh: Networking, Chapter 8. Ring: CORE — big-endian is
-// hand-rolled (no encoding/binary, §1); zone-name case-folding uses core/encoding.
+// Wire constants follow Inside Macintosh: Networking, Chapter 8. Ring: CORE — big-endian
+// integer codecs come from core/binaryprimitives (no encoding/binary, §1); zone-name
+// case-folding uses core/encoding.
 package zip
 
 import (
@@ -39,9 +40,6 @@ const (
 	ATPGetZoneList      = 8
 	ATPGetLocalZoneList = 9
 )
-
-// be16 reads a big-endian uint16.
-func be16(b []byte) uint16 { return uint16(b[0])<<8 | uint16(b[1]) }
 
 // toUCase upper-folds a zone name for case-insensitive comparison (MacRoman case table).
 func toUCase(input []byte) []byte { return encoding.MacRomanToUpper(input) }

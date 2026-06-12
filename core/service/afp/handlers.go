@@ -5,22 +5,12 @@ import (
 	stdfs "io/fs"
 	"strings"
 	"time"
+
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 )
 
-// --- hand-rolled big-endian + Pascal-string helpers (core ring: no
-// encoding/binary, which transitively imports reflect — §1 / archtest). ---
-
-func putBE16(dst []byte, v uint16) []byte { return append(dst, byte(v>>8), byte(v)) }
-
-func putBE32(dst []byte, v uint32) []byte {
-	return append(dst, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
-}
-
-func be16(b []byte) uint16 { return uint16(b[0])<<8 | uint16(b[1]) }
-
-func be32(b []byte) uint32 {
-	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
-}
+// --- Pascal-string helpers; big-endian integer codecs come from
+// core/binaryprimitives (core ring: no encoding/binary, §1 / archtest). ---
 
 // putPString appends a Pascal string (1-byte length prefix + bytes, truncated to
 // 255). Names longer than 255 bytes cannot be represented on the AFP wire.
@@ -108,11 +98,11 @@ func (s *Service) serverInfoBlock() []byte {
 
 	b := make([]byte, total)
 	out := b[:0]
-	out = putBE16(out, uint16(machineOff))
-	out = putBE16(out, uint16(versionsOff))
-	out = putBE16(out, uint16(uamsOff))
-	out = putBE16(out, 0) // icon/mask offset — none
-	out = putBE16(out, info.Flags)
+	out = bp.AppendBE16(out, uint16(machineOff))
+	out = bp.AppendBE16(out, uint16(versionsOff))
+	out = bp.AppendBE16(out, uint16(uamsOff))
+	out = bp.AppendBE16(out, 0) // icon/mask offset — none
+	out = bp.AppendBE16(out, info.Flags)
 	out = putPString(out, []byte(info.ServerName))
 	// out now ends before the even-boundary pad; jump to machineOff (the pad
 	// bytes between are already zero from the make).
@@ -170,7 +160,7 @@ func (s *Service) afpGetSrvrParms() []byte {
 	// Snapshot under the lock: the share.Manager can mutate s.volumes at runtime.
 	vols := s.Volumes()
 	out := make([]byte, 0, 5+16*len(vols))
-	out = putBE32(out, macTime(time.Now()))
+	out = bp.AppendBE32(out, macTime(time.Now()))
 	out = append(out, byte(len(vols)))
 	for _, v := range vols {
 		out = append(out, 0) // flags: no password, no config info
@@ -205,7 +195,7 @@ func (s *Service) afpOpenVol(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 4 {
 		return nil, afpErrParamErr
 	}
-	reqBitmap := be16(block[2:4])
+	reqBitmap := bp.BE16(block[2:4])
 	name, _, ok := pString(block, 4)
 	if !ok {
 		return nil, afpErrParamErr
@@ -220,7 +210,7 @@ func (s *Service) afpOpenVol(a *afpSession, block []byte) ([]byte, int32) {
 	// even if it asked for nothing (some clients send bitmap 0).
 	bitmap := reqBitmap | volBitmapID
 	out := make([]byte, 0, 64)
-	out = putBE16(out, bitmap)
+	out = bp.AppendBE16(out, bitmap)
 	out = packVolParams(out, vol, bitmap)
 	return out, afpNoErr
 }
@@ -234,28 +224,28 @@ func packVolParams(out []byte, vol *Volume, bitmap uint16) []byte {
 		total, free = t, f
 	}
 	if bitmap&volBitmapAttributes != 0 {
-		out = putBE16(out, 0)
+		out = bp.AppendBE16(out, 0)
 	}
 	if bitmap&volBitmapSignature != 0 {
-		out = putBE16(out, volSignatureFixed)
+		out = bp.AppendBE16(out, volSignatureFixed)
 	}
 	if bitmap&volBitmapCreateDate != 0 {
-		out = putBE32(out, macTime(afpEpoch))
+		out = bp.AppendBE32(out, macTime(afpEpoch))
 	}
 	if bitmap&volBitmapModDate != 0 {
-		out = putBE32(out, macTime(afpEpoch))
+		out = bp.AppendBE32(out, macTime(afpEpoch))
 	}
 	if bitmap&volBitmapBackupDate != 0 {
-		out = putBE32(out, noBackupDate)
+		out = bp.AppendBE32(out, noBackupDate)
 	}
 	if bitmap&volBitmapID != 0 {
-		out = putBE16(out, vol.ID())
+		out = bp.AppendBE16(out, vol.ID())
 	}
 	if bitmap&volBitmapBytesFree != 0 {
-		out = putBE32(out, uint32(free))
+		out = bp.AppendBE32(out, uint32(free))
 	}
 	if bitmap&volBitmapBytesTotal != 0 {
-		out = putBE32(out, uint32(total))
+		out = bp.AppendBE32(out, uint32(total))
 	}
 	if bitmap&volBitmapName != 0 {
 		out = putPString(out, []byte(vol.Name()))
@@ -270,7 +260,7 @@ func (s *Service) afpCloseVol(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 4 {
 		return nil, afpErrParamErr
 	}
-	delete(a.openVols, be16(block[2:4]))
+	delete(a.openVols, bp.BE16(block[2:4]))
 	return nil, afpNoErr
 }
 
@@ -294,12 +284,12 @@ func (s *Service) afpGetFileDirParms(a *afpSession, block []byte) ([]byte, int32
 	if len(block) < 13 {
 		return nil, afpErrParamErr
 	}
-	vol, ok := a.openVols[be16(block[2:4])]
+	vol, ok := a.openVols[bp.BE16(block[2:4])]
 	if !ok {
 		return nil, afpErrParamErr
 	}
-	fileBitmap := be16(block[8:10])
-	dirBitmap := be16(block[10:12])
+	fileBitmap := bp.BE16(block[8:10])
+	dirBitmap := bp.BE16(block[10:12])
 	pathType := block[12]
 	store, code := resolveBlockPath(vol, block, 13, pathType)
 	if code != afpNoErr {
@@ -315,7 +305,7 @@ func (s *Service) afpGetFileDirParms(a *afpSession, block []byte) ([]byte, int32
 		bitmap = fileBitmap
 	}
 	out := make([]byte, 0, 32)
-	out = putBE16(out, bitmap)
+	out = bp.AppendBE16(out, bitmap)
 	if info.IsDir() {
 		out = append(out, isDirFlag, 0)
 	} else {
@@ -339,14 +329,14 @@ func (s *Service) afpEnumerate(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 19 {
 		return nil, afpErrParamErr
 	}
-	vol, ok := a.openVols[be16(block[2:4])]
+	vol, ok := a.openVols[bp.BE16(block[2:4])]
 	if !ok {
 		return nil, afpErrParamErr
 	}
-	fileBitmap := be16(block[8:10])
-	dirBitmap := be16(block[10:12])
-	reqCount := int(be16(block[12:14]))
-	startIndex := int(be16(block[14:16]))
+	fileBitmap := bp.BE16(block[8:10])
+	dirBitmap := bp.BE16(block[10:12])
+	reqCount := int(bp.BE16(block[12:14]))
+	startIndex := int(bp.BE16(block[14:16]))
 	pathType := block[18]
 	store, code := resolveBlockPath(vol, block, 19, pathType)
 	if code != afpNoErr {
@@ -364,10 +354,10 @@ func (s *Service) afpEnumerate(a *afpSession, block []byte) ([]byte, int32) {
 	}
 
 	out := make([]byte, 0, 256)
-	out = putBE16(out, fileBitmap)
-	out = putBE16(out, dirBitmap)
+	out = bp.AppendBE16(out, fileBitmap)
+	out = bp.AppendBE16(out, dirBitmap)
 	countOff := len(out)
-	out = putBE16(out, 0) // actualCount, patched below
+	out = bp.AppendBE16(out, 0) // actualCount, patched below
 
 	actual := 0
 	for i := start; i < len(entries) && actual < reqCount; i++ {

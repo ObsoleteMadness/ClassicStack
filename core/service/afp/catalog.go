@@ -5,6 +5,8 @@ import (
 	stdfs "io/fs"
 	"os"
 
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+
 	"github.com/ObsoleteMadness/ClassicStack/core/metastore"
 )
 
@@ -35,11 +37,11 @@ func (s *Service) afpCreateFile(a *afpSession, block []byte) ([]byte, int32) {
 		return nil, afpErrParamErr
 	}
 	hardCreate := block[1]&createFlagHard != 0
-	vol, ok := a.openVols[be16(block[2:4])]
+	vol, ok := a.openVols[bp.BE16(block[2:4])]
 	if !ok {
 		return nil, afpErrParamErr
 	}
-	dirID := be32(block[4:8])
+	dirID := bp.BE32(block[4:8])
 	pathType := block[8]
 	store, code := resolveCatalogPath(vol, dirID, block, 9, pathType)
 	if code != afpNoErr {
@@ -68,11 +70,11 @@ func (s *Service) afpCreateDir(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 9 {
 		return nil, afpErrParamErr
 	}
-	vol, ok := a.openVols[be16(block[2:4])]
+	vol, ok := a.openVols[bp.BE16(block[2:4])]
 	if !ok {
 		return nil, afpErrParamErr
 	}
-	dirID := be32(block[4:8])
+	dirID := bp.BE32(block[4:8])
 	pathType := block[8]
 	store, code := resolveCatalogPath(vol, dirID, block, 9, pathType)
 	if code != afpNoErr {
@@ -86,7 +88,7 @@ func (s *Service) afpCreateDir(a *afpSession, block []byte) ([]byte, int32) {
 		return nil, mapCreateErr(err)
 	}
 	newID := vol.CNID(store)
-	out := putBE32(nil, newID)
+	out := bp.AppendBE32(nil, newID)
 	return out, afpNoErr
 }
 
@@ -99,11 +101,11 @@ func (s *Service) afpDelete(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 9 {
 		return nil, afpErrParamErr
 	}
-	vol, ok := a.openVols[be16(block[2:4])]
+	vol, ok := a.openVols[bp.BE16(block[2:4])]
 	if !ok {
 		return nil, afpErrParamErr
 	}
-	dirID := be32(block[4:8])
+	dirID := bp.BE32(block[4:8])
 	pathType := block[8]
 	store, code := resolveCatalogPath(vol, dirID, block, 9, pathType)
 	if code != afpNoErr {
@@ -133,11 +135,11 @@ func (s *Service) afpRename(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 9 {
 		return nil, afpErrParamErr
 	}
-	vol, ok := a.openVols[be16(block[2:4])]
+	vol, ok := a.openVols[bp.BE16(block[2:4])]
 	if !ok {
 		return nil, afpErrParamErr
 	}
-	dirID := be32(block[4:8])
+	dirID := bp.BE32(block[4:8])
 	pathType := block[8]
 	// First pathname: the object to rename.
 	name, nameEnd, ok := pString(block, 9)
@@ -193,11 +195,11 @@ func (s *Service) afpOpenDir(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 9 {
 		return nil, afpErrParamErr
 	}
-	vol, ok := a.openVols[be16(block[2:4])]
+	vol, ok := a.openVols[bp.BE16(block[2:4])]
 	if !ok {
 		return nil, afpErrParamErr
 	}
-	dirID := be32(block[4:8])
+	dirID := bp.BE32(block[4:8])
 	pathType := block[8]
 	store, code := resolveCatalogPath(vol, dirID, block, 9, pathType)
 	if code != afpNoErr {
@@ -210,7 +212,7 @@ func (s *Service) afpOpenDir(a *afpSession, block []byte) ([]byte, int32) {
 	if !info.IsDir() {
 		return nil, afpErrObjectTypeErr
 	}
-	out := putBE32(nil, vol.CNID(store))
+	out := bp.AppendBE32(nil, vol.CNID(store))
 	return out, afpNoErr
 }
 
@@ -224,7 +226,7 @@ func (s *Service) afpCloseDir(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 8 {
 		return nil, afpErrParamErr
 	}
-	if _, ok := a.openVols[be16(block[2:4])]; !ok {
+	if _, ok := a.openVols[bp.BE16(block[2:4])]; !ok {
 		return nil, afpErrParamErr
 	}
 	return nil, afpNoErr

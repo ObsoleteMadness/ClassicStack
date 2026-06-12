@@ -148,6 +148,17 @@ embedded/TinyGo pillar of the charter:
   generated-without-reflection codecs. Marshalling that *needs* reflection lives in an
   **adapter** (e.g. the JSON control encoding), never in core. The import-graph gate also
   flags `reflect` in core.
+  - *Corollary — one home for byte-order codecs.* Because `encoding/binary` transitively
+    imports `reflect` (its `Read`/`Write` reflection paths), it is **banned in core** (the gate
+    flags it). The fixed-width big-/little-endian integer codecs every protocol and service
+    needs therefore live in **one** package, **`core/binaryprimitives`** — readers (`BE16`,
+    `LE32`, …), in-place writers (`PutBE16`, `PutLE32`, …), and append writers (`AppendBE16`,
+    `AppendLE32`, …). Do **not** re-hand-roll `be16`/`putLE32`/etc. per package (the pattern
+    the migration found duplicated a dozen times); import `binaryprimitives` and call it. The
+    package is dependency-free and reflection-free, so it is safe for every ring (adapters use
+    it too, rather than re-deriving the same shifts). Note `fmt` also pulls `reflect`
+    transitively — even a lone `fmt.Fprintf("%02X")` in a core package trips the gate — so
+    format small fixed things by hand in core (see `core/fs/codec.go`).
 - **Allocation discipline, with per-target buffer sizing.** Hot paths (link read/write loops,
   framing, log formatting) avoid per-call allocation: reuse slices, use fixed sensibly-sized
   buffers, and pool where a buffer outlives a single call. Buffer sizes are **constants chosen

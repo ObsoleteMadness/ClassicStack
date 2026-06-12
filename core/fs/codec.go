@@ -2,7 +2,6 @@ package fs
 
 import (
 	"errors"
-	"fmt"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -74,12 +73,41 @@ func (rs ReservedSet) escape(s string) string {
 	var b strings.Builder
 	for _, r := range s {
 		if rs.isReserved(r) {
-			fmt.Fprintf(&b, "0x%02X", r)
+			b.WriteString("0x")
+			b.WriteString(upperHexRune(r))
 		} else {
 			b.WriteRune(r)
 		}
 	}
 	return b.String()
+}
+
+// upperHexRune formats a rune as uppercase hex, zero-padded to at least two
+// digits — the "%02X" form the escape tokens use, hand-rolled so this package
+// (and thus core/fs) need not import fmt, which transitively pulls reflect (§1 /
+// archtest). Reserved code points are small, but wider runes still round-trip:
+// the digit count is whatever the value needs, ≥2.
+func upperHexRune(r rune) string {
+	const digits = "0123456789ABCDEF"
+	u := uint32(r)
+	// Emit at least two digits (the "02" width), most-significant first.
+	var buf [8]byte
+	n := 0
+	for u > 0 {
+		buf[n] = digits[u&0xF]
+		u >>= 4
+		n++
+	}
+	for n < 2 {
+		buf[n] = '0'
+		n++
+	}
+	// buf currently holds least-significant digit first; reverse into order.
+	out := make([]byte, n)
+	for i := 0; i < n; i++ {
+		out[i] = buf[n-1-i]
+	}
+	return string(out)
 }
 
 // unescape reverses escape: "0xNN" tokens whose code point is reserved for this
