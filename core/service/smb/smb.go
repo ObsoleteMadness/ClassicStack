@@ -4,13 +4,28 @@
 // charset is threaded per request from the FLAGS2 Unicode bit (UTF-16 vs the
 // OEM/ANSI page, §2a) — keyed off the flag, not the dialect, so SMB 1.0 clients
 // that set SMB_FLAGS2_UNICODE get UTF-16. A same-fs_type AFP volume and
-// SMB share see the same forks and FinderInfo through the same ForkEngine. As of
-// M7 the protocol dispatch is still a thin stub; what lands here is the service
-// shape that drives the seam.
+// SMB share see the same forks and FinderInfo through the same ForkEngine.
+//
+// As of M7 the SMB1 session-establishment dispatch is wired as a
+// transport-independent spine: Service.Dispatch decodes one SMB message and
+// handles NEGOTIATE (accepting NT LM 0.12), SESSION_SETUP_ANDX (granting a guest
+// session), TREE_CONNECT[_ANDX] (binding a TID to a *Share or the virtual IPC$
+// pipe), TREE_DISCONNECT, LOGOFF_ANDX, and ECHO. Filesystem commands
+// (NT_CREATE_ANDX, READ/WRITE, CLOSE, TRANS2 find/query) answer
+// STATUS_NOT_SUPPORTED until the FS command-engine slice lands. The dispatch is
+// driven by the NetBIOS/transport seam (which frames session messages and calls
+// Dispatch); the spine itself holds no transport knowledge, so it is unit-tested
+// directly over raw SMB frames.
+//
+// Security posture: this is a compatibility server, not an authentication
+// server. SESSION_SETUP_ANDX grants a guest session without checking credentials
+// (the intentional weakness that lets vintage clients connect); treat an SMB
+// share as world-accessible to anything that can reach the transport.
 package smb
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
@@ -30,6 +45,7 @@ const Name = "SMB"
 type Service struct {
 	logger log.Logger
 	shares []*Share
+	wg     string // workgroup/domain advertised in NEGOTIATE (default WORKGROUP)
 
 	mu      sync.Mutex
 	running bool
@@ -58,6 +74,14 @@ func NewWithShares(logger log.Logger, specs ...ShareSpec) (*Service, error) {
 // Name returns the component name.
 func (s *Service) Name() string { return Name }
 
+// SetWorkgroup sets the workgroup/domain advertised in the NEGOTIATE response.
+// The compose/config layer calls it during wiring; unset defaults to WORKGROUP.
+func (s *Service) SetWorkgroup(wg string) {
+	s.mu.Lock()
+	s.wg = wg
+	s.mu.Unlock()
+}
+
 // ShareByName returns the share with the given tree name, if bound. Used by the
 // tree-connect dispatch; guarded because the Manager mutates the slice at runtime.
 func (s *Service) ShareByName(name string) (*Share, bool) {
@@ -66,10 +90,12 @@ func (s *Service) ShareByName(name string) (*Share, bool) {
 	return s.findShareLocked(name)
 }
 
-// findShareLocked returns the share of that name; caller holds s.mu.
+// findShareLocked returns the share of that name; caller holds s.mu. SMB share
+// names are case-insensitive, so the match folds case — a client connecting to
+// \\server\SHARED finds the share configured as "Shared".
 func (s *Service) findShareLocked(name string) (*Share, bool) {
 	for _, sh := range s.shares {
-		if sh.Name() == name {
+		if strings.EqualFold(sh.Name(), name) {
 			return sh, true
 		}
 	}
@@ -148,7 +174,7 @@ func (s *Service) Start(ctx context.Context) error {
 		return nil
 	}
 	s.running = true
-	s.logf("SMB service started (shares bound; protocol dispatch stub)")
+	s.logf("SMB service started (shares bound; session-establishment dispatch: negotiate/setup/treeconnect)")
 	return nil
 }
 
