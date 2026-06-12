@@ -2,8 +2,17 @@
 // transport-pluggable: NetBEUI, IPX, and NBT transports attach as SOFT bindings
 // (component.Attachable, §11d) rather than hard dependencies, so a transport
 // whose underlying protocol starts after NetBIOS joins the live service and
-// stopping that protocol detaches only its binding. As of M7 the session/datagram
-// command dispatch is a thin stub; what lands here is the binding shape.
+// stopping that protocol detaches only its binding.
+//
+// As of M7 the session-data path is wired: NewNBFEngine builds the NBF (NetBEUI)
+// virtual-circuit state machine (nbf.go) that compose registers on the
+// core/router/netbeui mini-router as both its NameHandler (session-establishment
+// NAME_QUERY) and SessionHandler (SESSION_*/DATA_* frames). The engine answers a
+// CALL, brings the circuit up, reassembles each SMB message, and routes it to the
+// installed SessionConsumer (the SMB command engine, via SetSessionConsumer),
+// sending the response back over the circuit (session.go defines the seam). The
+// engine holds no link-layer or SMB knowledge — it reaches the wire through the
+// FrameSender seam and the upper layer through the SessionConsumer seam.
 package netbios
 
 import (
@@ -100,11 +109,11 @@ func (b *binding) setNames(names []protocol.Name) error {
 
 var _ component.Attachable = (*binding)(nil)
 
-// Service is the NetBIOS name/session layer. It owns a server name and a set of
-// soft transport bindings; SMB plugs into the name layer to claim its
-// file-server name. The session/datagram command dispatch is a thin stub at this
-// milestone — what lands here is the §11d binding shape that lets transports
-// attach and detach independently of the service lifecycle.
+// Service is the NetBIOS name/session layer. It owns a server name, a set of
+// soft transport bindings, an upper-layer SessionConsumer (SMB), and the NBF
+// session engines built per transport. SMB plugs into the name layer to claim its
+// file-server name and into the session layer (via SetSessionConsumer) to receive
+// the SMB messages the NBF engine reassembles off the circuits.
 type Service struct {
 	logger     log.Logger
 	serverName string
@@ -114,6 +123,8 @@ type Service struct {
 	ctx      context.Context // captured in Start, for late AddTransport
 	names    []protocol.Name
 	bindings []*binding
+	consumer SessionConsumer // upper-layer session sink (SMB); set by compose
+	engines  []*Engine       // NBF session engines, one per transport; torn down on Stop
 }
 
 // New builds a NetBIOS service with no transports and no server name (the
@@ -158,7 +169,7 @@ func (s *Service) Start(ctx context.Context) error {
 			return err
 		}
 	}
-	s.logf("NetBIOS service started (transports attached; command dispatch stub)")
+	s.logf("NetBIOS service started (transports attached; NBF session engine carries SMB)")
 	return nil
 }
 
@@ -174,10 +185,14 @@ func (s *Service) Stop(ctx context.Context) error {
 	s.running = false
 	s.ctx = nil
 	bindings := append([]*binding(nil), s.bindings...)
+	engines := append([]*Engine(nil), s.engines...)
 	s.mu.Unlock()
 
 	for _, b := range bindings {
 		_ = b.Detach(ctx)
+	}
+	for _, eng := range engines {
+		eng.closeCircuits()
 	}
 	s.logf("NetBIOS service stopped")
 	return nil

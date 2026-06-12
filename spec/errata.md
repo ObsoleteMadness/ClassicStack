@@ -34,6 +34,16 @@ This document records places where ClassicStack's wire behavior intentionally di
 
 **Where:** `service/smb/command_fs_search.go` — `handleSearch`.
 
+### FS command engine path resolution over the share seam (M7)
+
+**Spec:** [MS-CIFS] file/path commands carry a server-side path that the server resolves against the share root.
+
+**Observed / design:** the legacy `service/smb` resolved wire paths with a DOS-name-mangling fuzzy matcher (`findDOSLikeComponentMatch`: uppercased, punctuation-stripped, prefix-or-truncation matching, e.g. `VOLUME68K` → `Volume 68k`). That conflated two concerns — wire→store charset transcoding and 8.3 short-name resolution — inside the SMB service, which the §9 refactor inverts.
+
+**What we do:** the new `core/service/smb` FS command engine resolves a wire path through the share's `FilenameCodec` only (`Share.ResolvePath`, threading the per-request UTF-16/ANSI charset off the FLAGS2 Unicode bit), then reaches the backend via `sh.FS()`. Exact (codec-decoded) names resolve directly; the FileSystem backend owns case-folding. DOS-mangled-name resolution (the `VOLUME68K` case) is deferred to a `core/fs` NameEngine (`short`/`medium`), not re-implemented in the protocol service. RENAME/DELETE ride the metadata-carrying `FS().Rename`/`Remove`, so SMB never pairs MoveMetadata/DeleteMetadata itself. NT_CREATE_ANDX and the locking/MPX/raw-mode paths answer STATUS_NOT_SUPPORTED in this slice (Win9x/WfW/classic-Mac use OPEN_ANDX, not NT_CREATE_ANDX).
+
+**Where:** `core/service/smb/{resolve,fileio,pathops,trans2}.go`.
+
 ## AFP
 
 ### Catalog date epoch (Inside Macintosh: Networking, "AFP date and time")

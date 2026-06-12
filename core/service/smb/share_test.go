@@ -26,6 +26,26 @@ func newTestShare(t *testing.T) *Share {
 	return sh
 }
 
+// newReadOnlyShare builds a read-only memfs share (its FS Capabilities report
+// ReadOnly), used to prove mutating FS commands are refused.
+func newReadOnlyShare(t *testing.T) *Share {
+	t.Helper()
+	sh, err := NewShare(ShareSpec{
+		Name: "RO",
+		Share: fs.ShareSpec{
+			Name:          "RO",
+			FSType:        "memfs",
+			ForkBackend:   "ads",
+			FilenameCodec: "identity",
+			ReadOnly:      true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewShare read-only: %v", err)
+	}
+	return sh
+}
+
 // utf16Wire encodes an ASCII/Unicode path string to UTF-16LE wire bytes (the form
 // an NT client sends when the FLAGS2 Unicode bit is set).
 func utf16Wire(s string) []byte {

@@ -71,6 +71,20 @@ func toWireStatus(reqFlags2 uint16, status uint32) uint32 {
 		return 0x00010001 // ERRDOS/ERRbadfunc
 	case statusSMBBadTID:
 		return 0x00050002 // ERRSRV/ERRinvtid (already DOS-form)
+	case statusObjectNameNotFound, statusObjectPathNotFound:
+		return 0x00020001 // ERRDOS/ERRbadfile
+	case statusObjectNameCollision:
+		return 0x00050001 // ERRSRV/ERRaccess (file exists → access-denied for CORE clients)
+	case statusObjectNameInvalid:
+		return 0x0002000C // ERRDOS/ERRbadpath
+	case statusFileIsADirectory, statusNotADirectory, statusDirectoryNotEmpty:
+		return 0x00050001 // ERRSRV/ERRaccess
+	case statusInvalidHandle:
+		return 0x00010006 // ERRDOS/ERRbadfid
+	case statusNoMoreFiles:
+		return 0x00010012 // ERRDOS/ERRnofiles
+	case statusUnsuccessful:
+		return 0x00010001 // ERRDOS/ERRbadfunc
 	default:
 		return status
 	}

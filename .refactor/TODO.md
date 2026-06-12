@@ -361,11 +361,55 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 >   (uid, TID→`treeConnect{share,ipc}`) binds `*Share` directly. Unit-tested over raw SMB frames
 >   (`dispatch_test.go`). The NetBIOS→SMB session-data delivery seam is NOT wired yet (netbios.Transport
 >   has Open/Close/Announce but no inbound-frame callback) — a separate slice.
-> - **Remaining M7:** **SMB FS command engine** (NT_CREATE_ANDX, READ/WRITE, CLOSE, TRANS2 find/query
->   over the shares — the next slice); **NetBIOS→SMB session-data seam** (transport inbound-frame
->   delivery, currently missing); NetBIOS command engine; same-FS AFP+SMB coordination via the FS bus
->   (§10d); capture-replay vs `/captures/afp-*.pcap`; then delete legacy `service/{afp,smb,netbios}` per
->   strangler step 5. TCP transports are M7a (`adapter/dsi`) / M7b (`adapter/smbtcp`).
+> - **SMB FS command engine (this slice):** `core/service/smb` now serves the file/path/find commands
+>   over the bound `*Share`'s FS, not just session establishment. `session.go` gains per-conn FID +
+>   search tables (TID-disconnect and conn-end close any leaked handles). New files: `body.go`
+>   (uniform WCT/words/BCC slicing + `reply`/`successNoData`/`errResponse` assembly), `resolve.go`
+>   (`treeFor` TID→`*Share`, `extractWirePath` strips the 0x04 buffer-format + UTF-16 alignment pad,
+>   `resolvePath` via the share codec, `mapFSErr`), `attrs.go` (DOS attr bits, the FS NTSTATUS set +
+>   their DOS-form mapping in `toWireStatus`, FILETIME/allocSize), `fileio.go`
+>   (OPEN[_ANDX]/CREATE/READ[_ANDX]/WRITE[_ANDX]/CLOSE/FLUSH — zero-len write truncates, read-only
+>   handle → ACCESS_DENIED, READ_ANDX even-aligned DataOffset), `pathops.go`
+>   (DELETE/RENAME/CREATE_DIR/DELETE_DIR/CHECK_DIR/QUERY_INFORMATION[_DISK] — idempotent mkdir,
+>   non-empty rmdir → DIRECTORY_NOT_EMPTY, read-only share refuses mutation), `trans2.go`
+>   (FIND_FIRST2/FIND_NEXT2 with a snapshotted per-session searchHandle + FILE_BOTH_DIR_INFO packing
+>   in the request wire charset, FIND_CLOSE2, QUERY_PATH/FILE_INFO basic/std/ea/all levels),
+>   `match.go` (case-insensitive DOS `*`/`?` wildcard). Every path reaches storage only through
+>   `sh.FS()`; RENAME/DELETE ride the metadata-carrying `FS().Rename`/`Remove`. The legacy
+>   DOS-name-mangling fuzzy resolver is **dropped** (deferred to a `core/fs` NameEngine) — see
+>   spec/errata "FS command engine path resolution over the share seam". `dispatch_test.go`'s
+>   not-supported probe now uses NT_CREATE_ANDX (genuinely unimplemented this slice); new
+>   `fileio_test.go`/`pathops_test.go`/`trans2_test.go` drive create→write→read→close, read-only
+>   denial, bad-TID, UTF-16 round-trip, mkdir/checkdir/rmdir, delete/rename, query-info, and
+>   find-first2/next2 pagination over raw SMB frames. archtest + full tagged harness green.
+> - **NetBIOS→SMB session-data seam (this slice):** the missing inbound-frame delivery is wired.
+>   `core/service/netbios` gains the NBF (NetBEUI) session engine (`nbf.go`): `Service.NewNBFEngine`
+>   builds the responder-side virtual-circuit state machine, which compose registers on the
+>   `core/router/netbeui` mini-router as both its `NameHandler` (session-establishment NAME_QUERY)
+>   and `SessionHandler` (SESSION_*/DATA_* frames). It answers a CALL (NAME_QUERY→NAME_RECOGNIZED),
+>   completes establishment (SESSION_INITIALIZE→SESSION_CONFIRM, advertising the 1464-byte Ethernet
+>   I-field), reassembles the DATA_FIRST_MIDDLE/DATA_ONLY_LAST segments of each SMB message,
+>   DATA_ACKs it, and routes the whole message to the installed `SessionConsumer` — sending the
+>   response back fragmented over DATA frames. SESSION_END and `Service.Stop` close the upper-layer
+>   circuits so no handles leak. The seam is two small interfaces (`session.go`): `SessionConsumer`
+>   (open a circuit) + `SessionCircuit` (serve a message / close); SMB satisfies them via `conn.go`
+>   (`*smb.Service.NewConn` → `*Conn`, one `smbSession` per circuit) + `ConsumerAdapter`. The engine
+>   reaches the wire only through a `FrameSender` seam (the mini-router's Send/SendBroadcast) and the
+>   upper layer only through `SessionConsumer` — no link or SMB knowledge in either direction
+>   (§3-bis command-core / session-transport split). It is the core re-home of the legacy
+>   `service/netbios/over_netbeui` transport's session half, stripped of netlog + the port import.
+>   `nbf_test.go` drives CALL-establishment, foreign-name ignore, data→consumer→reply over the real
+>   mini-router with a recording port, segment reassembly, SESSION_END + Stop teardown; `conn_test.go`
+>   proves the SMB circuit shares one session across messages and Close drains handles. cs-tinygo now
+>   blank-imports `core/service/{afp,smb,netbios}` so the file services' embedded-compilability is
+>   verified. Caller (CALL-out) side and the NO_RECEIVE/RECEIVE_CONTINUE flow-control + I-frame
+>   retransmit machinery are an adapter-altitude reliability concern, not needed by a listening file
+>   server; the responder path SMB-over-NBF depends on lands in core.
+> - **Remaining M7:** NetBIOS-over-IPX session transport (NBIPX) feeding the same engine seam; the
+>   datagram/name-status command paths; NT_CREATE_ANDX + the locking/MPX/raw paths if a target client
+>   needs them; same-FS AFP+SMB coordination via the FS bus (§10d); capture-replay vs
+>   `/captures/{afp,ipx}.pcap`; then delete legacy `service/{afp,smb,netbios}` per strangler step 5.
+>   TCP transports are M7a (`adapter/dsi`) / M7b (`adapter/smbtcp`).
 
 ---
 

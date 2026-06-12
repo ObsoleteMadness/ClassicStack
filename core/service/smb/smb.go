@@ -6,16 +6,25 @@
 // that set SMB_FLAGS2_UNICODE get UTF-16. A same-fs_type AFP volume and
 // SMB share see the same forks and FinderInfo through the same ForkEngine.
 //
-// As of M7 the SMB1 session-establishment dispatch is wired as a
-// transport-independent spine: Service.Dispatch decodes one SMB message and
-// handles NEGOTIATE (accepting NT LM 0.12), SESSION_SETUP_ANDX (granting a guest
-// session), TREE_CONNECT[_ANDX] (binding a TID to a *Share or the virtual IPC$
-// pipe), TREE_DISCONNECT, LOGOFF_ANDX, and ECHO. Filesystem commands
-// (NT_CREATE_ANDX, READ/WRITE, CLOSE, TRANS2 find/query) answer
-// STATUS_NOT_SUPPORTED until the FS command-engine slice lands. The dispatch is
-// driven by the NetBIOS/transport seam (which frames session messages and calls
-// Dispatch); the spine itself holds no transport knowledge, so it is unit-tested
-// directly over raw SMB frames.
+// As of M7 the SMB1 dispatch is wired as a transport-independent spine plus an FS
+// command engine: Service.Dispatch decodes one SMB message and handles the
+// session-establishment commands — NEGOTIATE (accepting NT LM 0.12),
+// SESSION_SETUP_ANDX (granting a guest session), TREE_CONNECT[_ANDX] (binding a
+// TID to a *Share or the virtual IPC$ pipe), TREE_DISCONNECT, LOGOFF_ANDX, ECHO —
+// and the filesystem commands over the bound *Share's FS: OPEN[_ANDX]/CREATE,
+// READ[_ANDX]/WRITE[_ANDX], CLOSE/FLUSH, DELETE/RENAME,
+// CREATE_DIRECTORY/DELETE_DIRECTORY/CHECK_DIRECTORY, QUERY_INFORMATION[_DISK], and
+// the TRANS2 FIND_FIRST2/FIND_NEXT2/FIND_CLOSE2 + QUERY_PATH/FILE_INFO
+// subcommands. Each FS command resolves its wire path through the share codec and
+// acts via sh.FS(), so the engine holds no storage-layout knowledge; RENAME and
+// DELETE ride the metadata-carrying FS().Rename/Remove. The remaining recognised
+// commands (NT_CREATE_ANDX, the locking/MPX/raw paths) answer STATUS_NOT_SUPPORTED.
+// The dispatch is driven by the NetBIOS/transport seam: the SMB Service exposes
+// one virtual circuit per session through NewConn (conn.go), and the NetBIOS NBF
+// session engine reassembles each SMB message off the circuit and calls
+// Conn.ServeMessage (which wraps Dispatch over a per-circuit smbSession),
+// Conn.Close on teardown. The spine itself holds no transport knowledge, so it is
+// unit-tested directly over raw SMB frames.
 //
 // Security posture: this is a compatibility server, not an authentication
 // server. SESSION_SETUP_ANDX grants a guest session without checking credentials

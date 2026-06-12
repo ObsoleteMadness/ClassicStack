@@ -42,6 +42,13 @@ import (
 	_ "github.com/ObsoleteMadness/ClassicStack/core/service/macip"
 	_ "github.com/ObsoleteMadness/ClassicStack/core/service/nbp"
 
+	// M7: the file services (AFP/SMB command engines over the §9 fs seam + the
+	// NetBIOS NBF session engine that carries SMB) must stay TinyGo-clean so an
+	// embedded build can serve files over the legacy protocols.
+	_ "github.com/ObsoleteMadness/ClassicStack/core/service/afp"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/service/netbios"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/service/smb"
+
 	// M1: the pure-Go pcapfile capture writer is required to be TinyGo-safe (§6f)
 	// so non-pcap/embedded links can still emit a Wireshark-openable file.
 	_ "github.com/ObsoleteMadness/ClassicStack/adapter/capture/pcapfile"

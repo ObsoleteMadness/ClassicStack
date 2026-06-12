@@ -27,12 +27,16 @@ const ipcShareName = "IPC$"
 // the session-message framing and calls Dispatch with the raw SMB message
 // (starting at the "\xffSMB" header). Each connection owns one *smbSession.
 //
-// As of this slice the spine handles the session-establishment commands —
-// NEGOTIATE, SESSION_SETUP_ANDX, TREE_CONNECT(_ANDX), TREE_DISCONNECT,
-// LOGOFF_ANDX, ECHO. Filesystem commands (NT_CREATE_ANDX, READ/WRITE, CLOSE,
-// TRANS2 find/query) return STATUS_NOT_SUPPORTED until the FS command-engine
-// slice lands; an unparseable frame is dropped (nil) so a malformed packet cannot
-// wedge the connection.
+// The spine handles the session-establishment commands — NEGOTIATE,
+// SESSION_SETUP_ANDX, TREE_CONNECT(_ANDX), TREE_DISCONNECT, LOGOFF_ANDX, ECHO —
+// and the FS command engine (this slice) handles the file/path/find commands over
+// the bound *Share's FS: OPEN[_ANDX]/CREATE, READ[_ANDX]/WRITE[_ANDX],
+// CLOSE/FLUSH, DELETE/RENAME, CREATE_DIRECTORY/DELETE_DIRECTORY/CHECK_DIRECTORY,
+// QUERY_INFORMATION[_DISK], and the TRANS2 FIND_FIRST2/FIND_NEXT2/FIND_CLOSE2 +
+// QUERY_PATH/FILE_INFO subcommands. A recognised-but-unimplemented command
+// answers STATUS_NOT_SUPPORTED so the client gets a definite reply; an
+// unparseable frame is dropped (nil) so a malformed packet cannot wedge the
+// connection.
 func (s *Service) Dispatch(sess *smbSession, req []byte) []byte {
 	h, err := protocol.DecodeHeader(req)
 	if err != nil {
@@ -54,10 +58,50 @@ func (s *Service) Dispatch(sess *smbSession, req []byte) []byte {
 		return s.handleLogoff(sess, h, req)
 	case protocol.CommandEcho:
 		return s.handleEcho(h, req)
+
+	// --- FS command engine: file I/O ---
+	case protocol.CommandOpenAndX:
+		return s.handleOpenAndX(sess, h, req)
+	case protocol.CommandOpen:
+		return s.handleOpen(sess, h, req)
+	case protocol.CommandCreate:
+		return s.handleCreate(sess, h, req)
+	case protocol.CommandReadAndX:
+		return s.handleReadAndX(sess, h, req)
+	case protocol.CommandRead:
+		return s.handleRead(sess, h, req)
+	case protocol.CommandWriteAndX:
+		return s.handleWriteAndX(sess, h, req)
+	case protocol.CommandWrite:
+		return s.handleWrite(sess, h, req)
+	case protocol.CommandClose:
+		return s.handleClose(sess, h, req)
+	case protocol.CommandFlush:
+		return s.handleFlush(sess, h, req)
+
+	// --- FS command engine: path operations ---
+	case protocol.CommandDelete:
+		return s.handleDelete(sess, h, req)
+	case protocol.CommandRename:
+		return s.handleRename(sess, h, req)
+	case protocol.CommandCreateDirectory:
+		return s.handleCreateDirectory(sess, h, req)
+	case protocol.CommandDeleteDirectory:
+		return s.handleDeleteDirectory(sess, h, req)
+	case protocol.CommandCheckDirectory:
+		return s.handleCheckDirectory(sess, h, req)
+	case protocol.CommandQueryInformation:
+		return s.handleQueryInformation(sess, h, req)
+	case protocol.CommandQueryInformationDisk:
+		return s.handleQueryInformationDisk(sess, h, req)
+
+	// --- FS command engine: TRANS2 find/query ---
+	case protocol.CommandTransaction2:
+		return s.handleTransaction2(sess, h, req)
+	case protocol.CommandFindClose2:
+		return s.handleFindClose2(sess, h, req)
+
 	default:
-		// A recognised-but-unimplemented command (the FS engine lands later) is
-		// answered with an error so the client gets a definite reply rather than
-		// hanging; an unknown command is likewise refused.
 		return buildErrorResponse(h, req, statusNotSupported)
 	}
 }
