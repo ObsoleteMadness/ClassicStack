@@ -62,10 +62,12 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 **Phase 1 DoD:** see exit criteria in [01-PHASE-harness.md](01-PHASE-harness.md).
 
 > **core/ errata — `encoding/binary` is forbidden:** it transitively imports
-> `reflect`, so the archtest gate rejects any core/ package that imports it. Hand-roll
-> big-endian helpers instead (see `core/protocol/ddp` `appendBE16`/`be16` and
-> `core/metastore` `putBE32`/`be32`). `encoding/binary` is now an explicit entry in the
-> archtest forbidden list. B2/B5/B8 do byte work — they must follow the same pattern.
+> `reflect`, so the archtest gate rejects any core/ package that imports it. Use the shared
+> **`core/binaryprimitives`** codecs (`BE16/…/LE64` readers, `PutBE16/…` in-place, `AppendBE16/…`
+> append) — do NOT re-hand-roll `be16`/`putLE32`/etc. per package (that duplication was consolidated
+> in `c5de757`). `encoding/binary` is an explicit entry in the archtest forbidden list. Note `fmt`
+> also pulls `reflect` transitively (even `fmt.Fprintf("%v"/"%X")`), so format small fixed things by
+> hand in core. B2/B5/B8 do byte work — they import `binaryprimitives`.
 >
 > **core/ errata — `net` is forbidden:** TCP listeners are not available on every embedded
 > target (a netless RP2040/Pico still serves DDP over raw Ethernet), so `net` must not enter
@@ -333,10 +335,37 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 >   covers OpenDT/CloseDT, comment round-trip (+ item-not-found), the FPAddIcon two-phase path →
 >   GetIcon/GetIconInfo, and APPL round-trip. spec/errata "Desktop database persistence" documents the
 >   comment/icon split + path-encoding convention.
-> - **Remaining M7:** FPCatSearch; SMB/NetBIOS command engines onto the shares; same-FS AFP+SMB
->   coordination via the FS bus (§10d); capture-replay vs `/captures/afp-*.pcap`; then delete legacy
->   `service/{afp,smb,netbios}` per strangler step 5. TCP transports are M7a (`adapter/dsi`) / M7b
->   (`adapter/smbtcp`).
+> - **Slice 9 (`7515477`) + reshape (`1cb4c08`):** AFP **FPCatSearch** (cmd 43) — the last AFP command.
+>   First cut walked the catalog in the spine; corrected (field feedback) so **search semantics belong
+>   to the FileSystem backend, which may decline**. Added an OPTIONAL `fs.CatSearcher` capability
+>   (`core/fs/catsearch.go`): `CatSearchCriteria` (name partial/full, parent path, free-text `Query`
+>   for synthetic backends, Max), `CatSearchResult`, opaque `CatSearchCursor`, `ErrCatSearchUnsupported`,
+>   and a default `WalkCatSearch` (depth-first predicate walk plain backends opt into — memfs/local_fs do).
+>   `afpCatSearch` decodes the AFP spec1/spec2 wire → `fs.CatSearchCriteria`, delegates via the capability
+>   (gated on `Capabilities().CatSearch`), returns **kFPCallNotSupported** when declined, packs returned
+>   paths with `fileDirParams`, round-trips the backend's opaque cursor through the 16-byte CatalogPosition.
+>   MacGarden et al. can turn CatSearch into an explicit query → virtual files. spec/errata "FPCatSearch
+>   over the FileSystem seam". **AFP command set now complete.**
+> - **Endian consolidation (`c5de757`):** created **`core/binaryprimitives`** — the one home for fixed-width
+>   BE/LE integer codecs (readers `BE16/…/LE64`, in-place `PutBE16/…`, append `AppendBE16/…`),
+>   dependency-free + reflection-free. Migrated ~14 hand-rolling packages to it and deleted the locals.
+>   **Restored archtest GREEN**: the red was a PRE-EXISTING `encoding/binary` import in
+>   `core/appledouble` + `core/fs/fork_{ads,xattr}` (cascading to fs/share/afp/smb), masked by a cached
+>   result, PLUS a stray `fmt.Fprintf` in `core/fs/codec.go` (fmt also pulls reflect). 00-DESIGN.md
+>   §"No reflection in core" documents the package + the don't-re-hand-roll rule + the fmt caveat.
+> - **SMB session-establishment spine (`e593271`):** `core/service/smb` — transport-independent
+>   `Service.Dispatch(sess, req)` over the `core/protocol/smb` header codec: NEGOTIATE (accept NT LM 0.12,
+>   WCT=17, Win9x-tuned caps), SESSION_SETUP_ANDX (guest UID=1, no credential check), TREE_CONNECT[_ANDX]
+>   (bind TID → `*Share` or IPC$; unknown → STATUS_BAD_NETWORK_NAME), TREE_DISCONNECT/LOGOFF_ANDX/ECHO;
+>   FS commands → STATUS_NOT_SUPPORTED until the FS-engine slice. `session.go` per-conn `smbSession`
+>   (uid, TID→`treeConnect{share,ipc}`) binds `*Share` directly. Unit-tested over raw SMB frames
+>   (`dispatch_test.go`). The NetBIOS→SMB session-data delivery seam is NOT wired yet (netbios.Transport
+>   has Open/Close/Announce but no inbound-frame callback) — a separate slice.
+> - **Remaining M7:** **SMB FS command engine** (NT_CREATE_ANDX, READ/WRITE, CLOSE, TRANS2 find/query
+>   over the shares — the next slice); **NetBIOS→SMB session-data seam** (transport inbound-frame
+>   delivery, currently missing); NetBIOS command engine; same-FS AFP+SMB coordination via the FS bus
+>   (§10d); capture-replay vs `/captures/afp-*.pcap`; then delete legacy `service/{afp,smb,netbios}` per
+>   strangler step 5. TCP transports are M7a (`adapter/dsi`) / M7b (`adapter/smbtcp`).
 
 ---
 
