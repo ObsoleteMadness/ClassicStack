@@ -77,7 +77,7 @@ func (s *Service) localNames() []protocol.Name {
 func (s *Service) NewNBFEngine(sender FrameSender) *Engine {
 	eng := &Engine{e: newSessionEngine(s.logger, sender, s.sessionConsumer, s.localNames)}
 	s.mu.Lock()
-	s.engines = append(s.engines, eng)
+	s.closers = append(s.closers, eng)
 	s.mu.Unlock()
 	return eng
 }
@@ -102,3 +102,33 @@ func (g *Engine) HandleSessionFrame(srcMAC, dstMAC [6]byte, frame *frameType) {
 
 // closeCircuits tears down every open circuit (called from Stop).
 func (g *Engine) closeCircuits() { g.e.closeAll() }
+
+// NewIPXEngine builds the NBIPX (NetBIOS-over-IPX) session state machine bound to
+// sender (the core/router/ipx mini-router, which it sends replies through).
+// Compose registers the returned engine on the mini-router as the SocketHandler
+// for the NB-IPX session socket (0x0455). The engine reads the live consumer
+// through the service, so SMB attaching late is honoured. The service tracks the
+// engine (as a circuitCloser) so Stop tears down its circuits. NB-IPX answers
+// NAME_QUERY at the name layer, so unlike NewNBFEngine this engine needs no name
+// set — it is purely the session-data path.
+func (s *Service) NewIPXEngine(sender DatagramSender) *IPXEngine {
+	eng := &IPXEngine{e: newIPXSessionEngine(s.logger, sender, s.sessionConsumer)}
+	s.mu.Lock()
+	s.closers = append(s.closers, eng)
+	s.mu.Unlock()
+	return eng
+}
+
+// IPXEngine is the exported handle to one IPX transport's NBIPX session state
+// machine. It satisfies the core/router/ipx mini-router's SocketHandler
+// (HandleDatagram) so compose registers it directly on socket 0x0455, with no
+// adapter shim. Its internals are the unexported ipxSessionEngine.
+type IPXEngine struct{ e *ipxSessionEngine }
+
+// HandleDatagram implements the core/router/ipx mini-router SocketHandler: an IPX
+// datagram delivered to the NB-IPX session socket, driving the circuit lifecycle
+// and data path.
+func (g *IPXEngine) HandleDatagram(d *ipxDatagramType) { g.e.HandleDatagram(d) }
+
+// closeCircuits tears down every open circuit (called from Stop).
+func (g *IPXEngine) closeCircuits() { g.e.closeAll() }

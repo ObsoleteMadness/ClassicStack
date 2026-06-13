@@ -405,11 +405,30 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 >   verified. Caller (CALL-out) side and the NO_RECEIVE/RECEIVE_CONTINUE flow-control + I-frame
 >   retransmit machinery are an adapter-altitude reliability concern, not needed by a listening file
 >   server; the responder path SMB-over-NBF depends on lands in core.
-> - **Remaining M7:** NetBIOS-over-IPX session transport (NBIPX) feeding the same engine seam; the
->   datagram/name-status command paths; NT_CREATE_ANDX + the locking/MPX/raw paths if a target client
->   needs them; same-FS AFP+SMB coordination via the FS bus (§10d); capture-replay vs
->   `/captures/{afp,ipx}.pcap`; then delete legacy `service/{afp,smb,netbios}` per strangler step 5.
->   TCP transports are M7a (`adapter/dsi`) / M7b (`adapter/smbtcp`).
+> - **NetBIOS-over-IPX (NBIPX) session transport (this slice):** the second session transport feeding
+>   the same `SessionConsumer`/`SessionCircuit` seam. `core/service/netbios/nbipx.go` is the IPX
+>   parallel of the NBF engine: `Service.NewIPXEngine` builds the responder-side NB-IPX session state
+>   machine that compose registers on the `core/router/ipx` mini-router as the `SocketHandler` for the
+>   NB-IPX session socket (0x0455, `NBIPXSessionSocket`). It accepts SESSION_INIT (→ SESSION_CONFIRM
+>   carrying our connection ID, circuit keyed by peer IPX address + the remote's SourceConnID),
+>   reassembles the DATA_FIRST_MIDDLE/DATA_ONLY_LAST(EOM) segments of each SMB message off the 16-byte
+>   `NBIPXSessionHeader`, routes the whole message to the installed consumer, and sends the response
+>   back as one EOM-flagged DATA_ONLY_LAST; SESSION_END closes the upper-layer conn + SESSION_END_ACKs.
+>   It reaches the wire only through the `DatagramSender` seam (the mini-router's `Send`) and the upper
+>   layer only through `SessionConsumer` — no link/router/SAP or SMB import (the legacy
+>   `over_ipx` transport's session half, stripped of netlog + the router/SAP coupling). The NetBIOS
+>   `Service` now tracks engines as a `circuitCloser` set (both `*Engine` and `*IPXEngine`) so `Stop`
+>   tears down circuits of either transport. `nbipx_test.go` drives INIT-establishment, non-PEP ignore,
+>   data→consumer→reply, segment reassembly, and SESSION_END + Stop teardown over the **real**
+>   `core/router/ipx` mini-router with a recording port (compile-asserting `*IPXEngine` satisfies
+>   `ipxrouter.SocketHandler`); `go list -deps ./core/router/ipx` carries no `service/netbios`, so the
+>   assertion is acyclic. NB-IPX name-query/NMPI/mailslot-datagram paths stay out of this engine (they
+>   are name/datagram-layer, not the session data path SMB rides). cs-tinygo already blank-imports
+>   `core/service/netbios`, so the embedded-compilability of the new engine is covered.
+> - **Remaining M7:** the datagram/name-status command paths; NT_CREATE_ANDX + the locking/MPX/raw
+>   paths if a target client needs them; same-FS AFP+SMB coordination via the FS bus (§10d);
+>   capture-replay vs `/captures/{afp,ipx}.pcap`; then delete legacy `service/{afp,smb,netbios}` per
+>   strangler step 5. TCP transports are M7a (`adapter/dsi`) / M7b (`adapter/smbtcp`).
 
 ---
 

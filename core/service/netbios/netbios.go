@@ -4,15 +4,26 @@
 // whose underlying protocol starts after NetBIOS joins the live service and
 // stopping that protocol detaches only its binding.
 //
-// As of M7 the session-data path is wired: NewNBFEngine builds the NBF (NetBEUI)
-// virtual-circuit state machine (nbf.go) that compose registers on the
-// core/router/netbeui mini-router as both its NameHandler (session-establishment
-// NAME_QUERY) and SessionHandler (SESSION_*/DATA_* frames). The engine answers a
-// CALL, brings the circuit up, reassembles each SMB message, and routes it to the
-// installed SessionConsumer (the SMB command engine, via SetSessionConsumer),
-// sending the response back over the circuit (session.go defines the seam). The
-// engine holds no link-layer or SMB knowledge — it reaches the wire through the
-// FrameSender seam and the upper layer through the SessionConsumer seam.
+// As of M7 the session-data path is wired over BOTH session transports through one
+// upper-layer seam (session.go: SessionConsumer/SessionCircuit, the §3-bis
+// command-core / session-transport split):
+//
+//   - NewNBFEngine builds the NBF (NetBEUI) virtual-circuit state machine (nbf.go)
+//     that compose registers on the core/router/netbeui mini-router as both its
+//     NameHandler (session-establishment NAME_QUERY) and SessionHandler
+//     (SESSION_*/DATA_* frames). It answers a CALL, brings the circuit up,
+//     reassembles each SMB message, and routes it to the installed consumer.
+//   - NewIPXEngine builds the NBIPX (NetBIOS-over-IPX / NWLink) state machine
+//     (nbipx.go) that compose registers on the core/router/ipx mini-router as the
+//     SocketHandler for the NB-IPX session socket (0x0455). It accepts SESSION_INIT,
+//     reassembles each SMB message off the NB-IPX session header, and routes it to
+//     the same consumer.
+//
+// Both engines route to the installed SessionConsumer (the SMB command engine, via
+// SetSessionConsumer), sending the response back over the circuit. Neither holds
+// link-layer or SMB knowledge — each reaches the wire through its own egress seam
+// (FrameSender / DatagramSender) and the upper layer through the SessionConsumer
+// seam.
 package netbios
 
 import (
@@ -124,8 +135,13 @@ type Service struct {
 	names    []protocol.Name
 	bindings []*binding
 	consumer SessionConsumer // upper-layer session sink (SMB); set by compose
-	engines  []*Engine       // NBF session engines, one per transport; torn down on Stop
+	closers  []circuitCloser // NBF/NBIPX session engines, one per transport; torn down on Stop
 }
+
+// circuitCloser is the per-transport session engine surface the service holds for
+// teardown: every NBF/NBIPX engine closes its open circuits on Stop so no
+// upper-layer (SMB) handles leak. Both *Engine and *IPXEngine satisfy it.
+type circuitCloser interface{ closeCircuits() }
 
 // New builds a NetBIOS service with no transports and no server name (the
 // registry default). Transports attach later via AddTransport.
@@ -185,13 +201,13 @@ func (s *Service) Stop(ctx context.Context) error {
 	s.running = false
 	s.ctx = nil
 	bindings := append([]*binding(nil), s.bindings...)
-	engines := append([]*Engine(nil), s.engines...)
+	closers := append([]circuitCloser(nil), s.closers...)
 	s.mu.Unlock()
 
 	for _, b := range bindings {
 		_ = b.Detach(ctx)
 	}
-	for _, eng := range engines {
+	for _, eng := range closers {
 		eng.closeCircuits()
 	}
 	s.logf("NetBIOS service stopped")
