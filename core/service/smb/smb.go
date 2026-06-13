@@ -17,8 +17,10 @@
 // the TRANS2 FIND_FIRST2/FIND_NEXT2/FIND_CLOSE2 + QUERY_PATH/FILE_INFO
 // subcommands. Each FS command resolves its wire path through the share codec and
 // acts via sh.FS(), so the engine holds no storage-layout knowledge; RENAME and
-// DELETE ride the metadata-carrying FS().Rename/Remove. The remaining recognised
-// commands (NT_CREATE_ANDX, the locking/MPX/raw paths) answer STATUS_NOT_SUPPORTED.
+// DELETE ride the metadata-carrying FS().Rename/Remove. NT_CREATE_ANDX serves the
+// NT/2000/XP open-or-create path (files and directories) over the same seam. The
+// remaining recognised commands (the byte-range locking/MPX/raw paths) answer
+// STATUS_NOT_SUPPORTED.
 // The dispatch is driven by the NetBIOS/transport seam: the SMB Service exposes
 // one virtual circuit per session through NewConn (conn.go), and the NetBIOS NBF
 // session engine reassembles each SMB message off the circuit and calls

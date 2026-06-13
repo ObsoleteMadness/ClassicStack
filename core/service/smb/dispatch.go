@@ -32,11 +32,12 @@ const ipcShareName = "IPC$"
 // and the FS command engine (this slice) handles the file/path/find commands over
 // the bound *Share's FS: OPEN[_ANDX]/CREATE, READ[_ANDX]/WRITE[_ANDX],
 // CLOSE/FLUSH, DELETE/RENAME, CREATE_DIRECTORY/DELETE_DIRECTORY/CHECK_DIRECTORY,
-// QUERY_INFORMATION[_DISK], and the TRANS2 FIND_FIRST2/FIND_NEXT2/FIND_CLOSE2 +
-// QUERY_PATH/FILE_INFO subcommands. A recognised-but-unimplemented command
-// answers STATUS_NOT_SUPPORTED so the client gets a definite reply; an
-// unparseable frame is dropped (nil) so a malformed packet cannot wedge the
-// connection.
+// QUERY_INFORMATION[_DISK], NT_CREATE_ANDX (the NT/2000/XP open-or-create path,
+// files and directories), and the TRANS2 FIND_FIRST2/FIND_NEXT2/FIND_CLOSE2 +
+// QUERY_PATH/FILE_INFO subcommands. A recognised-but-unimplemented command (the
+// byte-range LOCKING_ANDX / MPX / raw-read-write paths, out of M7 scope) answers
+// STATUS_NOT_SUPPORTED so the client gets a definite reply; an unparseable frame
+// is dropped (nil) so a malformed packet cannot wedge the connection.
 func (s *Service) Dispatch(sess *smbSession, req []byte) []byte {
 	h, err := protocol.DecodeHeader(req)
 	if err != nil {
@@ -94,6 +95,9 @@ func (s *Service) Dispatch(sess *smbSession, req []byte) []byte {
 		return s.handleQueryInformation(sess, h, req)
 	case protocol.CommandQueryInformationDisk:
 		return s.handleQueryInformationDisk(sess, h, req)
+
+	case protocol.CommandNtCreateAndX:
+		return s.handleNtCreateAndX(sess, h, req)
 
 	// --- FS command engine: TRANS2 find/query ---
 	case protocol.CommandTransaction2:

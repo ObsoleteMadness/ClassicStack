@@ -289,7 +289,14 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 >   macgarden) keep their declared schemas but real factories land as needed; only `memfs` + the new
 >   `local_fs` are wired today.
 
-> **M7 notes (in progress — slices landed):**
+> **M7 notes (in progress — slices landed):** the in-core file-services command engines (AFP, SMB,
+> NetBIOS NBF + NBIPX session transports) are now **functionally complete** — all AFP commands, the
+> SMB session + FS command set incl. NT_CREATE_ANDX, and both NetBIOS session transports plus the
+> connectionless datagram/node-status paths. The M7 row stays 🟡 because two scoped items remain
+> gated on later milestones: §10d same-FS coordination needs the shared bus/FS that **M8a** builds,
+> and legacy `service/{afp,smb,netbios}` deletion is blocked on the **M8/M8a→M10** compose cutover
+> (still imported by the live `internal/app`). The byte-range locking/MPX/raw SMB paths are left at
+> STATUS_NOT_SUPPORTED until a target client needs them.
 > - **Slice 1 (`47da010`):** service shape — AFP `Volume`/SMB `Share`/NetBIOS over the fs/metastore
 >   seam (no storage-layout knowledge); per-request wire charset threading; real `ads` fork backend.
 > - **Slice 2 (`1a03dc4`):** real `xattr` fork backend (Netatalk EA layout, spec/16 §1c).
@@ -425,10 +432,50 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 >   assertion is acyclic. NB-IPX name-query/NMPI/mailslot-datagram paths stay out of this engine (they
 >   are name/datagram-layer, not the session data path SMB rides). cs-tinygo already blank-imports
 >   `core/service/netbios`, so the embedded-compilability of the new engine is covered.
-> - **Remaining M7:** the datagram/name-status command paths; NT_CREATE_ANDX + the locking/MPX/raw
->   paths if a target client needs them; same-FS AFP+SMB coordination via the FS bus (§10d);
->   capture-replay vs `/captures/{afp,ipx}.pcap`; then delete legacy `service/{afp,smb,netbios}` per
->   strangler step 5. TCP transports are M7a (`adapter/dsi`) / M7b (`adapter/smbtcp`).
+> - **NT_CREATE_ANDX (this slice):** `core/service/smb/ntcreate.go` — the NT/2000/XP open-or-create
+>   path, the one modern-Windows open a real client uses. Over the bound `*Share`'s FS it honours
+>   CreateDisposition (SUPERSEDE/OPEN/CREATE/OPEN_IF/OVERWRITE/OVERWRITE_IF, gated against existence)
+>   and the FILE_DIRECTORY_FILE / FILE_NON_DIRECTORY_FILE CreateOptions (opens files AND directories;
+>   a directory FID carries no open fork.File). DesiredAccess maps to a read-only/read-write handle
+>   the WRITE path then enforces; the WCT=34 reply packs the four NT timestamps, ext-attrs,
+>   alloc/EOF sizes and the Directory flag. Storage is reached only via `sh.FS()` — no storage-layout
+>   knowledge. `ntcreate_test.go` covers create/collision, open/missing, read-only-handle write
+>   denial, directory create + the dir/file mismatch statuses, and bad-TID. The not-supported probe
+>   now uses LOCKING_ANDX (genuinely unimplemented).
+> - **NetBIOS datagram + node-status paths (this slice):** the NBF engine's `HandleFrame` now answers
+>   the two connectionless responder paths alongside the session machine (`nbf_datagram.go`):
+>   STATUS_QUERY → STATUS_RESPONSE (the node-status name table, built from the engine's own name set,
+>   truncated to the requester's advertised buffer with the more/too-big flags — how nbtstat / browser
+>   elections probe a node), and DATAGRAM / DATAGRAM_BROADCAST decoded to names+payload and routed to
+>   a new optional `DatagramConsumer` seam (`SetDatagramConsumer`, the datagram analogue of
+>   SessionConsumer — a browser/mailslot service plugs in there without touching the transport; until
+>   one does, datagrams drop after decode). `nbf_test.go` covers status-query answer/foreign-ignore/
+>   truncation and datagram deliver/drop. The NBIPX engine deliberately leaves its NMPI name-query /
+>   mailslot-datagram paths to the name/datagram layer (consistent with nbipx.go scope).
+> - **Capture-replay (this slice):** `core/protocol/netbios/nbipx_capture_test.go` — three real frames
+>   from `captures/ipx.pcap` decode→re-encode byte-identical: frame #2 (IPX type-20 NB-IPX
+>   name-service FIND.NAME for CLASSICSTACK), frame #3 (NMPI NAME_CLAIM 0xF1), frame #14 (NMPI
+>   MAILSLOT_SEND 0xFC carrying the `\MAILSLOT\BROWSE` browser announcement + embedded SMB — proves the
+>   header/payload split). These exercise the codec the M7 NBIPX session transport rides on. The
+>   `captures/afp-*.pcap` files are **link-layer** (LLAP/DDP/AARP over LocalTalk/EtherTalk), not clean
+>   AFP-command frames — the AFP request layer rides too deep (LLAP→DDP→ATP→ASP) for a standalone codec
+>   golden-vector, and a DDP-layer round-trip is non-identical because the wire frame carries a DDP
+>   checksum the core codec emits as zero (checksum-disabled, the legacy `AsLongHeaderBytes(false)`
+>   behaviour). AFP parity stays the golden-vector + round-trip tests the command engine already
+>   carries, per the M2 "atp/asp/afp ride inside DDP frames" note.
+> - **§10d same-FS AFP+SMB coordination — DEFERRED to M8a:** the FS-bus mechanism (`core/fs/bus.go`
+>   `Event`/`SkipOrigin`) exists, but today AFP `NewVolume` and SMB `NewShare` each call
+>   `share.Build(spec, nil)` with a **nil** bus and build **separate** FS stacks — there is no shared
+>   FS instance for two services to coordinate over, and `shareFS` does not yet publish on mutation.
+>   Wiring publish-on-mutation + per-service Origin filtering is only exercisable once **M8a** builds
+>   AFP+SMB over one shared bus/FS (the config→ShareSpec mapper + supervisor Reconfigure). Doing it
+>   now would add unreachable code; it is correctly M8a's, recorded here so M8a picks it up.
+> - **Remaining M7 (deferred, not blocking M7 close):** the byte-range LOCKING_ANDX / MPX / raw-read-
+>   write SMB paths answer STATUS_NOT_SUPPORTED — left until a target client needs them (no identified
+>   client does). Legacy `service/{afp,smb,netbios}` deletion is strangler step 5 but is **blocked**:
+>   those packages are still imported by the live `internal/app` runtime (afp_enabled / smb_enabled /
+>   netbios_enabled hooks + asp/dsi), so deletion happens at the **M8/M8a compose cutover → M10**, not
+>   in M7. TCP transports are M7a (`adapter/dsi`) / M7b (`adapter/smbtcp`).
 
 ---
 

@@ -39,6 +39,44 @@ type SessionCircuit interface {
 	Close()
 }
 
+// Datagram is one connectionless NetBIOS datagram delivered to a DatagramConsumer:
+// the source and destination NetBIOS names and the application payload (a browser
+// announcement / mailslot write). It carries no transport addressing — the
+// consumer is transport-agnostic, exactly like SessionCircuit.
+type Datagram struct {
+	Source      protocol.Name
+	Destination protocol.Name
+	Payload     []byte
+	Broadcast   bool // true for a group/broadcast datagram (DATAGRAM_BROADCAST)
+}
+
+// DatagramConsumer receives connectionless NetBIOS datagrams (mailslot / browser
+// traffic) the transports deliver. A browser/mailslot service is the consumer; it
+// is optional, so until one is installed datagrams drop cleanly after decode. The
+// consumer holds no transport knowledge — the datagram is already decoded to
+// names + payload (the §3-bis split, the datagram analogue of SessionConsumer).
+type DatagramConsumer interface {
+	HandleDatagram(d Datagram)
+}
+
+// SetDatagramConsumer installs the connectionless-datagram sink (a browser/mailslot
+// service). Compose calls it during wiring; a nil consumer leaves datagrams
+// dropped after decode.
+func (s *Service) SetDatagramConsumer(c DatagramConsumer) {
+	s.mu.Lock()
+	s.dgramConsumer = c
+	s.mu.Unlock()
+}
+
+// datagramConsumer returns the installed datagram consumer under the service lock.
+// The transports read it through this accessor (passed as a callback) so a consumer
+// attached after an engine is built is picked up live.
+func (s *Service) datagramConsumer() DatagramConsumer {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dgramConsumer
+}
+
 // SetSessionConsumer installs the upper-layer session consumer (the SMB command
 // engine) the NBF session engine routes established circuits to. Compose calls it
 // during wiring; a nil consumer leaves session data undelivered (drops cleanly).
@@ -75,7 +113,7 @@ func (s *Service) localNames() []protocol.Name {
 // are both honoured. The service tracks the engine so Stop tears down its
 // circuits.
 func (s *Service) NewNBFEngine(sender FrameSender) *Engine {
-	eng := &Engine{e: newSessionEngine(s.logger, sender, s.sessionConsumer, s.localNames)}
+	eng := &Engine{e: newSessionEngine(s.logger, sender, s.sessionConsumer, s.datagramConsumer, s.localNames)}
 	s.mu.Lock()
 	s.closers = append(s.closers, eng)
 	s.mu.Unlock()

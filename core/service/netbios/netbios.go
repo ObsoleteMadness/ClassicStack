@@ -24,6 +24,14 @@
 // link-layer or SMB knowledge — each reaches the wire through its own egress seam
 // (FrameSender / DatagramSender) and the upper layer through the SessionConsumer
 // seam.
+//
+// Alongside the session path the NBF engine answers the two connectionless
+// responder paths: the node-status query (STATUS_QUERY → STATUS_RESPONSE, built
+// from the local name set, how nbtstat / browser elections probe a node) and the
+// connectionless datagram (mailslot / browser traffic), routed to the optional
+// DatagramConsumer (SetDatagramConsumer) — a browser/mailslot service plugs in
+// there without touching the transport; until one does, datagrams drop after
+// decode.
 package netbios
 
 import (
@@ -129,13 +137,14 @@ type Service struct {
 	logger     log.Logger
 	serverName string
 
-	mu       sync.Mutex
-	running  bool
-	ctx      context.Context // captured in Start, for late AddTransport
-	names    []protocol.Name
-	bindings []*binding
-	consumer SessionConsumer // upper-layer session sink (SMB); set by compose
-	closers  []circuitCloser // NBF/NBIPX session engines, one per transport; torn down on Stop
+	mu            sync.Mutex
+	running       bool
+	ctx           context.Context // captured in Start, for late AddTransport
+	names         []protocol.Name
+	bindings      []*binding
+	consumer      SessionConsumer  // upper-layer session sink (SMB); set by compose
+	dgramConsumer DatagramConsumer // connectionless datagram sink (browser/mailslot); set by compose
+	closers       []circuitCloser  // NBF/NBIPX session engines, one per transport; torn down on Stop
 }
 
 // circuitCloser is the per-transport session engine surface the service holds for

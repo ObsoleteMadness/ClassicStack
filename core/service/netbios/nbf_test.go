@@ -247,3 +247,113 @@ func TestNBF_StopTearsDownCircuits(t *testing.T) {
 		t.Fatalf("Stop closed %d circuits, want 1", consumer.closed)
 	}
 }
+
+// recordingDatagramConsumer captures datagrams handed up by the engine.
+type recordingDatagramConsumer struct{ got []Datagram }
+
+func (c *recordingDatagramConsumer) HandleDatagram(d Datagram) { c.got = append(c.got, d) }
+
+// TestNBF_StatusQueryAnswered proves a STATUS_QUERY (NODE.STATUS) for one of our
+// names is answered with a STATUS_RESPONSE carrying the local name table.
+func TestNBF_StatusQueryAnswered(t *testing.T) {
+	_, r, port, _ := newWiredEngine(t)
+	name := protocol.NewName("CLASSICSTACK", protocol.NameTypeFileServer)
+
+	sq := &nbf.Frame{Command: nbf.CmdStatusQuery, Data2: 1024, RspCorrelator: 0x55}
+	copy(sq.DestinationName[:], name[:])
+	client := protocol.NewName("CLIENT", protocol.NameTypeWorkstation)
+	copy(sq.SourceName[:], client[:])
+	peer := [6]byte{0x02, 0, 0, 0, 0, 0x09}
+	r.Inbound(peer, peer, sq)
+
+	resp := port.lastSent(nbf.CmdStatusResponse)
+	if resp == nil {
+		t.Fatal("no STATUS_RESPONSE sent")
+	}
+	// Length field (low 14 bits of Data2) must be a whole number of 18-byte entries
+	// and cover the two names CLASSICSTACK claims (file-server + workstation).
+	n := int(resp.Data2 & statusLenMask)
+	if n == 0 || n%statusEntryLen != 0 {
+		t.Fatalf("STATUS_RESPONSE length %d not a multiple of %d", n, statusEntryLen)
+	}
+	if len(resp.Payload) != n {
+		t.Fatalf("payload %d bytes, Data2 length %d", len(resp.Payload), n)
+	}
+	// The reply must address the querier and source from the queried name.
+	if protocol.Name(resp.DestinationName) != client {
+		t.Errorf("STATUS_RESPONSE dst = %q, want %q", protocol.Name(resp.DestinationName).String(), client.String())
+	}
+}
+
+// TestNBF_StatusQueryForeignNameIgnored proves a STATUS_QUERY for a name we do not
+// own produces no STATUS_RESPONSE.
+func TestNBF_StatusQueryForeignNameIgnored(t *testing.T) {
+	_, r, port, _ := newWiredEngine(t)
+	foreign := protocol.NewName("ELSEWHERE", protocol.NameTypeFileServer)
+	sq := &nbf.Frame{Command: nbf.CmdStatusQuery, Data2: 1024}
+	copy(sq.DestinationName[:], foreign[:])
+	r.Inbound([6]byte{0x02}, [6]byte{0x02}, sq)
+	if port.lastSent(nbf.CmdStatusResponse) != nil {
+		t.Fatal("STATUS_RESPONSE sent for a foreign name")
+	}
+}
+
+// TestNBF_StatusQueryTruncation proves a small advertised buffer truncates the
+// name table to whole entries and sets the more/too-big flags.
+func TestNBF_StatusQueryTruncation(t *testing.T) {
+	_, r, port, _ := newWiredEngine(t)
+	name := protocol.NewName("CLASSICSTACK", protocol.NameTypeFileServer)
+	sq := &nbf.Frame{Command: nbf.CmdStatusQuery, Data2: statusEntryLen} // room for exactly one entry
+	copy(sq.DestinationName[:], name[:])
+	r.Inbound([6]byte{0x02}, [6]byte{0x02}, sq)
+
+	resp := port.lastSent(nbf.CmdStatusResponse)
+	if resp == nil {
+		t.Fatal("no STATUS_RESPONSE sent")
+	}
+	if resp.Data2&statusFlagMore == 0 {
+		t.Error("expected the more-data flag set on a truncated table")
+	}
+	if got := int(resp.Data2 & statusLenMask); got != statusEntryLen {
+		t.Fatalf("truncated length = %d, want %d (one entry)", got, statusEntryLen)
+	}
+}
+
+// TestNBF_DatagramDeliveredToConsumer proves a directed datagram is decoded to
+// names + payload and handed to the installed DatagramConsumer.
+func TestNBF_DatagramDeliveredToConsumer(t *testing.T) {
+	svc, r, _, _ := newWiredEngine(t)
+	dc := &recordingDatagramConsumer{}
+	svc.SetDatagramConsumer(dc)
+
+	name := protocol.NewName("CLASSICSTACK", protocol.NameTypeFileServer)
+	src := protocol.NewName("BROWSER", protocol.NameTypeWorkstation)
+	dg := &nbf.Frame{Command: nbf.CmdDatagram, Payload: []byte("mailslot-data")}
+	copy(dg.DestinationName[:], name[:])
+	copy(dg.SourceName[:], src[:])
+	r.Inbound([6]byte{0x02}, [6]byte{0x02}, dg)
+
+	if len(dc.got) != 1 {
+		t.Fatalf("consumer got %d datagrams, want 1", len(dc.got))
+	}
+	d := dc.got[0]
+	if d.Source != src || d.Destination != name {
+		t.Errorf("datagram names src=%q dst=%q", d.Source.String(), d.Destination.String())
+	}
+	if string(d.Payload) != "mailslot-data" || d.Broadcast {
+		t.Errorf("datagram payload=%q broadcast=%v", d.Payload, d.Broadcast)
+	}
+}
+
+// TestNBF_DatagramDroppedWithoutConsumer proves a datagram with no consumer wired
+// is dropped cleanly (no panic, no reply).
+func TestNBF_DatagramDroppedWithoutConsumer(t *testing.T) {
+	_, r, port, _ := newWiredEngine(t)
+	name := protocol.NewName("CLASSICSTACK", protocol.NameTypeFileServer)
+	dg := &nbf.Frame{Command: nbf.CmdDatagramBroadcast, Payload: []byte("x")}
+	copy(dg.DestinationName[:], name[:])
+	r.Inbound([6]byte{0x02}, [6]byte{0x02}, dg)
+	if len(port.sent) != 0 || len(port.broadcast) != 0 {
+		t.Fatal("a datagram without a consumer produced wire traffic")
+	}
+}

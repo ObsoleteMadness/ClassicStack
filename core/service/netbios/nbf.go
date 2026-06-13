@@ -15,11 +15,15 @@ package netbios
 // core/protocol/netbeui; this engine is the state machine over it.
 //
 // Scope: the responder (listen) side — answer an inbound CALL, accept the
-// session, carry SMB over it. The caller (CALL-out) side is not needed by a file
-// server. Flow control (NO_RECEIVE/RECEIVE_CONTINUE) and the I-frame
-// retransmit machinery the legacy transport carried are an adapter-altitude
-// reliability concern; the core engine delivers and replies, and the segment
-// reassembly + DATA_ACK that SMB-over-NBF actually depends on live here.
+// session, carry SMB over it. Alongside the session machine the engine also
+// answers the two connectionless responder paths (nbf_datagram.go): the
+// node-status query (STATUS_QUERY → STATUS_RESPONSE, built from the local name
+// set) and the directed/broadcast datagram (decoded and routed to the optional
+// DatagramConsumer). The caller (CALL-out) side is not needed by a file server.
+// Flow control (NO_RECEIVE/RECEIVE_CONTINUE) and the I-frame retransmit machinery
+// the legacy transport carried are an adapter-altitude reliability concern; the
+// core engine delivers and replies, and the segment reassembly + DATA_ACK that
+// SMB-over-NBF actually depends on live here.
 
 import (
 	"slices"
@@ -73,22 +77,24 @@ type circuit struct {
 type sessionEngine struct {
 	logger   log.Logger
 	sender   FrameSender
-	consumer func() SessionConsumer // late-bound: the service installs it after wiring
-	names    func() []protocol.Name // local names, to answer NAME_QUERY for ours
+	consumer func() SessionConsumer  // late-bound: the service installs it after wiring
+	dgram    func() DatagramConsumer // late-bound connectionless-datagram sink
+	names    func() []protocol.Name  // local names, to answer NAME_QUERY/STATUS_QUERY for ours
 
 	mu        sync.Mutex
 	circuits  map[circuitKey]*circuit
 	nextLocal uint8
 }
 
-// newSessionEngine builds an NBF session engine. consumer and names are
+// newSessionEngine builds an NBF session engine. consumer, dgram and names are
 // callbacks so the engine reads the live consumer/name set the service owns
-// (both can be set after the engine is constructed, e.g. SMB attaches late).
-func newSessionEngine(logger log.Logger, sender FrameSender, consumer func() SessionConsumer, names func() []protocol.Name) *sessionEngine {
+// (all can be set after the engine is constructed, e.g. SMB attaches late).
+func newSessionEngine(logger log.Logger, sender FrameSender, consumer func() SessionConsumer, dgram func() DatagramConsumer, names func() []protocol.Name) *sessionEngine {
 	return &sessionEngine{
 		logger:   logger,
 		sender:   sender,
 		consumer: consumer,
+		dgram:    dgram,
 		names:    names,
 		circuits: make(map[circuitKey]*circuit),
 	}
@@ -117,8 +123,15 @@ func (e *sessionEngine) ownsName(name protocol.Name) bool {
 // frames are left to the name layer / ignored here.
 func (e *sessionEngine) HandleFrame(srcMAC, dstMAC [6]byte, frame *nbf.Frame) {
 	_ = dstMAC
-	if frame.Command == nbf.CmdNameQuery {
+	switch frame.Command {
+	case nbf.CmdNameQuery:
 		e.handleNameQuery(srcMAC, frame)
+	case nbf.CmdStatusQuery:
+		e.handleStatusQuery(srcMAC, frame)
+	case nbf.CmdDatagram:
+		e.handleDatagram(frame, false)
+	case nbf.CmdDatagramBroadcast:
+		e.handleDatagram(frame, true)
 	}
 }
 
