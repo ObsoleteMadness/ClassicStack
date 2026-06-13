@@ -455,6 +455,56 @@ storage (files) are baked into the core. OpenWRT/UCI and ubus can't reuse it.
 `Plane.Save()` becomes `codec.Marshal(model)` → `store.Save(bytes)`. Swapping TOML-file
 for UCI-store is composition, not a code change in core.
 
+### 4-bis. Server identity is one top-level value, not per-service config
+
+The server's **hostname / NetBIOS computer name** (e.g. `CLASSICSTACK`) is consumed by three
+services — NetBIOS *claims* it (workstation + file-server name), SMB *advertises* it as its
+server name, and the browser *announces* it — so it must have **exactly one source of truth**.
+The trap (and the state today): NetBIOS takes a `serverName` in its constructor while SMB
+carries an independent `workgroup` and has no server-name field at all; nothing connects them,
+so a future config could let them drift. The fix is **single ownership, not divergence
+detection** — make it impossible to set two values, rather than validating two values agree
+after the fact.
+
+So server identity is a **well-known top-level section of the config `Model`** (alongside
+Logging/Router/Bridge, §4), not a field on any one component section:
+
+```go
+// core/config — top-level, cross-cutting; NOT owned by the SMB or NetBIOS section
+type Identity struct {
+    Hostname  string   // NetBIOS computer name: NetBIOS claims it, SMB advertises it,
+                       // browser announces it. UPPER-cased, ≤15 chars (NetBIOS limit),
+                       // validated once here. Empty → derive from OS hostname.
+    Workgroup string   // NetBIOS workgroup/domain (SMB NEGOTIATE domain, browser
+                       // DomainAnnounce). Default WORKGROUP.
+}
+```
+
+Wiring rule (compose, M8a): the registry reads `Model.Identity` **once** and hands the same
+`Hostname` to `netbios.NewService(...)`, to SMB (which gains a `SetServerName` it advertises in
+NEGOTIATE — today it only has `SetWorkgroup`), and to the browser. There is no per-service
+hostname field to disagree with: `Hostname` lives only on `Identity`, the SMB/NetBIOS sections
+do **not** carry one. `Workgroup` likewise flows from `Identity` to both SMB and the browser.
+
+- **Validation is on the single value** (§4 `Validate`): NetBIOS name rules (≤15 bytes,
+  upper-cased, no reserved chars) are enforced once on `Identity.Hostname` at load; an illegal
+  name fails Apply loudly. Because there is only one field, "SMB and NetBIOS names differ" is
+  unrepresentable — the stronger guarantee than a cross-section equality check.
+- **Defence-in-depth fallback:** *if* a config format or legacy import path ever surfaces a
+  second name (e.g. a UCI `smb.@server.name` a user hand-edits), the model's `Validate` rejects
+  a non-empty per-service name that disagrees with `Identity.Hostname` with a clear error,
+  rather than silently picking one. This is the "error if they vary" guard — a backstop for
+  external inputs, not the primary mechanism (the primary mechanism is that the model has one
+  field).
+- **Reconfigure (§11):** changing `Hostname` is a restart-grade change for NetBIOS (it must
+  re-claim the name on every transport) — a `RestartRequired` from those services' `Reconfigure`,
+  not a hot-apply.
+
+This is recorded now; the field + the SMB `SetServerName` + the compose wiring land with the
+config sections in **M8a** (no config sections exist before then). Until M8a, NetBIOS takes its
+name via constructor and SMB advertises only the workgroup — the disconnect is known and
+deliberately not patched piecemeal ahead of the config layer.
+
 ### Schema registration (so new transports don't edit a central struct)
 
 Today adding a transport means editing `config.Model`, `appConfig`, `appConfigFromModel`,
