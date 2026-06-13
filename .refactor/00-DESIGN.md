@@ -330,13 +330,30 @@ transports** that wrap it:
   in `core/service/afp` (and `core/service/smb`). It imports no `net`. *This already exists for
   AFP*: the M7 spine's `dispatchAFP` is exactly this, with `asp.go` as one transport (DDP/ATP,
   in core).
-- **Session transports** wrap the core for a specific wire:
+- **Session transports** wrap the core for a specific wire. **AFP**'s:
   - **ASP** (in core) — DDP/ATP datagram transport; needs no `net`, so it stays in `core/`.
   - **DSI** (`adapter/dsi`, `//go:build dsi || all`) — owns the `net.Listener`, accept loop,
     per-conn goroutines, and 16-byte DSI framing; maps DSI
     `GetStatus/OpenSession/Command/Write/Tickle/CloseSession` onto the core `CommandHandler`.
-  - **SMB-over-TCP** (`adapter/smbtcp`, `//go:build smbtcp || all`) — NBT/`:139` or
-    direct-TCP/`:445` framing over `net.Conn` onto the SMB command core.
+
+  **SMB**'s session transports come in **two families**, and crucially **SMB itself does not
+  distinguish them** — every one drives the same transport-agnostic seam (`SessionConsumer`:
+  open a circuit, serve each reassembled message, close on teardown — `conn.go`). So SMB rides
+  *with or without* NetBIOS:
+  - **NetBIOS-based** (the session is a NetBIOS session; SMB plugs into the NetBIOS service as
+    its `SessionConsumer`): **NBF** over NetBEUI, **NBIPX** over IPX (socket `0x0455`), **NBT**
+    over TCP (`adapter/netbios-tcp`, session service on TCP 139). NBF + NBIPX are in core (no
+    `net`); NBT is an adapter.
+  - **Direct (NetBIOS-less)** — SMB framed straight onto the lower transport with no NetBIOS
+    name/session layer, driving the **same** seam directly:
+    - **Direct-hosted SMB over IPX** (socket `0x0550`) — Microsoft "NWLink direct host." A core
+      transport (no `net`): its own connection-id framing on the IPX mini-router, then
+      `NewConn`/`ServeMessage`/`Close`. *(Legacy `service/smb/over_ipx_direct` is exactly this.)*
+    - **Direct-TCP SMB** (`adapter/smbtcp`, `//go:build smbtcp || all`, `:445`) — 4-byte
+      length-prefixed framing over `net.Conn`. Needs `net`, hence an adapter.
+  This is why server identity is NOT a NetBIOS-owned name (§4-bis): SMB has live transports
+  (direct-IPX `0x0550`, direct-TCP `:445`) that never touch NetBIOS yet still advertise the
+  hostname.
 
 The core exposes a small `CommandHandler`-style seam (mirroring today's
 `afp.CommandHandler.HandleCommand(block) → (reply, errCode)`) that the transport adapters

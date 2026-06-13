@@ -153,9 +153,16 @@ Each subsystem follows the same **strangler recipe**:
   `UpdateShare` builds the new stack first, then swaps under the lock, preserving the AFP id.
 - **Command core vs. session transport (§3-bis):** each file service is a **pure command core**
   (`dispatch(sess, block) → (reply, result)`, imports no `net`) plus session transports that
-  wrap it. The **in-core** transports stay in `core/`:
+  wrap it. SMB's transports come in two families — **NetBIOS-based** and **direct
+  (NetBIOS-less)** — and SMB drives all of them through ONE transport-agnostic seam (`conn.go`'s
+  `SessionConsumer`), so it does not distinguish them. The **in-core** transports stay in `core/`:
   - AFP/ASP (DDP/ATP) — `core/service/afp` (the M7 spine: `asp.go` over `dispatchAFP`). Done.
-  - SMB-over-NetBIOS (IPX/NetBEUI datagram/session) — `core/service/smb` over the mini-routers.
+  - SMB-over-NetBIOS — NBF (NetBEUI) + NBIPX (IPX socket `0x0455`) — `core/service/netbios` engines
+    feeding the SMB `SessionConsumer`. Done.
+  - **SMB direct-hosted over IPX** (socket `0x0550`, Microsoft "NWLink direct host") — a core
+    transport with NO NetBIOS layer: its own connection-id framing on the IPX mini-router, then the
+    SAME `NewConn`/`ServeMessage`/`Close` seam. Re-home from legacy `service/smb/over_ipx_direct`.
+    No `net`, so it stays in core. ⬜ not yet ported.
 - **TCP/stream transports are build-tagged ADAPTERS, not core (§1/§3-bis):** because `net` is
   forbidden in core (a netless Pico must still serve DDP), the TCP front-ends move out of
   `core/`:

@@ -1,12 +1,18 @@
 package smb
 
-// conn.go is the SMB side of the NetBIOS→SMB session-data seam. A NetBIOS
-// transport (NBF/NBT/IPX) carries one SMB virtual circuit per established
-// session; on that circuit it reassembles whole SMB messages and hands them to
-// the SMB command engine, writing the response back over the same circuit. The
-// transport holds no SMB knowledge and SMB holds no transport knowledge: the
-// only contract between them is "here is one SMB message on this circuit, give me
-// the bytes to send back."
+// conn.go is the SMB side of the (transport-agnostic) SMB session-data seam. A
+// session transport carries one SMB virtual circuit per established session; on
+// that circuit it reassembles whole SMB messages and hands them to the SMB command
+// engine, writing the response back over the same circuit. The transport holds no
+// SMB knowledge and SMB holds no transport knowledge: the only contract between
+// them is "here is one SMB message on this circuit, give me the bytes to send
+// back."
+//
+// The transport may be NetBIOS-based — NBF (NetBEUI), NBIPX (NetBIOS-over-IPX,
+// socket 0x0455), or NBT (NetBIOS-over-TCP) — OR a DIRECT (NetBIOS-less) transport:
+// SMB direct-hosted over IPX (socket 0x0550) or direct-TCP (:445). Both families
+// drive THIS SAME seam; SMB does not distinguish them — the command core is reached
+// the same way regardless of how the session was framed on the wire.
 //
 // The Conn is that per-circuit object. The transport calls NewConn once per
 // established session, ServeMessage for each reassembled SMB request, and Close
@@ -44,11 +50,12 @@ func (c *Conn) Close() {
 	c.sess.closeAll()
 }
 
-// SessionConsumer is the SMB-facing contract a NetBIOS transport drives: open a
-// circuit per session, serve each reassembled message, close on teardown. The
-// SMB Service satisfies it through NewConn/Conn. It lets the NetBIOS service hold
-// the SMB command engine behind one small interface, so neither side imports the
-// other's internals (the §3-bis command-core / session-transport split).
+// SessionConsumer is the SMB-facing contract ANY session transport drives —
+// NetBIOS-based (NBF/NBIPX/NBT) or direct (IPX-0x0550 / TCP-:445): open a circuit
+// per session, serve each reassembled message, close on teardown. The SMB Service
+// satisfies it through NewConn/Conn. It lets a transport hold the SMB command
+// engine behind one small interface, so neither side imports the other's internals
+// (the §3-bis command-core / session-transport split).
 type SessionConsumer interface {
 	NewConn() SessionCircuit
 }
