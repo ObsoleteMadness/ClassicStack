@@ -293,8 +293,11 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > NetBIOS NBF + NBIPX session transports) are now **functionally complete** — all AFP commands, the
 > SMB session + FS command set incl. NT_CREATE_ANDX, and both NetBIOS session transports plus the
 > connectionless datagram/node-status paths. The M7 row stays 🟡 because two scoped items remain
-> gated on later milestones: §10d same-FS coordination needs the shared bus/FS that **M8a** builds,
-> and legacy `service/{afp,smb,netbios}` deletion is blocked on the **M8/M8a→M10** compose cutover
+> gated on later milestones: §10d same-host-path coordination needs the **shared event bus** (each
+> service keeps its OWN `shareFS` instance — own fork engine/codec — but both are built with one
+> `bus.Bus` so a mutation by one reaches the other) that **M8a** wires once it recognises two specs
+> exporting the same host path, and legacy `service/{afp,smb,netbios}` deletion is blocked on the
+> **M8/M8a→M10** compose cutover
 > (still imported by the live `internal/app`). The byte-range locking/MPX/raw SMB paths are left at
 > STATUS_NOT_SUPPORTED until a target client needs them.
 > - **Slice 1 (`47da010`):** service shape — AFP `Volume`/SMB `Share`/NetBIOS over the fs/metastore
@@ -463,13 +466,20 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 >   checksum the core codec emits as zero (checksum-disabled, the legacy `AsLongHeaderBytes(false)`
 >   behaviour). AFP parity stays the golden-vector + round-trip tests the command engine already
 >   carries, per the M2 "atp/asp/afp ride inside DDP frames" note.
-> - **§10d same-FS AFP+SMB coordination — DEFERRED to M8a:** the FS-bus mechanism (`core/fs/bus.go`
->   `Event`/`SkipOrigin`) exists, but today AFP `NewVolume` and SMB `NewShare` each call
->   `share.Build(spec, nil)` with a **nil** bus and build **separate** FS stacks — there is no shared
->   FS instance for two services to coordinate over, and `shareFS` does not yet publish on mutation.
->   Wiring publish-on-mutation + per-service Origin filtering is only exercisable once **M8a** builds
->   AFP+SMB over one shared bus/FS (the config→ShareSpec mapper + supervisor Reconfigure). Doing it
->   now would add unreachable code; it is correctly M8a's, recorded here so M8a picks it up.
+> - **§10d same-host-path AFP+SMB coordination — DEFERRED to M8a:** NOTE the model — this is NOT one
+>   shared FS object. Each service keeps its **own** `shareFS` instance (it must: AFP wants the
+>   AppleDouble fork engine, SMB wants the bare data fork, and each has its own filename codec), even
+>   when an AFP volume and an SMB share export the **same host directory**. What they share is the
+>   **event bus**: §10d (00-DESIGN.md) is "each service subscribes to the FS bus, filters by Origin to
+>   skip its own events, and translates the rest into its protocol's change-notify" — one `Publish`
+>   per mutation, many reactors. The mechanism (`core/fs/bus.go` `Event`/`SkipOrigin`) exists, but
+>   today AFP `NewVolume` and SMB `NewShare` each call `share.Build(spec, nil)` with a **nil** bus, so
+>   there is no shared bus to publish on, no second subscriber, and `shareFS` does not yet publish on
+>   mutation. Recognising that two specs name the same host path and handing both `share.Build` calls
+>   one common `bus.Bus` is **M8a**'s job (the config→ShareSpec mapper + supervisor). Until then,
+>   publish-on-mutation + per-service Origin filtering would be unreachable code; recorded here so M8a
+>   picks it up. (The separate-host-path case — the common one, e.g. AFP `Music` and SMB `Docs` on
+>   different directories — needs no coordination at all: the shares cannot affect each other.)
 > - **Remaining M7 (deferred, not blocking M7 close):** the byte-range LOCKING_ANDX / MPX / raw-read-
 >   write SMB paths answer STATUS_NOT_SUPPORTED — left until a target client needs them (no identified
 >   client does). Legacy `service/{afp,smb,netbios}` deletion is strangler step 5 but is **blocked**:
