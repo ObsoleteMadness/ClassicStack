@@ -221,13 +221,17 @@ Each subsystem follows the same **strangler recipe**:
   rendered form (from `fs.ParamsFor`) and redacted in diagnostics. This consumes the
   `share.Manager` contract M7c already shipped.
 - **Server identity wiring (§4-bis):** add the top-level `config.Identity{Hostname, Workgroup}`
-  section (NOT a field on the SMB or NetBIOS section), validate `Hostname` once (≤15 bytes,
-  upper-cased, NetBIOS-legal), and have the registry read it **once** and hand the same `Hostname`
-  to `netbios.NewService`, to SMB (add `SetServerName`, advertised in NEGOTIATE — today SMB only
-  has `SetWorkgroup`), and to the browser; flow `Workgroup` to SMB + browser likewise. There is no
-  per-service hostname field, so NetBIOS and SMB names cannot diverge; the model `Validate` rejects
-  any externally-surfaced second name that disagrees (the "error if they vary" backstop). A
-  `Hostname` change is restart-grade for NetBIOS (re-claim on every transport).
+  section (owned by NO service — NOT a field on the SMB or NetBIOS section). The hostname is a
+  *server* property SMB needs even with NetBIOS absent (direct-TCP `:445`, or AFP-only / NetBIOS
+  off). The registry reads it **once** and hands the same `Hostname` to whichever consumers are
+  enabled — SMB (add `SetServerName`, advertised in NEGOTIATE — today SMB only has `SetWorkgroup`),
+  `netbios.NewService` *if NetBIOS is enabled*, the browser *if linked*; flow `Workgroup` likewise.
+  No per-service hostname field, so consumers cannot diverge; the model `Validate` rejects any
+  externally-surfaced second name that disagrees (the "error if they vary" backstop). Validation is
+  layered: a baseline hostname check always applies, but the **NetBIOS ≤15-byte/upper-case rule is a
+  consumer constraint applied only when NetBIOS is enabled** (a 20-char name is fine for an
+  SMB-`:445` / AFP-only server, rejected once NetBIOS turns on). `Hostname` change is restart-grade
+  for NetBIOS (re-claim per transport) and for direct-TCP SMB's advertised name.
 - **Source:** `pkg/logbuf`, `pkg/metrics`, `service/webui/*`, `pkg/control/*`, `config/*`,
   `internal/app/smb_shares.go` (+ AFP equivalent), `compose/registry/reg_afp.go`/`reg_smb.go`.
 - **Done when:** web UI drives the new Plane; ubus parity test passes on an OpenWRT target;

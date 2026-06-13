@@ -457,39 +457,50 @@ for UCI-store is composition, not a code change in core.
 
 ### 4-bis. Server identity is one top-level value, not per-service config
 
-The server's **hostname / NetBIOS computer name** (e.g. `CLASSICSTACK`) is consumed by three
-services — NetBIOS *claims* it (workstation + file-server name), SMB *advertises* it as its
-server name, and the browser *announces* it — so it must have **exactly one source of truth**.
-The trap (and the state today): NetBIOS takes a `serverName` in its constructor while SMB
-carries an independent `workgroup` and has no server-name field at all; nothing connects them,
-so a future config could let them drift. The fix is **single ownership, not divergence
-detection** — make it impossible to set two values, rather than validating two values agree
-after the fact.
+The server's **hostname** (e.g. `CLASSICSTACK`) is a *server-level* property, **not** a
+NetBIOS-owned name — SMB needs it even when NetBIOS is absent. SMB runs without NetBIOS in real
+deployments: **direct-TCP SMB (`:445`, §3-bis M7b)** has no NetBIOS layer at all (the client
+connects by IP/DNS and SMB still advertises a server name in NEGOTIATE), and a deployment can
+disable NetBIOS entirely (AFP-only, or SMB-over-`:445`-only) while SMB keeps serving. So the
+ownership is: **the hostname is the server's, and each of NetBIOS / SMB / browser is a
+*consumer*** — NetBIOS claims it as its workstation/file-server name *when running*, SMB
+advertises it in NEGOTIATE, the browser announces it. It must have **exactly one source of
+truth** so the consumers cannot disagree. The trap today: NetBIOS takes a `serverName` in its
+constructor while SMB carries an independent `workgroup` and has no server-name field at all;
+nothing connects them. The fix is **single ownership, not divergence detection** — make it
+impossible to set two values, rather than validating two values agree.
 
 So server identity is a **well-known top-level section of the config `Model`** (alongside
-Logging/Router/Bridge, §4), not a field on any one component section:
+Logging/Router/Bridge, §4), owned by no single service:
 
 ```go
-// core/config — top-level, cross-cutting; NOT owned by the SMB or NetBIOS section
+// core/config — top-level, cross-cutting; consumed by NetBIOS/SMB/browser, owned by none
 type Identity struct {
-    Hostname  string   // NetBIOS computer name: NetBIOS claims it, SMB advertises it,
-                       // browser announces it. UPPER-cased, ≤15 chars (NetBIOS limit),
-                       // validated once here. Empty → derive from OS hostname.
-    Workgroup string   // NetBIOS workgroup/domain (SMB NEGOTIATE domain, browser
-                       // DomainAnnounce). Default WORKGROUP.
+    Hostname  string   // the server name. SMB advertises it (even over direct-TCP :445 with
+                       // NO NetBIOS); NetBIOS claims it when running; browser announces it.
+                       // Empty → derive from OS hostname. See validation note re: the
+                       // NetBIOS ≤15-byte/upper-case constraint (a CONSUMER constraint, not
+                       // intrinsic to the field).
+    Workgroup string   // SMB NEGOTIATE domain + browser DomainAnnounce. Default WORKGROUP.
+                       // Also NetBIOS-flavoured but, like Hostname, used by SMB without NetBIOS.
 }
 ```
 
 Wiring rule (compose, M8a): the registry reads `Model.Identity` **once** and hands the same
-`Hostname` to `netbios.NewService(...)`, to SMB (which gains a `SetServerName` it advertises in
-NEGOTIATE — today it only has `SetWorkgroup`), and to the browser. There is no per-service
-hostname field to disagree with: `Hostname` lives only on `Identity`, the SMB/NetBIOS sections
-do **not** carry one. `Workgroup` likewise flows from `Identity` to both SMB and the browser.
+`Hostname` to whichever consumers are linked/enabled — SMB (which gains a `SetServerName` it
+advertises in NEGOTIATE — today it only has `SetWorkgroup`), `netbios.NewService(...)` *if
+NetBIOS is enabled*, and the browser *if linked*. There is no per-service hostname field to
+disagree with: `Hostname` lives only on `Identity`; the SMB/NetBIOS sections do **not** carry
+one. A NetBIOS-less server (SMB on `:445` only, or AFP-only) simply has no NetBIOS consumer —
+the field still drives SMB's advertised name. `Workgroup` flows the same way.
 
-- **Validation is on the single value** (§4 `Validate`): NetBIOS name rules (≤15 bytes,
-  upper-cased, no reserved chars) are enforced once on `Identity.Hostname` at load; an illegal
-  name fails Apply loudly. Because there is only one field, "SMB and NetBIOS names differ" is
-  unrepresentable — the stronger guarantee than a cross-section equality check.
+- **Validation is layered, on the single value** (§4 `Validate`): a baseline hostname check
+  always applies (non-empty after default, no path/control chars). The **NetBIOS-specific**
+  rules (≤15 bytes, upper-cased, no NetBIOS-reserved chars) are a **consumer constraint applied
+  only when the NetBIOS service is enabled** — a 20-char hostname is legal for an SMB-over-`:445`
+  / AFP-only server but rejected at Apply once NetBIOS is turned on (with a message naming
+  NetBIOS as the constraint source). This keeps the limit where it belongs (NetBIOS) instead of
+  baking a NetBIOS rule into a field SMB-without-NetBIOS also uses.
 - **Defence-in-depth fallback:** *if* a config format or legacy import path ever surfaces a
   second name (e.g. a UCI `smb.@server.name` a user hand-edits), the model's `Validate` rejects
   a non-empty per-service name that disagrees with `Identity.Hostname` with a clear error,
@@ -497,8 +508,8 @@ do **not** carry one. `Workgroup` likewise flows from `Identity` to both SMB and
   external inputs, not the primary mechanism (the primary mechanism is that the model has one
   field).
 - **Reconfigure (§11):** changing `Hostname` is a restart-grade change for NetBIOS (it must
-  re-claim the name on every transport) — a `RestartRequired` from those services' `Reconfigure`,
-  not a hot-apply.
+  re-claim the name on every transport) and for direct-TCP SMB's advertised name — a
+  `RestartRequired` from the affected services' `Reconfigure`, not a hot-apply.
 
 This is recorded now; the field + the SMB `SetServerName` + the compose wiring land with the
 config sections in **M8a** (no config sections exist before then). Until M8a, NetBIOS takes its
