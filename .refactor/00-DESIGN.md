@@ -354,6 +354,53 @@ consume, so the dependency points **adapter → core**, never the reverse. The d
 The AFP/SMB command-core source is **identical** across all three; only which adapters are
 linked changes.
 
+### 3-ter. The NetBIOS browser is a datagram-layer service, common to all transports
+
+SMB is a *session* service; the **browser** (host/domain announcements, master-browser
+elections, the `GetBackupList` exchange, the browse list the RAP/`NetServerEnum2` LANMAN call
+serves) is a *datagram* service. The two are independent: a file server works fine with no
+browser at all (clients still connect by name/IP), and a browser can run for hosts that serve
+no files. Today the legacy code buries the browser inside `service/smb`
+(`browser_frames.go`, `command_rap_lanman.go`, the `browserRole` machine in `server.go`),
+coupling a transport-and-protocol-neutral concern to one session protocol. The greenfield
+design breaks that out.
+
+The browser is the **datagram analogue of the §3-bis command-core/session-transport split**.
+NetBIOS runs over three transports — NetBEUI (NBF), IPX (NBIPX/NMPI), and TCP (NBT, UDP 138) —
+and each carries *both* a session path (SMB rides it) *and* a connectionless datagram path
+(the browser rides it). So:
+
+```
+ NBF datagram   ─┐                                   ┌─ HostAnnounce / DomainAnnounce
+ NBIPX mailslot  ├─ DatagramConsumer seam ─► browser ┤─ election state machine
+ NBT  UDP-138   ─┘   (one decoded Datagram)  command  └─ browse list  ─► RAP NetServerEnum2
+                                              core         (served back over the SMB pipe)
+```
+
+- The browser is a **`core/service/browser`** command core that holds no transport knowledge.
+  It plugs into the NetBIOS service as the **`DatagramConsumer`** (`SetDatagramConsumer`, the
+  datagram analogue of `SessionConsumer`) — a seam that already exists. Each transport decodes
+  its wire datagram to a neutral `netbios.Datagram` (source/destination name + payload +
+  broadcast flag) and hands it up; the browser parses the `\MAILSLOT\BROWSE` opcode
+  (HostAnnounce 0x01 / AnnouncementReq 0x02 / RequestElection 0x08 / GetBackupList 0x09/0x0A /
+  DomainAnnounce 0x0C / LocalMasterAnnounce 0x0F) and maintains the browse list + election role
+  (potential/backup/local-master). It sends its own announcements *out* through the same
+  NetBIOS datagram egress (a `SendDatagram` seam the transports satisfy), so one browser serves
+  NetBEUI, IPX and TCP at once with no per-transport browser code.
+- The **RAP/LANMAN `NetServerEnum2` ("get server list")** that returns the browse list to a
+  client arrives over the SMB **IPC$ named pipe** (`\PIPE\LANMAN`), i.e. on the *session* path.
+  SMB therefore needs a thin seam to *ask the browser* for the current list — a small
+  `BrowseList()` query interface the browser exposes and the SMB IPC$ handler consumes, with
+  SMB still holding no browser logic. (This is the one place the session and datagram services
+  meet; it is a read-only query, not a dependency that reorders lifecycle.)
+- It is **optional** (`§8` registry, no `*_disabled.go`): a build or deployment that wants only
+  file serving never links it, and the `DatagramConsumer` simply stays unset (datagrams drop
+  after decode, as today). Elections/announcements are also configurable off (be a non-browser
+  host that still announces itself, or announce nothing).
+
+The payoff is the same as everywhere else: **one browser command core, three transports, zero
+duplication** — and SMB stops carrying browser code it never should have owned.
+
 ### Router membership becomes event-driven (user point on dynamism)
 
 The router exposes `Attach(p RoutedPort)` / `Detach(p RoutedPort)`. `Detach` *immediately*
@@ -1416,9 +1463,11 @@ core/
   port/       ethertalk ipx netbeui localtalk  (Component + frame codec; AARP/node-claim
               live in the framing adapter, so a kernel DatagramLink omits them)
   router/     appletalk router + tables + ZIP; ipx mini-router; netbeui
-  service/    afp(+asp transport) smb macip  (Component + protocol logic; consume DatagramLink;
-              talk ONLY to fs/share/metastore for storage. Each file service is a PURE command core
-              + a CommandHandler seam — NO net here. DSI/SMB-TCP transports are adapters, §3-bis)
+  service/    afp(+asp transport) smb netbios(+nbf/nbipx session transports) browser macip
+              (Component + protocol logic; consume DatagramLink; talk ONLY to fs/share/metastore
+              for storage. Each file service is a PURE command core + a CommandHandler seam — NO
+              net here. DSI/SMB-TCP transports are adapters, §3-bis. browser is the datagram-layer
+              service over the NetBIOS DatagramConsumer seam, common to NBF/IPX/NBT, §3-ter)
   fs/         FileSystem + ForkFS/ForkEngine + NameEngine + FilenameCodec interfaces,
               Factory registry + per-fs_type Param schema (the one seam AFP+SMB consume) + FS-domain event bus
   share/      thin share descriptor (Name/FS/Config/ReadOnly/Description/Permissions) + Manager
@@ -1433,11 +1482,15 @@ core/
 adapter/
   link/pcap   link/tap   link/ppp   link/slip       (build-tagged FrameLink backends)
   link/kerneldp  link/driversnet                     (DatagramLink: AF_APPLETALK, TinyGo/ESP-IDF)
-  dsi   smbtcp                                        (TCP stream transports, §3-bis; build-tagged
-                                                     dsi/smbtcp; own net.Listener + framing over a
-                                                     pure core CommandHandler. net lives in this
-                                                     adapter, not core; esp32 sibling does
-                                                     netdev/WiFi bring-up)
+  dsi   smbtcp   netbios-tcp                          (TCP stream transports, §3-bis; build-tagged
+                                                     dsi/smbtcp/nbt; own net.Listener + framing over
+                                                     a pure core CommandHandler/seam. net lives in
+                                                     these adapters, not core; esp32 sibling does
+                                                     netdev/WiFi bring-up. netbios-tcp = NBT
+                                                     RFC1001/1002: name(udp137)/datagram(udp138)/
+                                                     session(tcp139) feeding the SAME NetBIOS
+                                                     Session+Datagram seams as NBF/NBIPX, §3-ter.
+                                                     smbtcp = direct-TCP :445 framing only)
   capture/libpcap  capture/pcapfile                  (CaptureSink writers; pcapfile = pure-Go,
                                                      TinyGo-safe — wire capture even w/o libpcap, §6f)
   log/syslog  log/file  log/journald  log/semihosting  (log sinks; SSE sink = bus → UI)

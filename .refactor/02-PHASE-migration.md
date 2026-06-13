@@ -162,8 +162,15 @@ Each subsystem follows the same **strangler recipe**:
   - `adapter/dsi` (`//go:build dsi || all`) — re-home `service/dsi/dsi.go`'s listener/accept
     loop + 16-byte DSI framing onto the AFP command core's `CommandHandler` seam (replacing the
     old `afp.CommandHandler`). Registers via `init()` (§8).
-  - `adapter/smbtcp` (`//go:build smbtcp || all`) — NBT `:139` / direct-TCP `:445` framing over
-    `net.Conn` onto the SMB command core.
+  - `adapter/smbtcp` (`//go:build smbtcp || all`) — **direct-TCP `:445`** framing (4-byte length
+    prefix) over `net.Conn` onto the SMB command core. Win2000+ clients.
+  - `adapter/netbios-tcp` (`//go:build nbt || all`) — **NBT (RFC 1001/1002)**, the TCP sibling of
+    the NBF/NBIPX transports: name service (UDP 137), datagram service (UDP 138), session service
+    (TCP 139). Its session half feeds the SAME NetBIOS `SessionConsumer` seam SMB rides over
+    NetBEUI/IPX, and its datagram half feeds the SAME `DatagramConsumer` seam the browser rides —
+    so NBT adds NO SMB or browser code, only the wire transport (§3-ter). It needs `net`, hence an
+    adapter. This is what most vintage TCP clients (Win9x/NT) actually use; `:445` direct-TCP is
+    Win2000+. Decide per deployment which (or both) to link.
   - Each owns its `net.Listener`; binding is `host:port` via `component.Bindable`, default all
     interfaces, restart-grade reconfigure (§11b). An `//go:build esp32` sibling does WiFi/`netdev`
     bring-up before `net.Listen`. **Do NOT create `core/service/dsi`** — that would pull `net`
@@ -176,6 +183,28 @@ Each subsystem follows the same **strangler recipe**:
   `core/share.Share` and implement `share.Manager` (add/update/remove a share on a running
   server, with `RemoveShare` leaving in-flight sessions intact); bug-for-bug capture-replay
   tests pass; a netless TinyGo build (no `dsi`/`smbtcp` tag) still compiles and serves DDP.
+
+## M7d. NetBIOS browser service (optional, datagram-layer; §3-ter)
+- **Migrate:** the browser out of `service/smb` into a standalone **`core/service/browser`** — a
+  datagram-layer NetBIOS service, common to ALL NetBIOS transports (NetBEUI/IPX/NBT), NOT bound to
+  SMB. It plugs into the NetBIOS service as the `DatagramConsumer` (the seam landed in M7), parses
+  the `\MAILSLOT\BROWSE` opcodes (HostAnnounce 0x01 / AnnouncementReq 0x02 / RequestElection 0x08 /
+  GetBackupList 0x09/0x0A / DomainAnnounce 0x0C / LocalMasterAnnounce 0x0F), maintains the browse
+  list + election role (potential/backup/local-master), and emits its own announcements out through
+  the NetBIOS datagram egress. One command core, three transports, zero per-transport browser code.
+- **The RAP/LANMAN `NetServerEnum2` seam:** the "get server list" call arrives over the SMB IPC$
+  named pipe (`\PIPE\LANMAN`) — the *session* path. SMB asks the browser for the current list via a
+  small read-only `BrowseList()` query interface the browser exposes; SMB holds no browser logic and
+  the browser holds no SMB logic. This is the one read-only meeting point of the two services.
+- **Source:** `service/smb/browser_frames.go`, `service/smb/command_rap_lanman.go`, the `browserRole`
+  /announcement/election machine in `service/smb/server.go`.
+- **Optional (§8):** registry `init()`; a build/deployment that wants only file serving never links
+  it (the `DatagramConsumer` stays unset, datagrams drop after decode). Announcements/elections are
+  configurable off.
+- **Done when:** a Windows client populates Network Neighborhood from our HostAnnounce; a
+  `NetServerEnum2` over IPC$ returns the browse list; the browser serves the same list over NetBEUI,
+  IPX and (once `adapter/netbios-tcp` lands) NBT with no transport-specific browser code; SMB carries
+  no browser logic.
 
 ## M8. Logging + control front-ends
 - **Migrate:** route all services' logging through `core/log` scoped loggers (drop ad-hoc
