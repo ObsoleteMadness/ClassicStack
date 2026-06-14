@@ -102,7 +102,7 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 | M7a | `adapter/dsi` (AFP-over-TCP `:548`): re-home `service/dsi` onto AFP command core's CommandHandler; `//go:build dsi`; net only here (§1/§3-bis) | M7 | | ⬜ |
 | M7b | `adapter/smbtcp` (SMB **direct-TCP `:445`** framing, 4-byte length prefix) onto SMB command core; `//go:build smbtcp`; net only in adapter (§3-bis) | M7 | | ⬜ |
 | M7b2 | `adapter/netbios-tcp` (**NBT**, RFC 1001/1002: name udp137 / datagram udp138 / session tcp139) — TCP sibling of NBF/NBIPX; session half → NetBIOS `SessionConsumer`, datagram half → `DatagramConsumer`; adds NO SMB/browser code, only the wire transport; `//go:build nbt`; net only in adapter (§3-ter). Most vintage TCP clients use `:139`, not `:445`. | M7 | | ⬜ |
-| M7e | **SMB direct-hosted over IPX** (socket `0x0550`, "NWLink direct host") — a CORE transport (no `net`, no NetBIOS layer): connection-id framing on the IPX mini-router driving the SAME SMB `SessionConsumer` seam as NBF/NBIPX. Re-home from legacy `service/smb/over_ipx_direct`. Proves SMB runs over IPX both with NetBIOS (NBIPX, 0x0455) and without (direct, 0x0550). | M7 | | ⬜ |
+| M7e | **SMB direct-hosted over IPX** (socket `0x0550`, "NWLink direct host") — a CORE transport (no `net`, no NetBIOS layer): connection-id framing on the IPX mini-router driving the SAME SMB `SessionConsumer` seam as NBF/NBIPX. Re-home from legacy `service/smb/over_ipx_direct`. Proves SMB runs over IPX both with NetBIOS (NBIPX, 0x0455) and without (direct, 0x0550). | M7 | claude | ✅ |
 | M7c | `core/share`: thin Share descriptor (Name/FS/Config/ReadOnly/Description/Permissions-stub) + `Manager` CRUD; AFP `Volume` & SMB `Share` hold the shared Share; both services implement `share.Manager` (add/update/remove; RemoveShare keeps in-flight sessions) — contract + tests, supervisor wiring is M8a (§9d/§11) | M6a,M7 | claude | ✅ |
 | M7d | `core/service/browser` (optional, datagram-layer; §3-ter): NetBIOS browser broken out of `service/smb` into a standalone service common to NetBEUI/IPX/NBT. Plugs into the NetBIOS `DatagramConsumer` seam; parses `\MAILSLOT\BROWSE` (HostAnnounce/Election/GetBackupList/DomainAnnounce/LocalMaster); maintains browse list + election role; SMB asks for the list via a read-only `BrowseList()` seam over IPC$ `\PIPE\LANMAN`. Optional (registry `init()`); SMB carries no browser logic. | M7 | | ⬜ |
 | M8 | Logging cutover + control front-ends (http, ubus) + config codecs (toml/uci) | M5,M7 | | ⬜ |
@@ -483,12 +483,32 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 >   publish-on-mutation + per-service Origin filtering would be unreachable code; recorded here so M8a
 >   picks it up. (The separate-host-path case — the common one, e.g. AFP `Music` and SMB `Docs` on
 >   different directories — needs no coordination at all: the shares cannot affect each other.)
+> - **M7e — SMB direct-hosted over IPX (this slice):** `core/service/smb/directipx.go` — the
+>   Microsoft "NWLink direct host" transport: SMB framed straight onto IPX socket `0x0550` (type-4
+>   PEP) with NO NetBIOS layer (contrast NBIPX on `0x0455`, which rides the NetBIOS session engine).
+>   It is **connectionless** — each IPX datagram carries one whole SMB message, so no reassembly — and
+>   drives the SAME transport-agnostic SMB `SessionConsumer` seam (`conn.go` `NewConn`/`ServeMessage`/
+>   `Close`) that NBF/NBIPX use; `*Service.NewDirectIPX(sender)` builds it. It keeps one `Conn`
+>   (smbSession) per remote IPX endpoint and a server-assigned **CID** ([MS-CIFS] §2.2.1.6.4) allocated
+>   on NEGOTIATE, stamped into the SMB header SecurityFeatures field of every response with the
+>   request's SequenceNumber mirrored; SMB_COM_ECHO multi-response (N datagrams, incrementing seq) is
+>   honoured. It reaches the IPX wire only through a local `DirectIPXSender` seam (the `core/router/ipx`
+>   mini-router's `Send` satisfies it structurally), so SMB never imports the mini-router — the same
+>   acyclicity discipline as the NetBIOS engines (`go list -deps ./core/router/ipx` carries no
+>   `service/smb`). The SMB `Service` now tracks transports it owns directly as a `circuitCloser` set,
+>   torn down on `Stop`. Re-home of legacy `service/smb/over_ipx_direct`, stripped of the netbios
+>   `SessionContext` coupling + `encoding/binary`. `directipx_test.go` drives NEGOTIATE→CID-allocation,
+>   circuit-shared-across-messages, ECHO multi-response, response-ingress-drop, non-SMB-drop, and
+>   Stop-closes-circuits over the **real** IPX mini-router with a recording port (compile-asserting
+>   `*DirectIPX` satisfies `ipxrouter.SocketHandler`). **This proves SMB-over-IPX both ways:** with
+>   NetBIOS (NBIPX `0x0455`) and without (direct `0x0550`). Compose registration on the mini-router is
+>   M8a (mirrors NBF/NBIPX — the engine is done; the wiring lands with the config layer).
 > - **Remaining M7 (deferred, not blocking M7 close):** the byte-range LOCKING_ANDX / MPX / raw-read-
 >   write SMB paths answer STATUS_NOT_SUPPORTED — left until a target client needs them (no identified
 >   client does). Legacy `service/{afp,smb,netbios}` deletion is strangler step 5 but is **blocked**:
 >   those packages are still imported by the live `internal/app` runtime (afp_enabled / smb_enabled /
 >   netbios_enabled hooks + asp/dsi), so deletion happens at the **M8/M8a compose cutover → M10**, not
->   in M7. TCP transports are M7a (`adapter/dsi`) / M7b (`adapter/smbtcp`).
+>   in M7. TCP transports are M7a (`adapter/dsi`) / M7b (`adapter/smbtcp`) / M7b2 (`adapter/netbios-tcp`).
 
 ---
 

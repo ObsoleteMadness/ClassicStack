@@ -21,12 +21,15 @@
 // NT/2000/XP open-or-create path (files and directories) over the same seam. The
 // remaining recognised commands (the byte-range locking/MPX/raw paths) answer
 // STATUS_NOT_SUPPORTED.
-// The dispatch is driven by the NetBIOS/transport seam: the SMB Service exposes
-// one virtual circuit per session through NewConn (conn.go), and the NetBIOS NBF
-// session engine reassembles each SMB message off the circuit and calls
-// Conn.ServeMessage (which wraps Dispatch over a per-circuit smbSession),
-// Conn.Close on teardown. The spine itself holds no transport knowledge, so it is
-// unit-tested directly over raw SMB frames.
+// The dispatch is driven by a transport-agnostic session seam: the SMB Service
+// exposes one virtual circuit per session through NewConn (conn.go), and a session
+// transport hands it each whole SMB message via Conn.ServeMessage (which wraps
+// Dispatch over a per-circuit smbSession), Conn.Close on teardown. Transports come
+// in two families and SMB does not distinguish them: NetBIOS-based (NBF/NBIPX/NBT
+// — the NetBIOS engines reassemble off the session circuit) and DIRECT/NetBIOS-less
+// (SMB direct-hosted over IPX socket 0x0550 — directipx.go, registered on the IPX
+// mini-router; direct-TCP :445 — an adapter). The spine itself holds no transport
+// knowledge, so it is unit-tested directly over raw SMB frames.
 //
 // Security posture: this is a compatibility server, not an authentication
 // server. SESSION_SETUP_ANDX grants a guest session without checking credentials
@@ -60,7 +63,14 @@ type Service struct {
 
 	mu      sync.Mutex
 	running bool
+	closers []circuitCloser // SMB-owned session transports (e.g. direct-IPX); torn down on Stop
 }
+
+// circuitCloser is the per-transport surface the SMB service holds for teardown:
+// a transport SMB owns directly (the direct-hosted-over-IPX transport, which is
+// not a NetBIOS transport and so is not torn down by the NetBIOS service) closes
+// its open circuits on Stop so no file handles leak. *DirectIPX satisfies it.
+type circuitCloser interface{ closeCircuits() }
 
 // New builds the SMB service with no shares (the registry default).
 func New(logger log.Logger) *Service {
@@ -189,15 +199,23 @@ func (s *Service) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop brings the service down. Safe after failed/partial Start (§3).
+// Stop brings the service down, tearing down any SMB-owned session transports
+// (the direct-IPX transport) so their open circuits release file handles. Safe
+// after failed/partial Start (§3).
 func (s *Service) Stop(ctx context.Context) error {
 	_ = ctx
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !s.running {
+		s.mu.Unlock()
 		return nil
 	}
 	s.running = false
+	closers := append([]circuitCloser(nil), s.closers...)
+	s.mu.Unlock()
+
+	for _, c := range closers {
+		c.closeCircuits()
+	}
 	s.logf("SMB service stopped")
 	return nil
 }
