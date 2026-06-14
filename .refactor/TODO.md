@@ -104,7 +104,7 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 | M7b2 | `adapter/netbios-tcp` (**NBT**, RFC 1001/1002: name udp137 / datagram udp138 / session tcp139) — TCP sibling of NBF/NBIPX; session half → NetBIOS `SessionConsumer`, datagram half → `DatagramConsumer`; adds NO SMB/browser code, only the wire transport; `//go:build nbt`; net only in adapter (§3-ter). Most vintage TCP clients use `:139`, not `:445`. | M7 | | ⬜ |
 | M7e | **SMB direct-hosted over IPX** (socket `0x0550`, "NWLink direct host") — a CORE transport (no `net`, no NetBIOS layer): connection-id framing on the IPX mini-router driving the SAME SMB `SessionConsumer` seam as NBF/NBIPX. Re-home from legacy `service/smb/over_ipx_direct`. Proves SMB runs over IPX both with NetBIOS (NBIPX, 0x0455) and without (direct, 0x0550). | M7 | claude | ✅ |
 | M7c | `core/share`: thin Share descriptor (Name/FS/Config/ReadOnly/Description/Permissions-stub) + `Manager` CRUD; AFP `Volume` & SMB `Share` hold the shared Share; both services implement `share.Manager` (add/update/remove; RemoveShare keeps in-flight sessions) — contract + tests, supervisor wiring is M8a (§9d/§11) | M6a,M7 | claude | ✅ |
-| M7d | `core/service/browser` (optional, datagram-layer; §3-ter): NetBIOS browser broken out of `service/smb` into a standalone service common to NetBEUI/IPX/NBT. Plugs into the NetBIOS `DatagramConsumer` seam; parses `\MAILSLOT\BROWSE` (HostAnnounce/Election/GetBackupList/DomainAnnounce/LocalMaster); maintains browse list + election role; SMB asks for the list via a read-only `BrowseList()` seam over IPC$ `\PIPE\LANMAN`. Optional (registry `init()`); SMB carries no browser logic. | M7 | | ⬜ |
+| M7d | `core/service/browser` (optional, datagram-layer; §3-ter): NetBIOS browser broken out of `service/smb` into a standalone service common to NetBEUI/IPX/NBT. Plugs into the NetBIOS `DatagramConsumer` seam; parses `\MAILSLOT\BROWSE` (HostAnnounce/Election/GetBackupList/DomainAnnounce/LocalMaster); maintains browse list + election role; SMB asks for the list via a read-only `BrowseList()` seam over IPC$ `\PIPE\LANMAN`. Optional (registry `init()`); SMB carries no browser logic. **The RAP `NetServerEnum2` IPC$ consumer that calls `BrowseList()` is the SMB side (a follow-on in `core/service/smb`).** | M7 | claude | ✅ |
 | M8 | Logging cutover + control front-ends (http, ubus) + config codecs (toml/uci) | M5,M7 | | ⬜ |
 | M8a | Share config + Manager wiring: AFP/SMB volume `core/config` sections + `config → []fs.ShareSpec` mapper (options→Extra) in the registry factories; supervisor `Reconfigure` for an AFP/SMB section drives `share.Manager` Add/Update/Remove; `ParamsFor`-generated per-fs_type form masks `secret` params (§9d/§11). **Plus server identity (§4-bis):** top-level `config.Identity{Hostname,Workgroup}` (one source of truth, owned by NO service — SMB needs the hostname even with NetBIOS absent, e.g. direct-TCP `:445` / AFP-only); registry hands one `Hostname` to whichever consumers are enabled — SMB (`SetServerName`, advertised in NEGOTIATE), NetBIOS *if enabled*, browser *if linked*; no per-service hostname field so they cannot diverge; `Validate` backstops any externally-surfaced second name; the NetBIOS ≤15-byte/upper-case rule applies only when NetBIOS is enabled; `Hostname` change is restart-grade. | M7c,M8 | | ⬜ |
 | M9 | Platform integration (Windows svc / launchd / systemd / procd) | M8 | | ⬜ |
@@ -503,6 +503,30 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 >   `*DirectIPX` satisfies `ipxrouter.SocketHandler`). **This proves SMB-over-IPX both ways:** with
 >   NetBIOS (NBIPX `0x0455`) and without (direct `0x0550`). Compose registration on the mini-router is
 >   M8a (mirrors NBF/NBIPX — the engine is done; the wiring lands with the config layer).
+> - **M7d — NetBIOS browser service (this slice):** the browser is broken out of legacy
+>   `service/smb` into a standalone datagram-layer service (§3-ter), common to all NetBIOS
+>   transports. Two new core packages: **`core/protocol/browser`** — the [MS-BRWS] wire codec as
+>   self-serialising DTOs (rule #10): `MailslotTransaction` (the SMB_COM_TRANSACTION `\MAILSLOT\BROWSE`
+>   envelope), `Announcement` (host/local-master), `DomainAnnouncement`, `Election` (+ `Compare`, the
+>   criteria→uptime→lower-name ordering), `GetBackupListRequest`/`Response`, `AnnouncementRequest`,
+>   plus `UnwrapPayload` (tolerates the Win9x 2-byte preamble) — reflection-free, `bp`-based,
+>   round-trip tested. **`core/service/browser`** — the command core: a `component.Component` that
+>   IS the NetBIOS `DatagramConsumer`; `HandleDatagram` unwraps the mailslot, drops self-sourced
+>   loop-backs (the storm guard), records observed servers (browse list) + machine-group masters,
+>   answers AnnouncementRequest, runs the election (lose→potential+silent; win→transmit loop→after
+>   3 uncontested retransmits become local master + emit a local-master announcement), and answers
+>   GetBackupList ONLY as local master (token echoed, sourced from our `<1D>` name). Exposes the
+>   read-only `BrowseList()` / `BackupList()` query API SMB's IPC$ `\PIPE\LANMAN` `NetServerEnum2`
+>   consumes. Election timers are injectable (`electionDelay`/`now`) so the machine is race-tested
+>   without real-time sleeps. **Outbound seam added to `core/service/netbios`:** `Service.SendDatagram`
+>   fans a `Datagram` to every transport's `datagramEgress`; the NBF engine emits a
+>   `CmdDatagram[Broadcast]` UI frame — the outbound mirror of `DatagramConsumer`. The browser imports
+>   `core/service/netbios` only for the two seam types; `go list -deps ./core/service/netbios` carries
+>   no `service/browser` (acyclic). cs-tinygo blank-imports both new packages. archtest green (the new
+>   core packages are reflection/net/binary-clean). NBIPX datagram-egress (NMPI mailslot send) is a
+>   follow-on — the NBF egress is the primary browser transport. The SMB-side IPC$ `NetServerEnum2`
+>   consumer that calls `BrowseList()` is a `core/service/smb` follow-on (re-home of legacy
+>   `command_rap_lanman.go`).
 > - **Remaining M7 (deferred, not blocking M7 close):** the byte-range LOCKING_ANDX / MPX / raw-read-
 >   write SMB paths answer STATUS_NOT_SUPPORTED — left until a target client needs them (no identified
 >   client does). Legacy `service/{afp,smb,netbios}` deletion is strangler step 5 but is **blocked**:

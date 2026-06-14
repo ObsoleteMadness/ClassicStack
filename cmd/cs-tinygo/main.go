@@ -43,10 +43,12 @@ import (
 	_ "github.com/ObsoleteMadness/ClassicStack/core/service/nbp"
 
 	// M7: the file services (AFP/SMB command engines over the §9 fs seam + the
-	// NetBIOS NBF and NBIPX session engines that carry SMB over NetBEUI and IPX)
-	// must stay TinyGo-clean so an embedded build can serve files over the legacy
-	// protocols.
+	// NetBIOS NBF and NBIPX session engines that carry SMB over NetBEUI and IPX +
+	// the datagram-layer browser service) must stay TinyGo-clean so an embedded
+	// build can serve files and browse over the legacy protocols.
+	_ "github.com/ObsoleteMadness/ClassicStack/core/protocol/browser"
 	_ "github.com/ObsoleteMadness/ClassicStack/core/service/afp"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/service/browser"
 	_ "github.com/ObsoleteMadness/ClassicStack/core/service/netbios"
 	_ "github.com/ObsoleteMadness/ClassicStack/core/service/smb"
 

@@ -116,6 +116,7 @@ func (s *Service) NewNBFEngine(sender FrameSender) *Engine {
 	eng := &Engine{e: newSessionEngine(s.logger, sender, s.sessionConsumer, s.datagramConsumer, s.localNames)}
 	s.mu.Lock()
 	s.closers = append(s.closers, eng)
+	s.egresses = append(s.egresses, eng)
 	s.mu.Unlock()
 	return eng
 }
@@ -140,6 +141,10 @@ func (g *Engine) HandleSessionFrame(srcMAC, dstMAC [6]byte, frame *frameType) {
 
 // closeCircuits tears down every open circuit (called from Stop).
 func (g *Engine) closeCircuits() { g.e.closeAll() }
+
+// emitDatagram implements datagramEgress: send a connectionless NetBIOS datagram
+// (the browser's HostAnnounce / election / backup-list traffic) as an NBF UI frame.
+func (g *Engine) emitDatagram(d Datagram) error { return g.e.emitDatagram(d) }
 
 // NewIPXEngine builds the NBIPX (NetBIOS-over-IPX) session state machine bound to
 // sender (the core/router/ipx mini-router, which it sends replies through).

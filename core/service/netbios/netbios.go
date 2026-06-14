@@ -31,7 +31,10 @@
 // connectionless datagram (mailslot / browser traffic), routed to the optional
 // DatagramConsumer (SetDatagramConsumer) — a browser/mailslot service plugs in
 // there without touching the transport; until one does, datagrams drop after
-// decode.
+// decode. The OUTBOUND mirror is SendDatagram: the service fans a connectionless
+// NetBIOS datagram (names + payload) to every attached transport's datagramEgress
+// (the NBF engine emits a CmdDatagram[Broadcast] UI frame), so the browser sends
+// its HostAnnounce / election / backup-list traffic over one seam, transport-blind.
 package netbios
 
 import (
@@ -145,12 +148,41 @@ type Service struct {
 	consumer      SessionConsumer  // upper-layer session sink (SMB); set by compose
 	dgramConsumer DatagramConsumer // connectionless datagram sink (browser/mailslot); set by compose
 	closers       []circuitCloser  // NBF/NBIPX session engines, one per transport; torn down on Stop
+	egresses      []datagramEgress // per-transport outbound-datagram emitters (browser sends fan to these)
 }
 
 // circuitCloser is the per-transport session engine surface the service holds for
 // teardown: every NBF/NBIPX engine closes its open circuits on Stop so no
 // upper-layer (SMB) handles leak. Both *Engine and *IPXEngine satisfy it.
 type circuitCloser interface{ closeCircuits() }
+
+// datagramEgress is the per-transport outbound-datagram emitter: send one decoded
+// NetBIOS datagram (names + payload) on this transport's wire. The browser's
+// SendDatagram fans to every registered egress so one browser serves NetBEUI/IPX
+// at once. The NBF engine satisfies it (a CmdDatagram[Broadcast] UI frame). It is
+// the outbound mirror of DatagramConsumer (the inbound seam).
+type datagramEgress interface {
+	emitDatagram(d Datagram) error
+}
+
+// SendDatagram emits a connectionless NetBIOS datagram on every attached transport
+// that can carry one (the browser uses this for HostAnnounce / election / backup-
+// list traffic). A directed reply (Datagram.Broadcast false) and a group broadcast
+// (true) are distinguished by the transports. With no egress attached the datagram
+// is dropped. Errors from individual transports are collected but do not stop the
+// fan-out — a failing transport must not silence the others.
+func (s *Service) SendDatagram(d Datagram) error {
+	s.mu.Lock()
+	egresses := append([]datagramEgress(nil), s.egresses...)
+	s.mu.Unlock()
+	var firstErr error
+	for _, e := range egresses {
+		if err := e.emitDatagram(d); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
 
 // New builds a NetBIOS service with no transports and no server name (the
 // registry default). Transports attach later via AddTransport.

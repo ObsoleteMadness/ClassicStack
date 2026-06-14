@@ -333,6 +333,27 @@ func (e *sessionEngine) closeAll() {
 	}
 }
 
+// emitDatagram sends a connectionless NetBIOS datagram (a browser HostAnnounce /
+// election / backup-list frame) as an NBF UI frame carrying the source/destination
+// NetBIOS names and the payload. Both directed and broadcast browser datagrams go
+// to the NetBIOS multicast MAC: a directed reply names its destination so the
+// receiving node's mini-router dispatches it by name, while the engine has no
+// name→MAC binding for an out-of-band send. CmdDatagramBroadcast marks a group
+// broadcast, CmdDatagram a directed (named) datagram.
+func (e *sessionEngine) emitDatagram(d Datagram) error {
+	if e.sender == nil {
+		return nil
+	}
+	cmd := nbf.CmdDatagram
+	if d.Broadcast {
+		cmd = nbf.CmdDatagramBroadcast
+	}
+	frame := &nbf.Frame{Command: cmd, Payload: d.Payload}
+	frame.DestinationName = [16]byte(d.Destination)
+	frame.SourceName = [16]byte(d.Source)
+	return e.sender.SendBroadcast(frame)
+}
+
 // send writes a directed NBF frame through the sender, logging a send error at
 // warn. A nil sender (engine not wired to a router) drops the frame.
 func (e *sessionEngine) send(dstMAC [6]byte, frame *nbf.Frame, reason string) {

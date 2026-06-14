@@ -1,0 +1,242 @@
+// Package browser is the NetBIOS browser service (datagram-layer, §3-ter): the
+// master-browser-election + host/domain announcement + browse-list machine that
+// SMB clients use to populate Network Neighborhood. It is NOT part of SMB — it is
+// a connectionless DATAGRAM service common to every NetBIOS transport (NetBEUI,
+// IPX, NBT). It plugs into the NetBIOS service as its DatagramConsumer (the inbound
+// seam) and sends its own announcements/elections out through the NetBIOS
+// SendDatagram egress (the outbound seam); it imports core/service/netbios only for
+// those two seam types, and core/protocol/browser for the wire frames.
+//
+// The one place the browser meets the SESSION layer is the RAP/LANMAN
+// NetServerEnum2 "get server list" call, which arrives over the SMB IPC$ pipe:
+// SMB asks the browser for the current list via the read-only BrowseList() /
+// BackupList() query API here; SMB holds no browser logic and the browser holds no
+// SMB logic.
+//
+// Ring: CORE (stdlib only, reflection-free). Timers are injectable so the election
+// machine is unit-testable without real-time sleeps.
+package browser
+
+import (
+	"context"
+	"sync"
+	"time"
+
+	"github.com/ObsoleteMadness/ClassicStack/core/component"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
+	proto "github.com/ObsoleteMadness/ClassicStack/core/protocol/browser"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/netbios"
+)
+
+// Name is the component name for the browser service.
+const Name = "Browser"
+
+// hostAnnouncePeriod is how often the service re-announces itself.
+const hostAnnouncePeriod = 2 * time.Minute
+
+// Role is the browser's current standing in the workgroup ([MS-BRWS]).
+type Role uint8
+
+const (
+	RolePotential   Role = iota // not (yet) a browser
+	RoleBackup                  // a backup browser
+	RoleLocalMaster             // won the election, owns the browse list
+)
+
+// DatagramSink is the outbound seam the browser sends through: emit a
+// connectionless NetBIOS datagram on every transport. The NetBIOS service's
+// SendDatagram satisfies it structurally, so the browser never imports the
+// concrete service for sending.
+type DatagramSink interface {
+	SendDatagram(d netbios.Datagram) error
+}
+
+// serverRecord is one observed browser/server: its advertised type bits and when
+// it was last seen (for ageing, future).
+type serverRecord struct {
+	serverType uint32
+	lastSeen   time.Time
+}
+
+// Service is the browser command core. It records the servers it has observed
+// (browse list), maintains its election role, and answers GetBackupList. It is the
+// NetBIOS DatagramConsumer; compose installs it via netbios.SetDatagramConsumer and
+// hands it the SendDatagram sink.
+type Service struct {
+	logger    log.Logger
+	sink      DatagramSink
+	server    string // our server name (the identity, §4-bis)
+	workgroup string
+
+	mu            sync.Mutex
+	running       bool
+	role          Role
+	started       time.Time
+	servers       map[string]serverRecord // browse list, keyed by normalised name
+	machineGroups map[string]string       // workgroup → local master name
+
+	// election timing, injectable for tests.
+	electionDelay func(Role) time.Duration
+	now           func() time.Time
+
+	cancel    context.CancelFunc
+	electGen  uint64
+	announceC chan struct{}
+}
+
+// New builds a browser service for the given server identity + workgroup, sending
+// through sink. server/workgroup come from the shared config.Identity (§4-bis); an
+// empty server defaults to CLASSICSTACK, empty workgroup to WORKGROUP.
+func New(logger log.Logger, sink DatagramSink, server, workgroup string) *Service {
+	if server == "" {
+		server = "CLASSICSTACK"
+	}
+	if workgroup == "" {
+		workgroup = "WORKGROUP"
+	}
+	return &Service{
+		logger:        logger,
+		sink:          sink,
+		server:        proto.NormalizeName(server),
+		workgroup:     proto.NormalizeName(workgroup),
+		role:          RolePotential,
+		servers:       make(map[string]serverRecord),
+		machineGroups: make(map[string]string),
+		electionDelay: defaultElectionDelay,
+		now:           time.Now,
+	}
+}
+
+// Name returns the component name.
+func (s *Service) Name() string { return Name }
+
+// Start brings the browser up: record the start time (election uptime) and emit a
+// first host announcement, then a periodic announce loop. Idempotent (§3).
+func (s *Service) Start(ctx context.Context) error {
+	s.mu.Lock()
+	if s.running {
+		s.mu.Unlock()
+		return nil
+	}
+	s.running = true
+	s.started = s.now()
+	s.announceC = make(chan struct{})
+	announceC := s.announceC
+	s.mu.Unlock()
+
+	s.sendHostAnnouncement()
+	go s.announceLoop(ctx, announceC)
+	s.logf("browser started")
+	return nil
+}
+
+// Stop brings the browser down, cancelling any election loop and the announce
+// loop. Safe after a partial Start (§3).
+func (s *Service) Stop(ctx context.Context) error {
+	_ = ctx
+	s.mu.Lock()
+	if !s.running {
+		s.mu.Unlock()
+		return nil
+	}
+	s.running = false
+	cancel := s.cancel
+	s.cancel = nil
+	if s.announceC != nil {
+		close(s.announceC)
+		s.announceC = nil
+	}
+	s.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	s.logf("browser stopped")
+	return nil
+}
+
+// announceLoop re-emits a host announcement every hostAnnouncePeriod until Stop.
+func (s *Service) announceLoop(ctx context.Context, done chan struct{}) {
+	t := time.NewTicker(hostAnnouncePeriod)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case <-t.C:
+			s.sendHostAnnouncement()
+		}
+	}
+}
+
+// --- query API (the read-only seam SMB's IPC$ \PIPE\LANMAN NetServerEnum2 uses) ---
+
+// BrowseList returns the names of every server the browser has observed (plus
+// ourselves), for the RAP NetServerEnum2 "get server list" SMB serves over IPC$.
+func (s *Service) BrowseList() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.servers)+1)
+	out = append(out, s.server)
+	for name := range s.servers {
+		if name != s.server {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// BackupList returns ourselves plus every observed backup browser, for a
+// GetBackupList response. Self is always first (a master browser is its own first
+// backup, matching the legacy/Windows behaviour).
+func (s *Service) BackupList() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []string{s.server}
+	for name, rec := range s.servers {
+		if name == s.server {
+			continue
+		}
+		if rec.serverType&proto.ServerTypeBackupBrowser != 0 {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// CurrentRole reports the browser's election standing, for diagnostics/tests.
+func (s *Service) CurrentRole() Role {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.role
+}
+
+// logf emits one info line through the logger if configured.
+func (s *Service) logf(msg string) {
+	if s.logger == nil || !s.logger.Enabled(log.Info) {
+		return
+	}
+	s.logger.Log1(log.Info, msg, log.Str("scope", Name))
+}
+
+// defaultElectionDelay is the per-role backoff before (re)transmitting an election
+// frame ([MS-BRWS] §3.3): a current master responds fastest, a potential browser
+// slowest, so the rightful winner usually transmits first.
+func defaultElectionDelay(role Role) time.Duration {
+	switch role {
+	case RoleLocalMaster:
+		return 100 * time.Millisecond
+	case RoleBackup:
+		return 200 * time.Millisecond
+	default:
+		return 400 * time.Millisecond
+	}
+}
+
+// compile-time assertions: the service is a Component and the NetBIOS datagram sink.
+var (
+	_ component.Component      = (*Service)(nil)
+	_ netbios.DatagramConsumer = (*Service)(nil)
+)
