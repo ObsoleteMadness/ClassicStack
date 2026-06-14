@@ -384,26 +384,30 @@ design breaks that out.
 
 The browser is the **datagram analogue of the §3-bis command-core/session-transport split**.
 NetBIOS runs over three transports — NetBEUI (NBF), IPX (NBIPX/NMPI), and TCP (NBT, UDP 138) —
-and each carries *both* a session path (SMB rides it) *and* a connectionless datagram path
-(the browser rides it). So:
+and each carries *both* a session path (SMB rides it) *and* a connectionless datagram path. But
+the browser does **not** sit directly on the raw datagram path: a **mailslot layer** (§3-quater)
+sits between, because the browser, the messenger (`net send`), and the LANMAN RAP calls are all
+**mailslot** consumers, and the `\MAILSLOT\*` SMB_COM_TRANSACTION envelope is a shared framing
+none of them should re-implement. So:
 
 ```
- NBF datagram   ─┐                                   ┌─ HostAnnounce / DomainAnnounce
- NBIPX mailslot  ├─ DatagramConsumer seam ─► browser ┤─ election state machine
- NBT  UDP-138   ─┘   (one decoded Datagram)  command  └─ browse list  ─► RAP NetServerEnum2
-                                              core         (served back over the SMB pipe)
+ NBF datagram   ─┐                  ┌─ \MAILSLOT\BROWSE ─► browser  (HostAnnounce/Election/…)
+ NBIPX mailslot  ├─ DatagramConsumer ┤─ \MAILSLOT\MESSNGR ─► messenger (net send; future)
+ NBT  UDP-138   ─┘  (netbios.Datagram)│  mailslot router   └─ \MAILSLOT\LANMAN ─► (RAP datagram form)
+                                      └─ unwraps the SMB_COM_TRANSACTION \MAILSLOT\* envelope,
+                                         routes the INNER frame by mailslot name to the consumer
 ```
 
-- The browser is a **`core/service/browser`** command core that holds no transport knowledge.
-  It plugs into the NetBIOS service as the **`DatagramConsumer`** (`SetDatagramConsumer`, the
-  datagram analogue of `SessionConsumer`) — a seam that already exists. Each transport decodes
-  its wire datagram to a neutral `netbios.Datagram` (source/destination name + payload +
-  broadcast flag) and hands it up; the browser parses the `\MAILSLOT\BROWSE` opcode
-  (HostAnnounce 0x01 / AnnouncementReq 0x02 / RequestElection 0x08 / GetBackupList 0x09/0x0A /
-  DomainAnnounce 0x0C / LocalMasterAnnounce 0x0F) and maintains the browse list + election role
-  (potential/backup/local-master). It sends its own announcements *out* through the same
-  NetBIOS datagram egress (a `SendDatagram` seam the transports satisfy), so one browser serves
-  NetBEUI, IPX and TCP at once with no per-transport browser code.
+- The browser is a **`core/service/browser`** command core that holds **neither transport nor
+  mailslot-envelope knowledge**. It registers with the mailslot layer for `\MAILSLOT\BROWSE` and
+  only ever sees/sends a bare **browser frame** (HostAnnounce 0x01 / AnnouncementReq 0x02 /
+  RequestElection 0x08 / GetBackupList 0x09/0x0A / DomainAnnounce 0x0C / LocalMasterAnnounce
+  0x0F); the mailslot layer wraps/unwraps the SMB_COM_TRANSACTION envelope, and the NetBIOS
+  transports do the per-protocol wire framing (NBF UI-frame / NBIPX NMPI-MailslotSend / NBT
+  UDP-138). The browser maintains the browse list + election role (potential/backup/local-master)
+  and sends its announcements through the mailslot layer, so **one browser serves NetBEUI, IPX
+  and TCP with no per-transport AND no mailslot-framing code** — those differences live one and
+  two layers below it respectively.
 - The **RAP/LANMAN `NetServerEnum2` ("get server list")** that returns the browse list to a
   client arrives over the SMB **IPC$ named pipe** (`\PIPE\LANMAN`), i.e. on the *session* path.
   SMB therefore needs a thin seam to *ask the browser* for the current list — a small
@@ -415,8 +419,55 @@ and each carries *both* a session path (SMB rides it) *and* a connectionless dat
   after decode, as today). Elections/announcements are also configurable off (be a non-browser
   host that still announces itself, or announce nothing).
 
-The payoff is the same as everywhere else: **one browser command core, three transports, zero
-duplication** — and SMB stops carrying browser code it never should have owned.
+The payoff is the same as everywhere else: **one browser command core, three transports, one
+mailslot layer, zero duplication** — and SMB stops carrying browser code it never should have
+owned.
+
+### 3-quater. The mailslot seam — a shared datagram-delivery layer, not SMB's
+
+Mailslots (`\MAILSLOT\*`) are a general **second-class NetBIOS datagram delivery** mechanism
+(connectionless, unreliable, one-way): a write to a named mailslot is carried in an
+SMB_COM_TRANSACTION over a NetBIOS group/unique-name datagram. They are **not** owned by SMB and
+**not** owned by any single consumer — several services receive on different mailslot names:
+
+- `\MAILSLOT\BROWSE` — the browser (host/domain announcements, elections, GetBackupList).
+- `\MAILSLOT\LANMAN` — the RAP datagram form (older browse traffic).
+- `\MAILSLOT\MESSNGR` — the **messenger** service (`net send` / WinPopup), a likely future
+  consumer; the user has flagged wanting it.
+- (room for more — e.g. a DirectPlay-emulation consumer later.)
+
+So the mailslot envelope is its **own seam**, sitting between the consumers and the NetBIOS
+datagram path — exactly the "no per-protocol code in the consumer" rule applied one layer up:
+
+```go
+// core/protocol/mailslot — the SMB_COM_TRANSACTION \MAILSLOT\* envelope codec (the wrapper
+// the browser used to marshal itself, lifted out). Self-serialising (DTO rule):
+type Write struct { Name string; Body []byte; ... }   // Marshal / Unmarshal
+
+// core/service/mailslot (or a router on the NetBIOS service) — the dispatch layer:
+type Consumer interface { HandleMailslot(name string, src, dest Name, body []byte) }
+//   Register(name string, c Consumer)                  // "\MAILSLOT\BROWSE" → browser
+//   SendMailslot(name string, src, dest Name, body []byte, broadcast bool) error
+```
+
+- The mailslot layer is the thing that plugs into NetBIOS as the **`DatagramConsumer`** /
+  `SendDatagram` user. It unwraps the `\MAILSLOT\*` envelope from an inbound `netbios.Datagram`,
+  routes the **inner frame** to the consumer registered for that mailslot name, and on send wraps
+  a consumer's frame back into the envelope and hands it to NetBIOS (which does the per-transport
+  framing). Consumers (browser, messenger) never touch the envelope or any transport.
+- **Layering, top to bottom:** consumer frame (browser/messenger) → mailslot envelope
+  (`\MAILSLOT\*` SMB_COM_TRANSACTION) → NetBIOS datagram (names + payload) → per-transport wire
+  framing (NBF UI-frame / NBIPX NMPI-MailslotSend / NBT UDP-138). Each layer owns exactly one
+  concern; nothing reaches around another.
+- It is **optional and lazy**: with no mailslot consumers registered, inbound mailslot datagrams
+  drop after decode. A build that wants only file serving links neither the mailslot layer nor
+  the browser.
+
+This is the corrected home for the SMB_COM_TRANSACTION mailslot wrapper that an earlier browser
+slice put inside `core/protocol/browser` — it is lifted into `core/protocol/mailslot` and the
+browser is reworked to handle only browser frames. The RAP NetServerEnum2/NetShareEnum calls that
+arrive over the **SMB IPC$ session pipe** (`\PIPE\LANMAN`, not a mailslot) stay where they are
+(§3-ter); they are the session-path query, distinct from the datagram-path mailslot announcements.
 
 ### Router membership becomes event-driven (user point on dynamism)
 
@@ -1531,7 +1582,9 @@ net-backed link), never in core.
 
 ```
 core/
-  protocol/   ddp atp asp pap nbp  ipx  netbeui  smb  netbios   (pure codecs + clients)
+  protocol/   ddp atp asp pap nbp  ipx  netbeui  smb  netbios  mailslot  browser  (pure codecs)
+              (mailslot = the \MAILSLOT\* SMB_COM_TRANSACTION envelope, §3-quater; browser = the
+              [MS-BRWS] frames, NO mailslot envelope)
   link/       FrameLink + DatagramLink (two altitudes), sentinels, in-memory link,
               decorators (filter/dedup/capture/bridge — frame altitude only)
   link/       FrameLink + DatagramLink interfaces; `framing` (FrameLink→DatagramLink,
@@ -1541,11 +1594,14 @@ core/
   port/       ethertalk ipx netbeui localtalk  (Component + frame codec; AARP/node-claim
               live in the framing adapter, so a kernel DatagramLink omits them)
   router/     appletalk router + tables + ZIP; ipx mini-router; netbeui
-  service/    afp(+asp transport) smb netbios(+nbf/nbipx session transports) browser macip
+  service/    afp(+asp transport) smb netbios(+nbf/nbipx session transports) mailslot browser
+              messenger(future) macip
               (Component + protocol logic; consume DatagramLink; talk ONLY to fs/share/metastore
               for storage. Each file service is a PURE command core + a CommandHandler seam — NO
-              net here. DSI/SMB-TCP transports are adapters, §3-bis. browser is the datagram-layer
-              service over the NetBIOS DatagramConsumer seam, common to NBF/IPX/NBT, §3-ter)
+              net here. DSI/SMB-TCP transports are adapters, §3-bis. mailslot is the shared
+              \MAILSLOT\* dispatch layer over the NetBIOS DatagramConsumer seam (§3-quater);
+              browser + messenger are mailslot consumers that hold NO transport AND NO mailslot-
+              envelope code, common to NBF/IPX/NBT, §3-ter)
   fs/         FileSystem + ForkFS/ForkEngine + NameEngine + FilenameCodec interfaces,
               Factory registry + per-fs_type Param schema (the one seam AFP+SMB consume) + FS-domain event bus
   share/      thin share descriptor (Name/FS/Config/ReadOnly/Description/Permissions) + Manager
