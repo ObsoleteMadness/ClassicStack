@@ -20,6 +20,7 @@ It bridges legacy Apple networking protocols to modern environments, supporting 
 7. If code is from 3rd parties, **Always** attribute it to the original authors. 
 8. Check for linting errors before committing.
 9. Run gofmt before commiting.
+10. Use DTOs for protocol level representations. Ie rather than manipulating bytes in protocol function calls, each struct should be self serialising/deserialising.  Eg a `processRequest(data []byte)` method should call request.Unmarshal(data []byte) rather than attempt to decode the request in the function body. 
 
 
 ## Commands
