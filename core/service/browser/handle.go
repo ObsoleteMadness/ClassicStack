@@ -6,28 +6,27 @@ import (
 	"time"
 
 	proto "github.com/ObsoleteMadness/ClassicStack/core/protocol/browser"
+	mswire "github.com/ObsoleteMadness/ClassicStack/core/protocol/mailslot"
 	nbproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbios"
-	"github.com/ObsoleteMadness/ClassicStack/core/service/netbios"
 )
 
-// handle.go is the inbound datagram dispatch + the announcement/election emitters.
-// HandleDatagram is the NetBIOS DatagramConsumer entry point: it unwraps the
-// mailslot transaction, decodes the browser opcode, updates the browse list, and
-// (for elections / GetBackupList) emits a response through the SendDatagram sink.
+// handle.go is the inbound mailslot dispatch + the announcement/election emitters.
+// HandleMailslot is the mailslot.Consumer entry point (registered for
+// \MAILSLOT\BROWSE): the mailslot layer has already unwrapped the SMB_COM_TRANSACTION
+// envelope, so the browser receives the bare browser frame body. It decodes the
+// browser opcode, updates the browse list, and (for elections / GetBackupList) emits
+// a response through the MailslotSink. No mailslot-envelope code here.
 
-// HandleDatagram implements netbios.DatagramConsumer: one connectionless NetBIOS
-// datagram. Browser frames are sent to group names the local stack also subscribes
-// to, so our own broadcasts come back to us — drop self-sourced datagrams to avoid
-// an election/announce storm (the loop observed in the legacy captures).
-func (s *Service) HandleDatagram(d netbios.Datagram) {
-	if s.isSelfSourced(d) {
+// HandleMailslot implements mailslot.Consumer: one browser frame body delivered on
+// \MAILSLOT\BROWSE, with the source/destination NetBIOS names. Browser frames are
+// sent to group names the local stack also subscribes to, so our own broadcasts come
+// back to us — drop self-sourced frames to avoid an election/announce storm (the
+// loop observed in the legacy captures).
+func (s *Service) HandleMailslot(name string, src, dest nbproto.Name, body []byte) {
+	if s.isSelfSourced(src) {
 		return
 	}
-	tx, err := proto.UnmarshalMailslotTransaction(d.Payload)
-	if err != nil || len(tx.Payload) == 0 {
-		return
-	}
-	op, frame, ok := proto.UnwrapPayload(tx.Payload)
+	op, frame, ok := proto.UnwrapPayload(body)
 	if !ok {
 		return
 	}
@@ -41,20 +40,20 @@ func (s *Service) HandleDatagram(d netbios.Datagram) {
 	case proto.OpAnnouncementRequest:
 		s.sendHostAnnouncement()
 	case proto.OpGetBackupListReq:
-		s.handleGetBackupList(frame, d)
+		s.handleGetBackupList(frame, src)
 	case proto.OpRequestElection:
 		s.handleElection(frame)
 	}
 }
 
-// isSelfSourced reports whether a datagram came from our own name or workgroup, so
-// our looped-back broadcasts are ignored.
-func (s *Service) isSelfSourced(d netbios.Datagram) bool {
-	src := strings.ToUpper(strings.TrimSpace(d.Source.String()))
-	if src == "" {
+// isSelfSourced reports whether a frame came from our own name or workgroup, so our
+// looped-back broadcasts are ignored.
+func (s *Service) isSelfSourced(src nbproto.Name) bool {
+	name := strings.ToUpper(strings.TrimSpace(src.String()))
+	if name == "" {
 		return false
 	}
-	return src == s.server || src == s.workgroup
+	return name == s.server || name == s.workgroup
 }
 
 // observeAnnouncement records a host or local-master announcement in the browse
@@ -90,8 +89,9 @@ func (s *Service) observeDomain(frame []byte) {
 
 // handleGetBackupList answers a GetBackupList request, but only while we are the
 // local master (only the master owns the authoritative backup list). The response
-// echoes the request token and is sourced from our <1D> master-browser name.
-func (s *Service) handleGetBackupList(frame []byte, d netbios.Datagram) {
+// echoes the request token, is sourced from our <1D> master-browser name, and is
+// directed back to the requester (not a broadcast).
+func (s *Service) handleGetBackupList(frame []byte, requester nbproto.Name) {
 	s.mu.Lock()
 	role := s.role
 	s.mu.Unlock()
@@ -102,16 +102,17 @@ func (s *Service) handleGetBackupList(frame []byte, d netbios.Datagram) {
 	if err != nil {
 		return
 	}
-	payload := proto.GetBackupListResponse{
+	body := proto.GetBackupListResponse{
 		Token:         req.Token,
 		BackupServers: s.BackupList(),
 	}.Marshal()
-	tx := proto.MailslotTransaction{MailslotName: proto.MailslotBrowse, Payload: payload}.Marshal()
-	_ = s.sink.SendDatagram(netbios.Datagram{
-		Source:      nbproto.NewName(s.server, proto.NameTypeMasterBrowser),
-		Destination: d.Source,
-		Payload:     tx,
-	})
+	_ = s.sink.SendMailslot(
+		mswire.NameBrowse,
+		nbproto.NewName(s.server, proto.NameTypeMasterBrowser),
+		requester,
+		body,
+		false,
+	)
 }
 
 // handleElection runs the election decision ([MS-BRWS] §3.3): compare the
@@ -230,12 +231,13 @@ func (s *Service) sendLocalMasterAnnouncement() {
 	s.emitAnnouncement(proto.OpLocalMasterAnnounce)
 }
 
-// emitAnnouncement broadcasts a host or local-master announcement for our identity.
+// emitAnnouncement broadcasts a host or local-master announcement for our identity
+// to the workgroup master-browser group name.
 func (s *Service) emitAnnouncement(op uint8) {
 	if s.sink == nil {
 		return
 	}
-	payload := proto.Announcement{
+	body := proto.Announcement{
 		Op:             op,
 		UpdateCount:    0,
 		PeriodicityMS:  uint32(hostAnnouncePeriod / time.Millisecond),
@@ -245,13 +247,7 @@ func (s *Service) emitAnnouncement(op uint8) {
 		VersionMajor:   proto.AnnounceVersionMajor,
 		VersionMinor:   proto.AnnounceVersionMinor,
 	}.Marshal()
-	tx := proto.MailslotTransaction{MailslotName: proto.MailslotBrowse, Payload: payload}.Marshal()
-	_ = s.sink.SendDatagram(netbios.Datagram{
-		Source:      nbproto.NewName(s.server, nbproto.NameTypeWorkstation),
-		Destination: nbproto.NewName(s.workgroup, proto.NameTypeMasterBrowser),
-		Payload:     tx,
-		Broadcast:   true,
-	})
+	_ = s.sendBrowseBroadcast(body)
 }
 
 // emitElection broadcasts an election frame for the given candidacy.
@@ -259,11 +255,17 @@ func (s *Service) emitElection(local proto.Election) error {
 	if s.sink == nil {
 		return nil
 	}
-	tx := proto.MailslotTransaction{MailslotName: proto.MailslotBrowse, Payload: local.Marshal()}.Marshal()
-	return s.sink.SendDatagram(netbios.Datagram{
-		Source:      nbproto.NewName(s.server, nbproto.NameTypeWorkstation),
-		Destination: nbproto.NewName(s.workgroup, proto.NameTypeMasterBrowser),
-		Payload:     tx,
-		Broadcast:   true,
-	})
+	return s.sendBrowseBroadcast(local.Marshal())
+}
+
+// sendBrowseBroadcast writes body to \MAILSLOT\BROWSE, sourced from our workstation
+// name to the workgroup<1D> master-browser group name, as a broadcast.
+func (s *Service) sendBrowseBroadcast(body []byte) error {
+	return s.sink.SendMailslot(
+		mswire.NameBrowse,
+		nbproto.NewName(s.server, nbproto.NameTypeWorkstation),
+		nbproto.NewName(s.workgroup, proto.NameTypeMasterBrowser),
+		body,
+		true,
+	)
 }

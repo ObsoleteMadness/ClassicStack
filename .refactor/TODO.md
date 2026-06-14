@@ -105,7 +105,7 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 | M7e | **SMB direct-hosted over IPX** (socket `0x0550`, "NWLink direct host") — a CORE transport (no `net`, no NetBIOS layer): connection-id framing on the IPX mini-router driving the SAME SMB `SessionConsumer` seam as NBF/NBIPX. Re-home from legacy `service/smb/over_ipx_direct`. Proves SMB runs over IPX both with NetBIOS (NBIPX, 0x0455) and without (direct, 0x0550). | M7 | claude | ✅ |
 | M7c | `core/share`: thin Share descriptor (Name/FS/Config/ReadOnly/Description/Permissions-stub) + `Manager` CRUD; AFP `Volume` & SMB `Share` hold the shared Share; both services implement `share.Manager` (add/update/remove; RemoveShare keeps in-flight sessions) — contract + tests, supervisor wiring is M8a (§9d/§11) | M6a,M7 | claude | ✅ |
 | M7d | `core/service/browser` (optional, datagram-layer; §3-ter): NetBIOS browser broken out of `service/smb` into a standalone service common to NetBEUI/IPX/NBT. Plugs into the NetBIOS `DatagramConsumer` seam; parses `\MAILSLOT\BROWSE` (HostAnnounce/Election/GetBackupList/DomainAnnounce/LocalMaster); maintains browse list + election role; SMB asks for the list via a read-only `BrowseList()` seam over IPC$ `\PIPE\LANMAN`. Optional (registry `init()`); SMB carries no browser logic. **The RAP `NetServerEnum2` IPC$ consumer that calls `BrowseList()` is the SMB side (a follow-on in `core/service/smb`).** | M7 | claude | ✅ |
-| M7f | **Mailslot seam (§3-quater)** — lift the `\MAILSLOT\*` SMB_COM_TRANSACTION envelope out of `core/protocol/browser` into `core/protocol/mailslot`; add a mailslot dispatch layer (`Consumer` registered by mailslot name + `SendMailslot`) that plugs into the NetBIOS `DatagramConsumer`/`SendDatagram` seams; **rework `core/service/browser` to register for `\MAILSLOT\BROWSE` and handle ONLY browser frames** (no mailslot-envelope code). The browser sits entirely on top of NetBIOS via the mailslot layer; per-protocol framing stays in the NBF/NBIPX transports. Reshape of the M7d slice. | M7d | claude | ⬜ |
+| M7f | **Mailslot seam (§3-quater)** — lift the `\MAILSLOT\*` SMB_COM_TRANSACTION envelope out of `core/protocol/browser` into `core/protocol/mailslot`; add a mailslot dispatch layer (`Consumer` registered by mailslot name + `SendMailslot`) that plugs into the NetBIOS `DatagramConsumer`/`SendDatagram` seams; **rework `core/service/browser` to register for `\MAILSLOT\BROWSE` and handle ONLY browser frames** (no mailslot-envelope code). The browser sits entirely on top of NetBIOS via the mailslot layer; per-protocol framing stays in the NBF/NBIPX transports. Reshape of the M7d slice. | M7d | claude | ✅ |
 | M7g | **Messenger service `\MAILSLOT\MESSNGR`** (`net send` / WinPopup receive) — a second mailslot consumer, proving the seam is multi-consumer. Receive first; send/UI future. Optional. Depends on the M7f mailslot seam. | M7f | | ⬜ |
 | M8 | Logging cutover + control front-ends (http, ubus) + config codecs (toml/uci) | M5,M7 | | ⬜ |
 | M8a | Share config + Manager wiring: AFP/SMB volume `core/config` sections + `config → []fs.ShareSpec` mapper (options→Extra) in the registry factories; supervisor `Reconfigure` for an AFP/SMB section drives `share.Manager` Add/Update/Remove; `ParamsFor`-generated per-fs_type form masks `secret` params (§9d/§11). **Plus server identity (§4-bis):** top-level `config.Identity{Hostname,Workgroup}` (one source of truth, owned by NO service — SMB needs the hostname even with NetBIOS absent, e.g. direct-TCP `:445` / AFP-only); registry hands one `Hostname` to whichever consumers are enabled — SMB (`SetServerName`, advertised in NEGOTIATE), NetBIOS *if enabled*, browser *if linked*; no per-service hostname field so they cannot diverge; `Validate` backstops any externally-surfaced second name; the NetBIOS ≤15-byte/upper-case rule applies only when NetBIOS is enabled; `Hostname` change is restart-grade. | M7c,M8 | | ⬜ |
@@ -544,6 +544,23 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 >   frames. Per-NetBIOS-transport framing (NBF UI-frame / NBIPX NMPI-MailslotSend) ALREADY lives
 >   correctly in `core/service/netbios` — that part of M7d/M7d-d stands; only the mailslot-envelope
 >   layer moves out of the browser.
+> - **M7f — mailslot seam landed (this slice):** the layering correction is done. New
+>   `core/protocol/mailslot` holds the `\MAILSLOT\*` SMB_COM_TRANSACTION envelope codec (a
+>   self-serialising `Write` DTO + the well-known `NameBrowse`/`NameLANMAN`/`NameMessenger` consts),
+>   lifted verbatim out of `core/protocol/browser` — and the lift surfaced + fixed a latent bug: the
+>   data offset was a fixed 86, which overran for any mailslot name longer than `\MAILSLOT\BROWSE`
+>   (e.g. `\MAILSLOT\MESSNGR`); it now tracks the name length. New `core/service/mailslot` is the
+>   dispatch layer: a `Router` that IS the NetBIOS `DatagramConsumer` (unwraps the envelope, routes the
+>   bare body by mailslot name, case-insensitive, to the registered `Consumer`) and exposes
+>   `SendMailslot(name, src, dest, body, broadcast)` (wraps + `SendDatagram`). `core/service/browser`
+>   is reworked: it is now a `mailslot.Consumer` (`HandleMailslot`, registered for `\MAILSLOT\BROWSE`)
+>   and sends through a `MailslotSink` — it holds **zero** mailslot-envelope code and zero transport
+>   code; `MailslotTransaction` is deleted from `protocol/browser`. The browser imports
+>   `core/service/netbios` only for the seam types via the mailslot layer; `go list -deps
+>   ./core/service/netbios` carries neither `service/mailslot` nor `service/browser` (acyclic). All
+>   four packages (protocol/service × mailslot/browser) race-tested green; cs-tinygo blank-imports both
+>   new packages; archtest green. A future `\MAILSLOT\MESSNGR` messenger (M7g) plugs into the same
+>   Router as a second consumer with no browser/SMB coupling.
 > - **M7d-b — SMB IPC$ NetServerEnum2 consumer (this slice):** the SMB side of the browser query.
 >   `core/service/smb/lanman.go` adds the `SMB_COM_TRANSACTION` dispatch case: a TRANSACTION on the
 >   IPC$ pipe whose byte area names `\PIPE\LANMAN` + RAP function `NetServerEnum2` (0x0068) is answered

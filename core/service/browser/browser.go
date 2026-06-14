@@ -25,7 +25,8 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	proto "github.com/ObsoleteMadness/ClassicStack/core/protocol/browser"
-	"github.com/ObsoleteMadness/ClassicStack/core/service/netbios"
+	nbproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbios"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/mailslot"
 )
 
 // Name is the component name for the browser service.
@@ -43,12 +44,13 @@ const (
 	RoleLocalMaster             // won the election, owns the browse list
 )
 
-// DatagramSink is the outbound seam the browser sends through: emit a
-// connectionless NetBIOS datagram on every transport. The NetBIOS service's
-// SendDatagram satisfies it structurally, so the browser never imports the
-// concrete service for sending.
-type DatagramSink interface {
-	SendDatagram(d netbios.Datagram) error
+// MailslotSink is the outbound seam the browser sends through: write a body to a
+// named mailslot, sourced from src to dest. The mailslot router's SendMailslot
+// satisfies it structurally — the browser holds NO mailslot-envelope and NO
+// transport code; the router wraps the SMB_COM_TRANSACTION envelope and the NetBIOS
+// transports do the per-protocol wire framing.
+type MailslotSink interface {
+	SendMailslot(name string, src, dest nbproto.Name, body []byte, broadcast bool) error
 }
 
 // serverRecord is one observed browser/server: its advertised type bits and when
@@ -59,12 +61,13 @@ type serverRecord struct {
 }
 
 // Service is the browser command core. It records the servers it has observed
-// (browse list), maintains its election role, and answers GetBackupList. It is the
-// NetBIOS DatagramConsumer; compose installs it via netbios.SetDatagramConsumer and
-// hands it the SendDatagram sink.
+// (browse list), maintains its election role, and answers GetBackupList. It is a
+// mailslot.Consumer (HandleMailslot, registered for \MAILSLOT\BROWSE) and sends
+// through the MailslotSink; compose registers it on the mailslot router and hands
+// it the sink. It holds no mailslot-envelope and no transport knowledge.
 type Service struct {
 	logger    log.Logger
-	sink      DatagramSink
+	sink      MailslotSink
 	server    string // our server name (the identity, §4-bis)
 	workgroup string
 
@@ -87,7 +90,7 @@ type Service struct {
 // New builds a browser service for the given server identity + workgroup, sending
 // through sink. server/workgroup come from the shared config.Identity (§4-bis); an
 // empty server defaults to CLASSICSTACK, empty workgroup to WORKGROUP.
-func New(logger log.Logger, sink DatagramSink, server, workgroup string) *Service {
+func New(logger log.Logger, sink MailslotSink, server, workgroup string) *Service {
 	if server == "" {
 		server = "CLASSICSTACK"
 	}
@@ -266,8 +269,9 @@ func defaultElectionDelay(role Role) time.Duration {
 	}
 }
 
-// compile-time assertions: the service is a Component and the NetBIOS datagram sink.
+// compile-time assertions: the service is a Component and a mailslot Consumer (it
+// registers for \MAILSLOT\BROWSE on the mailslot router).
 var (
-	_ component.Component      = (*Service)(nil)
-	_ netbios.DatagramConsumer = (*Service)(nil)
+	_ component.Component = (*Service)(nil)
+	_ mailslot.Consumer   = (*Service)(nil)
 )

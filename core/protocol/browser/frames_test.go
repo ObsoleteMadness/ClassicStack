@@ -1,29 +1,8 @@
 package browser
 
 import (
-	"bytes"
 	"testing"
 )
-
-// TestMailslotTransactionRoundTrip proves a browser payload survives wrapping in
-// the SMB_COM_TRANSACTION mailslot envelope and unwrapping back, with the mailslot
-// name preserved.
-func TestMailslotTransactionRoundTrip(t *testing.T) {
-	payload := []byte{OpHostAnnouncement, 0x01, 0x02, 0x03}
-	tx := MailslotTransaction{MailslotName: MailslotBrowse, Payload: payload}
-	wire := tx.Marshal()
-
-	got, err := UnmarshalMailslotTransaction(wire)
-	if err != nil {
-		t.Fatalf("UnmarshalMailslotTransaction: %v", err)
-	}
-	if got.MailslotName != MailslotBrowse {
-		t.Errorf("mailslot name = %q, want %q", got.MailslotName, MailslotBrowse)
-	}
-	if !bytes.Equal(got.Payload, payload) {
-		t.Errorf("payload = % x, want % x", got.Payload, payload)
-	}
-}
 
 // TestAnnouncementRoundTrip proves a host announcement Marshals and Unmarshals with
 // every field preserved (the server name normalised/upper-cased).

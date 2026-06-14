@@ -4,10 +4,11 @@
 // GetBackupList request/response. Each frame is a self-serialising DTO (Marshal /
 // Unmarshal, per the project DTO rule) so callers never decode bytes inline.
 //
-// The frames ride inside an SMB_COM_TRANSACTION mailslot write addressed to a
-// browser group name (WORKGROUP<1D>/<1E>); the MailslotTransaction DTO wraps that
-// SMB transaction envelope. The browser SERVICE (core/service/browser) is the
-// state machine over these codecs; this package holds no state.
+// These are the BARE browser frames only — the SMB_COM_TRANSACTION mailslot
+// envelope that carries them on \MAILSLOT\BROWSE is core/protocol/mailslot
+// (§3-quater), wrapped/unwrapped by the mailslot dispatch layer, never here. The
+// browser SERVICE (core/service/browser) is the state machine over these codecs;
+// this package holds no state and no envelope.
 //
 // Ring: CORE (stdlib only, reflection-free). Fixed-width fields use
 // core/binaryprimitives; all multi-byte fields are little-endian (SMB wire order).
@@ -27,12 +28,6 @@ const (
 	OpGetBackupListResp   uint8 = 0x0A
 	OpDomainAnnouncement  uint8 = 0x0C
 	OpLocalMasterAnnounce uint8 = 0x0F
-)
-
-// Mailslot names browser traffic is written to.
-const (
-	MailslotBrowse = "\\MAILSLOT\\BROWSE"
-	MailslotLANMAN = "\\MAILSLOT\\LANMAN"
 )
 
 // Server-type bits ([MS-BRWS] §2.2 SV_TYPE_*), used in announcements and the
@@ -63,9 +58,8 @@ const NameTypeMasterBrowser uint8 = 0x1D
 
 // errors returned by the Unmarshal methods.
 var (
-	ErrShort    = errors.New("browser: frame too short")
-	ErrBadOp    = errors.New("browser: wrong opcode for frame type")
-	ErrEnvelope = errors.New("browser: invalid mailslot transaction envelope")
+	ErrShort = errors.New("browser: frame too short")
+	ErrBadOp = errors.New("browser: wrong opcode for frame type")
 )
 
 // --- name helpers (browser names are 16-byte fixed, space/NUL trimmed) ---

@@ -5,97 +5,10 @@ import (
 )
 
 // frames.go holds the self-serialising browser frame DTOs (the DTO rule): each
-// type Marshals to / Unmarshals from its [MS-BRWS] wire form. The mailslot
-// transaction envelope wraps a browser payload in the SMB_COM_TRANSACTION the
-// datagram carries; the announcement/election/backup-list frames are the payloads.
-
-// --- SMB_COM_TRANSACTION mailslot envelope ---
-
-const (
-	smbHeaderLen       = 32
-	txWordCount        = 17
-	txWordsLen         = 34
-	txByteCountOffset  = smbHeaderLen + 1 + txWordsLen // 67
-	txDataOffset       = 86
-	commandTransaction = 0x25 // SMB_COM_TRANSACTION
-)
-
-// MailslotTransaction is the SMB_COM_TRANSACTION mailslot write that carries a
-// browser payload to a mailslot (e.g. \MAILSLOT\BROWSE). It is the datagram
-// payload the browser service sends and receives.
-type MailslotTransaction struct {
-	MailslotName string
-	Payload      []byte // the browser frame (opcode + fields)
-	TimeoutMS    uint32
-	Priority     uint16
-	Class        uint16
-}
-
-// Marshal renders the transaction envelope ([MS-CIFS] SMB_COM_TRANSACTION with a
-// mailslot Name and the browser Payload as the transaction data).
-func (t MailslotTransaction) Marshal() []byte {
-	name := t.MailslotName
-	if name == "" {
-		name = MailslotBrowse
-	}
-	nameField := append([]byte(name), 0)
-	timeout := t.TimeoutMS
-	if timeout == 0 {
-		timeout = 1000
-	}
-	class := t.Class
-	if class == 0 {
-		class = 2
-	}
-
-	out := make([]byte, txDataOffset+len(t.Payload))
-	copy(out[0:4], "\xffSMB")
-	out[4] = commandTransaction
-	out[smbHeaderLen] = txWordCount
-	w := out[smbHeaderLen+1 : smbHeaderLen+1+txWordsLen]
-	bp.PutLE16(w[2:4], uint16(len(t.Payload)))   // TotalDataCount
-	bp.PutLE32(w[12:16], timeout)                // Timeout (ULONG)
-	bp.PutLE16(w[22:24], uint16(len(t.Payload))) // DataCount
-	bp.PutLE16(w[24:26], txDataOffset)           // DataOffset
-	w[26] = 3                                    // SetupCount
-	bp.PutLE16(w[28:30], 1)                      // (legacy fixed: Setup word)
-	bp.PutLE16(w[30:32], t.Priority)
-	bp.PutLE16(w[32:34], class)
-
-	bp.PutLE16(out[txByteCountOffset:txByteCountOffset+2], uint16(len(nameField)+len(t.Payload)))
-	copy(out[txByteCountOffset+2:], nameField)
-	copy(out[txDataOffset:], t.Payload)
-	return out
-}
-
-// UnmarshalMailslotTransaction parses an SMB_COM_TRANSACTION mailslot write,
-// extracting the mailslot name and the browser payload data window.
-func UnmarshalMailslotTransaction(b []byte) (*MailslotTransaction, error) {
-	if len(b) < txByteCountOffset+2 || string(b[0:4]) != "\xffSMB" {
-		return nil, ErrEnvelope
-	}
-	if b[4] != commandTransaction || b[smbHeaderLen] != txWordCount {
-		return nil, ErrEnvelope
-	}
-	w := b[smbHeaderLen+1 : smbHeaderLen+1+txWordsLen]
-	dataCount := int(bp.LE16(w[22:24]))
-	dataOffset := int(bp.LE16(w[24:26]))
-	if dataCount == 0 || dataOffset < txByteCountOffset+2 || dataOffset > len(b) || dataOffset+dataCount > len(b) {
-		return nil, ErrEnvelope
-	}
-	byteStart := txByteCountOffset + 2
-	nameEnd := indexByte(b[byteStart:dataOffset], 0)
-	if nameEnd < 0 {
-		return nil, ErrEnvelope
-	}
-	return &MailslotTransaction{
-		MailslotName: string(b[byteStart : byteStart+nameEnd]),
-		Payload:      append([]byte(nil), b[dataOffset:dataOffset+dataCount]...),
-		TimeoutMS:    bp.LE32(w[12:16]),
-		Priority:     bp.LE16(w[30:32]),
-		Class:        bp.LE16(w[32:34]),
-	}, nil
-}
+// type Marshals to / Unmarshals from its [MS-BRWS] wire form. These are the bare
+// browser frames — the SMB_COM_TRANSACTION mailslot envelope that carries them is
+// core/protocol/mailslot (§3-quater), wrapped/unwrapped by the mailslot dispatch
+// layer, never by the browser.
 
 // --- HostAnnouncement (0x01) / LocalMasterAnnouncement (0x0F) ---
 
