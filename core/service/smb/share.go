@@ -49,6 +49,10 @@ func newFromShare(s *share.Share) *Share { return &Share{sh: s} }
 // Name returns the share's tree name.
 func (sh *Share) Name() string { return sh.sh.Name() }
 
+// Description returns the operator-supplied human description (the NetShareEnum
+// remark / share comment), or empty.
+func (sh *Share) Description() string { return sh.sh.Description() }
+
 // FS returns the bound filesystem; the dispatch reaches files through it
 // (sh.FS().Stat(p), sh.FS().OpenFork(p, fork, flag), sh.FS().Rename/Remove which
 // carry fork metadata).

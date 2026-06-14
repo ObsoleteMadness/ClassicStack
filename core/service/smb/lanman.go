@@ -8,18 +8,29 @@ import (
 	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/smb"
 )
 
-// lanman.go is the SMB side of the browser query: the RAP NetServerEnum2 ("get
-// server list") that arrives over the IPC$ \PIPE\LANMAN named pipe inside an
-// SMB_COM_TRANSACTION. This is the ONE place the SMB session layer meets the
-// datagram-layer browser service (§3-ter): SMB asks the browser for the current
-// list through the BrowseProvider seam and packs it into the RAP wire reply. SMB
-// holds no browser/election logic; the browser holds no SMB logic.
+// lanman.go is the SMB RAP layer over the IPC$ \PIPE\LANMAN named pipe (inside an
+// SMB_COM_TRANSACTION). Two calls are served:
 //
-// Only NetServerEnum2 (the browse list) is served here. NetShareEnum (the share
-// list) rides the same pipe but is answered from SMB's own shares — a follow-on.
+//   - NetServerEnum2 ("get server list") — the browse list. SMB asks the
+//     datagram-layer browser service through the BrowseProvider seam (§3-ter, the
+//     ONE place the SMB session layer meets the browser); SMB holds no browser/
+//     election logic and the browser holds no SMB logic.
+//   - NetShareEnum ("get share list") — this server's own shares (every bound disk
+//     share + the virtual IPC$ pipe), answered straight from SMB state with no
+//     browser involved.
 
-// rapNetServerEnum2 is the RAP function code for NetServerEnum2 ([MS-RAP] §3.2.5.5).
-const rapNetServerEnum2 uint16 = 0x0068
+// RAP function codes ([MS-RAP]): NetShareEnum lists this server's shares,
+// NetServerEnum2 lists the servers the browser has observed.
+const (
+	rapNetShareEnum   uint16 = 0x0000
+	rapNetServerEnum2 uint16 = 0x0068
+)
+
+// SHARE_INFO_1 share-type bits ([MS-SRVS] STYPE_*): a disk tree vs the IPC$ pipe.
+const (
+	shareTypeDisktree uint16 = 0x0000
+	shareTypeIPC      uint16 = 0x0003
+)
 
 // RAP status codes ([MS-ERREF] Win32) returned in the 2-byte RAP Status param.
 const (
@@ -69,9 +80,10 @@ func (s *Service) browseProvider() BrowseProvider {
 }
 
 // handleTransaction answers SMB_COM_TRANSACTION. Only the IPC$ \PIPE\LANMAN RAP
-// calls are served (NetServerEnum2 today); any other transaction — or a TRANSACTION
-// on a non-IPC$ tree — answers STATUS_NOT_SUPPORTED so the client gets a definite
-// reply rather than a drop.
+// calls are served — NetServerEnum2 (browse list, from the browser) and
+// NetShareEnum (share list, from our own shares); any other transaction — or a
+// TRANSACTION on a non-IPC$ tree — answers STATUS_NOT_SUPPORTED so the client gets
+// a definite reply rather than a drop.
 func (s *Service) handleTransaction(sess *smbSession, h protocol.Header, req []byte) []byte {
 	tc, ok := sess.tree(h.TID)
 	if !ok {
@@ -88,8 +100,11 @@ func (s *Service) handleTransaction(sess *smbSession, h protocol.Header, req []b
 	if !ok {
 		return errResponse(h, statusNotSupported)
 	}
-	if fn == rapNetServerEnum2 {
+	switch fn {
+	case rapNetServerEnum2:
 		return s.handleNetServerEnum2(h, area)
+	case rapNetShareEnum:
+		return s.handleNetShareEnum(h)
 	}
 	return errResponse(h, statusNotSupported)
 }
@@ -174,6 +189,74 @@ func (s *Service) handleNetServerEnum2(h protocol.Header, area []byte) []byte {
 		return buildNetServerEnum2Response(h, []BrowseServer{{Name: s.workgroup(), Type: svTypeDomainEnum}})
 	}
 	return buildNetServerEnum2Response(h, provider.ServerEntries())
+}
+
+// shareEntry is one SHARE_INFO_1 row: a share name, its STYPE_*, and an optional
+// remark/comment.
+type shareEntry struct {
+	Name    string
+	Type    uint16
+	Comment string
+}
+
+// shareEntries lists this server's shares for NetShareEnum: every bound disk share
+// (held under the service lock — the Manager mutates the slice at runtime) plus the
+// always-present virtual IPC$ pipe.
+func (s *Service) shareEntries() []shareEntry {
+	s.mu.Lock()
+	out := make([]shareEntry, 0, len(s.shares)+1)
+	for _, sh := range s.shares {
+		out = append(out, shareEntry{Name: sh.Name(), Type: shareTypeDisktree, Comment: sh.Description()})
+	}
+	s.mu.Unlock()
+	out = append(out, shareEntry{Name: ipcShareName, Type: shareTypeIPC})
+	return out
+}
+
+// handleNetShareEnum answers a RAP NetShareEnum (function 0x0000) from this
+// server's own shares — no browser involved, since shares are SMB's own state.
+func (s *Service) handleNetShareEnum(h protocol.Header) []byte {
+	return buildNetShareEnumResponse(h, s.shareEntries())
+}
+
+// buildNetShareEnumResponse packs the share entries into a RAP NetShareEnum reply
+// (SHARE_INFO_1 records + a trailing remark heap) inside an SMB_COM_TRANSACTION
+// response. Each record is Name(13)+Pad(1)+Type(2)+RemarkOff(4) = 20 bytes; the
+// netname is capped at 12 chars + NUL.
+func buildNetShareEnumResponse(h protocol.Header, entries []shareEntry) []byte {
+	const entrySize = 20
+
+	remarkBase := len(entries) * entrySize
+	remarkOff := remarkBase
+	remarkData := make([]byte, 0, len(entries))
+	remarkOffsets := make([]int, len(entries))
+	for i, e := range entries {
+		remarkOffsets[i] = remarkOff
+		remarkData = append(remarkData, []byte(e.Comment)...)
+		remarkData = append(remarkData, 0)
+		remarkOff += len(e.Comment) + 1
+	}
+
+	const paramLen = 8
+	params := make([]byte, paramLen)
+	// params[0:2] Status = 0, params[2:4] Converter = 0.
+	bp.PutLE16(params[4:6], uint16(len(entries))) // EntriesReturned
+	bp.PutLE16(params[6:8], uint16(len(entries))) // EntriesAvailable
+
+	data := make([]byte, remarkBase+len(remarkData))
+	for i, e := range entries {
+		base := i * entrySize
+		name := e.Name
+		if len(name) > 12 {
+			name = name[:12]
+		}
+		copy(data[base:base+12], name) // shi1_netname, NUL-padded to 13
+		bp.PutLE16(data[base+14:base+16], e.Type)
+		bp.PutLE32(data[base+16:base+20], uint32(remarkOffsets[i]))
+	}
+	copy(data[remarkBase:], remarkData)
+
+	return buildTransactionResponse(h, params, data)
 }
 
 // buildRAPError wraps a non-zero RAP status in an SMB_COM_TRANSACTION success frame

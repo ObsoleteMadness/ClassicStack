@@ -146,6 +146,44 @@ func TestTransactionOnNonIPCRefused(t *testing.T) {
 	}
 }
 
+// TestNetShareEnumListsSharesAndIPC proves NetShareEnum over IPC$ returns every
+// bound disk share plus the virtual IPC$ pipe, with the SHARE_INFO_1 names + types
+// packed in the data block. NetShareEnum needs no browser.
+func TestNetShareEnumListsSharesAndIPC(t *testing.T) {
+	svc := &Service{shares: []*Share{newTestShare(t)}} // one share named PUBLIC
+	sess := newSession()
+	tid := sess.allocTID(&treeConnect{ipc: true})
+
+	reply := svc.Dispatch(sess, lanmanReq(tid, rapNetShareEnum, 0))
+	status, returned, available := rapParams(t, reply)
+	if status != 0 {
+		t.Fatalf("RAP status = %d, want success", status)
+	}
+	if returned != 2 || available != 2 {
+		t.Fatalf("shares returned=%d available=%d, want 2 (PUBLIC + IPC$)", returned, available)
+	}
+
+	// Walk the two SHARE_INFO_1 records (20 bytes each): Name(13)+Pad(1)+Type(2)+RemarkOff(4).
+	const entrySize = 20
+	dataOffset := protocol.HeaderLen + 1 + 20 + 2 + 8
+	names := make([]string, 0, 2)
+	types := make([]uint16, 0, 2)
+	for i := range 2 {
+		base := dataOffset + i*entrySize
+		names = append(names, string(trimNul(reply[base:base+13])))
+		types = append(types, bp.LE16(reply[base+14:base+16]))
+	}
+	if names[0] != "PUBLIC" {
+		t.Errorf("first share name = %q, want PUBLIC", names[0])
+	}
+	if names[1] != ipcShareName || types[1] != shareTypeIPC {
+		t.Errorf("last entry = %q type %#x, want IPC$ / STYPE_IPC", names[1], types[1])
+	}
+	if types[0] != shareTypeDisktree {
+		t.Errorf("disk share type = %#x, want STYPE_DISKTREE", types[0])
+	}
+}
+
 func trimNul(b []byte) []byte {
 	if i := indexByte(b, 0); i >= 0 {
 		return b[:i]

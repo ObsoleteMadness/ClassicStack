@@ -537,8 +537,15 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 >   SERVER_INFO_1 records + comment heap in the TRANSACTION param/data blocks. A TRANSACTION on a
 >   non-IPC$ tree, or with no browser wired, answers STATUS_NOT_SUPPORTED / empty-success rather than
 >   dropping. `lanman_test.go` covers the browse-list reply, the potential-browser + domain-enum gates,
->   no-provider empty success, and the non-IPC$ refusal. NetShareEnum (the share list over the same
->   pipe) stays a follow-on, answered from SMB's own shares.
+>   no-provider empty success, and the non-IPC$ refusal.
+> - **M7d-c — SMB IPC$ NetShareEnum (this slice):** the share-list RAP call (function 0x0000) over the
+>   same `\PIPE\LANMAN` pipe, answered straight from SMB's own state — no browser involved. The
+>   TRANSACTION dispatch now switches on the RAP function; NetShareEnum packs a SHARE_INFO_1 record
+>   (Name(13)+Pad(1)+Type(2)+RemarkOff(4)=20) per bound disk share (STYPE_DISKTREE, remark =
+>   `Share.Description()`, a new accessor over the held `*share.Share`) plus the always-present virtual
+>   IPC$ pipe (STYPE_IPC). `lanman_test.go` proves both records (PUBLIC + IPC$) with their names/types
+>   in the data block. This is what a client's "browse this server's shares" actually queries, so the
+>   IPC$ RAP layer now answers both the inter-server browse list and the per-server share list.
 > - **Remaining M7 (deferred, not blocking M7 close):** the byte-range LOCKING_ANDX / MPX / raw-read-
 >   write SMB paths answer STATUS_NOT_SUPPORTED — left until a target client needs them (no identified
 >   client does). Legacy `service/{afp,smb,netbios}` deletion is strangler step 5 but is **blocked**:

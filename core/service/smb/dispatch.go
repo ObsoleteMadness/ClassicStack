@@ -35,9 +35,10 @@ const ipcShareName = "IPC$"
 // QUERY_INFORMATION[_DISK], NT_CREATE_ANDX (the NT/2000/XP open-or-create path,
 // files and directories), and the TRANS2 FIND_FIRST2/FIND_NEXT2/FIND_CLOSE2 +
 // QUERY_PATH/FILE_INFO subcommands. TRANSACTION over the IPC$ \PIPE\LANMAN pipe
-// serves the RAP NetServerEnum2 ("get server list") by asking the browser service
-// through the BrowseProvider seam (lanman.go) — the one place SMB meets the
-// datagram-layer browser. A recognised-but-unimplemented command (the byte-range
+// serves the RAP NetServerEnum2 ("get server list", from the browser via the
+// BrowseProvider seam — the one place SMB meets the datagram-layer browser) and
+// NetShareEnum ("get share list", from SMB's own bound shares + IPC$) — lanman.go.
+// A recognised-but-unimplemented command (the byte-range
 // LOCKING_ANDX / MPX / raw-read-write paths, out of M7 scope) answers
 // STATUS_NOT_SUPPORTED so the client gets a definite reply; an unparseable frame
 // is dropped (nil) so a malformed packet cannot wedge the connection.
