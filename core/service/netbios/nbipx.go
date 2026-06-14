@@ -297,6 +297,50 @@ func (e *ipxSessionEngine) send(in *ipxproto.Datagram, body []byte, reason strin
 	}
 }
 
+// nbipxDatagramSocket is the IPX socket NB-IPX connectionless datagrams (the
+// browser's NMPI mailslot traffic) ride (0x0553).
+var nbipxDatagramSocket = [2]byte{0x05, 0x53}
+
+// ipxBroadcastNode is the IPX node-ID broadcast address (all-ones); a browser
+// group datagram fans to it. Defined locally so the engine needs no router import.
+var ipxBroadcastNode = [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
+
+// emitDatagram sends a connectionless NetBIOS datagram (a browser HostAnnounce /
+// election / backup-list frame) over NB-IPX as an NMPI MailslotSend (opcode 0xFC)
+// on the datagram socket (0x0553), IPX type 20. The browser's payload is the SMB
+// mailslot transaction; it rides the NMPI Payload field with the source/destination
+// NetBIOS names in the NMPI header. Both directed and broadcast browser datagrams
+// fan to the IPX broadcast node (the engine has no name→node binding for an
+// out-of-band send), matching the NBF egress.
+func (e *ipxSessionEngine) emitDatagram(d Datagram) error {
+	if e.sender == nil {
+		return nil
+	}
+	body := protocol.EncodeNMPIPacket(&protocol.NMPIPacket{
+		Opcode:        protocol.NMPIOpMailslotSend,
+		NameType:      nmpiNameType(d.Destination),
+		RequestedName: d.Destination,
+		SourceName:    d.Source,
+		Payload:       d.Payload,
+	})
+	return e.sender.Send(&ipxproto.Datagram{
+		Type:    protocol.IPXTypeNetBIOS,
+		DstNode: ipxBroadcastNode,
+		DstSock: nbipxDatagramSocket,
+		SrcSock: nbipxDatagramSocket,
+		Payload: body,
+	})
+}
+
+// nmpiNameType maps a NetBIOS name to the NMPI name-type byte: a group name is a
+// workgroup, anything else a machine.
+func nmpiNameType(name protocol.Name) uint8 {
+	if name.Type() == protocol.NameTypeGroup {
+		return protocol.NMPINameTypeWorkgroup
+	}
+	return protocol.NMPINameTypeMachine
+}
+
 // closeAll tears down every circuit (called when the service stops), closing the
 // SMB conns so no file handles leak.
 func (e *ipxSessionEngine) closeAll() {

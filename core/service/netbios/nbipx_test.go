@@ -248,3 +248,50 @@ func TestNBIPX_StopTearsDownCircuits(t *testing.T) {
 		t.Fatalf("Stop closed %d circuits, want 1", consumer.closed)
 	}
 }
+
+// TestNBIPX_EmitDatagramSendsNMPIMailslot proves Service.SendDatagram fans a
+// connectionless NetBIOS datagram to the NBIPX engine, which emits it as an NMPI
+// MailslotSend (opcode 0xFC) IPX type-20 broadcast on the datagram socket (0x0553),
+// carrying the source/destination names + payload — the browser's HostAnnounce /
+// election egress over IPX.
+func TestNBIPX_EmitDatagramSendsNMPIMailslot(t *testing.T) {
+	svc, _, port, _ := newWiredIPXEngine(t)
+
+	src := protocol.NewName("CLASSICSTACK", protocol.NameTypeWorkstation)
+	dst := protocol.NewName("WORKGROUP", protocol.NameTypeGroup)
+	payload := []byte("\xffSMB-mailslot-browse-frame")
+	if err := svc.SendDatagram(Datagram{Source: src, Destination: dst, Payload: payload, Broadcast: true}); err != nil {
+		t.Fatalf("SendDatagram: %v", err)
+	}
+
+	if len(port.sent) != 1 {
+		t.Fatalf("SendDatagram emitted %d IPX datagrams, want 1", len(port.sent))
+	}
+	dg := port.sent[0]
+	if dg.Type != protocol.IPXTypeNetBIOS {
+		t.Errorf("IPX type = %#x, want NetBIOS(0x14)", dg.Type)
+	}
+	if dg.DstSock != ([2]byte{0x05, 0x53}) {
+		t.Errorf("dst socket = % x, want 0553 (NB-IPX datagram)", dg.DstSock)
+	}
+	if dg.DstNode != ([6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}) {
+		t.Errorf("dst node = % x, want broadcast", dg.DstNode)
+	}
+
+	nmpi, err := protocol.DecodeNMPIPacket(dg.Payload)
+	if err != nil {
+		t.Fatalf("DecodeNMPIPacket: %v", err)
+	}
+	if nmpi.Opcode != protocol.NMPIOpMailslotSend {
+		t.Errorf("NMPI opcode = %#x, want MailslotSend(0xFC)", nmpi.Opcode)
+	}
+	if nmpi.SourceName.String() != "CLASSICSTACK" || nmpi.RequestedName.String() != "WORKGROUP" {
+		t.Errorf("NMPI names src=%q dst=%q", nmpi.SourceName.String(), nmpi.RequestedName.String())
+	}
+	if nmpi.NameType != protocol.NMPINameTypeWorkgroup {
+		t.Errorf("NMPI name type = %#x, want workgroup (group dest)", nmpi.NameType)
+	}
+	if string(nmpi.Payload) != string(payload) {
+		t.Errorf("NMPI payload = %q, want %q", nmpi.Payload, payload)
+	}
+}

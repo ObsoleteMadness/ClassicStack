@@ -523,8 +523,16 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 >   `CmdDatagram[Broadcast]` UI frame — the outbound mirror of `DatagramConsumer`. The browser imports
 >   `core/service/netbios` only for the two seam types; `go list -deps ./core/service/netbios` carries
 >   no `service/browser` (acyclic). cs-tinygo blank-imports both new packages. archtest green (the new
->   core packages are reflection/net/binary-clean). NBIPX datagram-egress (NMPI mailslot send) is a
->   follow-on — the NBF egress is the primary browser transport.
+>   core packages are reflection/net/binary-clean).
+> - **M7d-d — NBIPX datagram-egress (this slice):** the browser now also broadcasts over IPX, not just
+>   NetBEUI. `*IPXEngine` gains `emitDatagram` and registers as a `datagramEgress`, so
+>   `Service.SendDatagram` fans the browser's HostAnnounce/election/backup-list to NBF AND NBIPX. The
+>   NBIPX egress wraps the browser's SMB mailslot payload in an NMPI MailslotSend (opcode 0xFC), IPX
+>   type-20 broadcast on the datagram socket (0x0553), with the source/destination NetBIOS names in the
+>   NMPI header (group dest → workgroup name-type). Like NBF it fans to the IPX broadcast node (no
+>   name→node binding for an out-of-band send). Re-home of the legacy `over_ipx` `sendNMPIDatagram`.
+>   `nbipx_test.go` proves `SendDatagram` emits the NMPI MailslotSend with names + payload round-tripped.
+>   The browser is now transport-complete: it serves over both NetBEUI and IPX.
 > - **M7d-b — SMB IPC$ NetServerEnum2 consumer (this slice):** the SMB side of the browser query.
 >   `core/service/smb/lanman.go` adds the `SMB_COM_TRANSACTION` dispatch case: a TRANSACTION on the
 >   IPC$ pipe whose byte area names `\PIPE\LANMAN` + RAP function `NetServerEnum2` (0x0068) is answered

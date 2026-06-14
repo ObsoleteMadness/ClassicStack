@@ -158,9 +158,10 @@ type circuitCloser interface{ closeCircuits() }
 
 // datagramEgress is the per-transport outbound-datagram emitter: send one decoded
 // NetBIOS datagram (names + payload) on this transport's wire. The browser's
-// SendDatagram fans to every registered egress so one browser serves NetBEUI/IPX
-// at once. The NBF engine satisfies it (a CmdDatagram[Broadcast] UI frame). It is
-// the outbound mirror of DatagramConsumer (the inbound seam).
+// SendDatagram fans to every registered egress so one browser serves NetBEUI AND
+// IPX at once. The NBF engine satisfies it (a CmdDatagram[Broadcast] UI frame) and
+// the NBIPX engine does too (an NMPI MailslotSend IPX type-20 broadcast). It is the
+// outbound mirror of DatagramConsumer (the inbound seam).
 type datagramEgress interface {
 	emitDatagram(d Datagram) error
 }

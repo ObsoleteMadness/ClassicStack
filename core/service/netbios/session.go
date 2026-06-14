@@ -158,6 +158,7 @@ func (s *Service) NewIPXEngine(sender DatagramSender) *IPXEngine {
 	eng := &IPXEngine{e: newIPXSessionEngine(s.logger, sender, s.sessionConsumer)}
 	s.mu.Lock()
 	s.closers = append(s.closers, eng)
+	s.egresses = append(s.egresses, eng)
 	s.mu.Unlock()
 	return eng
 }
@@ -175,3 +176,8 @@ func (g *IPXEngine) HandleDatagram(d *ipxDatagramType) { g.e.HandleDatagram(d) }
 
 // closeCircuits tears down every open circuit (called from Stop).
 func (g *IPXEngine) closeCircuits() { g.e.closeAll() }
+
+// emitDatagram implements datagramEgress: send a connectionless NetBIOS datagram
+// (the browser's HostAnnounce / election / backup-list traffic) over NB-IPX as an
+// NMPI mailslot send.
+func (g *IPXEngine) emitDatagram(d Datagram) error { return g.e.emitDatagram(d) }
