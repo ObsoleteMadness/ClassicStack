@@ -173,17 +173,48 @@ func (s *Service) announceLoop(ctx context.Context, done chan struct{}) {
 
 // --- query API (the read-only seam SMB's IPC$ \PIPE\LANMAN NetServerEnum2 uses) ---
 
-// BrowseList returns the names of every server the browser has observed (plus
-// ourselves), for the RAP NetServerEnum2 "get server list" SMB serves over IPC$.
-func (s *Service) BrowseList() []string {
+// ServerEntry is one row of the browse list: a server name, its advertised
+// SV_TYPE_* bits, and an optional comment. It is what SMB's NetServerEnum2 packs
+// into a SERVER_INFO_1 record.
+type ServerEntry struct {
+	Name    string
+	Type    uint32
+	Comment string
+}
+
+// ServerEntries returns the full browse list (ourselves first, then every observed
+// server) as typed rows, for SMB's RAP NetServerEnum2 over IPC$. Self advertises
+// the workstation type ClassicStack announces.
+func (s *Service) ServerEntries() []ServerEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]string, 0, len(s.servers)+1)
-	out = append(out, s.server)
-	for name := range s.servers {
-		if name != s.server {
-			out = append(out, name)
+	out := make([]ServerEntry, 0, len(s.servers)+1)
+	out = append(out, ServerEntry{Name: s.server, Type: proto.ServerTypeWorkstationSet})
+	for name, rec := range s.servers {
+		if name == s.server {
+			continue
 		}
+		out = append(out, ServerEntry{Name: name, Type: rec.serverType})
+	}
+	return out
+}
+
+// Available reports whether the browser can serve a server list — false while it is
+// only a potential browser (NetServerEnum2 then returns ERROR_REQ_NOT_ACCEP per
+// [MS-BRWS] §3.3.5.6), true once it is a backup or local master.
+func (s *Service) Available() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.role != RolePotential
+}
+
+// BrowseList returns the names of every server the browser has observed (plus
+// ourselves). Kept as a convenience alongside the typed ServerEntries.
+func (s *Service) BrowseList() []string {
+	entries := s.ServerEntries()
+	out := make([]string, len(entries))
+	for i, e := range entries {
+		out[i] = e.Name
 	}
 	return out
 }

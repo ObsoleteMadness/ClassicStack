@@ -34,8 +34,11 @@ const ipcShareName = "IPC$"
 // CLOSE/FLUSH, DELETE/RENAME, CREATE_DIRECTORY/DELETE_DIRECTORY/CHECK_DIRECTORY,
 // QUERY_INFORMATION[_DISK], NT_CREATE_ANDX (the NT/2000/XP open-or-create path,
 // files and directories), and the TRANS2 FIND_FIRST2/FIND_NEXT2/FIND_CLOSE2 +
-// QUERY_PATH/FILE_INFO subcommands. A recognised-but-unimplemented command (the
-// byte-range LOCKING_ANDX / MPX / raw-read-write paths, out of M7 scope) answers
+// QUERY_PATH/FILE_INFO subcommands. TRANSACTION over the IPC$ \PIPE\LANMAN pipe
+// serves the RAP NetServerEnum2 ("get server list") by asking the browser service
+// through the BrowseProvider seam (lanman.go) — the one place SMB meets the
+// datagram-layer browser. A recognised-but-unimplemented command (the byte-range
+// LOCKING_ANDX / MPX / raw-read-write paths, out of M7 scope) answers
 // STATUS_NOT_SUPPORTED so the client gets a definite reply; an unparseable frame
 // is dropped (nil) so a malformed packet cannot wedge the connection.
 func (s *Service) Dispatch(sess *smbSession, req []byte) []byte {
@@ -98,6 +101,10 @@ func (s *Service) Dispatch(sess *smbSession, req []byte) []byte {
 
 	case protocol.CommandNtCreateAndX:
 		return s.handleNtCreateAndX(sess, h, req)
+
+	// --- IPC$ named-pipe RAP: NetServerEnum2 (browse list) over \PIPE\LANMAN ---
+	case protocol.CommandTransaction:
+		return s.handleTransaction(sess, h, req)
 
 	// --- FS command engine: TRANS2 find/query ---
 	case protocol.CommandTransaction2:

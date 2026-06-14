@@ -524,9 +524,21 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 >   `core/service/netbios` only for the two seam types; `go list -deps ./core/service/netbios` carries
 >   no `service/browser` (acyclic). cs-tinygo blank-imports both new packages. archtest green (the new
 >   core packages are reflection/net/binary-clean). NBIPX datagram-egress (NMPI mailslot send) is a
->   follow-on — the NBF egress is the primary browser transport. The SMB-side IPC$ `NetServerEnum2`
->   consumer that calls `BrowseList()` is a `core/service/smb` follow-on (re-home of legacy
->   `command_rap_lanman.go`).
+>   follow-on — the NBF egress is the primary browser transport.
+> - **M7d-b — SMB IPC$ NetServerEnum2 consumer (this slice):** the SMB side of the browser query.
+>   `core/service/smb/lanman.go` adds the `SMB_COM_TRANSACTION` dispatch case: a TRANSACTION on the
+>   IPC$ pipe whose byte area names `\PIPE\LANMAN` + RAP function `NetServerEnum2` (0x0068) is answered
+>   from the browse list. SMB asks the browser through a `BrowseProvider` seam (`Available()` +
+>   `ServerEntries() []BrowseServer`, `SetBrowseProvider`) — a small local interface the browser
+>   satisfies structurally (`browser.Available()`/`ServerEntries()`), so SMB imports no browser package
+>   (a one-line `[]browser.ServerEntry`→`[]smb.BrowseServer` adapter is M8a compose wiring, alongside
+>   `SetDatagramConsumer`/`SetSessionConsumer`). A potential browser → ERROR_REQ_NOT_ACCEP (71);
+>   DOMAIN_ENUM mixed with other type bits → ERROR_INVALID_FUNCTION (1); the RAP reply packs
+>   SERVER_INFO_1 records + comment heap in the TRANSACTION param/data blocks. A TRANSACTION on a
+>   non-IPC$ tree, or with no browser wired, answers STATUS_NOT_SUPPORTED / empty-success rather than
+>   dropping. `lanman_test.go` covers the browse-list reply, the potential-browser + domain-enum gates,
+>   no-provider empty success, and the non-IPC$ refusal. NetShareEnum (the share list over the same
+>   pipe) stays a follow-on, answered from SMB's own shares.
 > - **Remaining M7 (deferred, not blocking M7 close):** the byte-range LOCKING_ANDX / MPX / raw-read-
 >   write SMB paths answer STATUS_NOT_SUPPORTED — left until a target client needs them (no identified
 >   client does). Legacy `service/{afp,smb,netbios}` deletion is strangler step 5 but is **blocked**:

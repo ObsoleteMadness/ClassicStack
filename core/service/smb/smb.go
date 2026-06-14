@@ -57,9 +57,10 @@ const Name = "SMB"
 // is still a thin stub at this milestone; the service shape that drives the seam
 // is what lands here.
 type Service struct {
-	logger log.Logger
-	shares []*Share
-	wg     string // workgroup/domain advertised in NEGOTIATE (default WORKGROUP)
+	logger  log.Logger
+	shares  []*Share
+	wg      string         // workgroup/domain advertised in NEGOTIATE (default WORKGROUP)
+	browser BrowseProvider // browse-list source for IPC$ NetServerEnum2 (the browser service); optional
 
 	mu      sync.Mutex
 	running bool
