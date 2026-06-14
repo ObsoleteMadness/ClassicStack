@@ -48,9 +48,11 @@ import (
 	// build can serve files and browse over the legacy protocols.
 	_ "github.com/ObsoleteMadness/ClassicStack/core/protocol/browser"
 	_ "github.com/ObsoleteMadness/ClassicStack/core/protocol/mailslot"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/protocol/messenger"
 	_ "github.com/ObsoleteMadness/ClassicStack/core/service/afp"
 	_ "github.com/ObsoleteMadness/ClassicStack/core/service/browser"
 	_ "github.com/ObsoleteMadness/ClassicStack/core/service/mailslot"
+	_ "github.com/ObsoleteMadness/ClassicStack/core/service/messenger"
 	_ "github.com/ObsoleteMadness/ClassicStack/core/service/netbios"
 	_ "github.com/ObsoleteMadness/ClassicStack/core/service/smb"
 

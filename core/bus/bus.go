@@ -98,6 +98,9 @@ const (
 	TopicState = "state"
 	TopicStats = "stats"
 	TopicLog   = "log"
+	// TopicMessage carries Messenger Service ("net send" / WinPopup) pop-ups the
+	// stack received, so a UI can surface them (§3-quater messenger consumer).
+	TopicMessage = "message"
 )
 
 // StateChanged is published on every component lifecycle transition. Topic()=="state".
@@ -124,6 +127,19 @@ type LogRecord struct {
 }
 
 func (LogRecord) Topic() string { return TopicLog }
+
+// MessageReceived carries one Messenger Service pop-up ("net send" / WinPopup)
+// the stack received off \MAILSLOT\MESSNGR. From/To are the OEM names on the wire,
+// Text the message body. Topic()=="message". A UI subscribes to TopicMessage to
+// display these net-send events.
+type MessageReceived struct {
+	From string
+	To   string
+	Text string
+	Time time.Time
+}
+
+func (MessageReceived) Topic() string { return TopicMessage }
 
 // Field is one scalar log field; rendered by switch on Kind, not reflection.
 type Field struct {

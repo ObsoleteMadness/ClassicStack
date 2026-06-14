@@ -392,7 +392,7 @@ none of them should re-implement. So:
 
 ```
  NBF datagram   ─┐                  ┌─ \MAILSLOT\BROWSE ─► browser  (HostAnnounce/Election/…)
- NBIPX mailslot  ├─ DatagramConsumer ┤─ \MAILSLOT\MESSNGR ─► messenger (net send; future)
+ NBIPX mailslot  ├─ DatagramConsumer ┤─ \MAILSLOT\MESSNGR ─► messenger (net send; landed M7g)
  NBT  UDP-138   ─┘  (netbios.Datagram)│  mailslot router   └─ \MAILSLOT\LANMAN ─► (RAP datagram form)
                                       └─ unwraps the SMB_COM_TRANSACTION \MAILSLOT\* envelope,
                                          routes the INNER frame by mailslot name to the consumer
@@ -432,8 +432,10 @@ SMB_COM_TRANSACTION over a NetBIOS group/unique-name datagram. They are **not** 
 
 - `\MAILSLOT\BROWSE` — the browser (host/domain announcements, elections, GetBackupList).
 - `\MAILSLOT\LANMAN` — the RAP datagram form (older browse traffic).
-- `\MAILSLOT\MESSNGR` — the **messenger** service (`net send` / WinPopup), a likely future
-  consumer; the user has flagged wanting it.
+- `\MAILSLOT\MESSNGR` — the **messenger** service (`net send` / WinPopup); **landed (M7g)** as the
+  second consumer, proving the seam is multi-consumer. It receives a single-block [MS-MSRP] message,
+  logs it, and publishes `bus.MessageReceived` on the telemetry `message` topic (§5) for the UI; the
+  send half (`Service.SendMessage`) is the core a future `cmd/csnetsend` (T1) wraps.
 - (room for more — e.g. a DirectPlay-emulation consumer later.)
 
 So the mailslot envelope is its **own seam**, sitting between the consumers and the NetBIOS
@@ -1496,10 +1498,10 @@ CaptureSink ← Capture(FrameLink) tees frames; writers (adapters): capture/libp
 ### Event buses (`core/bus` primitive, two instances)
 ```
 bus.Bus (Publish/Subscribe(topics…))          ← ONE primitive (§5)
-  ├─ telemetry instance (core/bus): topics state/stats/log
-  │     events: StateChanged, StatSample{component.Stats}, LogRecord{[]Field}
-  │     producers: supervisor (state), components (stats), log bus-sink (log)
-  │     consumers: control.Plane.Subscribe → http/ubus/cli adapters; stats collector
+  ├─ telemetry instance (core/bus): topics state/stats/log/message
+  │     events: StateChanged, StatSample{component.Stats}, LogRecord{[]Field}, MessageReceived
+  │     producers: supervisor (state), components (stats), log bus-sink (log), messenger (message)
+  │     consumers: control.Plane.Subscribe → http/ubus/cli adapters; stats collector; UI net-send view
   └─ FS-mutation instance (core/fs): topic "fs"
         events: fs.Event{Op,HostPath,Origin,…}
         producers: file services, fork/name engines, fswatch adapter

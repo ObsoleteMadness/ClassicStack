@@ -106,7 +106,7 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 | M7c | `core/share`: thin Share descriptor (Name/FS/Config/ReadOnly/Description/Permissions-stub) + `Manager` CRUD; AFP `Volume` & SMB `Share` hold the shared Share; both services implement `share.Manager` (add/update/remove; RemoveShare keeps in-flight sessions) — contract + tests, supervisor wiring is M8a (§9d/§11) | M6a,M7 | claude | ✅ |
 | M7d | `core/service/browser` (optional, datagram-layer; §3-ter): NetBIOS browser broken out of `service/smb` into a standalone service common to NetBEUI/IPX/NBT. Plugs into the NetBIOS `DatagramConsumer` seam; parses `\MAILSLOT\BROWSE` (HostAnnounce/Election/GetBackupList/DomainAnnounce/LocalMaster); maintains browse list + election role; SMB asks for the list via a read-only `BrowseList()` seam over IPC$ `\PIPE\LANMAN`. Optional (registry `init()`); SMB carries no browser logic. **The RAP `NetServerEnum2` IPC$ consumer that calls `BrowseList()` is the SMB side (a follow-on in `core/service/smb`).** | M7 | claude | ✅ |
 | M7f | **Mailslot seam (§3-quater)** — lift the `\MAILSLOT\*` SMB_COM_TRANSACTION envelope out of `core/protocol/browser` into `core/protocol/mailslot`; add a mailslot dispatch layer (`Consumer` registered by mailslot name + `SendMailslot`) that plugs into the NetBIOS `DatagramConsumer`/`SendDatagram` seams; **rework `core/service/browser` to register for `\MAILSLOT\BROWSE` and handle ONLY browser frames** (no mailslot-envelope code). The browser sits entirely on top of NetBIOS via the mailslot layer; per-protocol framing stays in the NBF/NBIPX transports. Reshape of the M7d slice. | M7d | claude | ✅ |
-| M7g | **Messenger service `\MAILSLOT\MESSNGR`** (`net send` / WinPopup receive) — a second mailslot consumer, proving the seam is multi-consumer. Receive first; send/UI future. Optional. Depends on the M7f mailslot seam. | M7f | | ⬜ |
+| M7g | **Messenger service `\MAILSLOT\MESSNGR`** (`net send` / WinPopup receive) — a second mailslot consumer, proving the seam is multi-consumer. Receive first; send/UI future. Optional. Depends on the M7f mailslot seam. | M7f | claude | ✅ |
 | M8 | Logging cutover + control front-ends (http, ubus) + config codecs (toml/uci) | M5,M7 | | ⬜ |
 | M8a | Share config + Manager wiring: AFP/SMB volume `core/config` sections + `config → []fs.ShareSpec` mapper (options→Extra) in the registry factories; supervisor `Reconfigure` for an AFP/SMB section drives `share.Manager` Add/Update/Remove; `ParamsFor`-generated per-fs_type form masks `secret` params (§9d/§11). **Plus server identity (§4-bis):** top-level `config.Identity{Hostname,Workgroup}` (one source of truth, owned by NO service — SMB needs the hostname even with NetBIOS absent, e.g. direct-TCP `:445` / AFP-only); registry hands one `Hostname` to whichever consumers are enabled — SMB (`SetServerName`, advertised in NEGOTIATE), NetBIOS *if enabled*, browser *if linked*; no per-service hostname field so they cannot diverge; `Validate` backstops any externally-surfaced second name; the NetBIOS ≤15-byte/upper-case rule applies only when NetBIOS is enabled; `Hostname` change is restart-grade. | M7c,M8 | | ⬜ |
 | M9 | Platform integration (Windows svc / launchd / systemd / procd) | M8 | | ⬜ |
@@ -544,6 +544,20 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 >   frames. Per-NetBIOS-transport framing (NBF UI-frame / NBIPX NMPI-MailslotSend) ALREADY lives
 >   correctly in `core/service/netbios` — that part of M7d/M7d-d stands; only the mailslot-envelope
 >   layer moves out of the browser.
+> - **M7g — messenger service landed (this slice):** the §3-quater seam is proven multi-consumer.
+>   New `core/protocol/messenger` is the [MS-MSRP] single-block "net send"/WinPopup frame codec (a
+>   self-serialising `Message{From,To,Text}` DTO: type byte `0x01` + three NUL-terminated OEM strings);
+>   no live capture exists (`/captures` has none), so per CLAUDE.md rule 6 the wire layout is documented
+>   from [MS-MSRP] + the long-stable WinPopup form and the parser tolerates a missing trailing NUL. New
+>   `core/service/messenger` registers for `\MAILSLOT\MESSNGR` on the mailslot router as a second
+>   `mailslot.Consumer` alongside the browser — it holds **zero** mailslot-envelope and zero transport
+>   code (mirrors the browser's `MailslotSink`). On receive it decodes, **logs at Info** ("net send
+>   received", typed from/to/text), and **publishes `bus.MessageReceived` on the new `bus.TopicMessage`**
+>   so a UI can display net-send events (the user's ask). The send half (`Service.SendMessage` → a
+>   directed `\MAILSLOT\MESSNGR` write) is the core a future `cmd/csnetsend` (T1) wraps; the standalone
+>   binary + transport Link is deferred to T1 (user chose "core send half only"). `core/protocol/netbios`
+>   gains `NameTypeMessenger` (`<03>`). cs-tinygo blank-imports both new packages; archtest green;
+>   `go list -deps ./core/service/netbios` still carries neither messenger package (acyclic).
 > - **M7f — mailslot seam landed (this slice):** the layering correction is done. New
 >   `core/protocol/mailslot` holds the `\MAILSLOT\*` SMB_COM_TRANSACTION envelope codec (a
 >   self-serialising `Write` DTO + the well-known `NameBrowse`/`NameLANMAN`/`NameMessenger` consts),

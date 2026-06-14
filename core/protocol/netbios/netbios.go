@@ -31,6 +31,7 @@ const NameLength = 16
 // claiming or resolving.
 const (
 	NameTypeWorkstation uint8 = 0x00
+	NameTypeMessenger   uint8 = 0x03 // Messenger Service (net send / WinPopup) recipient
 	NameTypeFileServer  uint8 = 0x20 // SMB / file-server
 	NameTypeGroup       uint8 = 0x1E
 )
