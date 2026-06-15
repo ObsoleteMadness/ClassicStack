@@ -54,10 +54,11 @@ type ShareSection struct {
 	Options []string `toml:"options"`
 }
 
-// compile-time assertions: *ShareSection is a NamedSection.
+// compile-time assertions: *ShareSection is a NamedSection and a SecretMasker.
 var (
 	_ config.Section      = (*ShareSection)(nil)
 	_ config.NamedSection = (*ShareSection)(nil)
+	_ config.SecretMasker = (*ShareSection)(nil)
 )
 
 // Key returns the shared repeated-section schema key.
@@ -77,6 +78,30 @@ func (s *ShareSection) Clone() config.Section {
 	cp.AllowedUsers = append([]string(nil), s.AllowedUsers...)
 	cp.Options = append([]string(nil), s.Options...)
 	return &cp
+}
+
+// MaskedClone returns a deep copy with secret Options redacted (config.SecretMasker).
+// The fs_type's fs.Param schema names which option keys are Secret (a backend
+// password); their values become config.RedactedSecret so a config served to a UI
+// never carries the cleartext secret. Mirrors afp.VolumeSection.
+func (s *ShareSection) MaskedClone() config.Section {
+	cp := s.Clone().(*ShareSection)
+	cp.Options = fs.MaskSecretOptions(cp.FSType, cp.Options, config.RedactedSecret)
+	return cp
+}
+
+// Unmask returns a deep copy in which any secret Option still holding the redaction
+// sentinel is restored from prev (config.SecretMasker), so a UI round-tripping the
+// masked config does not overwrite a stored password with the placeholder. prev that
+// is not a *ShareSection (or nil) leaves nothing to restore.
+func (s *ShareSection) Unmask(prev config.Section) config.Section {
+	cp := s.Clone().(*ShareSection)
+	var prior []string
+	if pv, ok := prev.(*ShareSection); ok {
+		prior = pv.Options
+	}
+	cp.Options = fs.UnmaskSecretOptions(cp.FSType, cp.Options, prior, config.RedactedSecret)
+	return cp
 }
 
 // Validate checks the section in isolation. A share must have a name; the

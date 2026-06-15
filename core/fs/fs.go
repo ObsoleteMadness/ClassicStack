@@ -215,6 +215,77 @@ func ParamsFor(fsType string) []Param {
 	return fsFactories[strings.ToLower(fsType)].params
 }
 
+// secretKeys returns the set of option keys an fs_type marks fs.Param.Secret
+// (lower-cased for case-insensitive matching), or nil if the type declares none.
+func secretKeys(fsType string) map[string]bool {
+	var out map[string]bool
+	for _, p := range ParamsFor(fsType) {
+		if p.Secret {
+			if out == nil {
+				out = make(map[string]bool)
+			}
+			out[strings.ToLower(p.Key)] = true
+		}
+	}
+	return out
+}
+
+// MaskSecretOptions returns a copy of an "key=value" option list (the codec-friendly
+// carrier for ShareSpec.Extra) in which the value of every key the fs_type marks
+// Secret is replaced by sentinel. An empty value is left empty (so "unset" stays
+// distinguishable from "hidden"); a non-secret key is copied verbatim. When the type
+// declares no secret params the input is returned copied but unchanged. This is the
+// AFP-volume / SMB-share SecretMasker.MaskedClone helper.
+func MaskSecretOptions(fsType string, options []string, sentinel string) []string {
+	secrets := secretKeys(fsType)
+	out := make([]string, len(options))
+	for i, opt := range options {
+		k, v, hasEq := strings.Cut(opt, "=")
+		if !hasEq || !secrets[strings.ToLower(strings.TrimSpace(k))] || strings.TrimSpace(v) == "" {
+			out[i] = opt
+			continue
+		}
+		out[i] = strings.TrimSpace(k) + "=" + sentinel
+	}
+	return out
+}
+
+// UnmaskSecretOptions returns a copy of an inbound option list in which any secret
+// key still holding sentinel is restored from prev (the live stored option list).
+// A secret key whose value differs from sentinel is a genuine edit and is kept; a
+// sentinel-valued key with no prior value is dropped (cleared) rather than persisting
+// the placeholder. Non-secret keys are copied verbatim. This is the inverse of
+// MaskSecretOptions and the SecretMasker.Unmask helper.
+func UnmaskSecretOptions(fsType string, options, prev []string, sentinel string) []string {
+	secrets := secretKeys(fsType)
+	if len(secrets) == 0 {
+		out := make([]string, len(options))
+		copy(out, options)
+		return out
+	}
+	prior := make(map[string]string, len(prev))
+	for _, opt := range prev {
+		if k, v, ok := strings.Cut(opt, "="); ok {
+			prior[strings.ToLower(strings.TrimSpace(k))] = v
+		}
+	}
+	out := make([]string, 0, len(options))
+	for _, opt := range options {
+		k, v, hasEq := strings.Cut(opt, "=")
+		key := strings.ToLower(strings.TrimSpace(k))
+		if !hasEq || !secrets[key] || v != sentinel {
+			out = append(out, opt)
+			continue
+		}
+		// Sentinel value for a secret key → restore the stored value, or drop the
+		// entry entirely when there is nothing to restore (no prior secret set).
+		if pv, ok := prior[key]; ok {
+			out = append(out, strings.TrimSpace(k)+"="+pv)
+		}
+	}
+	return out
+}
+
 func lookupFactory(fsType string) (Factory, bool) {
 	fsFactoryMu.RLock()
 	defer fsFactoryMu.RUnlock()

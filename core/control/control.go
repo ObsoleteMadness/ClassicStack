@@ -115,11 +115,44 @@ func (p *plane) Config() (*config.Model, error) {
 	if m == nil {
 		return config.NewModel(), nil
 	}
-	return m.Clone(), nil
+	// Redact secret-valued fields (backend passwords in AFP volume / SMB share
+	// options) before the model leaves the process. MaskSecrets clones, so the live
+	// model is untouched; the inbound Reconfigure path restores any value a UI returns
+	// still bearing the placeholder.
+	return m.MaskSecrets(), nil
 }
 
 func (p *plane) Reconfigure(ctx context.Context, name string, section config.Section) error {
+	// Unmask before applying: a front-end edits the masked model (Config above) and
+	// submits a section whose secret fields may still hold config.RedactedSecret for
+	// values the operator did not change. Restore those from the live stored section so
+	// a blind round-trip never overwrites a stored secret with the placeholder.
+	section = p.unmaskAgainstLive(name, section)
 	return p.sup.Reconfigure(ctx, name, section)
+}
+
+// unmaskAgainstLive restores redacted secret fields in an inbound section from the
+// matching live section in the model. It is a no-op for a section that carries no
+// secrets (not a config.SecretMasker). The live counterpart is resolved as a singleton
+// (by Key) or, when the section is a repeated named instance, by its InstanceName.
+func (p *plane) unmaskAgainstLive(name string, section config.Section) config.Section {
+	sm, ok := section.(config.SecretMasker)
+	if !ok {
+		return section
+	}
+	m := p.sup.Model()
+	if m == nil {
+		return sm.Unmask(nil)
+	}
+	var prev config.Section
+	if ns, ok := section.(config.NamedSection); ok {
+		// Repeated instance: match by schema key + instance name.
+		prev, _ = m.Instance(ns.Key(), ns.InstanceName())
+	} else {
+		// Singleton: addressed by the component name (== section key).
+		prev, _ = m.Get(name)
+	}
+	return sm.Unmask(prev)
 }
 
 func (p *plane) Save(ctx context.Context) (revision string, err error) {

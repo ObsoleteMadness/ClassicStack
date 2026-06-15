@@ -838,6 +838,27 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > new ring (none exists in `adapter/` yet; legacy `service/webui` is old-ring); the logging cutover
 > (blocked on M10). **Still M8a:** `secret`-param form masking (UI/M8).
 
+> **M8a notes (secret-param masking — landed; the last core M8a item):** the `fs.Param.Secret` flag
+> now actually redacts on the management boundary. **`config.SecretMasker`** (core/config) is the
+> optional capability a Section implements when it carries secret-valued fields — `MaskedClone()`
+> (clone with secrets → `config.RedactedSecret` `"********"`) and `Unmask(prev)` (clone restoring any
+> still-sentinel field from the live stored section). `Model.MaskSecrets()` clones the model and masks
+> every SecretMasker section. **`control.Plane.Config()`** now returns `MaskSecrets()` — a secret never
+> leaves the process in clear — and **`Reconfigure`** unmasks the inbound section against the live one
+> (resolved as a singleton by Key, or a repeated instance by `InstanceName`) **before** delegating, so a
+> blind UI round-trip (resubmitting the placeholder) restores the stored secret instead of overwriting it;
+> a genuine edit (any non-sentinel value) is kept. The secret knowledge stays in the sections that own
+> their `fs_type`: **`afp.VolumeSection`** + **`smb.ShareSection`** implement SecretMasker via two
+> `core/fs` helpers, **`fs.MaskSecretOptions`/`fs.UnmaskSecretOptions`**, which consult `fs.ParamsFor`
+> for which `Options` keys are `Secret` (an empty value stays empty — "unset" vs "hidden" — case-
+> insensitive key match). core/config and core/control carry **no** fs-type knowledge (structural
+> interface, like `HostPathProvider`); reflection-free, archtest + both TinyGo amd64 gates green. Tests:
+> `core/fs` (mask/unmask/round-trip/no-secrets/no-prior), `core/service/{afp,smb}` (section
+> MaskedClone/Unmask + edit-kept), `core/control` (Config masks + live model untouched; Reconfigure
+> unmasks a blind round-trip and passes an edit through). **This closes the core M8a slice list.** The
+> SPA's secret-input form hint (render a password field for a `Secret` param) is the only remaining piece
+> and is M8/webui (front-end markup over the already-exposed `ListFSTypes`/`ParamsFor` schema).
+
 ---
 
 ## How to claim a task

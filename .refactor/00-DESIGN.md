@@ -1111,6 +1111,23 @@ backend at runtime; all are config the operator (and the UI) can see and pin:
   redacted in logs/diagnostics and masked in the UI. The protocol services and `core/share`
   never see these keys — backend config stays behind `core/fs`.
 
+  **Secret masking on the management boundary (M8a).** The `Secret` flag is enforced at the
+  one seam every front-end goes through — `control.Plane`. A config Section that carries
+  secret-valued fields implements the optional **`config.SecretMasker`** capability
+  (`MaskedClone()` → a clone with secrets replaced by the fixed sentinel
+  `config.RedactedSecret` = `"********"`; `Unmask(prev)` → a clone restoring any still-sentinel
+  field from the live stored section). `Plane.Config()` returns `Model.MaskSecrets()` so a
+  secret never leaves the process in clear, and `Plane.Reconfigure` unmasks the inbound section
+  against the live one *before* applying — so a UI that blindly round-trips the masked model
+  (resubmitting the placeholder for fields it did not touch) restores the stored secret rather
+  than overwriting it with asterisks, while a genuine edit (any non-sentinel value) is kept.
+  The secret knowledge lives in the sections that own their `fs_type` (`afp.VolumeSection`,
+  `smb.ShareSection`), which consult `fs.ParamsFor` via the `fs.MaskSecretOptions` /
+  `fs.UnmaskSecretOptions` helpers; `core/config` and `core/control` stay free of any fs-type
+  knowledge (a structural interface, like `HostPathProvider`). All reflection-free — the
+  masking is hand-rolled `key=value` splitting, so `core/fs`/`core/config`/`core/control`
+  remain TinyGo-clean.
+
 The share-build **validates the combination** (e.g. `hfs-image` ⇒ `native` forks; read-only
 `zipfs` ⇒ `appledouble` only) and **validates each backend's required params** (e.g. an `ftp`
 share missing `url`), rejecting incompatible or under-specified shares at config time, so a

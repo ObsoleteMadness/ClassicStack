@@ -148,6 +148,61 @@ type HostPathProvider interface {
 	HostPath() string
 }
 
+// RedactedSecret is the placeholder a masked secret value is replaced with on the
+// way OUT to a management front-end (control.Plane.Config). It is deliberately a
+// fixed, recognisable sentinel: a UI that round-trips the model and submits it back
+// unchanged sends RedactedSecret for any field it did not edit, and the inbound
+// unmask (SecretMasker.Unmask) restores the real stored value rather than persisting
+// the placeholder. A user who genuinely wants a literal value of these asterisks is
+// not a case the compatibility-server posture needs to serve.
+const RedactedSecret = "********"
+
+// SecretMasker is the optional capability a Section implements when it carries
+// secret-valued fields (a backend password in an AFP volume / SMB share's options).
+// The control plane masks on the way out and unmasks on the way back in, so a secret
+// never leaves the process in clear and a blind round-trip never overwrites it with
+// the placeholder. A section that knows its own schema (which option keys its fs_type
+// marks fs.Param.Secret) implements this; core/config and core/control stay free of
+// any fs-type knowledge.
+//
+// The interface is value-clean: both methods return a fresh Section (a clone), never
+// mutating the receiver — mirroring Clone — so masking the model for display never
+// disturbs the live model.
+type SecretMasker interface {
+	// MaskedClone returns a deep copy with every secret-valued field replaced by
+	// RedactedSecret. A field that is empty (no secret set) is left empty, not
+	// masked, so the UI can tell "no password" from "password hidden".
+	MaskedClone() Section
+	// Unmask returns a deep copy in which any field still holding RedactedSecret is
+	// restored from the corresponding field of prev (the live stored section). A
+	// field the caller actually changed (anything other than the sentinel) is kept
+	// verbatim. prev may be nil (a brand-new instance with no prior value), in which
+	// case a sentinel-valued field is cleared rather than restored.
+	Unmask(prev Section) Section
+}
+
+// MaskSecrets returns a clone of the model in which every SecretMasker section has its
+// secret fields redacted (RedactedSecret). It is the shape the control plane hands to
+// a front-end: the model is faithfully reproduced except that secrets read as the
+// placeholder. Non-masking sections are copied unchanged.
+func (m *Model) MaskSecrets() *Model {
+	c := m.Clone()
+	for k, s := range c.Sections {
+		if sm, ok := s.(SecretMasker); ok {
+			c.Sections[k] = sm.MaskedClone()
+		}
+	}
+	for k, list := range c.Lists {
+		for i, s := range list {
+			if sm, ok := s.(SecretMasker); ok {
+				list[i] = sm.MaskedClone()
+			}
+		}
+		c.Lists[k] = list
+	}
+	return c
+}
+
 // HostPaths returns the distinct, non-empty host directories backing the model's
 // repeated sections (AFP volumes / SMB shares), for the §10e host-filesystem watcher
 // to watch. Order follows registration; duplicates (an AFP volume and SMB share on

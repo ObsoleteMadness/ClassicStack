@@ -50,10 +50,11 @@ type VolumeSection struct {
 	Options []string `toml:"options"`
 }
 
-// compile-time assertions: *VolumeSection is a NamedSection.
+// compile-time assertions: *VolumeSection is a NamedSection and a SecretMasker.
 var (
 	_ config.Section      = (*VolumeSection)(nil)
 	_ config.NamedSection = (*VolumeSection)(nil)
+	_ config.SecretMasker = (*VolumeSection)(nil)
 )
 
 // Key returns the shared repeated-section schema key.
@@ -73,6 +74,31 @@ func (s *VolumeSection) Clone() config.Section {
 	cp.AllowedUsers = append([]string(nil), s.AllowedUsers...)
 	cp.Options = append([]string(nil), s.Options...)
 	return &cp
+}
+
+// MaskedClone returns a deep copy with secret Options redacted (config.SecretMasker).
+// The fs_type's fs.Param schema names which option keys are Secret (a backend
+// password); their values become config.RedactedSecret so a config served to a UI
+// never carries the cleartext secret.
+func (s *VolumeSection) MaskedClone() config.Section {
+	cp := s.Clone().(*VolumeSection)
+	cp.Options = fs.MaskSecretOptions(cp.FSType, cp.Options, config.RedactedSecret)
+	return cp
+}
+
+// Unmask returns a deep copy in which any secret Option still holding the redaction
+// sentinel is restored from prev (config.SecretMasker), so a UI round-tripping the
+// masked config does not overwrite a stored password with the placeholder. prev that
+// is not a *VolumeSection (or nil) leaves nothing to restore — a sentinel-valued
+// secret is then dropped rather than persisted.
+func (s *VolumeSection) Unmask(prev config.Section) config.Section {
+	cp := s.Clone().(*VolumeSection)
+	var prior []string
+	if pv, ok := prev.(*VolumeSection); ok {
+		prior = pv.Options
+	}
+	cp.Options = fs.UnmaskSecretOptions(cp.FSType, cp.Options, prior, config.RedactedSecret)
+	return cp
 }
 
 // Validate checks the section in isolation. A volume must have a name; the

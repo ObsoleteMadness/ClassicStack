@@ -3,8 +3,47 @@ package smb
 import (
 	"testing"
 
+	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
+	"github.com/ObsoleteMadness/ClassicStack/core/fs"
+	"github.com/ObsoleteMadness/ClassicStack/core/metastore"
 )
+
+// TestShareSectionSecretMasking mirrors the AFP volume masking test: MaskedClone
+// redacts a secret-keyed option, Unmask restores the sentinel from the live section
+// and keeps a genuine edit.
+func TestShareSectionSecretMasking(t *testing.T) {
+	fs.RegisterFSWithParams("test-smb-secret", func(_ fs.ShareSpec, _ bus.Bus, _ metastore.Store) (fs.FileSystem, error) {
+		return nil, nil
+	},
+		fs.Param{Key: "username"},
+		fs.Param{Key: "password", Secret: true},
+	)
+
+	live := &ShareSection{
+		SName:   "Public",
+		FSType:  "test-smb-secret",
+		Options: []string{"username=alice", "password=hunter2"},
+	}
+
+	masked := live.MaskedClone().(*ShareSection)
+	if masked.Options[1] != "password="+config.RedactedSecret {
+		t.Fatalf("secret option not redacted: %q", masked.Options[1])
+	}
+	if live.Options[1] != "password=hunter2" {
+		t.Fatalf("MaskedClone mutated the receiver: %q", live.Options[1])
+	}
+
+	unmasked := masked.Unmask(live).(*ShareSection)
+	if unmasked.Options[1] != "password=hunter2" {
+		t.Fatalf("Unmask did not restore the stored secret: %q", unmasked.Options[1])
+	}
+
+	edited := &ShareSection{SName: "Public", FSType: "test-smb-secret", Options: []string{"password=newpw"}}
+	if got := edited.Unmask(live).(*ShareSection).Options[0]; got != "password=newpw" {
+		t.Fatalf("Unmask clobbered an edited secret: %q", got)
+	}
+}
 
 func TestShareSectionSpecMapsFields(t *testing.T) {
 	ss := &ShareSection{

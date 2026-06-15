@@ -200,6 +200,101 @@ func TestPlane_SaveNetBIOSHostnameRuleGated(t *testing.T) {
 	}
 }
 
+// secretSection is a minimal config.SecretMasker + NamedSection: one named instance
+// carrying a single secret value, so the plane's Config-mask / Reconfigure-unmask path
+// can be exercised without importing a file-service package. MaskedClone redacts the
+// value; Unmask restores config.RedactedSecret from the prior instance.
+type secretSection struct {
+	key    string
+	name   string
+	secret string
+}
+
+func (s *secretSection) Key() string           { return s.key }
+func (s *secretSection) InstanceName() string  { return s.name }
+func (s *secretSection) Validate() error       { return nil }
+func (s *secretSection) Clone() config.Section { cp := *s; return &cp }
+func (s *secretSection) MaskedClone() config.Section {
+	cp := *s
+	if cp.secret != "" {
+		cp.secret = config.RedactedSecret
+	}
+	return &cp
+}
+func (s *secretSection) Unmask(prev config.Section) config.Section {
+	cp := *s
+	if cp.secret == config.RedactedSecret {
+		if pv, ok := prev.(*secretSection); ok {
+			cp.secret = pv.secret
+		} else {
+			cp.secret = ""
+		}
+	}
+	return &cp
+}
+
+// recordingSupervisor captures the section handed to Reconfigure so a test can assert
+// the plane unmasked it before delegating.
+type recordingSupervisor struct {
+	fakeSupervisor
+	gotSection config.Section
+}
+
+func (s *recordingSupervisor) Reconfigure(_ context.Context, name string, section config.Section) error {
+	s.lastName = name
+	s.gotSection = section
+	return nil
+}
+
+// TestPlane_ConfigMasksSecrets asserts Config() redacts a SecretMasker section's secret
+// and leaves the live model untouched (mask operates on a clone).
+func TestPlane_ConfigMasksSecrets(t *testing.T) {
+	m := config.NewModel()
+	m.AddInstance(&secretSection{key: "AFPVolumes", name: "Public", secret: "hunter2"})
+	sup := &fakeSupervisor{model: m}
+	p := New(sup, fakeCodec{}, &fakeStore{}, bus.New(2))
+
+	cfg, err := p.Config()
+	if err != nil {
+		t.Fatalf("Config(): %v", err)
+	}
+	got := cfg.List("AFPVolumes")[0].(*secretSection)
+	if got.secret != config.RedactedSecret {
+		t.Fatalf("Config() did not mask the secret: %q", got.secret)
+	}
+	// Live model still holds the cleartext.
+	if live := m.List("AFPVolumes")[0].(*secretSection); live.secret != "hunter2" {
+		t.Fatalf("Config() mutated the live model: %q", live.secret)
+	}
+}
+
+// TestPlane_ReconfigureUnmasksSecrets asserts a blind round-trip (submitting the masked
+// sentinel) restores the stored secret, while a genuine edit is kept.
+func TestPlane_ReconfigureUnmasksSecrets(t *testing.T) {
+	m := config.NewModel()
+	m.AddInstance(&secretSection{key: "AFPVolumes", name: "Public", secret: "hunter2"})
+	sup := &recordingSupervisor{fakeSupervisor: fakeSupervisor{model: m}}
+	p := New(sup, fakeCodec{}, &fakeStore{}, bus.New(2))
+
+	// Blind round-trip: submit the masked sentinel → stored secret restored.
+	in := &secretSection{key: "AFPVolumes", name: "Public", secret: config.RedactedSecret}
+	if err := p.Reconfigure(context.Background(), "Public", in); err != nil {
+		t.Fatalf("Reconfigure(): %v", err)
+	}
+	if got := sup.gotSection.(*secretSection).secret; got != "hunter2" {
+		t.Fatalf("Reconfigure did not unmask the secret: %q", got)
+	}
+
+	// Genuine edit: a non-sentinel value is passed through verbatim.
+	edit := &secretSection{key: "AFPVolumes", name: "Public", secret: "newpw"}
+	if err := p.Reconfigure(context.Background(), "Public", edit); err != nil {
+		t.Fatalf("Reconfigure(edit): %v", err)
+	}
+	if got := sup.gotSection.(*secretSection).secret; got != "newpw" {
+		t.Fatalf("Reconfigure clobbered an edited secret: %q", got)
+	}
+}
+
 func TestPlane_SubscribeStateTopic(t *testing.T) {
 	tb := bus.New(4)
 	sup := &fakeSupervisor{model: config.NewModel()}
