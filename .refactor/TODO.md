@@ -635,6 +635,21 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > / sqlite user stores under `adapter/auth/*`; file-level ACLs / per-user read-only; AFP DHX & SMB
 > NTLM challenge UAMs.
 
+> **M8 notes (config-codec round-trip + UCI fix — partial M8):** the TOML/UCI codecs and the
+> file/UCI stores were already built (B6/D4/D6); this slice adds the missing **real-section**
+> round-trip coverage and fixes a latent codec bug it surfaced. The new M8a `Auth` section now has
+> explicit round-trip tests through **both** codecs (`adapter/config/{toml,uci}/auth_roundtrip_test.go`)
+> plus an end-to-end **codec→file.Store→codec** persistence test (the path the control plane's
+> config-apply drives), proving the store selector a user writes is what `auth.SectionFromModel`
+> reads back. **Bug fixed:** the UCI tokenizer dropped an empty quoted value (`option key ''`), so a
+> default `config.Model` — whose well-known `Logging.Level` is `""` — could not be reloaded through
+> UCI (the whole `Unmarshal` failed on the short option line); the tokenizer now emits an empty
+> token when a quote was opened. Documented in `spec/errata.md` "UCI empty-quoted-value tokenizer".
+> **Still M8, NOT done by this slice:** the logging cutover (live `internal/app`/`pkg/logging`/
+> `netlog` onto `core/log` + bus sink) is blocked on the M8/M10 compose cutover; the HTTP/ubus
+> control front-ends + SPA; and the AFP/SMB **volume** config sections / multi-share UCI named
+> sections (M8a, the `config→[]fs.ShareSpec` mapper).
+
 ---
 
 ## How to claim a task

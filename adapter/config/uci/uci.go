@@ -227,6 +227,10 @@ func tokenize(line string) []string {
 	var tokens []string
 	var current strings.Builder
 	inQuote := false
+	// quoted records that the current token had an opening quote, so an empty
+	// quoted value ('' — e.g. an unset string option) emits an empty token
+	// rather than being dropped (which would corrupt the option's arity).
+	quoted := false
 	var quoteChar rune
 
 	runes := []rune(line)
@@ -241,18 +245,20 @@ func tokenize(line string) []string {
 		} else {
 			if r == '\'' || r == '"' {
 				inQuote = true
+				quoted = true
 				quoteChar = r
 			} else if r == ' ' || r == '\t' {
-				if current.Len() > 0 {
+				if current.Len() > 0 || quoted {
 					tokens = append(tokens, current.String())
 					current.Reset()
+					quoted = false
 				}
 			} else {
 				current.WriteRune(r)
 			}
 		}
 	}
-	if current.Len() > 0 {
+	if current.Len() > 0 || quoted {
 		tokens = append(tokens, current.String())
 	}
 	return tokens

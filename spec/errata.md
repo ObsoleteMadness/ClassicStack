@@ -110,3 +110,15 @@ A volume whose backend does **not** advertise `Capabilities().CatSearch` (or doe
 **What we do:** "No User Authent" is always a guest login. "Cleartxt Passwrd" is a guest login when no user store is wired (the historical world-readable default); with a store wired, a non-empty user name is validated against it (wrong password → `kFPUserNotAuth`), and an empty name is admitted as guest. The resolved identity is recorded on the session and gates which volumes it may **enumerate** (FPGetSrvrParms omits volumes the identity may not access) and **open** (FPOpenVol returns `kFPObjectNotFound` for a restricted volume, not leaking its existence). The gate is at login because a client logs in once and opens volumes under one identity; the allow-list is share-level (`share.Permissions.AllowedUsers`), not file-level ACLs, and `ReadOnly` stays share-wide.
 
 **Where:** `core/service/afp/{handlers.go,afp.go}` (`afpLogin`, `SetAuthenticator`, `afpGetSrvrParms`, `afpOpenVol`); the store + PBKDF2 in `core/auth` + `adapter/auth/local`; the allow-list in `core/share/permissions.go`.
+
+## Config codecs (§4)
+
+### UCI empty-quoted-value tokenizer (M8)
+
+**Spec:** OpenWRT UCI renders a string option as `option <key> '<value>'`; an unset string is `option <key> ''` — an empty single-quoted value is a valid, present value (the empty string), distinct from an absent option.
+
+**Observed:** the `adapter/config/uci` tokenizer dropped any token whose accumulated text was empty, so `''` produced zero tokens. An `option key ''` line then had only two tokens, tripped the `len(tokens) < 3` arity check, and failed the **whole** `Unmarshal`. Because a default `config.Model` has empty well-known string fields (e.g. `Logging.Level == ""`), a freshly-marshalled default model could not be reloaded through UCI — only models that happened to set every string field round-tripped.
+
+**What we do:** the tokenizer now tracks whether the current token was opened with a quote (`quoted`) and emits an empty token at the next separator/EOL when it was, so `''` yields one empty-string token. An unquoted run of whitespace still collapses to nothing. TOML was never affected (go-toml represents empty strings natively).
+
+**Where:** `adapter/config/uci/uci.go` (`tokenize`); regression in `adapter/config/uci/auth_roundtrip_test.go` (`TestEmptyStringOptionRoundTrips`).
