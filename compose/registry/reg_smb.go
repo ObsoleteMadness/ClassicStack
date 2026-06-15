@@ -22,9 +22,21 @@ func init() {
 		// spec (invalid fs_type×fork×codec triple or missing required param) fails
 		// the build loudly here rather than mangling names at runtime.
 		specs := smb.SpecsFromModel(m)
+		var (
+			svc *smb.Service
+			err error
+		)
 		if len(specs) == 0 {
-			return smb.New(logger), nil
+			svc = smb.New(logger)
+		} else if svc, err = smb.NewWithShares(logger, specs...); err != nil {
+			return nil, err
 		}
-		return smb.NewWithShares(logger, specs...)
+		// Wire the hot-apply resolver: a Reconfigure of an SMB share section then
+		// reconciles the live share set against the model via share.Manager
+		// (Add/Update/Remove) without restarting the service (§11b).
+		svc.SetShareResolver(func() ([]smb.ShareSpec, error) {
+			return smb.SpecsFromModel(m), nil
+		})
+		return svc, nil
 	})
 }

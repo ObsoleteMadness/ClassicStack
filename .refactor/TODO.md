@@ -672,7 +672,25 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > failing loudly on a bad spec; a model with no shares yields the historical zero-share service. The
 > SMB `share.Manager` surface (Add/Update/RemoveShare) was already in from M7c. Both file services
 > are now config-driven through the same repeated-section mechanism. **Still M8a:** the supervisor
-> `Reconfigure`→`share.Manager` hot-apply path, server identity (§4-bis), §10d shared-bus.
+> `Reconfigure`→`share.Manager` hot-apply path (landed in the follow-on below), server identity
+> (§4-bis), §10d shared-bus.
+
+> **M8a notes (supervisor share hot-apply — partial M8a):** the `Reconfigure`→`share.Manager`
+> hot-apply path the two config-section slices enabled. Both file services now implement
+> `component.Configurable`: **`ApplyConfig` ignores the passed section** (the file-service "config"
+> is the *set* of repeated volume/share sections in `config.Model.Lists`, not a singleton section)
+> and instead **re-resolves the whole desired set from the model and reconciles** it against the
+> live shares via `share.Manager` — `afp.Service.ReconcileVolumes` / `smb.Service.ReconcileShares`,
+> keyed by name (case-insensitively for SMB, as tree-connect matches): add new, update changed
+> (rebuild that one share's stack — AFP preserves the volume's protocol-assigned id across an
+> update), remove dropped. Reconcile is **all-or-nothing**: it builds the full desired set before
+> swapping, so a bad triple/param in one section aborts the reconcile leaving the live shares
+> untouched. The model→spec closure is wired by the registry (`reg_{afp,smb}.go` `SetVolumeResolver`/
+> `SetShareResolver`, closing over the model and `SpecsFromModel`); **no resolver wired (a unit-level
+> service) → `ApplyConfig` returns `ErrNeedsRestart`** so the supervisor falls back to its rebuild
+> path. So editing one share in the UI now reconciles live (no AFP/SMB restart, in-flight sessions
+> undisturbed) instead of rebuilding the whole service. **Still M8a:** server identity (§4-bis),
+> §10d shared-bus; `secret`-param form masking (mostly UI/M8).
 
 > **M8 notes (config-codec round-trip + UCI fix — partial M8):** the TOML/UCI codecs and the
 > file/UCI stores were already built (B6/D4/D6); this slice adds the missing **real-section**

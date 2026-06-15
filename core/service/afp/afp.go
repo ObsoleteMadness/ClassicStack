@@ -95,10 +95,11 @@ type Service struct {
 	sessions      *sessionTable
 	pendingWrites *pendingWriteTable
 
-	mu      sync.Mutex
-	rtr     router.ServiceRouter
-	auth    Authenticator
-	running bool
+	mu       sync.Mutex
+	rtr      router.ServiceRouter
+	auth     Authenticator
+	resolver func() ([]VolumeSpec, error) // re-resolves the desired volume set from the model; set at wire time for hot-apply
+	running  bool
 }
 
 // Authenticator validates a (username, cleartext password) credential. It is the
@@ -293,6 +294,105 @@ func (s *Service) allocVolIDLocked() uint16 {
 	return 0
 }
 
+// --- component.Configurable: hot-apply a changed volume set without restart ---
+
+// SetVolumeResolver installs the closure the supervisor's Reconfigure consults to
+// re-resolve the desired volume set from the (already-updated) shared model. The
+// compose registry supplies it (a closure over SpecsFromModel(model)); without it
+// ApplyConfig reports ErrNeedsRestart so the supervisor falls back to a full
+// rebuild. Idempotent; safe before Start.
+func (s *Service) SetVolumeResolver(resolve func() ([]VolumeSpec, error)) {
+	s.mu.Lock()
+	s.resolver = resolve
+	s.mu.Unlock()
+}
+
+// ApplyConfig hot-applies a changed volume set (§11b): the AFP "config" is the set
+// of repeated volume sections (config.Model.Lists[VolumesKey]), not a singleton
+// section, so the passed section payload is ignored — ApplyConfig re-resolves the
+// whole desired set from the model and reconciles it against the live volumes via
+// the share.Manager (Add new, Update changed, Remove dropped). A volume's fs-type /
+// backend change is absorbed by UpdateShare rebuilding that one volume's stack — no
+// service restart, and unrelated sessions are undisturbed. When no resolver is wired
+// (e.g. a unit-level service with no compose root) it returns ErrNeedsRestart so the
+// supervisor falls back to the rebuild path.
+func (s *Service) ApplyConfig(_ any) error {
+	s.mu.Lock()
+	resolve := s.resolver
+	s.mu.Unlock()
+	if resolve == nil {
+		return component.ErrNeedsRestart
+	}
+	desired, err := resolve()
+	if err != nil {
+		return err
+	}
+	return s.ReconcileVolumes(desired)
+}
+
+// ReconcileVolumes brings the live volume set to match desired, keyed by volume
+// name: a name present only in desired is added, one present in both is updated
+// (rebuilding its stack, preserving its AFP id), one present only live is removed.
+// It assigns ids and builds every volume before mutating, so a bad spec in the set
+// aborts the whole reconcile leaving the live volumes untouched (all-or-nothing).
+// Order of the surviving volumes follows desired.
+func (s *Service) ReconcileVolumes(desired []VolumeSpec) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Map live volumes by name so an updated spec keeps its protocol-assigned id, and
+	// seed the used-id set with the ids the surviving volumes keep.
+	live := make(map[string]*Volume, len(s.volumes))
+	for _, v := range s.volumes {
+		live[v.Name()] = v
+	}
+	used := make(map[uint16]bool, len(desired))
+	for _, spec := range desired {
+		if existing, ok := live[spec.Name]; ok && spec.ID == 0 {
+			used[existing.ID()] = true
+		} else if spec.ID != 0 {
+			used[spec.ID] = true
+		}
+	}
+	nextID := func() uint16 {
+		for id := uint16(1); id != 0; id++ {
+			if !used[id] {
+				used[id] = true
+				return id
+			}
+		}
+		return 0
+	}
+
+	// Build the full desired set first (a bad triple/param fails before any swap).
+	out := make([]*Volume, 0, len(desired))
+	seen := make(map[string]bool, len(desired))
+	for _, spec := range desired {
+		if seen[spec.Name] {
+			return share.ErrDuplicateShare
+		}
+		seen[spec.Name] = true
+		id := spec.ID
+		switch {
+		case id != 0:
+			// caller-pinned id; honoured as-is
+		case live[spec.Name] != nil:
+			id = live[spec.Name].ID() // preserve the id across an update
+		default:
+			if id = nextID(); id == 0 {
+				return errVolumeIDsExhausted
+			}
+		}
+		v, err := NewVolume(VolumeSpec{ID: id, Name: spec.Name, Share: spec.Share})
+		if err != nil {
+			return err
+		}
+		out = append(out, v)
+	}
+	s.volumes = out
+	return nil
+}
+
 // serverInfo returns the advertised identity with defaults filled in.
 func (s *Service) serverInfo() ServerInfo {
 	info := s.info
@@ -377,7 +477,8 @@ func (s *Service) logf(msg string) {
 
 // compile-time assertions.
 var (
-	_ component.Component = (*Service)(nil)
-	_ router.Service      = (*Service)(nil)
-	_ share.Manager       = (*Service)(nil)
+	_ component.Component    = (*Service)(nil)
+	_ component.Configurable = (*Service)(nil)
+	_ router.Service         = (*Service)(nil)
+	_ share.Manager          = (*Service)(nil)
 )

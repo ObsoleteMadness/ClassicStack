@@ -69,9 +69,10 @@ type Service struct {
 	browser BrowseProvider // browse-list source for IPC$ NetServerEnum2 (the browser service); optional
 	auth    Authenticator  // credential validator consulted at SESSION_SETUP; nil = guest-only
 
-	mu      sync.Mutex
-	running bool
-	closers []circuitCloser // SMB-owned session transports (e.g. direct-IPX); torn down on Stop
+	mu       sync.Mutex
+	running  bool
+	closers  []circuitCloser             // SMB-owned session transports (e.g. direct-IPX); torn down on Stop
+	resolver func() ([]ShareSpec, error) // re-resolves the desired share set from the model; set at wire time for hot-apply
 }
 
 // Authenticator validates a (username, cleartext password) credential. It is the
@@ -213,6 +214,70 @@ func (s *Service) RemoveShare(name string) error {
 	return share.ErrNoSuchShare
 }
 
+// --- component.Configurable: hot-apply a changed share set without restart ---
+
+// SetShareResolver installs the closure the supervisor's Reconfigure consults to
+// re-resolve the desired share set from the (already-updated) shared model. The
+// compose registry supplies it (a closure over SpecsFromModel(model)); without it
+// ApplyConfig reports ErrNeedsRestart so the supervisor falls back to a full
+// rebuild. Idempotent; safe before Start.
+func (s *Service) SetShareResolver(resolve func() ([]ShareSpec, error)) {
+	s.mu.Lock()
+	s.resolver = resolve
+	s.mu.Unlock()
+}
+
+// ApplyConfig hot-applies a changed share set (§11b): the SMB "config" is the set of
+// repeated share sections (config.Model.Lists[SharesKey]), not a singleton section,
+// so the passed section payload is ignored — ApplyConfig re-resolves the whole
+// desired set from the model and reconciles it against the live shares via the
+// share.Manager (Add new, Update changed, Remove dropped). A share's fs-type/backend
+// change is absorbed by UpdateShare rebuilding that one share's stack — no service
+// restart, and in-flight tree connects are undisturbed. When no resolver is wired it
+// returns ErrNeedsRestart so the supervisor falls back to the rebuild path.
+func (s *Service) ApplyConfig(_ any) error {
+	s.mu.Lock()
+	resolve := s.resolver
+	s.mu.Unlock()
+	if resolve == nil {
+		return component.ErrNeedsRestart
+	}
+	desired, err := resolve()
+	if err != nil {
+		return err
+	}
+	return s.ReconcileShares(desired)
+}
+
+// ReconcileShares brings the live share set to match desired, keyed (case-insensitively,
+// as tree-connect matches) by share name: a name present only in desired is added, one
+// present in both is updated (rebuilding its stack), one present only live is removed.
+// It builds every share before mutating, so a bad spec in the set aborts the whole
+// reconcile leaving the live shares untouched (all-or-nothing). Order of the surviving
+// shares follows desired.
+func (s *Service) ReconcileShares(desired []ShareSpec) error {
+	// Build the full desired set first (outside the service lock) so a bad
+	// triple/param fails before anything is swapped in.
+	built := make([]*Share, 0, len(desired))
+	seen := make(map[string]bool, len(desired))
+	for _, spec := range desired {
+		key := strings.ToLower(spec.Name)
+		if seen[key] {
+			return share.ErrDuplicateShare
+		}
+		seen[key] = true
+		sh, err := NewShare(spec)
+		if err != nil {
+			return err
+		}
+		built = append(built, sh)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.shares = built
+	return nil
+}
+
 // Start brings the service up. Idempotent (§3).
 func (s *Service) Start(ctx context.Context) error {
 	_ = ctx
@@ -257,6 +322,7 @@ func (s *Service) logf(msg string) {
 
 // compile-time assertions.
 var (
-	_ component.Component = (*Service)(nil)
-	_ share.Manager       = (*Service)(nil)
+	_ component.Component    = (*Service)(nil)
+	_ component.Configurable = (*Service)(nil)
+	_ share.Manager          = (*Service)(nil)
 )

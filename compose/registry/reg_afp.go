@@ -17,18 +17,37 @@ func init() {
 
 	Register(afp.Name, func(m *config.Model) (component.Component, error) {
 		logger := log.New(afp.Name, log.NewStderrSink(log.NewLevelVar(log.Info)))
+		// volSpecsFromModel maps the configured volume sections to VolumeSpecs with
+		// id 1..N in registration order. Shared by the initial build and the
+		// hot-apply resolver so both see one definition of "the desired set".
+		volSpecsFromModel := func(m *config.Model) []afp.VolumeSpec {
+			specs := afp.SpecsFromModel(m)
+			out := make([]afp.VolumeSpec, 0, len(specs))
+			for i, spec := range specs {
+				out = append(out, afp.VolumeSpec{ID: uint16(i + 1), Name: spec.Name, Share: spec})
+			}
+			return out
+		}
 		// Build one Volume per configured AFP volume section. A model with no
 		// volumes yields a service with none (the historical zero-config default);
 		// a bad spec (invalid fs_type×fork×codec triple or missing required param)
 		// fails the build loudly here rather than mangling names at runtime.
-		specs := afp.SpecsFromModel(m)
-		if len(specs) == 0 {
-			return afp.New(logger), nil
+		volSpecs := volSpecsFromModel(m)
+		var (
+			svc *afp.Service
+			err error
+		)
+		if len(volSpecs) == 0 {
+			svc = afp.New(logger)
+		} else if svc, err = afp.NewWithVolumes(logger, volSpecs...); err != nil {
+			return nil, err
 		}
-		volSpecs := make([]afp.VolumeSpec, 0, len(specs))
-		for i, spec := range specs {
-			volSpecs = append(volSpecs, afp.VolumeSpec{ID: uint16(i + 1), Name: spec.Name, Share: spec})
-		}
-		return afp.NewWithVolumes(logger, volSpecs...)
+		// Wire the hot-apply resolver: a Reconfigure of an AFP volume section then
+		// reconciles the live volume set against the model via share.Manager
+		// (Add/Update/Remove) without restarting the service (§11b).
+		svc.SetVolumeResolver(func() ([]afp.VolumeSpec, error) {
+			return volSpecsFromModel(m), nil
+		})
+		return svc, nil
 	})
 }
