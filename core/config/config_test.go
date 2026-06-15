@@ -270,6 +270,27 @@ func (s *volSection) Key() string          { return "Vols" }
 func (s *volSection) InstanceName() string { return s.VName }
 func (s *volSection) Clone() Section       { c := *s; return &c }
 func (s *volSection) Validate() error      { return nil }
+func (s *volSection) HostPath() string     { return s.Path }
+
+func TestHostPathsDistinctNonEmpty(t *testing.T) {
+	m := NewModel()
+	m.AddInstance(&volSection{VName: "a", Path: "/srv/a"})
+	m.AddInstance(&volSection{VName: "b", Path: "/srv/b"})
+	m.AddInstance(&volSection{VName: "c", Path: "/srv/a"}) // duplicate path → collapsed
+	m.AddInstance(&volSection{VName: "d", Path: ""})       // synthetic backend → skipped
+
+	paths := m.HostPaths()
+	if len(paths) != 2 {
+		t.Fatalf("HostPaths = %v, want 2 distinct non-empty", paths)
+	}
+	seen := map[string]bool{}
+	for _, p := range paths {
+		seen[p] = true
+	}
+	if !seen["/srv/a"] || !seen["/srv/b"] {
+		t.Fatalf("HostPaths = %v, want /srv/a and /srv/b", paths)
+	}
+}
 
 func TestAddInstanceAndList(t *testing.T) {
 	m := NewModel()

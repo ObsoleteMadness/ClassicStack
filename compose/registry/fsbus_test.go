@@ -1,4 +1,4 @@
-//go:build afp || smb || all
+//go:build afp || smb || fswatch || all
 
 package registry
 

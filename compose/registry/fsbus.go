@@ -1,4 +1,4 @@
-//go:build afp || smb || all
+//go:build afp || smb || fswatch || all
 
 package registry
 
@@ -30,6 +30,13 @@ type fsBusBroker struct {
 // Buffered modestly: FS publishes are fire-and-forget, and a slow reactor must not
 // stall a mutation (a dropped event is a missed notify, not a corrupted store).
 var fsBus = &fsBusBroker{bufN: 64, byPath: map[string]bus.Bus{}}
+
+// busForPath returns the shared bus for a host path (the §10e host-watcher resolves
+// by raw path, not a ShareSpec). It must key identically to busFor so a watcher event
+// and a file service's own publish land on the SAME bus.
+func (b *fsBusBroker) busForPath(hostPath string) bus.Bus {
+	return b.busFor(fs.ShareSpec{Path: hostPath})
+}
 
 // busFor returns the shared bus for a share's host path, creating it on first use.
 // A share with no host path (e.g. an in-memory backend) keys on the empty string, so

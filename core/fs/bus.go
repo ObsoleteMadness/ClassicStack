@@ -36,6 +36,13 @@ func (o Op) String() string {
 
 const TopicFSMutation = "fs"
 
+// OriginFSNotify tags FS-mutation events produced by the host-filesystem watcher
+// (§10e, the adapter/fswatch fsnotify edge) — an out-of-band change made OUTSIDE
+// ClassicStack. It is neither a file service's origin ("afp"/"smb"), so BOTH
+// services' reactors act on it (an external edit notifies every connected client),
+// and no service's SkipOrigin filters it.
+const OriginFSNotify = "fsnotify"
+
 // Event is a file-system mutation. OldPath is set only for OpRename.
 type Event struct {
 	Op       Op

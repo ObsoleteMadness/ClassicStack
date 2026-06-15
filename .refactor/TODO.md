@@ -760,6 +760,22 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > host-watcher (fsnotify), then the SMB push fires for external edits too. **Still M8a:** `secret`-param
 > masking (UI/M8).
 
+> **M8a notes (§10e host-watcher — landed):** the inbound edge of the FS bus. `adapter/fswatch`
+> (build-tagged `fswatch || all` + a no-tag stub so a tag-less build links no fsnotify). `fswatch.Watcher`
+> is a `component.Component`: Start opens an `fsnotify.Watcher`, walks each host root adding every
+> subdir (fsnotify watches dirs not trees; a new dir is added on its OpCreate), and the loop maps each
+> fsnotify op → `fs.Op` (Remove>Rename>Create>Write>Chmod) and publishes `fs.Event{Origin:"fsnotify"}`
+> (new const `fs.OriginFSNotify`) on the path's bus. Origin is neither afp nor smb, so BOTH reactors
+> fire (no SkipOrigin match) — an external edit notifies every client; SMB completes held NOTIFY_CHANGE,
+> AFP observes. Wiring: `config.HostPathProvider` + `Model.HostPaths()` (impl by afp.VolumeSection /
+> smb.ShareSection — decoupled, untagged) collect distinct roots; `registry.BuildHostWatcher(m, logger)`
+> builds over `fsBus.busForPath` (same per-host-path bus, keyed identically to busFor). `fsbus.go` tag
+> widened to `afp || smb || fswatch || all` so the broker exists for a fswatch-only build. cs-tinygo
+> confirmed to NOT pull fsnotify (build-tag isolation). Tests: `adapter/fswatch` (mapOp precedence,
+> real-fsnotify publish with Origin/HostPath/Op, idempotent Start/Stop, missing-root-skipped) +
+> `core/config` HostPaths dedup. The §10d/§10e pair is now complete. **Still M8a:** `secret`-param
+> masking (UI/M8); wire a central `Model.Validate()` Apply hook (calls `Identity.ValidateForNetBIOS`).
+
 > **M8 notes (config-codec round-trip + UCI fix — partial M8):** the TOML/UCI codecs and the
 > file/UCI stores were already built (B6/D4/D6); this slice adds the missing **real-section**
 > round-trip coverage and fixes a latent codec bug it surfaced. The new M8a `Auth` section now has

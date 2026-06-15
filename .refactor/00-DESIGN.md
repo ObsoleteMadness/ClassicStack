@@ -1397,6 +1397,23 @@ inbound mirror of the services-as-publishers path: `fsnotify` in, protocol chang
 the FS bus in the middle. This is what lets a server "be informed when its state changed
 outside the application scope," per the user's requirement.
 
+**Landed (M8a, 2026-06-15):** `adapter/fswatch` (build-tagged `fswatch || all`, with a
+no-tag stub so compose links unconditionally and a tag-less build carries no fsnotify
+dependency). `fswatch.Watcher` is a `component.Component`: `Start` opens an `fsnotify.Watcher`,
+walks each host root and adds every subdirectory (fsnotify watches dirs, not trees; a
+newly-created dir is added on its OpCreate so coverage follows new subtrees), and runs a loop
+that maps each fsnotify op to an `fs.Op` (Remove>Rename>Create>Write>Chmod precedence) and
+publishes `fs.Event{Origin:"fsnotify"}` (const `fs.OriginFSNotify`) on the bus for the event's
+host path. Because the origin is neither `"afp"` nor `"smb"`, **both** services' reactors act
+on it (no `SkipOrigin` match) — an external edit notifies every connected client; SMB completes
+held NOTIFY_CHANGE, AFP observes. Compose wiring: `config.HostPathProvider`/`Model.HostPaths()`
+(implemented by `afp.VolumeSection`/`smb.ShareSection`) collect the distinct host roots with no
+dependency on the file-service packages; `registry.BuildHostWatcher(m, logger)` builds the
+watcher over `fsBus.busForPath` (same per-host-path bus a same-path share holds, keyed
+identically) so a watcher event and a service's own publish land on one bus. The compose root
+adds the watcher to the supervisor (start/stop with the server). A missing root is skipped, not
+fatal (a share may point at a path created later).
+
 ---
 
 ## 11. Dynamic per-component reconfiguration

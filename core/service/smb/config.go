@@ -66,6 +66,10 @@ func (s *ShareSection) Key() string { return SharesKey }
 // InstanceName returns the per-share instance name (the section name the codec writes).
 func (s *ShareSection) InstanceName() string { return s.SName }
 
+// HostPath returns the share's backing host directory (config.HostPathProvider), for
+// the §10e host watcher; empty for a synthetic backend with no host tree.
+func (s *ShareSection) HostPath() string { return s.Path }
+
 // Clone returns a deep copy. The two slices are copied so staging never aliases the
 // live instance's backing arrays.
 func (s *ShareSection) Clone() config.Section {

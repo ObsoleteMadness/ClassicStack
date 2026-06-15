@@ -62,6 +62,10 @@ func (s *VolumeSection) Key() string { return VolumesKey }
 // InstanceName returns the per-volume instance name (the section name the codec writes).
 func (s *VolumeSection) InstanceName() string { return s.VName }
 
+// HostPath returns the volume's backing host directory (config.HostPathProvider), for
+// the §10e host watcher; empty for a synthetic backend with no host tree.
+func (s *VolumeSection) HostPath() string { return s.Path }
+
 // Clone returns a deep copy. The two slices are copied so staging never aliases the
 // live instance's backing arrays.
 func (s *VolumeSection) Clone() config.Section {

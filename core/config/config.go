@@ -80,6 +80,38 @@ type NamedSection interface {
 	InstanceName() string
 }
 
+// HostPathProvider is the optional capability a Section implements when it backs a
+// host directory (an AFP volume / SMB share): HostPath returns that directory, or ""
+// for a synthetic backend (memfs) that has none. Model.HostPaths collects them for
+// the §10e host watcher, with no dependency on the file-service packages.
+type HostPathProvider interface {
+	HostPath() string
+}
+
+// HostPaths returns the distinct, non-empty host directories backing the model's
+// repeated sections (AFP volumes / SMB shares), for the §10e host-filesystem watcher
+// to watch. Order follows registration; duplicates (an AFP volume and SMB share on
+// one path) are collapsed so the watcher adds each directory once.
+func (m *Model) HostPaths() []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, list := range m.Lists {
+		for _, s := range list {
+			hp, ok := s.(HostPathProvider)
+			if !ok {
+				continue
+			}
+			p := hp.HostPath()
+			if p == "" || seen[p] {
+				continue
+			}
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // List returns the repeated sections registered under key (the registered instances of a
 // repeated schema), or nil if none. The slice is the live one; callers that mutate it should
 // Clone the model first.

@@ -4,6 +4,7 @@ go 1.25.11
 
 require (
 	github.com/PuerkitoBio/goquery v1.10.0
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/google/gopacket v1.1.19
 	github.com/jacobsa/go-serial v0.0.0-20180131005756-15cf729a72d4
 	github.com/knadh/koanf/parsers/toml/v2 v2.2.0
@@ -21,7 +22,6 @@ require (
 	github.com/andybalholm/cascadia v1.3.2 // indirect
 	github.com/dblohm7/wingoes v0.0.0-20240119213807-a09d6be7affa // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/google/go-cmp v0.6.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
