@@ -56,6 +56,13 @@ import (
 	_ "github.com/ObsoleteMadness/ClassicStack/core/service/netbios"
 	_ "github.com/ObsoleteMadness/ClassicStack/core/service/smb"
 
+	// M8a: the authentication seam's CONTRACT + PBKDF2 credential codec must stay
+	// TinyGo-clean so an embedded build can gate share access. Only core/auth is
+	// blank-imported: it is reflection-free (hand-rolled hex, no crypto/rand). The
+	// file-backed store lives in adapter/auth/local — it uses crypto/rand (which
+	// pulls reflect) and os, so it is deliberately an adapter, not part of this gate.
+	_ "github.com/ObsoleteMadness/ClassicStack/core/auth"
+
 	// M1: the pure-Go pcapfile capture writer is required to be TinyGo-safe (§6f)
 	// so non-pcap/embedded links can still emit a Wireshark-openable file.
 	_ "github.com/ObsoleteMadness/ClassicStack/adapter/capture/pcapfile"

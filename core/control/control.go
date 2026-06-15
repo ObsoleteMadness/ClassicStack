@@ -29,7 +29,36 @@ type Plane interface {
 	ListFSTypes() []string
 	Diagnostics() Diagnostics
 
+	// User administration (the web UI's user CRUD). Users live in the auth store,
+	// not the config model, so these are a surface of their own rather than config
+	// edits. When no user store is wired (a build with no file services, or none
+	// configured) they return ErrUnavailable — the same "not in this build" shape
+	// as Diagnostics. Share allow-lists, by contrast, ARE config and ride the
+	// Config()/Reconfigure path.
+	Users() ([]UserInfo, error)
+	SetUser(name, password string) error
+	SetUserDisabled(name string, disabled bool) error
+	RemoveUser(name string) error
+
 	Subscribe(topics ...string) (<-chan bus.Event, func())
+}
+
+// UserInfo is the management view of one stored identity. It never carries hash
+// or password material.
+type UserInfo struct {
+	Name     string
+	Disabled bool
+}
+
+// UserAdmin is the optional user-management surface a Supervisor exposes when a
+// user store is wired. The plane type-asserts it; absent, the user methods return
+// ErrUnavailable. The supervisor satisfies it by delegating to the wired
+// auth.UserStore (the concrete auth types stay out of core/control).
+type UserAdmin interface {
+	Users() ([]UserInfo, error)
+	SetUser(name, password string) error
+	SetUserDisabled(name string, disabled bool) error
+	RemoveUser(name string) error
 }
 
 // Unit is one component status snapshot for dashboards.
@@ -113,6 +142,47 @@ func (p *plane) Status() []Unit                           { return p.sup.Status(
 func (p *plane) ListInterfaces() ([]InterfaceInfo, error) { return p.sup.ListInterfaces() }
 func (p *plane) ListFSTypes() []string                    { return p.sup.ListFSTypes() }
 func (p *plane) Diagnostics() Diagnostics                 { return p.diag }
+
+// userAdmin returns the supervisor's user-management surface if it exposes one,
+// else nil (no user store wired / not in this build).
+func (p *plane) userAdmin() UserAdmin {
+	if ua, ok := p.sup.(UserAdmin); ok {
+		return ua
+	}
+	return nil
+}
+
+func (p *plane) Users() ([]UserInfo, error) {
+	ua := p.userAdmin()
+	if ua == nil {
+		return nil, ErrUnavailable
+	}
+	return ua.Users()
+}
+
+func (p *plane) SetUser(name, password string) error {
+	ua := p.userAdmin()
+	if ua == nil {
+		return ErrUnavailable
+	}
+	return ua.SetUser(name, password)
+}
+
+func (p *plane) SetUserDisabled(name string, disabled bool) error {
+	ua := p.userAdmin()
+	if ua == nil {
+		return ErrUnavailable
+	}
+	return ua.SetUserDisabled(name, disabled)
+}
+
+func (p *plane) RemoveUser(name string) error {
+	ua := p.userAdmin()
+	if ua == nil {
+		return ErrUnavailable
+	}
+	return ua.RemoveUser(name)
+}
 func (p *plane) Subscribe(topics ...string) (<-chan bus.Event, func()) {
 	return p.telemetry.Subscribe(topics...)
 }

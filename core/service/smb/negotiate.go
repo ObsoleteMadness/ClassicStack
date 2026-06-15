@@ -139,12 +139,45 @@ func (s *Service) handleNegotiate(h protocol.Header, req []byte) []byte {
 	return out
 }
 
-// handleSessionSetup answers SMB_COM_SESSION_SETUP_ANDX by granting a guest
-// session (UID=1, Action=0x0001 guest logon). WCT=3: AndXCommand/AndXReserved/
-// AndXOffset + Action; ByteCount=2 (empty NativeOS/NativeLM).
+// statusLogonFailure is STATUS_LOGON_FAILURE — the named account/password did not
+// validate against the wired user store.
+const statusLogonFailure uint32 = 0xC000006D
+
+// handleSessionSetup answers SMB_COM_SESSION_SETUP_ANDX. With no user store wired
+// (or an anonymous/guest attempt) it grants a guest session as before (UID=1,
+// Action=0x0001 guest logon). With a store wired and a non-empty AccountName, it
+// validates the cleartext password against the store: success grants a named,
+// non-guest session (Action=0x0000); failure returns STATUS_LOGON_FAILURE.
+//
+// We can only validate a CLEARTEXT password — a legacy client sending an LM/NTLM
+// hash cannot be reversed, so a hashed credential is accepted AS GUEST (it still
+// only sees guest-open shares). See spec/errata.md "SMB hashed-credential
+// accept-as-guest". WCT=3: AndXCommand/AndXReserved/AndXOffset + Action.
 func (s *Service) handleSessionSetup(sess *smbSession, h protocol.Header, req []byte) []byte {
+	user, pass, hashed := parseSessionSetup(req, h.Flags2)
+
+	s.mu.Lock()
+	authn := s.auth
+	s.mu.Unlock()
+
+	action := uint16(0x0001) // guest logon by default
+	identity := ""
+	if authn != nil && user != "" && !hashed {
+		ok, err := authn.Authenticate(user, pass)
+		if err != nil {
+			s.logf("SESSION_SETUP authenticate error")
+			return errResponse(h, toWireStatus(h.Flags2, statusLogonFailure))
+		}
+		if !ok {
+			return errResponse(h, toWireStatus(h.Flags2, statusLogonFailure))
+		}
+		identity = user
+		action = 0x0000 // non-guest logon
+	}
+
 	sess.mu.Lock()
 	sess.uid = sessionGuestUID
+	sess.user = identity
 	sess.mu.Unlock()
 
 	h.UID = sessionGuestUID
@@ -156,12 +189,98 @@ func (s *Service) handleSessionSetup(sess *smbSession, h protocol.Header, req []
 	w[0] = protocol.CommandNoAndXCommand // AndXCommand = no chaining
 	w[1] = 0x00                          // AndXReserved
 	bp.PutLE16(w[2:4], 0)                // AndXOffset
-	bp.PutLE16(w[4:6], 0x0001)           // Action = guest logon
+	bp.PutLE16(w[4:6], action)           // Action (0=user, 1=guest)
 	out = append(out, w...)
 
 	out = append(out, 2, 0)       // ByteCount = 2
 	out = append(out, 0x00, 0x00) // NativeOS="" NativeLM="" (two NULs)
 	return out
+}
+
+// parseSessionSetup extracts the AccountName and cleartext password from a
+// SESSION_SETUP_ANDX request. It handles the NT LM 0.12 variant (WCT=13: two
+// password-length words locate the byte-area layout) and the older LM variant
+// (WCT=10: one password-length word). hashed reports that the supplied password
+// is a binary LM/NTLM hash (length != the cleartext we can validate, or the
+// case-sensitive response is present) rather than a cleartext string — in that
+// case the caller falls back to a guest grant. A frame we cannot parse yields an
+// empty user (guest).
+func parseSessionSetup(req []byte, flags2 uint16) (user, pass string, hashed bool) {
+	words, area, ok := reqBody(req)
+	if !ok {
+		return "", "", false
+	}
+	unicode := flags2&protocol.Flags2Unicode != 0
+
+	switch {
+	case len(words) >= 26: // WCT>=13: NT LM 0.12
+		ciPwLen := int(bp.LE16(words[14:16])) // CaseInsensitivePasswordLength
+		csPwLen := int(bp.LE16(words[16:18])) // CaseSensitivePasswordLength
+		// A case-sensitive (NTLM) response, or a case-insensitive blob longer than a
+		// plausible cleartext string with a trailing NUL, is a hash we cannot reverse.
+		if csPwLen > 0 {
+			hashed = true
+		}
+		off := ciPwLen + csPwLen
+		if off > len(area) {
+			return "", "", hashed
+		}
+		// AccountName is the first string after the two password blobs.
+		name, _ := readWireString(area[off:], unicode)
+		if !hashed && ciPwLen > 0 {
+			// The case-insensitive field is the cleartext (or LM hash). 24 bytes is
+			// the LM/NTLM response size — treat that as a hash, shorter as cleartext.
+			if ciPwLen == 24 {
+				hashed = true
+			} else {
+				pass = strings.TrimRight(string(area[:ciPwLen]), "\x00")
+			}
+		}
+		return strings.TrimRight(name, "\x00"), pass, hashed
+	case len(words) >= 20: // WCT=10: LM 1.0/2.0 (single password length)
+		pwLen := int(bp.LE16(words[14:16]))
+		if pwLen > len(area) {
+			return "", "", false
+		}
+		if pwLen == 24 {
+			hashed = true
+		} else if pwLen > 0 {
+			pass = strings.TrimRight(string(area[:pwLen]), "\x00")
+		}
+		name, _ := readWireString(area[pwLen:], unicode)
+		return strings.TrimRight(name, "\x00"), pass, hashed
+	default:
+		return "", "", false
+	}
+}
+
+// readWireString reads one NUL-terminated string from b in the wire charset
+// (UTF-16LE when the Unicode flag is set, else OEM/ANSI bytes), returning the
+// decoded string and the number of raw bytes consumed including the terminator.
+func readWireString(b []byte, unicode bool) (string, int) {
+	if unicode {
+		// 2-byte alignment is the caller's concern; here decode UTF-16LE to the
+		// first 0x0000 unit. Non-ASCII is rare for an account name; take the low
+		// byte (matches the OEM behaviour for ASCII account names).
+		var sb strings.Builder
+		i := 0
+		for i+1 < len(b) {
+			lo, hi := b[i], b[i+1]
+			if lo == 0 && hi == 0 {
+				i += 2
+				break
+			}
+			sb.WriteByte(lo) // ASCII account names: low byte is the character
+			i += 2
+		}
+		return sb.String(), i
+	}
+	for i := 0; i < len(b); i++ {
+		if b[i] == 0 {
+			return string(b[:i]), i + 1
+		}
+	}
+	return string(b), len(b)
 }
 
 // handleTreeConnectAndX answers SMB_COM_TREE_CONNECT_ANDX (0x75). It resolves the
@@ -180,7 +299,10 @@ func (s *Service) handleTreeConnectAndX(sess *smbSession, h protocol.Header, req
 	}
 
 	sh, found := s.ShareByName(name)
-	if !found {
+	if !found || !sh.allows(sess.user) {
+		// A share the session identity may not access is reported as if it does not
+		// exist (BAD_NETWORK_NAME), so naming a restricted share directly is refused
+		// without leaking its existence — matching the enumeration that omitted it.
 		return buildErrorResponse(h, req, statusBadNetworkName)
 	}
 	tid := sess.allocTID(&treeConnect{share: sh})
@@ -201,7 +323,7 @@ func (s *Service) handleTreeConnect(sess *smbSession, h protocol.Header, req []b
 		tc = &treeConnect{ipc: true}
 	} else {
 		sh, found := s.ShareByName(name)
-		if !found {
+		if !found || !sh.allows(sess.user) {
 			return buildErrorResponse(h, req, statusBadNetworkName)
 		}
 		tc = &treeConnect{share: sh}

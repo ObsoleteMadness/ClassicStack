@@ -603,6 +603,38 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 >   netbios_enabled hooks + asp/dsi), so deletion happens at the **M8/M8a compose cutover → M10**, not
 >   in M7. TCP transports are M7a (`adapter/dsi`) / M7b (`adapter/smbtcp`) / M7b2 (`adapter/netbios-tcp`).
 
+> **M8a notes (auth slice landed — partial M8a):** the authentication seam the design lacked is
+> in. **`core/auth`** (always-compiled, reflection-free — archtest- + TinyGo-gate-clean): the
+> `Authenticator`/`UserStore` contract (`User` DTO carries no secrets) + a hand-rolled
+> PBKDF2-HMAC-SHA256 credential codec (`DeriveCredential`/`Verify`/`SaltHex`/`ParseCredential`) over
+> `crypto/hmac`+`sha256`+`subtle` only. **Salt generation (`crypto/rand`) and the file store moved to
+> the ADAPTER ring** — `adapter/auth/local` (`Open(path)` smbpasswd-style `name:saltHex:hashHex:flags`
+> users file, atomic temp+rename writes, case-insensitive names) — because `crypto/rand` AND
+> `encoding/hex` both transitively pull `reflect` (banned in core); core hand-rolls hex and takes the
+> salt as a parameter. **`core/share`**: the `Permissions` stub became real (`AllowedUsers` +
+> `Allows`/`AllowsGuest`; empty list = guest/world default), lifted from a new
+> `fs.ShareSpec.AllowedUsers` in `share.New`, surfaced on `share.Info`. **Gate is at LOGIN** (per the
+> client reality: legacy AFP/SMB log in once under one identity, then bind shares — no per-share
+> re-auth): AFP `FPLogin` parses the cleartext user/pass (previously dropped) and validates via a
+> local `Authenticator` seam (nil = guest, the old behaviour), then the identity filters
+> `FPGetSrvrParms` + gates `FPOpenVol`; SMB `SESSION_SETUP_ANDX` parses the AccountName (NT WCT=13 /
+> LM WCT=10), validates cleartext (hashed LM/NTLM → accept-as-guest, errata noted), then the identity
+> filters `NetShareEnum`/`NetServerEnum2` + gates `TREE_CONNECT`. **Control plane**: `Plane` gained
+> `Users()`/`SetUser`/`SetUserDisabled`/`RemoveUser` (the web UI's user CRUD), backed by an optional
+> `control.UserAdmin` the supervisor satisfies via a wired `auth.UserStore` (`SetUserStore`; nil →
+> `ErrUnavailable`, the Diagnostics "not in this build" shape). Share allow-lists ride the existing
+> `Config()`/`Reconfigure` path (no new Plane method). **`config.AuthSection`** (`Backend`/`Path`, no
+> secret fields — secrets live in the dedicated users file) + `compose/registry/reg_auth.go`
+> (`//go:build afp||smb||all`: `BuildUserStore(m)` + section registration). **Still M8a, NOT done by
+> this slice:** the AFP/SMB volume/share config sections + `config→ShareSpec` mapper (`allowed_users`
+> → `ShareSpec.AllowedUsers`), the supervisor assembly that actually calls `SetAuthenticator`/
+> `SetUserStore`/`Manager.Add` (no compose root wires services into each other yet — the registry
+> factories are still zero-config stubs), server identity (§4-bis), and the §10d shared-bus
+> coordination. The HTTP/ubus `/api/users` front-ends + SPA Users panel are M8/webui (this slice
+> delivers the Plane methods they bind to). **Deferred (tagged adapters, future):** PAM / Windows-SSPI
+> / sqlite user stores under `adapter/auth/*`; file-level ACLs / per-user read-only; AFP DHX & SMB
+> NTLM challenge UAMs.
+
 ---
 
 ## How to claim a task

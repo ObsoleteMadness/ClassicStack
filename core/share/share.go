@@ -42,9 +42,16 @@ func Build(spec fs.ShareSpec, b bus.Bus) (*Share, error) {
 }
 
 // New wraps an already-built ForkFS as a Share (used where the caller has
-// assembled the stack itself, e.g. in tests or a custom backend path).
+// assembled the stack itself, e.g. in tests or a custom backend path). The access
+// allow-list rides in on the spec and is lifted into Permissions here, so a Share
+// built either way carries its policy.
 func New(spec fs.ShareSpec, built fs.ForkFS) *Share {
-	return &Share{name: spec.Name, fsys: built, config: spec}
+	return &Share{
+		name:   spec.Name,
+		fsys:   built,
+		config: spec,
+		perms:  Permissions{AllowedUsers: spec.AllowedUsers},
+	}
 }
 
 // Name returns the share's display/tree name.
@@ -69,11 +76,14 @@ func (s *Share) Description() string { return s.description }
 // SetDescription sets the human description.
 func (s *Share) SetDescription(d string) { s.description = d }
 
-// Permissions returns the share's access policy. This is a stub today (no
-// enforcement) — a share is reachable by anything that can connect, matching the
-// compatibility-server posture. The field exists so the descriptor and config
-// model carry it ahead of real enforcement.
+// Permissions returns the share's access policy (the allow-list gate). The file
+// services consult it at login-time enumeration and at tree-connect/OpenVol. An
+// empty allow-list is the world-readable default (AllowsGuest).
 func (s *Share) Permissions() Permissions { return s.perms }
+
+// SetPermissions replaces the share's access policy. Used by the share Manager's
+// UpdateShare path so an allow-list change is applied without rebuilding the FS.
+func (s *Share) SetPermissions(p Permissions) { s.perms = p }
 
 // Codec exposes the share's FilenameCodec so the protocol layer can thread its
 // per-request wire charset through Decode/Encode. The built ForkFS carries the

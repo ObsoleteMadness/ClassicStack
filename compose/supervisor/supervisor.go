@@ -7,6 +7,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/ObsoleteMadness/ClassicStack/core/auth"
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
@@ -50,11 +51,16 @@ type Supervisor struct {
 	model     *config.Model
 	telemetry bus.Bus
 	nodes     map[string]*node
-	order     []string // insertion order, the tie-breaker in topo sort
+	order     []string       // insertion order, the tie-breaker in topo sort
+	users     auth.UserStore // wired user store; nil = no user administration available
 }
 
-// compile-time assertion: Supervisor satisfies the control plane's lifecycle surface.
-var _ control.Supervisor = (*Supervisor)(nil)
+// compile-time assertions: Supervisor satisfies the control plane's lifecycle
+// surface and (when a store is wired) its user-administration surface.
+var (
+	_ control.Supervisor = (*Supervisor)(nil)
+	_ control.UserAdmin  = (*Supervisor)(nil)
+)
 
 // New builds an empty supervisor bound to the shared model and telemetry bus.
 func New(m *config.Model, telemetry bus.Bus) *Supervisor {
@@ -258,6 +264,70 @@ func (s *Supervisor) dependents(name string) []string {
 
 // Model returns the shared in-memory model.
 func (s *Supervisor) Model() *config.Model { return s.model }
+
+// SetUserStore wires the authentication store the user-administration surface
+// (control.UserAdmin, driven by the web UI) operates on. The compose root builds
+// the store once (registry.BuildUserStore) and hands it here as well as to each
+// file service (SetAuthenticator). A nil store means no user administration is
+// available — the Users/SetUser/… methods then report control.ErrUnavailable.
+func (s *Supervisor) SetUserStore(store auth.UserStore) {
+	s.mu.Lock()
+	s.users = store
+	s.mu.Unlock()
+}
+
+// Users lists the stored identities (control.UserAdmin). No user store wired →
+// ErrUnavailable.
+func (s *Supervisor) Users() ([]control.UserInfo, error) {
+	s.mu.Lock()
+	store := s.users
+	s.mu.Unlock()
+	if store == nil {
+		return nil, control.ErrUnavailable
+	}
+	us, err := store.Users()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]control.UserInfo, len(us))
+	for i, u := range us {
+		out[i] = control.UserInfo{Name: u.Name, Disabled: u.Disabled}
+	}
+	return out, nil
+}
+
+// SetUser adds a user or resets a password (control.UserAdmin).
+func (s *Supervisor) SetUser(name, password string) error {
+	s.mu.Lock()
+	store := s.users
+	s.mu.Unlock()
+	if store == nil {
+		return control.ErrUnavailable
+	}
+	return store.SetUser(name, password)
+}
+
+// SetUserDisabled parks/unparks an account (control.UserAdmin).
+func (s *Supervisor) SetUserDisabled(name string, disabled bool) error {
+	s.mu.Lock()
+	store := s.users
+	s.mu.Unlock()
+	if store == nil {
+		return control.ErrUnavailable
+	}
+	return store.SetDisabled(name, disabled)
+}
+
+// RemoveUser deletes a user (control.UserAdmin).
+func (s *Supervisor) RemoveUser(name string) error {
+	s.mu.Lock()
+	store := s.users
+	s.mu.Unlock()
+	if store == nil {
+		return control.ErrUnavailable
+	}
+	return store.RemoveUser(name)
+}
 
 // Start starts one component, bringing up its hard dependencies first (idempotent).
 func (s *Supervisor) Start(ctx context.Context, name string) error {

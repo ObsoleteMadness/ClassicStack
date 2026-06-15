@@ -32,10 +32,14 @@
 // original aspWrite. The DSI/TCP transport lands in a follow-up slice.
 //
 // Security posture: this is a compatibility server, not an authentication
-// server. The supported single-step UAMs ("No User Authent", "Cleartxt Passwrd")
-// are accepted without credential checking — the intentional weakness that lets
-// vintage clients connect. Treat an AFP share as world-readable to anything on
-// the AppleTalk segment.
+// server. "No User Authent" is always a guest login. "Cleartxt Passwrd" is a
+// guest login when no user store is wired (SetAuthenticator), preserving the
+// historical world-readable default; with a store wired, a non-empty user name is
+// validated against it and a per-volume allow-list then gates which volumes the
+// resulting identity may enumerate (FPGetSrvrParms) and open (FPOpenVol) —
+// login-time gating, since a client logs in once and opens volumes under one
+// identity. The weak single-step UAMs (no challenge/response) are the intentional
+// concession that lets vintage clients connect.
 package afp
 
 import (
@@ -89,7 +93,27 @@ type Service struct {
 
 	mu      sync.Mutex
 	rtr     router.ServiceRouter
+	auth    Authenticator
 	running bool
+}
+
+// Authenticator validates a (username, cleartext password) credential. It is the
+// minimal seam the AFP login path needs; the compose wiring hands in the
+// configured user store (core/auth). It is a LOCAL interface — structurally
+// satisfied by auth.UserStore — so this package does not import core/auth (same
+// acyclicity discipline as the SMB BrowseProvider seam). A nil Authenticator
+// means guest-only: every login is admitted as guest, exactly as before this seam
+// existed.
+type Authenticator interface {
+	Authenticate(username, password string) (ok bool, err error)
+}
+
+// SetAuthenticator installs the credential validator the cleartext UAM consults.
+// Passing nil restores guest-only behaviour. Idempotent; safe before Start.
+func (s *Service) SetAuthenticator(a Authenticator) {
+	s.mu.Lock()
+	s.auth = a
+	s.mu.Unlock()
 }
 
 // New builds the AFP service with no volumes (the registry default — volumes are

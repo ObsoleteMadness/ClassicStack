@@ -65,8 +65,48 @@ func TestInfoOf(t *testing.T) {
 	sh, _ := Build(fs.ShareSpec{Name: "Users", FSType: "memfs", ReadOnly: true}, nil)
 	sh.SetDescription("home dirs")
 	got := InfoOf(sh)
-	want := Info{Name: "Users", FSType: "memfs", Description: "home dirs", ReadOnly: true}
-	if got != want {
-		t.Fatalf("InfoOf = %+v, want %+v", got, want)
+	if got.Name != "Users" || got.FSType != "memfs" || got.Description != "home dirs" || !got.ReadOnly {
+		t.Fatalf("InfoOf = %+v", got)
+	}
+	if len(got.AllowedUsers) != 0 {
+		t.Fatalf("AllowedUsers = %v, want empty (guest) for an unrestricted share", got.AllowedUsers)
+	}
+}
+
+func TestPermissionsAllows(t *testing.T) {
+	open := Permissions{}
+	if !open.AllowsGuest() || !open.Allows("") || !open.Allows("anyone") {
+		t.Fatal("empty allow-list should admit guest and any user")
+	}
+
+	restricted := Permissions{AllowedUsers: []string{"alice", "BOB"}}
+	if restricted.AllowsGuest() {
+		t.Fatal("restricted share should not allow guest")
+	}
+	if restricted.Allows("") {
+		t.Fatal("restricted share admitted a guest (empty username)")
+	}
+	if !restricted.Allows("alice") || !restricted.Allows("bob") /* case-insensitive */ {
+		t.Fatal("restricted share rejected a listed user")
+	}
+	if restricted.Allows("carol") {
+		t.Fatal("restricted share admitted an unlisted user")
+	}
+}
+
+func TestBuildLiftsAllowedUsers(t *testing.T) {
+	sh, err := Build(fs.ShareSpec{Name: "Secret", FSType: "memfs", AllowedUsers: []string{"alice"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sh.Permissions().Allows("bob") {
+		t.Fatal("spec allow-list not lifted into Permissions")
+	}
+	if !sh.Permissions().Allows("alice") {
+		t.Fatal("listed user denied")
+	}
+	sh.SetPermissions(Permissions{}) // back to open
+	if !sh.Permissions().AllowsGuest() {
+		t.Fatal("SetPermissions did not apply")
 	}
 }

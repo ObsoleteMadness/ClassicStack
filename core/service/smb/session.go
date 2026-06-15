@@ -23,6 +23,7 @@ import (
 type smbSession struct {
 	mu       sync.Mutex
 	uid      uint16
+	user     string // authenticated identity from SESSION_SETUP; "" = guest
 	trees    map[uint16]*treeConnect
 	fids     map[uint16]*fileHandle
 	searches map[uint16]*searchHandle

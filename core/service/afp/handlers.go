@@ -7,6 +7,7 @@ import (
 	"time"
 
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 )
 
 // --- Pascal-string helpers; big-endian integer codecs come from
@@ -134,7 +135,7 @@ func (s *Service) afpLogin(a *afpSession, args []byte) ([]byte, int32) {
 	if !ok {
 		return nil, afpErrParamErr
 	}
-	uam, _, ok := pString(args, off)
+	uam, uoff, ok := pString(args, off)
 	if !ok {
 		return nil, afpErrParamErr
 	}
@@ -142,8 +143,50 @@ func (s *Service) afpLogin(a *afpSession, args []byte) ([]byte, int32) {
 		return nil, afpErrBadVersNum
 	}
 	switch string(uam) {
-	case "No User Authent", "Cleartxt Passwrd":
+	case "No User Authent":
+		// Guest login: no credential, no user store consulted. Admitted as guest;
+		// the session then only sees guest-open volumes.
 		a.loggedIn = true
+		a.user = ""
+		return nil, afpNoErr
+	case "Cleartxt Passwrd":
+		// Cleartext UAM: username (pstring) then an 8-byte password field (Inside
+		// AppleTalk: Networking, "Cleartext Password UAM"), space-padded/NUL-padded.
+		// With no user store wired we admit as guest (the historical behaviour);
+		// with one wired we validate, and a non-empty username that fails is denied.
+		user, poff, ok := pString(args, uoff)
+		if !ok {
+			return nil, afpErrParamErr
+		}
+		username := strings.TrimRight(string(user), " \x00")
+		password := ""
+		if poff+8 <= len(args) {
+			password = strings.TrimRight(string(args[poff:poff+8]), " \x00")
+		}
+
+		s.mu.Lock()
+		authn := s.auth
+		s.mu.Unlock()
+
+		if authn == nil || username == "" {
+			// No store, or an anonymous cleartext attempt → guest.
+			a.loggedIn = true
+			a.user = ""
+			return nil, afpNoErr
+		}
+		okCred, err := authn.Authenticate(username, password)
+		if err != nil {
+			if s.logger != nil && s.logger.Enabled(log.Warn) {
+				s.logger.Log2(log.Warn, "FPLogin authenticate error",
+					log.Str("user", username), log.Str("err", err.Error()))
+			}
+			return nil, afpErrUserNotAuth
+		}
+		if !okCred {
+			return nil, afpErrUserNotAuth
+		}
+		a.loggedIn = true
+		a.user = username
 		return nil, afpNoErr
 	default:
 		return nil, afpErrBadUAM
@@ -156,9 +199,17 @@ func (s *Service) afpLogin(a *afpSession, args []byte) ([]byte, int32) {
 // volume list (one flags byte + a Pascal name per volume).
 //
 // Reply: uint32 ServerTime, uint8 volCount, {uint8 flags, pstring name} × count.
-func (s *Service) afpGetSrvrParms() []byte {
+func (s *Service) afpGetSrvrParms(a *afpSession) []byte {
 	// Snapshot under the lock: the share.Manager can mutate s.volumes at runtime.
-	vols := s.Volumes()
+	// Only volumes the logged-in identity may access are listed — a guest session
+	// never sees a restricted volume (defence-in-depth with the FPOpenVol gate).
+	all := s.Volumes()
+	vols := make([]*Volume, 0, len(all))
+	for _, v := range all {
+		if v.allows(a.user) {
+			vols = append(vols, v)
+		}
+	}
 	out := make([]byte, 0, 5+16*len(vols))
 	out = bp.AppendBE32(out, macTime(time.Now()))
 	out = append(out, byte(len(vols)))
@@ -202,6 +253,13 @@ func (s *Service) afpOpenVol(a *afpSession, block []byte) ([]byte, int32) {
 	}
 	vol := s.volumeByName(string(name))
 	if vol == nil {
+		return nil, afpErrObjectNotFnd
+	}
+	// Gate on the session identity: a volume the logged-in user may not access is
+	// reported as not-found (the same answer FPGetSrvrParms gave by omitting it),
+	// so a client naming a restricted volume directly is still refused without
+	// leaking that the volume exists.
+	if !vol.allows(a.user) {
 		return nil, afpErrObjectNotFnd
 	}
 	a.openVols[vol.ID()] = vol

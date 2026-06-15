@@ -151,6 +151,12 @@ type ShareSpec struct {
 	// Synthetic backends (memfs, macgarden) leave it empty.
 	Path     string
 	ReadOnly bool
+	// AllowedUsers is the share's access allow-list (protocol-layer policy, NOT a
+	// backend param): the usernames permitted to see/bind the share. Empty means
+	// guest/anonymous access. It is not secret and is consumed by no FS backend —
+	// core/share lifts it into Permissions; the file services enforce it at login
+	// enumeration and tree-connect/OpenVol. Matching is case-insensitive.
+	AllowedUsers []string
 	// Extra carries backend-specific params a given fs_type documents and reads
 	// (e.g. ftp: "url"/"username"/"password"; hfs-image: "partition"). It is a
 	// plain carrier — never reflection-marshalled in core.

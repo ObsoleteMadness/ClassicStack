@@ -44,6 +44,16 @@ This document records places where ClassicStack's wire behavior intentionally di
 
 **Where:** `core/service/smb/{resolve,fileio,pathops,trans2}.go`.
 
+### SMB hashed-credential accept-as-guest (M8a auth)
+
+**Spec:** [MS-CIFS] SESSION_SETUP_ANDX carries a CaseInsensitivePassword (LM) and CaseSensitivePassword (NTLM) the server validates against the account's stored hash.
+
+**Observed / design:** ClassicStack stores passwords as salted PBKDF2-SHA256 (modern at rest, see the charter "compatibility over correctness" stance) — there is no LM/NTLM hash to compare a wire response against, and an LM/NTLM response cannot be reversed to the cleartext we *can* validate. A legacy client that sends a hashed response (CaseSensitivePasswordLength > 0, or a 24-byte case-insensitive response) therefore cannot be authenticated as a named user.
+
+**What we do:** with a user store wired, SESSION_SETUP validates only a **cleartext** case-insensitive password (the form Win9x/WfW send when the negotiated security mode does not demand a challenge response) against the store; a hashed response is accepted **as guest** (UID granted, Action=guest) rather than refused, so the client still connects and sees guest-open shares. A wrong cleartext password for a named account is refused with STATUS_LOGON_FAILURE. With no store wired, every session is guest (the historical world-readable default). The gate is at login (legacy clients log in once and bind shares under one identity); a per-share allow-list then filters which shares the resulting identity may enumerate (NetShareEnum/NetServerEnum2) and bind (TREE_CONNECT).
+
+**Where:** `core/service/smb/{negotiate.go,lanman.go}`; the store + PBKDF2 in `core/auth` + `adapter/auth/local`.
+
 ## AFP
 
 ### Catalog date epoch (Inside Macintosh: Networking, "AFP date and time")
@@ -90,3 +100,13 @@ A volume whose backend does **not** advertise `Capabilities().CatSearch` (or doe
 **Divergence from the legacy port:** The old `service/afp/catsearch.go` also delegated to a backend `FileSystem.CatSearch`, but flattened the criteria to a single printable-substring `query` string and packed only directories. The refactored seam passes structured criteria (`fs.CatSearchCriteria`) plus the free-text `Query`, returns both files and directories, and round-trips a backend-opaque cursor — so a synthetic backend gets enough to run a real query while a predicate backend gets the structured fields.
 
 **Where:** `core/fs/catsearch.go` — `CatSearcher`, `CatSearchCriteria`/`CatSearchResult`/`CatSearchCursor`, `WalkCatSearch`, `ErrCatSearchUnsupported`; `core/service/afp/catsearch.go` — `afpCatSearch`, `decodeCatSearchCriteria`, `Volume.catSearcher`/`packCatSearchRecord`.
+
+### FPLogin credential validation and per-volume access gating (M8a auth)
+
+**Spec:** AFP authentication is a UAM handshake; "Cleartxt Passwrd" carries the user name (pstring) and an 8-byte password field. "No User Authent" is the guest UAM.
+
+**Observed / design:** ClassicStack is a compatibility server keeping modern primitives at rest (salted PBKDF2-SHA256). The single-step UAMs it accepts (no DHX/2-way-randnum challenge) are the intentional concession that lets vintage clients connect — the weakness is on the *wire*, not at rest.
+
+**What we do:** "No User Authent" is always a guest login. "Cleartxt Passwrd" is a guest login when no user store is wired (the historical world-readable default); with a store wired, a non-empty user name is validated against it (wrong password → `kFPUserNotAuth`), and an empty name is admitted as guest. The resolved identity is recorded on the session and gates which volumes it may **enumerate** (FPGetSrvrParms omits volumes the identity may not access) and **open** (FPOpenVol returns `kFPObjectNotFound` for a restricted volume, not leaking its existence). The gate is at login because a client logs in once and opens volumes under one identity; the allow-list is share-level (`share.Permissions.AllowedUsers`), not file-level ACLs, and `ReadOnly` stays share-wide.
+
+**Where:** `core/service/afp/{handlers.go,afp.go}` (`afpLogin`, `SetAuthenticator`, `afpGetSrvrParms`, `afpOpenVol`); the store + PBKDF2 in `core/auth` + `adapter/auth/local`; the allow-list in `core/share/permissions.go`.

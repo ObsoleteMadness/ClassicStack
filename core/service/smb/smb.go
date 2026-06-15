@@ -32,9 +32,15 @@
 // knowledge, so it is unit-tested directly over raw SMB frames.
 //
 // Security posture: this is a compatibility server, not an authentication
-// server. SESSION_SETUP_ANDX grants a guest session without checking credentials
-// (the intentional weakness that lets vintage clients connect); treat an SMB
-// share as world-accessible to anything that can reach the transport.
+// server. With no user store wired, SESSION_SETUP_ANDX grants a guest session
+// without checking credentials (the intentional weakness that lets vintage
+// clients connect) and every share is world-accessible. With a user store wired
+// (SetAuthenticator), a non-empty AccountName with a CLEARTEXT password is
+// validated; a per-share allow-list then gates which shares the resulting
+// identity may enumerate and bind (login-time gating — legacy clients log in once
+// and bind shares under one identity, they do not re-authenticate per share). A
+// legacy client sending an LM/NTLM hash we cannot reverse is accepted as guest
+// (spec/errata "SMB hashed-credential accept-as-guest").
 package smb
 
 import (
@@ -61,10 +67,30 @@ type Service struct {
 	shares  []*Share
 	wg      string         // workgroup/domain advertised in NEGOTIATE (default WORKGROUP)
 	browser BrowseProvider // browse-list source for IPC$ NetServerEnum2 (the browser service); optional
+	auth    Authenticator  // credential validator consulted at SESSION_SETUP; nil = guest-only
 
 	mu      sync.Mutex
 	running bool
 	closers []circuitCloser // SMB-owned session transports (e.g. direct-IPX); torn down on Stop
+}
+
+// Authenticator validates a (username, cleartext password) credential. It is the
+// minimal seam the SMB session-setup path needs; the compose wiring hands in the
+// configured user store (core/auth). It is a LOCAL interface — structurally
+// satisfied by auth.UserStore — so this package does not import core/auth (the
+// same acyclicity discipline as the BrowseProvider seam). A nil Authenticator
+// means guest-only: every session is granted as guest, exactly as before this
+// seam existed.
+type Authenticator interface {
+	Authenticate(username, password string) (ok bool, err error)
+}
+
+// SetAuthenticator installs the credential validator SESSION_SETUP_ANDX consults.
+// Passing nil restores guest-only behaviour. Idempotent; safe before Start.
+func (s *Service) SetAuthenticator(a Authenticator) {
+	s.mu.Lock()
+	s.auth = a
+	s.mu.Unlock()
 }
 
 // circuitCloser is the per-transport surface the SMB service holds for teardown:

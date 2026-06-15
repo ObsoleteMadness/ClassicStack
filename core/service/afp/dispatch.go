@@ -45,6 +45,7 @@ const (
 	afpErrCallNotSuppt  int32 = -5024 // kFPCallNotSupported
 	afpErrObjectTypeErr int32 = -5025 // kFPObjectTypeErr
 	afpErrDirNotFound   int32 = -5029 // kFPDirNotFound
+	afpErrUserNotAuth   int32 = -5023 // kFPUserNotAuth (bad password / not authorised)
 )
 
 // afpSession is the per-ASP-session AFP state: whether the client has logged in,
@@ -53,6 +54,10 @@ const (
 // ASP layer's concern.
 type afpSession struct {
 	loggedIn bool
+	// user is the authenticated identity resolved at FPLogin. Empty means a guest
+	// login (No User Authent, or cleartext with no user store wired). It gates
+	// which volumes the session may enumerate (FPGetSrvrParms) and open (FPOpenVol).
+	user     string
 	openVols map[uint16]*Volume
 	forks    *forkTable
 	dt       *dtTable // Desktop reference numbers handed out by FPOpenDT
@@ -95,7 +100,7 @@ func (s *Service) dispatchAFP(sess *session, block []byte) (reply []byte, result
 		if !a.loggedIn {
 			return nil, afpErrAccessDenied
 		}
-		return s.afpGetSrvrParms(), afpNoErr
+		return s.afpGetSrvrParms(a), afpNoErr
 	case cmdOpenVol:
 		if !a.loggedIn {
 			return nil, afpErrAccessDenied

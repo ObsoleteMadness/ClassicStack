@@ -82,6 +82,79 @@ func TestPlane_StatusAndReconfigure(t *testing.T) {
 	}
 }
 
+func TestPlane_UserAdminUnavailableWithoutStore(t *testing.T) {
+	// fakeSupervisor does NOT implement UserAdmin → every user op is unavailable.
+	p := New(&fakeSupervisor{model: config.NewModel()}, fakeCodec{}, &fakeStore{}, bus.New(8))
+	if _, err := p.Users(); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Users() err = %v, want ErrUnavailable", err)
+	}
+	if err := p.SetUser("a", "p"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("SetUser() err = %v, want ErrUnavailable", err)
+	}
+	if err := p.SetUserDisabled("a", true); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("SetUserDisabled() err = %v, want ErrUnavailable", err)
+	}
+	if err := p.RemoveUser("a"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("RemoveUser() err = %v, want ErrUnavailable", err)
+	}
+}
+
+// userSupervisor is a fakeSupervisor that also implements UserAdmin, proving the
+// plane delegates user ops when the surface is present.
+type userSupervisor struct {
+	fakeSupervisor
+	users    []UserInfo
+	lastSet  string
+	disabled map[string]bool
+}
+
+func (s *userSupervisor) Users() ([]UserInfo, error) { return s.users, nil }
+func (s *userSupervisor) SetUser(name, _ string) error {
+	s.lastSet = name
+	s.users = append(s.users, UserInfo{Name: name})
+	return nil
+}
+func (s *userSupervisor) SetUserDisabled(name string, d bool) error {
+	if s.disabled == nil {
+		s.disabled = map[string]bool{}
+	}
+	s.disabled[name] = d
+	return nil
+}
+func (s *userSupervisor) RemoveUser(name string) error {
+	for i, u := range s.users {
+		if u.Name == name {
+			s.users = append(s.users[:i], s.users[i+1:]...)
+		}
+	}
+	return nil
+}
+
+func TestPlane_UserAdminDelegates(t *testing.T) {
+	sup := &userSupervisor{fakeSupervisor: fakeSupervisor{model: config.NewModel()}}
+	p := New(sup, fakeCodec{}, &fakeStore{}, bus.New(8))
+
+	if err := p.SetUser("alice", "pw"); err != nil {
+		t.Fatal(err)
+	}
+	if sup.lastSet != "alice" {
+		t.Fatalf("SetUser not delegated (lastSet=%q)", sup.lastSet)
+	}
+	users, err := p.Users()
+	if err != nil || len(users) != 1 || users[0].Name != "alice" {
+		t.Fatalf("Users() = %v, err %v", users, err)
+	}
+	if err := p.SetUserDisabled("alice", true); err != nil || !sup.disabled["alice"] {
+		t.Fatalf("SetUserDisabled not delegated (err=%v disabled=%v)", err, sup.disabled)
+	}
+	if err := p.RemoveUser("alice"); err != nil {
+		t.Fatal(err)
+	}
+	if users, _ := p.Users(); len(users) != 0 {
+		t.Fatalf("RemoveUser left %d users", len(users))
+	}
+}
+
 func TestPlane_SubscribeStateTopic(t *testing.T) {
 	tb := bus.New(4)
 	sup := &fakeSupervisor{model: config.NewModel()}

@@ -31,21 +31,24 @@ type Manager interface {
 
 // Info is the protocol-neutral view of a bound share for listing/diagnostics.
 // It deliberately omits backend params (some are secret); a caller that needs the
-// full, redacted config reads Share.Config() directly.
+// full, redacted config reads Share.Config() directly. AllowedUsers IS included —
+// it is the access allow-list (not secret) the management UI edits.
 type Info struct {
-	Name        string
-	FSType      string
-	Description string
-	ReadOnly    bool
+	Name         string
+	FSType       string
+	Description  string
+	ReadOnly     bool
+	AllowedUsers []string // empty = guest/anonymous access
 }
 
 // InfoOf builds the listing view of a Share.
 func InfoOf(s *Share) Info {
 	return Info{
-		Name:        s.Name(),
-		FSType:      s.Config().FSType,
-		Description: s.Description(),
-		ReadOnly:    s.ReadOnly(),
+		Name:         s.Name(),
+		FSType:       s.Config().FSType,
+		Description:  s.Description(),
+		ReadOnly:     s.ReadOnly(),
+		AllowedUsers: append([]string(nil), s.Permissions().AllowedUsers...),
 	}
 }
 

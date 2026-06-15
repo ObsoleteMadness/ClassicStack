@@ -53,6 +53,11 @@ func (sh *Share) Name() string { return sh.sh.Name() }
 // remark / share comment), or empty.
 func (sh *Share) Description() string { return sh.sh.Description() }
 
+// allows reports whether the session identity may see/bind this share, per the
+// share's access allow-list. An empty (guest) identity is admitted only by a
+// guest-open share.
+func (sh *Share) allows(user string) bool { return sh.sh.Permissions().Allows(user) }
+
 // FS returns the bound filesystem; the dispatch reaches files through it
 // (sh.FS().Stat(p), sh.FS().OpenFork(p, fork, flag), sh.FS().Rename/Remove which
 // carry fork metadata).

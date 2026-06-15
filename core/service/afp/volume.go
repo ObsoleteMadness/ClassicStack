@@ -70,6 +70,11 @@ func (v *Volume) ID() uint16 { return v.id }
 // Name returns the volume's display name.
 func (v *Volume) Name() string { return v.sh.Name() }
 
+// allows reports whether the session identity may see/open this volume, per the
+// share's access allow-list. An empty (guest) identity is admitted only by a
+// guest-open volume.
+func (v *Volume) allows(user string) bool { return v.sh.Permissions().Allows(user) }
+
 // FS returns the bound filesystem. AFP dispatch reaches catalog/fork operations
 // through it (v.FS().Stat(p), v.FS().OpenFork(p, fork, flag), v.FS().ReadDir(p),
 // v.FS().DiskUsage(p)); the FS carries fork metadata on Rename/Remove.

@@ -1107,6 +1107,49 @@ share it; (3) invert forks into the FS via `ForkEngine`/`ForkFS` and move AppleD
 adapter; (4) add the new backends as independent build-tagged adapters. Net: AFP and SMB
 shrink (they lose storage-layout code), and embedded/cloud targets become composition.
 
+### 9e. Authentication and share access gating (the user store)
+
+The same "one interface, swappable adapters, only one wired" shape the metastore (§9a) and FS
+backends (§9c) use applies to **who may use the server**. The charter stance ("compatibility over
+correctness": modern at rest, faithful to the weak dialect on the wire) decides the whole design —
+**credentials are salted-hashed at rest even though the legacy auth handshake compares them against
+a cleartext or weakly-hashed value off the wire**.
+
+- **`core/auth` — the contract (always compiled, reflection-free).** `Authenticator{Authenticate
+  (user, pass) (ok, err)}` is the minimal seam the file services consult; `UserStore` extends it
+  with the management surface the web UI drives (`Users`/`SetUser`/`SetDisabled`/`RemoveUser`). The
+  PBKDF2-HMAC-SHA256 credential codec lives here too (`DeriveCredential`/`Verify`/`SaltHex`/
+  `ParseCredential`) — over `crypto/hmac`+`sha256`+`subtle` only, with **hand-rolled hex**, because
+  both `encoding/hex` and `crypto/rand` transitively import `reflect` (banned in core, §1). The
+  contract therefore takes the salt as a *parameter*; it never generates randomness.
+- **`adapter/auth/local` — the built-in store (always available, adapter ring).** An smbpasswd-style
+  line file (`name:saltHex:hashHex:flags`, separate from `server.toml` so secrets never ride config
+  backups), loaded into memory, rewritten atomically on mutation. It uses `crypto/rand` (salt) and
+  `os` — both fine in the adapter ring, neither allowed in core. It is the default the way
+  `local_fs`/`mem` are defaults: pure stdlib, no build tag. A future PAM / Windows-SSPI / sqlite
+  store is an additional `adapter/auth/*` behind its own tag (those would carry the hash-format
+  differences between PAM crypt, NTLM, and our PBKDF2).
+- **The gate is at LOGIN, not per share.** Legacy AFP/SMB clients log in **once** with a single
+  identity, then enumerate and bind shares under it — they do not re-authenticate per share. So AFP
+  `FPLogin` / SMB `SESSION_SETUP_ANDX` validate the credential (or admit guest), and the resolved
+  identity then **filters which shares are enumerable** (AFP `FPGetSrvrParms`, SMB `NetShareEnum`/
+  `NetServerEnum2`) and **gates binding** (AFP `FPOpenVol`, SMB `TREE_CONNECT`). A restricted share
+  the identity may not use is reported as non-existent (`kFPObjectNotFound` / `STATUS_BAD_NETWORK_
+  NAME`), not access-denied, so naming it directly leaks nothing. With no store wired, every login is
+  guest and every share world-readable — exactly the pre-auth behaviour.
+- **Access policy is share-level, not file ACLs.** `share.Permissions{AllowedUsers}` (empty = guest/
+  world) is the whole policy: a coarse "who may see/bind this share." `ReadOnly` stays share-wide,
+  not per-user. This is a compatibility server for vintage Macs/DOS, not an enterprise file server —
+  deliberately not in the per-file-ACL space. The allow-list is **not** a backend `Extra` param (it
+  is protocol-layer policy, not storage config), so it rides on `ShareSpec.AllowedUsers` →
+  `share.Permissions`, visible/editable in the UI, never behind `core/fs`.
+- **Management surface.** Users live in the store's file, **not** the config model, so the control
+  plane exposes user CRUD as its own surface (`control.Plane.Users/SetUser/SetUserDisabled/
+  RemoveUser`, backed by the optional `control.UserAdmin` the supervisor satisfies from the wired
+  store; absent → `ErrUnavailable`). Share allow-lists, by contrast, ARE config and ride the existing
+  `Config()`/`Reconfigure` path. The hashed-credential-can't-be-reversed compromise (a client sending
+  an LM/NTLM response we accept as guest rather than refuse) is documented in `spec/errata.md`.
+
 ---
 
 ## 10. Naming, filename codecs, and the filesystem event bus

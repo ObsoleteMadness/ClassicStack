@@ -104,7 +104,7 @@ func (s *Service) handleTransaction(sess *smbSession, h protocol.Header, req []b
 	case rapNetServerEnum2:
 		return s.handleNetServerEnum2(h, area)
 	case rapNetShareEnum:
-		return s.handleNetShareEnum(h)
+		return s.handleNetShareEnum(h, sess.user)
 	}
 	return errResponse(h, statusNotSupported)
 }
@@ -200,12 +200,17 @@ type shareEntry struct {
 }
 
 // shareEntries lists this server's shares for NetShareEnum: every bound disk share
-// (held under the service lock — the Manager mutates the slice at runtime) plus the
-// always-present virtual IPC$ pipe.
-func (s *Service) shareEntries() []shareEntry {
+// the session identity may access (held under the service lock — the Manager
+// mutates the slice at runtime) plus the always-present virtual IPC$ pipe. A
+// restricted share the identity cannot use is omitted, matching the tree-connect
+// gate so a guest never sees a share it could not bind.
+func (s *Service) shareEntries(user string) []shareEntry {
 	s.mu.Lock()
 	out := make([]shareEntry, 0, len(s.shares)+1)
 	for _, sh := range s.shares {
+		if !sh.allows(user) {
+			continue
+		}
 		out = append(out, shareEntry{Name: sh.Name(), Type: shareTypeDisktree, Comment: sh.Description()})
 	}
 	s.mu.Unlock()
@@ -215,8 +220,9 @@ func (s *Service) shareEntries() []shareEntry {
 
 // handleNetShareEnum answers a RAP NetShareEnum (function 0x0000) from this
 // server's own shares — no browser involved, since shares are SMB's own state.
-func (s *Service) handleNetShareEnum(h protocol.Header) []byte {
-	return buildNetShareEnumResponse(h, s.shareEntries())
+// The session identity filters which shares are listed.
+func (s *Service) handleNetShareEnum(h protocol.Header, user string) []byte {
+	return buildNetShareEnumResponse(h, s.shareEntries(user))
 }
 
 // buildNetShareEnumResponse packs the share entries into a RAP NetShareEnum reply
