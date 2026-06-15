@@ -165,10 +165,48 @@ func (t *DirectIPX) connFor(network [4]byte, node [6]byte, allocate bool) (*Conn
 			c.cid = t.allocCIDLocked()
 		}
 		t.conns[key] = c
+		// Install the server-push writer for asynchronous completions
+		// (NOTIFY_CHANGE): stamp the circuit's CID and send to the retained peer
+		// address. The CID is read live from the circuit at push time (a NEGOTIATE
+		// after a non-NEGOTIATE first message may assign it later).
+		pushKey := key
+		c.conn.SetPushWriter(func(frame []byte) {
+			t.pushResponse(pushKey, frame)
+		})
 	} else if allocate && c.cid == 0 {
 		c.cid = t.allocCIDLocked()
 	}
 	return c.conn, c.cid
+}
+
+// pushResponse sends a server-initiated SMB frame (an asynchronous NOTIFY_CHANGE
+// completion, §10d) to a circuit's peer, stamping the circuit's CID. There is no
+// request to echo a SequenceNumber from, so it is left zero. Drops cleanly if the
+// circuit closed or no sender is wired.
+func (t *DirectIPX) pushResponse(key directIPXEndpoint, frame []byte) {
+	t.mu.Lock()
+	c := t.conns[key]
+	var cid uint16
+	if c != nil {
+		cid = c.cid
+	}
+	sender := t.sender
+	t.mu.Unlock()
+	if c == nil || sender == nil {
+		return
+	}
+	payload := append([]byte(nil), frame...)
+	if len(payload) >= smbWordCountStart {
+		bp.PutLE16(payload[smbCIDOffset:smbCIDOffset+2], cid)
+	}
+	_ = sender.Send(&ipxproto.Datagram{
+		Type:    ipxPEPType,
+		DstNet:  key.net,
+		DstNode: key.node,
+		DstSock: DirectSMBSocket,
+		SrcSock: DirectSMBSocket,
+		Payload: payload,
+	})
 }
 
 // allocCIDLocked hands out the next CID, skipping the reserved 0x0000 and 0xFFFF.

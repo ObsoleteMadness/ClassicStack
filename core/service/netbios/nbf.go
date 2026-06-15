@@ -262,6 +262,13 @@ func (e *sessionEngine) handleDataOnlyLast(srcMAC [6]byte, frame *nbf.Frame) {
 	if c.conn == nil {
 		if consumer := e.consumer(); consumer != nil {
 			c.conn = consumer.NewConn()
+			// Install the server-push writer: a held NOTIFY_CHANGE completes
+			// asynchronously by framing SMB bytes onto this circuit's DATA frames,
+			// using the circuit's retained (MAC, localNum, remoteNum) addressing.
+			cMAC, cLocal, cRemote := c.mac, c.localNum, c.remoteNum
+			c.conn.SetPushWriter(func(frame []byte) {
+				e.sendSessionData(cMAC, cLocal, cRemote, frame)
+			})
 		}
 	}
 	conn := c.conn

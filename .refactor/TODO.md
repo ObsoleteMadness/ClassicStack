@@ -740,6 +740,26 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > M8a:** `secret`-param form masking (UI/M8). **Also pending:** §10e host-watcher (fsnotify) inbound
 > edge — an adapter that publishes external mutations onto the same bus; the reactors fire for free.
 
+> **M8a notes (§10d wire push — SMB CHANGE_NOTIFY landed; AFP excluded):** the deferred wire-push half
+> of §10d, **SMB only**. The session seam gained a server-initiated push channel: `Conn.SetPushWriter`
+> (on both `smb` and `netbios` `SessionCircuit` interfaces); each transport installs a push closure
+> after `NewConn` — NBF via `sendSessionData`, NB-IPX via a new `pushData` over the circuit's retained
+> net/node/sock+conn-ids, direct-IPX via a new `pushResponse` stamping the circuit CID. SMB now serves
+> `NT_TRANSACT (0xA0)` `NOTIFY_CHANGE (0x0004)` (`core/service/smb/notify.go`): parse the Setup,
+> register a held `pendingNotify` on the session (ids + bound share), return **nil** (held open, not
+> answered). The reactor sink `notifyFSChange` (now wired into `share.Reactor` in place of the no-op)
+> completes every held watch for the changed share by pushing one `FILE_NOTIFY_INFORMATION` record
+> (FILE_ACTION_* from the fs.Op + the changed leaf in UTF-16LE) over the circuit; one-shot per
+> [MS-CIFS], share-coarse granularity (client re-reads). NOTIFY_CHANGE on IPC$/unbound tree is refused
+> (not held). The SMB service tracks live sessions (`NewConn`/`Close` register/unregister) so the
+> reactor fans completions to every watching circuit. **AFP is EXCLUDED by protocol** — classic AFP
+> has no per-directory change-notify push (clients poll the volume mod-date; the only ASP attention
+> codes are shutdown/crash/message), so its reactor sink stays nil (ReactorDelivered is the observable,
+> no wire frame). Tests: `notify_test.go` (NT_TRANSACT parse, held-then-completed, one-shot,
+> no-watch-no-push, IPC$-refused) + `nbf_test.go` server-push delivery. **Still pending:** §10e
+> host-watcher (fsnotify), then the SMB push fires for external edits too. **Still M8a:** `secret`-param
+> masking (UI/M8).
+
 > **M8 notes (config-codec round-trip + UCI fix — partial M8):** the TOML/UCI codecs and the
 > file/UCI stores were already built (B6/D4/D6); this slice adds the missing **real-section**
 > round-trip coverage and fixes a latent codec bug it surfaced. The new M8a `Auth` section now has

@@ -30,6 +30,32 @@ type smbSession struct {
 	nextTID  uint16
 	nextFID  uint16
 	nextSID  uint16
+
+	// push delivers an unsolicited (server-initiated) SMB frame back over the
+	// session's transport circuit. The transport installs it via Conn.SetPushWriter
+	// after NewConn; nil on a transport that does not support server push, in which
+	// case a deferred NOTIFY_CHANGE is simply never completed (the client times it
+	// out, exactly as if the server held the request). Guarded by mu.
+	push func([]byte)
+	// watches holds the outstanding NT_TRANSACT NOTIFY_CHANGE requests the client
+	// has posted and the server has not yet completed (§10d wire push). Each is a
+	// one-shot: the first matching FS change completes and removes it.
+	watches []*pendingNotify
+}
+
+// pendingNotify is one outstanding NOTIFY_CHANGE request the server is holding open
+// until a change occurs under the watched tree. It captures the request ids so the
+// asynchronous completion frame addresses the right client request, and the bound
+// share so the reactor can match an FS event's tree.
+type pendingNotify struct {
+	tid    uint16
+	uid    uint16
+	mid    uint16
+	pidLow uint16
+	pidHi  uint16
+	flags2 uint16 // request flags2 (Unicode/NTStatus) — the completion mirrors them
+	filter uint32 // CompletionFilter bits the client asked to watch
+	share  *Share // the tree's bound share; the reactor matches events under its root
 }
 
 // treeConnect is one bound tree: the Share it resolves paths against, or the
@@ -189,6 +215,47 @@ func (sess *smbSession) dropSearch(sid uint16) {
 	sess.mu.Lock()
 	delete(sess.searches, sid)
 	sess.mu.Unlock()
+}
+
+// setPush installs the transport's server-push writer (Conn.SetPushWriter). Safe to
+// call once before the circuit serves messages.
+func (sess *smbSession) setPush(w func([]byte)) {
+	sess.mu.Lock()
+	sess.push = w
+	sess.mu.Unlock()
+}
+
+// addWatch registers an outstanding NOTIFY_CHANGE request (the server holds it open
+// rather than replying). A session with no push writer still registers it so the
+// bookkeeping is uniform; it just can never be delivered.
+func (sess *smbSession) addWatch(w *pendingNotify) {
+	sess.mu.Lock()
+	sess.watches = append(sess.watches, w)
+	sess.mu.Unlock()
+}
+
+// takeWatchesFor removes and returns the outstanding watches whose tree binds the
+// given share — the one-shot completions a change under that share's root fires. It
+// also returns the push writer so the caller can deliver them without holding the
+// lock. NOTIFY_CHANGE is one-shot per [MS-CIFS]: a fired watch is consumed (the
+// client re-arms by posting a fresh request).
+func (sess *smbSession) takeWatchesFor(sh *Share) ([]*pendingNotify, func([]byte)) {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if len(sess.watches) == 0 || sess.push == nil {
+		return nil, nil
+	}
+	var fired []*pendingNotify
+	kept := sess.watches[:0]
+	for _, w := range sess.watches {
+		if w.share == sh {
+			fired = append(fired, w)
+		} else {
+			kept = append(kept, w)
+		}
+	}
+	sess.watches = kept
+	return fired, sess.push
 }
 
 // closeAll closes every open file handle (called when the connection ends). The

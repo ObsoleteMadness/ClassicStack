@@ -103,6 +103,10 @@ func (s *Service) Dispatch(sess *smbSession, req []byte) []byte {
 	case protocol.CommandNtCreateAndX:
 		return s.handleNtCreateAndX(sess, h, req)
 
+	// --- NT_TRANSACT: only NOTIFY_CHANGE is served (the §10d async-completion path) ---
+	case protocol.CommandNtTransact:
+		return s.handleNtTransact(sess, h, req)
+
 	// --- IPC$ named-pipe RAP: NetServerEnum2 (browse list) over \PIPE\LANMAN ---
 	case protocol.CommandTransaction:
 		return s.handleTransaction(sess, h, req)

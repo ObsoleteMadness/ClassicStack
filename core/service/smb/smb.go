@@ -83,6 +83,7 @@ type Service struct {
 	resolver func() ([]ShareSpec, error) // re-resolves the desired share set from the model; set at wire time for hot-apply
 	busFor   func(fs.ShareSpec) bus.Bus  // resolves the shared FS-mutation bus for a share's host path (§10d); nil = isolated
 	reactor  *share.Reactor              // §10d coordination consumer; subscribes to same-path buses on Start
+	sessions map[*smbSession]struct{}    // live circuits, for delivering async NOTIFY_CHANGE completions (§10d push)
 }
 
 // Authenticator validates a (username, cleartext password) credential. It is the
@@ -112,12 +113,12 @@ type circuitCloser interface{ closeCircuits() }
 
 // New builds the SMB service with no shares (the registry default).
 func New(logger log.Logger) *Service {
-	s := &Service{logger: logger}
-	// §10d reactor: deliver foreign-origin FS mutations under one of our shares as a
-	// pending notification. shareRoots() re-reads the live share set per event so a
-	// reconcile is reflected without re-subscribing. The notify sink is a no-op for
-	// now (wire push deferred — see share.Reactor); Delivered() is the observable.
-	s.reactor = share.NewReactor(OriginSMB, s.shareRoots, nil)
+	s := &Service{logger: logger, sessions: make(map[*smbSession]struct{})}
+	// §10d reactor: deliver foreign-origin FS mutations under one of our shares to
+	// the SMB wire-push sink (notifyFSChange), which completes any held NT_TRANSACT
+	// NOTIFY_CHANGE for that share. shareRoots() re-reads the live share set per event
+	// so a reconcile is reflected without re-subscribing.
+	s.reactor = share.NewReactor(OriginSMB, s.shareRoots, s.notifyFSChange)
 	return s
 }
 
@@ -129,6 +130,35 @@ func (s *Service) ReactorDelivered() uint64 {
 		return 0
 	}
 	return s.reactor.Delivered()
+}
+
+// registerSession adds a live circuit's session to the push set (called from
+// NewConn) so an async NOTIFY_CHANGE completion can reach it.
+func (s *Service) registerSession(sess *smbSession) {
+	s.mu.Lock()
+	if s.sessions == nil {
+		s.sessions = make(map[*smbSession]struct{})
+	}
+	s.sessions[sess] = struct{}{}
+	s.mu.Unlock()
+}
+
+// unregisterSession drops a session from the push set (called from Conn.Close).
+func (s *Service) unregisterSession(sess *smbSession) {
+	s.mu.Lock()
+	delete(s.sessions, sess)
+	s.mu.Unlock()
+}
+
+// liveSessions snapshots the registered sessions for a §10d push fan-out.
+func (s *Service) liveSessions() []*smbSession {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*smbSession, 0, len(s.sessions))
+	for sess := range s.sessions {
+		out = append(out, sess)
+	}
+	return out
 }
 
 // shareRoots returns the live shares as (name, host-root) pairs for the §10d

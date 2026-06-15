@@ -57,24 +57,29 @@ func (p *recordingPort) lastSent(cmd uint8) *nbf.Frame {
 // with a marker prefix, so a test can prove the reassembled SMB message reached
 // the consumer and the response travelled back over the circuit.
 type echoConsumer struct {
-	opened int
-	closed int
-	last   []byte
+	opened  int
+	closed  int
+	last    []byte
+	circuit *echoCircuit // the most recently opened circuit (for asserting server push)
 }
 
 type echoCircuit struct {
-	c *echoConsumer
+	c    *echoConsumer
+	push func([]byte) // captured server-push writer, for asserting async delivery
 }
 
 func (e *echoConsumer) NewConn() SessionCircuit {
 	e.opened++
-	return &echoCircuit{c: e}
+	ec := &echoCircuit{c: e}
+	e.circuit = ec
+	return ec
 }
 func (ec *echoCircuit) ServeMessage(req []byte) []byte {
 	ec.c.last = append([]byte(nil), req...)
 	return append([]byte("R:"), req...)
 }
-func (ec *echoCircuit) Close() { ec.c.closed++ }
+func (ec *echoCircuit) SetPushWriter(w func([]byte)) { ec.push = w }
+func (ec *echoCircuit) Close()                       { ec.c.closed++ }
 
 // establishCircuit drives a CALL through to an active circuit and returns the
 // local/remote session numbers and the peer MAC, leaving the circuit ready for
@@ -187,6 +192,37 @@ func TestNBF_DataDeliversToConsumerAndReplies(t *testing.T) {
 	if reply.DestNumber != remoteNum || reply.SourceNumber != localNum {
 		t.Errorf("response session nums dst=%d src=%d, want dst=%d src=%d",
 			reply.DestNumber, reply.SourceNumber, remoteNum, localNum)
+	}
+}
+
+// TestNBF_ServerPushDeliversUnsolicitedFrame proves the §10d server-push seam: the
+// engine installs a push writer on the circuit, and invoking it sends an unsolicited
+// DATA_ONLY_LAST to the circuit's peer (the path an async NOTIFY_CHANGE completion
+// takes), addressed with the circuit's own session numbers.
+func TestNBF_ServerPushDeliversUnsolicitedFrame(t *testing.T) {
+	_, r, port, consumer := newWiredEngine(t)
+	name := protocol.NewName("CLASSICSTACK", protocol.NameTypeFileServer)
+	localNum, remoteNum, peer := establishCircuit(t, r, port, name, 7)
+
+	// One data frame opens the circuit (and installs the push writer).
+	r.Inbound(peer, peer, &nbf.Frame{Command: nbf.CmdDataOnlyLast, DestNumber: localNum, SourceNumber: remoteNum, Payload: []byte("\xffSMBx")})
+	if consumer.circuit == nil || consumer.circuit.push == nil {
+		t.Fatal("engine did not install a server-push writer on the circuit")
+	}
+
+	// Invoke the push writer with an unsolicited frame.
+	port.sent = nil
+	consumer.circuit.push([]byte("\xffSMBnotify"))
+
+	pushed := port.lastSent(nbf.CmdDataOnlyLast)
+	if pushed == nil {
+		t.Fatal("server push did not send a DATA_ONLY_LAST")
+	}
+	if string(pushed.Payload) != "\xffSMBnotify" {
+		t.Fatalf("pushed payload = %q, want the notify frame", pushed.Payload)
+	}
+	if pushed.DestNumber != remoteNum || pushed.SourceNumber != localNum {
+		t.Errorf("push session nums dst=%d src=%d, want dst=%d src=%d", pushed.DestNumber, pushed.SourceNumber, remoteNum, localNum)
 	}
 }
 

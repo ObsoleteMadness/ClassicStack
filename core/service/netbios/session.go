@@ -33,9 +33,14 @@ type SessionConsumer interface {
 }
 
 // SessionCircuit is one open virtual circuit: serve a reassembled message
-// (returning the reply bytes, or nil to send nothing), and close on teardown.
+// (returning the reply bytes, or nil to send nothing), optionally accept a
+// server-push writer for asynchronous server-initiated frames (SMB NOTIFY_CHANGE
+// completion), and close on teardown. A transport that can retain per-circuit
+// addressing installs a push writer after opening the circuit; one that cannot
+// simply never calls it, and server-initiated frames are not delivered.
 type SessionCircuit interface {
 	ServeMessage(req []byte) []byte
+	SetPushWriter(w func([]byte))
 	Close()
 }
 

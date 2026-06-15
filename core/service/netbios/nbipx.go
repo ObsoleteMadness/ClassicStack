@@ -228,6 +228,14 @@ func (e *ipxSessionEngine) handleData(d *ipxproto.Datagram, hdr *protocol.NBIPXS
 	if c.conn == nil {
 		if consumer := e.consumer(); consumer != nil {
 			c.conn = consumer.NewConn()
+			// Install the server-push writer for asynchronous completions
+			// (NOTIFY_CHANGE), framing SMB bytes onto a DATA_ONLY_LAST addressed
+			// from the circuit's retained peer address + connection ids.
+			peerNet, peerNode, peerSock := c.net, c.node, c.sock
+			cLocal, cRemote := c.localID, c.remoteID
+			c.conn.SetPushWriter(func(frame []byte) {
+				e.pushData(peerNet, peerNode, peerSock, cLocal, cRemote, frame)
+			})
 		}
 	}
 	conn := c.conn
@@ -275,6 +283,36 @@ func (e *ipxSessionEngine) sendData(in *ipxproto.Datagram, inHdr *protocol.NBIPX
 		ConnCtrlByte:   inHdr.ConnCtrlByte,
 	}
 	e.send(in, append(protocol.EncodeSessionHeader(h), payload...), "session-send")
+}
+
+// pushData sends a server-initiated reassembled message (an asynchronous
+// NOTIFY_CHANGE completion, §10d wire push) to the circuit's peer as one
+// EOM-flagged DATA_ONLY_LAST. Unlike sendData it has no inbound datagram to swap
+// addressing from, so it addresses the peer directly from the circuit's retained
+// net/node/sock. A nil sender drops it.
+func (e *ipxSessionEngine) pushData(peerNet [4]byte, peerNode [6]byte, peerSock [2]byte, localID, remoteID uint16, payload []byte) {
+	if e.sender == nil {
+		return
+	}
+	h := &protocol.NBIPXSessionHeader{
+		ConnCtrlFlag:   protocol.NBIPXConnFlagEOM,
+		DataStreamType: protocol.NBIPXDataOnlyLast,
+		SourceConnID:   localID,
+		DestConnID:     remoteID,
+		TotalDataLen:   uint16(len(payload)),
+		DataLen:        uint16(len(payload)),
+	}
+	out := &ipxproto.Datagram{
+		Type:    protocol.IPXTypePEP,
+		DstNet:  peerNet,
+		DstNode: peerNode,
+		DstSock: peerSock,
+		SrcSock: NBIPXSessionSocket,
+		Payload: append(protocol.EncodeSessionHeader(h), payload...),
+	}
+	if err := e.sender.Send(out); err != nil {
+		e.logf("NBIPX push failed")
+	}
 }
 
 // send writes an NB-IPX PEP datagram (type 4) back to the inbound peer, swapping

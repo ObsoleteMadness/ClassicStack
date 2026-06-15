@@ -32,7 +32,9 @@ type Conn struct {
 // once per established NetBIOS session; the returned Conn is fed each reassembled
 // SMB message via ServeMessage and released via Close.
 func (s *Service) NewConn() *Conn {
-	return &Conn{svc: s, sess: newSession()}
+	sess := newSession()
+	s.registerSession(sess) // §10d: track the circuit so async NOTIFY_CHANGE can reach it
+	return &Conn{svc: s, sess: sess}
 }
 
 // ServeMessage dispatches one reassembled SMB request and returns the response
@@ -43,10 +45,21 @@ func (c *Conn) ServeMessage(req []byte) []byte {
 	return c.svc.Dispatch(c.sess, req)
 }
 
+// SetPushWriter installs the transport's server-initiated push channel: a function
+// that frames and sends one unsolicited SMB message back over THIS circuit (§10d
+// wire push). The SMB command engine uses it to complete a held NT_TRANSACT
+// NOTIFY_CHANGE asynchronously when a watched tree changes. A transport that cannot
+// push (no retained per-circuit addressing) simply never calls this; a held
+// NOTIFY_CHANGE then never completes (the client times it out), which is benign.
+func (c *Conn) SetPushWriter(w func([]byte)) {
+	c.sess.setPush(w)
+}
+
 // Close releases the circuit, closing any file handles and searches the session
 // still holds. The transport calls this when the NetBIOS session ends so a
 // dropped circuit does not leak handles.
 func (c *Conn) Close() {
+	c.svc.unregisterSession(c.sess) // §10d: stop tracking this circuit for pushes
 	c.sess.closeAll()
 }
 
@@ -61,9 +74,11 @@ type SessionConsumer interface {
 }
 
 // SessionCircuit is one open SMB virtual circuit as the NetBIOS transport sees
-// it: serve a message (returning the reply bytes), and close on teardown.
+// it: serve a message (returning the reply bytes), optionally accept a server-push
+// writer (for asynchronous completions like NOTIFY_CHANGE), and close on teardown.
 type SessionCircuit interface {
 	ServeMessage(req []byte) []byte
+	SetPushWriter(w func([]byte))
 	Close()
 }
 

@@ -139,10 +139,15 @@ func New(logger log.Logger) *Service {
 		sessions:      newSessionTable(),
 		pendingWrites: newPendingWriteTable(),
 	}
-	// §10d reactor: deliver foreign-origin FS mutations under one of our volumes as a
-	// pending notification. roots() re-reads the live volume set per event so a
-	// reconcile is reflected without re-subscribing. The notify sink is a no-op for
-	// now (wire push deferred — see share.Reactor); Delivered() is the observable.
+	// §10d reactor: observe foreign-origin FS mutations under one of our volumes.
+	// AFP is deliberately EXCLUDED from wire notifications — classic AFP has no
+	// per-directory change-notify push (a client discovers changes by polling the
+	// volume modification date / re-enumerating, and the only server→workstation ASP
+	// attention codes are shutdown/crash/message, none of which mean "catalog
+	// changed"). So the AFP sink stays nil (no wire frame); the reactor still tracks
+	// Delivered() as the observable that coordination reached AFP, and the volume
+	// mod-date a polling client reads reflects the underlying FS. The SMB side, which
+	// HAS a real async primitive (NT_TRANSACT NOTIFY_CHANGE), does emit frames.
 	s.reactor = share.NewReactor(OriginAFP, s.volumeRoots, nil)
 	return s
 }
