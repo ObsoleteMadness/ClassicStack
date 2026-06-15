@@ -21,16 +21,7 @@ func init() {
 		// yields a service with none (the historical zero-config default); a bad
 		// spec (invalid fs_type×fork×codec triple or missing required param) fails
 		// the build loudly here rather than mangling names at runtime.
-		specs := smb.SpecsFromModel(m)
-		var (
-			svc *smb.Service
-			err error
-		)
-		if len(specs) == 0 {
-			svc = smb.New(logger)
-		} else if svc, err = smb.NewWithShares(logger, specs...); err != nil {
-			return nil, err
-		}
+		svc := smb.New(logger)
 		// Server identity is one top-level value (§4-bis): SMB advertises the shared
 		// Identity.Hostname/Workgroup/Description — no per-service name field, so SMB
 		// and NetBIOS cannot diverge. These hold even with NetBIOS absent (direct-TCP
@@ -38,12 +29,22 @@ func init() {
 		svc.SetServerName(m.Identity.Hostname)
 		svc.SetWorkgroup(m.Identity.Workgroup)
 		svc.SetDescription(m.Identity.Description)
+		// §10d: build each share over the shared FS-mutation bus for its host path, so
+		// a same-host-path AFP volume sees this share's mutations (and vice-versa). Set
+		// BEFORE the shares are built so the initial set gets the shared bus too.
+		svc.SetBusResolver(fsBus.busFor)
 		// Wire the hot-apply resolver: a Reconfigure of an SMB share section then
 		// reconciles the live share set against the model via share.Manager
 		// (Add/Update/Remove) without restarting the service (§11b).
 		svc.SetShareResolver(func() ([]smb.ShareSpec, error) {
 			return smb.SpecsFromModel(m), nil
 		})
+		// Populate the initial share set through the reconcile path so it is built
+		// over the shared bus. A bad spec fails the build loudly here; an empty model
+		// yields a service with no shares (the historical zero-config default).
+		if err := svc.ReconcileShares(smb.SpecsFromModel(m)); err != nil {
+			return nil, err
+		}
 		return svc, nil
 	})
 }

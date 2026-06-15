@@ -93,7 +93,7 @@ func TestLocalFSRoundTrip(t *testing.T) {
 // TestLocalFSRejectsTraversal proves a '..' path cannot escape the share root.
 func TestLocalFSRejectsTraversal(t *testing.T) {
 	root := t.TempDir()
-	l, err := newLocalFS(ShareSpec{FSType: "local_fs", Path: root})
+	l, err := newLocalFS(ShareSpec{FSType: "local_fs", Path: root}, nil)
 	if err != nil {
 		t.Fatalf("newLocalFS: %v", err)
 	}

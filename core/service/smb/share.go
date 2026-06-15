@@ -3,6 +3,7 @@ package smb
 import (
 	"strings"
 
+	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	"github.com/ObsoleteMadness/ClassicStack/core/share"
 )
@@ -33,12 +34,25 @@ type ShareSpec struct {
 	Share       fs.ShareSpec
 }
 
-// NewShare builds one Share from a spec by assembling the share stack through the
-// shared share.Build, which validates the fs_type×fork_backend×filename_codec
-// triple and the backend's required params.
+// NewShare builds one Share from a spec with no FS-mutation bus (the bus-less path
+// used by tests and the zero-config default). A share built this way is isolated —
+// its FS publishes to a private bus no one else holds, so it cannot coordinate with
+// a same-host-path AFP volume (§10d). Production builds go through NewShareWithBus.
 func NewShare(spec ShareSpec) (*Share, error) {
+	return NewShareWithBus(spec, nil)
+}
+
+// NewShareWithBus builds one Share, assembling the share stack through share.Build
+// over the supplied FS-mutation bus (§10d): when an SMB share and an AFP volume back
+// the same host path, the service hands them the SAME bus so a mutation by one
+// reaches the other. A nil bus means "isolated" (share.Build then makes a private
+// one).
+func NewShareWithBus(spec ShareSpec, b bus.Bus) (*Share, error) {
 	spec.Share.Name = spec.Name
-	built, err := share.Build(spec.Share, nil)
+	// Stamp this service's origin onto the FS mutations this share produces, so a
+	// same-bus AFP volume's reactor acts on them and SMB's own reactor skips them
+	// (§10d). OriginBus is a no-op when b is nil.
+	built, err := share.Build(spec.Share, fs.OriginBus(b, OriginSMB))
 	if err != nil {
 		return nil, err
 	}

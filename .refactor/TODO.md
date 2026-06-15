@@ -710,8 +710,35 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > but the setter + self-entry comment are in). **No per-service hostname field exists**, so SMB and
 > NetBIOS cannot diverge. **NOTE:** no central `Model.Validate()` Apply-time hook exists yet, so
 > `ValidateForNetBIOS` is provided but not yet called by an Apply path — wire it when control-plane
-> Apply validation lands. **Still M8a:** §10d same-host-path AFP+SMB shared-bus; `secret`-param form
-> masking (UI/M8).
+> Apply validation lands. **Still M8a:** §10d same-host-path AFP+SMB shared-bus (landed in the
+> follow-on below); `secret`-param form masking (UI/M8).
+
+> **M8a notes (§10d same-host-path AFP+SMB coordination — coordination seam landed, wire push
+> deferred):** when an AFP volume and an SMB share back the SAME host path, a mutation by one now
+> reaches the other through one shared FS-mutation bus. **(A) Shared bus per host path:** the registry
+> holds an `fsBusBroker` (`compose/registry/fsbus.go`) handing one `fs.Bus` per distinct host path
+> (normalised case-fold/trailing-slash); both file-service factories resolve through it via
+> `SetBusResolver(fsBus.busFor)`. Threaded through `share.Build` by new `afp.NewVolumeWithBus` /
+> `smb.NewShareWithBus` (bus-less `NewVolume`/`NewShare` kept for tests/zero-config); the registry now
+> builds the initial set through the reconcile path so the shared bus applies from boot. **Origin
+> stamping:** `fs.OriginBus(b, origin)` wraps the bus to stamp "afp"/"smb" (`afp.OriginAFP`/
+> `smb.OriginSMB`) onto each `fs.Event`, forwarding to the same underlying bus. **(B) FS publishes:**
+> `local_fs` publishes OpCreate (CreateDir/CreateFile), OpModify (write-then-Close, coalesced — a
+> read-only open stays silent), OpRename (+OldPath), OpDelete, with the absolute host path; `memfs`
+> doesn't publish (no shared store). **(C) Reactor:** `share.Reactor` (`core/share/reactor.go`)
+> subscribes per distinct bus, drops its own Origin (`fs.SkipOrigin`), resolves the affected share(s)
+> by host-path prefix (rename matches either end), and delivers `(share, event)` to a notify sink;
+> each service builds one in `New`, subscribes in `Start`, stops in `Stop`; `ReactorDelivered()` is the
+> observable. Tests cover OriginBus stamping/shared-underlying, local_fs publish-on-mutation, the
+> reactor filter+resolve+stop, broker dedup, and an **end-to-end** `compose/registry` test (AFP+SMB on
+> one path, AFP creates → SMB notified, AFP's own reactor not). **DEFERRED to its own slice — the wire
+> push:** the notify sink is a no-op counter; it does NOT emit AFP attention or SMB CHANGE_NOTIFY
+> frames. SMB's `conn.go` `ServeMessage(req)→reply` seam has no server-initiated channel (real
+> CHANGE_NOTIFY needs a new async-push contract across NBF/NBIPX/NBT/direct), and classic AFP has no
+> per-dir change-notify (only volume-mod-date polling + server-message attention). The coordination
+> plumbing is complete; turning the resolved notification into wire frames is the follow-on. **Still
+> M8a:** `secret`-param form masking (UI/M8). **Also pending:** §10e host-watcher (fsnotify) inbound
+> edge — an adapter that publishes external mutations onto the same bus; the reactors fire for free.
 
 > **M8 notes (config-codec round-trip + UCI fix — partial M8):** the TOML/UCI codecs and the
 > file/UCI stores were already built (B6/D4/D6); this slice adds the missing **real-section**

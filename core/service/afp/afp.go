@@ -48,6 +48,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
@@ -68,6 +69,11 @@ var ErrVolumeNameRequired = errors.New("afp: volume name is required")
 const (
 	// Name is the component name for the AFP service.
 	Name = "AFP"
+
+	// OriginAFP tags FS-mutation events this service produces on the shared §10d
+	// FS bus, so a same-host-path SMB share's reactor acts on them and AFP's own
+	// reactor (fs.SkipOrigin) ignores them.
+	OriginAFP = "afp"
 
 	// Socket is the DDP socket the AFP/ASP service listens on: the ASP session
 	// listening socket. The spine serves both the GetStatus/OpenSession exchanges
@@ -99,6 +105,8 @@ type Service struct {
 	rtr      router.ServiceRouter
 	auth     Authenticator
 	resolver func() ([]VolumeSpec, error) // re-resolves the desired volume set from the model; set at wire time for hot-apply
+	busFor   func(fs.ShareSpec) bus.Bus   // resolves the shared FS-mutation bus for a share's host path (§10d); nil = isolated
+	reactor  *share.Reactor               // §10d coordination consumer; subscribes to same-path buses on Start
 	running  bool
 }
 
@@ -125,12 +133,40 @@ func (s *Service) SetAuthenticator(a Authenticator) {
 // configured separately as the seam wiring matures). Kept for the compose
 // registry's zero-config constructor.
 func New(logger log.Logger) *Service {
-	return &Service{
+	s := &Service{
 		logger:        logger,
 		socket:        defaultSocket,
 		sessions:      newSessionTable(),
 		pendingWrites: newPendingWriteTable(),
 	}
+	// §10d reactor: deliver foreign-origin FS mutations under one of our volumes as a
+	// pending notification. roots() re-reads the live volume set per event so a
+	// reconcile is reflected without re-subscribing. The notify sink is a no-op for
+	// now (wire push deferred — see share.Reactor); Delivered() is the observable.
+	s.reactor = share.NewReactor(OriginAFP, s.volumeRoots, nil)
+	return s
+}
+
+// ReactorDelivered reports how many foreign-origin FS mutations the §10d reactor has
+// delivered (a same-host-path SMB share's writes this AFP service was notified of).
+// Diagnostics / tests; 0 until a cross-service mutation occurs.
+func (s *Service) ReactorDelivered() uint64 {
+	if s.reactor == nil {
+		return 0
+	}
+	return s.reactor.Delivered()
+}
+
+// volumeRoots returns the live volumes as (name, host-root) pairs for the §10d
+// reactor's path matching.
+func (s *Service) volumeRoots() []share.NamedPath {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]share.NamedPath, 0, len(s.volumes))
+	for _, v := range s.volumes {
+		out = append(out, share.NamedPath{Name: v.Name(), Root: v.sh.Config().Path})
+	}
+	return out
 }
 
 // NewWithVolumes builds the AFP service over a set of share specs, constructing
@@ -140,7 +176,7 @@ func New(logger log.Logger) *Service {
 func NewWithVolumes(logger log.Logger, specs ...VolumeSpec) (*Service, error) {
 	s := New(logger)
 	for _, spec := range specs {
-		v, err := NewVolume(spec)
+		v, err := NewVolumeWithBus(spec, s.busForSpec(spec.Share))
 		if err != nil {
 			return nil, err
 		}
@@ -237,7 +273,11 @@ func (s *Service) AddShare(spec fs.ShareSpec) error {
 	if id == 0 {
 		return errVolumeIDsExhausted
 	}
-	v, err := NewVolume(VolumeSpec{ID: id, Name: spec.Name, Share: spec})
+	b := bus.Bus(nil)
+	if s.busFor != nil {
+		b = s.busFor(spec)
+	}
+	v, err := NewVolumeWithBus(VolumeSpec{ID: id, Name: spec.Name, Share: spec}, b)
 	if err != nil {
 		return err
 	}
@@ -253,7 +293,11 @@ func (s *Service) UpdateShare(name string, spec fs.ShareSpec) error {
 	defer s.mu.Unlock()
 	for i, v := range s.volumes {
 		if v.Name() == name {
-			rebuilt, err := NewVolume(VolumeSpec{ID: v.ID(), Name: spec.Name, Share: spec})
+			b := bus.Bus(nil)
+			if s.busFor != nil {
+				b = s.busFor(spec)
+			}
+			rebuilt, err := NewVolumeWithBus(VolumeSpec{ID: v.ID(), Name: spec.Name, Share: spec}, b)
 			if err != nil {
 				return err
 			}
@@ -305,6 +349,31 @@ func (s *Service) SetVolumeResolver(resolve func() ([]VolumeSpec, error)) {
 	s.mu.Lock()
 	s.resolver = resolve
 	s.mu.Unlock()
+}
+
+// SetBusResolver installs the closure that maps a share's spec to the shared
+// FS-mutation bus for its host path (§10d). The compose registry supplies it (one
+// bus per distinct host path, shared with a same-path SMB share) so a mutation by
+// one service reaches the other. A nil resolver (or one returning nil) means each
+// volume gets a private bus — no cross-service coordination. Idempotent; safe
+// before Start. Volumes already built are not retro-fitted; this affects volumes
+// built after it is set (AddShare / a reconcile / a rebuild).
+func (s *Service) SetBusResolver(resolve func(fs.ShareSpec) bus.Bus) {
+	s.mu.Lock()
+	s.busFor = resolve
+	s.mu.Unlock()
+}
+
+// busForSpec resolves the shared bus for a spec, or nil when no resolver is wired.
+// Caller need not hold s.mu (the field is read under it).
+func (s *Service) busForSpec(spec fs.ShareSpec) bus.Bus {
+	s.mu.Lock()
+	resolve := s.busFor
+	s.mu.Unlock()
+	if resolve == nil {
+		return nil
+	}
+	return resolve(spec)
 }
 
 // ApplyConfig hot-applies a changed volume set (§11b): the AFP "config" is the set
@@ -383,7 +452,11 @@ func (s *Service) ReconcileVolumes(desired []VolumeSpec) error {
 				return errVolumeIDsExhausted
 			}
 		}
-		v, err := NewVolume(VolumeSpec{ID: id, Name: spec.Name, Share: spec.Share})
+		b := bus.Bus(nil)
+		if s.busFor != nil {
+			b = s.busFor(spec.Share)
+		}
+		v, err := NewVolumeWithBus(VolumeSpec{ID: id, Name: spec.Name, Share: spec.Share}, b)
 		if err != nil {
 			return err
 		}
@@ -450,8 +523,28 @@ func (s *Service) Start(ctx context.Context) error {
 		return nil
 	}
 	s.running = true
+	s.subscribeReactorLocked()
 	s.logf("AFP service started (dispatch spine: ASP session + catalog read/mutate + full file/dir bitmaps + fork I/O + two-phase write + desktop DB + catsearch)")
 	return nil
+}
+
+// subscribeReactorLocked attaches the §10d reactor to each distinct FS bus among the
+// current volumes (compose hands one bus per host path, so two volumes on one path
+// resolve to one bus — subscribed once). Caller holds s.mu. A no-op when no bus
+// resolver is wired (every volume is isolated).
+func (s *Service) subscribeReactorLocked() {
+	if s.busFor == nil || s.reactor == nil {
+		return
+	}
+	seen := make(map[bus.Bus]bool, len(s.volumes))
+	for _, v := range s.volumes {
+		b := s.busFor(v.sh.Config())
+		if b == nil || seen[b] {
+			continue
+		}
+		seen[b] = true
+		s.reactor.Subscribe(b)
+	}
 }
 
 // Stop brings the service down. Safe after failed/partial Start (§3).
@@ -463,6 +556,9 @@ func (s *Service) Stop(ctx context.Context) error {
 		return nil
 	}
 	s.running = false
+	if s.reactor != nil {
+		s.reactor.Stop()
+	}
 	s.logf("AFP service stopped")
 	return nil
 }

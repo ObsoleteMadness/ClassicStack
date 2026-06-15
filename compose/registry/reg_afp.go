@@ -28,26 +28,24 @@ func init() {
 			}
 			return out
 		}
-		// Build one Volume per configured AFP volume section. A model with no
-		// volumes yields a service with none (the historical zero-config default);
-		// a bad spec (invalid fs_type×fork×codec triple or missing required param)
-		// fails the build loudly here rather than mangling names at runtime.
-		volSpecs := volSpecsFromModel(m)
-		var (
-			svc *afp.Service
-			err error
-		)
-		if len(volSpecs) == 0 {
-			svc = afp.New(logger)
-		} else if svc, err = afp.NewWithVolumes(logger, volSpecs...); err != nil {
-			return nil, err
-		}
+		svc := afp.New(logger)
+		// §10d: build each volume over the shared FS-mutation bus for its host path,
+		// so a same-host-path SMB share sees this volume's mutations (and vice-versa).
+		// Set BEFORE the volumes are built so the initial set gets the shared bus too.
+		svc.SetBusResolver(fsBus.busFor)
 		// Wire the hot-apply resolver: a Reconfigure of an AFP volume section then
 		// reconciles the live volume set against the model via share.Manager
 		// (Add/Update/Remove) without restarting the service (§11b).
 		svc.SetVolumeResolver(func() ([]afp.VolumeSpec, error) {
 			return volSpecsFromModel(m), nil
 		})
+		// Populate the initial volume set through the reconcile path so it is built
+		// over the shared bus. A bad spec (invalid fs_type×fork×codec triple or
+		// missing required param) fails the build loudly here. An empty model yields
+		// a service with no volumes (the historical zero-config default).
+		if err := svc.ReconcileVolumes(volSpecsFromModel(m)); err != nil {
+			return nil, err
+		}
 		return svc, nil
 	})
 }

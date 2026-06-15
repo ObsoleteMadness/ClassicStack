@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/metastore"
@@ -24,13 +25,14 @@ import (
 // the share.
 type localFS struct {
 	root string
+	bus  bus.Bus // FS-mutation bus (§10d); publishes Create/Modify/Rename/Delete. May be nil.
 }
 
 // ErrPathEscape is returned when a share-relative path resolves outside the
 // share root after cleaning (a path-traversal attempt).
 var ErrPathEscape = errors.New("fs: path escapes share root")
 
-func newLocalFS(spec ShareSpec) (*localFS, error) {
+func newLocalFS(spec ShareSpec, b bus.Bus) (*localFS, error) {
 	root := spec.Path
 	if root == "" {
 		return nil, errors.New("fs: local_fs requires a path")
@@ -46,7 +48,18 @@ func newLocalFS(spec ShareSpec) (*localFS, error) {
 	if !info.IsDir() {
 		return nil, errors.New("fs: local_fs path is not a directory")
 	}
-	return &localFS{root: abs}, nil
+	return &localFS{root: abs, bus: b}, nil
+}
+
+// publish emits an FS-mutation Event for a store path onto the §10d bus, if one is
+// wired. hostPath is the absolute host path the mutation touched; oldHost is set
+// only for a rename. The Origin is left blank: the service-supplied OriginBus
+// wrapper stamps "afp"/"smb" so reactors can filter their own events.
+func (l *localFS) publish(op Op, hostPath, oldHost string) {
+	if l.bus == nil {
+		return
+	}
+	l.bus.Publish(Event{Op: op, HostPath: hostPath, OldPath: oldHost, Time: time.Now()})
 }
 
 // host maps a '/'-joined, share-relative store path to an absolute host path
@@ -101,7 +114,11 @@ func (l *localFS) CreateDir(path string) error {
 	if err != nil {
 		return err
 	}
-	return os.Mkdir(h, 0o755)
+	if err := os.Mkdir(h, 0o755); err != nil {
+		return err
+	}
+	l.publish(OpCreate, h, "")
+	return nil
 }
 
 func (l *localFS) CreateFile(path string) (File, error) {
@@ -113,7 +130,9 @@ func (l *localFS) CreateFile(path string) (File, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &localFile{f: f}, nil
+	l.publish(OpCreate, h, "")
+	// Hand the file a publish hook so a subsequent write+close emits OpModify.
+	return &localFile{f: f, fs: l, host: h}, nil
 }
 
 func (l *localFS) OpenFile(path string, flag int) (File, error) {
@@ -125,7 +144,9 @@ func (l *localFS) OpenFile(path string, flag int) (File, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &localFile{f: f}, nil
+	// The file publishes OpModify on close only if it was actually written to
+	// (dirty); a read-only open that never writes stays silent regardless of flags.
+	return &localFile{f: f, fs: l, host: h}, nil
 }
 
 func (l *localFS) Remove(path string) error {
@@ -133,7 +154,11 @@ func (l *localFS) Remove(path string) error {
 	if err != nil {
 		return err
 	}
-	return os.Remove(h)
+	if err := os.Remove(h); err != nil {
+		return err
+	}
+	l.publish(OpDelete, h, "")
+	return nil
 }
 
 func (l *localFS) Rename(old, new string) error {
@@ -145,7 +170,11 @@ func (l *localFS) Rename(old, new string) error {
 	if err != nil {
 		return err
 	}
-	return os.Rename(ho, hn)
+	if err := os.Rename(ho, hn); err != nil {
+		return err
+	}
+	l.publish(OpRename, hn, ho)
+	return nil
 }
 
 // ShortName/MediumName are passthroughs: the assembled shareFS overrides them
@@ -166,22 +195,46 @@ func (l *localFS) CatSearch(crit CatSearchCriteria, cursor CatSearchCursor) ([]C
 	return WalkCatSearch(l, crit, cursor)
 }
 
-// localFile wraps *os.File, which already satisfies positional ReadAt/WriteAt.
+// localFile wraps *os.File, which already satisfies positional ReadAt/WriteAt. It
+// holds a back-reference to its localFS + host path so a write-then-close publishes
+// one OpModify on the §10d bus (a per-WriteAt event would flood the bus; coalescing
+// to close is the right granularity for a change-notify).
 type localFile struct {
-	f *os.File
+	f     *os.File
+	fs    *localFS
+	host  string
+	dirty bool // a write/truncate happened, so Close should publish OpModify
 }
 
-func (f *localFile) ReadAt(p []byte, off int64) (int, error)  { return f.f.ReadAt(p, off) }
-func (f *localFile) WriteAt(p []byte, off int64) (int, error) { return f.f.WriteAt(p, off) }
-func (f *localFile) Truncate(size int64) error                { return f.f.Truncate(size) }
-func (f *localFile) Stat() (fs.FileInfo, error)               { return f.f.Stat() }
-func (f *localFile) Sync() error                              { return f.f.Sync() }
-func (f *localFile) Close() error                             { return f.f.Close() }
+func (f *localFile) ReadAt(p []byte, off int64) (int, error) { return f.f.ReadAt(p, off) }
+func (f *localFile) WriteAt(p []byte, off int64) (int, error) {
+	n, err := f.f.WriteAt(p, off)
+	if n > 0 {
+		f.dirty = true
+	}
+	return n, err
+}
+func (f *localFile) Truncate(size int64) error {
+	f.dirty = true
+	return f.f.Truncate(size)
+}
+func (f *localFile) Stat() (fs.FileInfo, error) { return f.f.Stat() }
+func (f *localFile) Sync() error                { return f.f.Sync() }
+func (f *localFile) Close() error {
+	err := f.f.Close()
+	// Publish the modification after the data is flushed/closed, so a same-path
+	// reactor that re-stats the file sees the post-write state. A Create already
+	// emitted OpCreate; a subsequent write still emits OpModify (create+write is two
+	// events, matching how a host watcher would observe it).
+	if f.dirty && f.fs != nil {
+		f.fs.publish(OpModify, f.host, "")
+	}
+	return err
+}
 
 func init() {
 	RegisterFSWithParams("local_fs", func(spec ShareSpec, b bus.Bus, store metastore.Store) (FileSystem, error) {
-		_ = b
 		_ = store
-		return newLocalFS(spec)
+		return newLocalFS(spec, b)
 	}, Param{Key: PathKey, Required: true, Doc: "host directory served as the share root"})
 }

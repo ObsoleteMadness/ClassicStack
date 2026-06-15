@@ -48,6 +48,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
@@ -56,6 +57,11 @@ import (
 
 // Name is the component name for the SMB service.
 const Name = "SMB"
+
+// OriginSMB tags FS-mutation events this service produces on the shared §10d FS
+// bus, so a same-host-path AFP volume's reactor acts on them and SMB's own reactor
+// (fs.SkipOrigin) ignores them.
+const OriginSMB = "smb"
 
 // Service is the SMB component. As of M7 it owns a set of Shares built over the
 // §9 storage seam (fs.ForkFS + FilenameCodec) and holds no storage-layout
@@ -75,6 +81,8 @@ type Service struct {
 	running  bool
 	closers  []circuitCloser             // SMB-owned session transports (e.g. direct-IPX); torn down on Stop
 	resolver func() ([]ShareSpec, error) // re-resolves the desired share set from the model; set at wire time for hot-apply
+	busFor   func(fs.ShareSpec) bus.Bus  // resolves the shared FS-mutation bus for a share's host path (§10d); nil = isolated
+	reactor  *share.Reactor              // §10d coordination consumer; subscribes to same-path buses on Start
 }
 
 // Authenticator validates a (username, cleartext password) credential. It is the
@@ -104,14 +112,42 @@ type circuitCloser interface{ closeCircuits() }
 
 // New builds the SMB service with no shares (the registry default).
 func New(logger log.Logger) *Service {
-	return &Service{logger: logger}
+	s := &Service{logger: logger}
+	// §10d reactor: deliver foreign-origin FS mutations under one of our shares as a
+	// pending notification. shareRoots() re-reads the live share set per event so a
+	// reconcile is reflected without re-subscribing. The notify sink is a no-op for
+	// now (wire push deferred — see share.Reactor); Delivered() is the observable.
+	s.reactor = share.NewReactor(OriginSMB, s.shareRoots, nil)
+	return s
+}
+
+// ReactorDelivered reports how many foreign-origin FS mutations the §10d reactor has
+// delivered (a same-host-path AFP volume's writes this SMB service was notified of).
+// Diagnostics / tests; 0 until a cross-service mutation occurs.
+func (s *Service) ReactorDelivered() uint64 {
+	if s.reactor == nil {
+		return 0
+	}
+	return s.reactor.Delivered()
+}
+
+// shareRoots returns the live shares as (name, host-root) pairs for the §10d
+// reactor's path matching.
+func (s *Service) shareRoots() []share.NamedPath {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]share.NamedPath, 0, len(s.shares))
+	for _, sh := range s.shares {
+		out = append(out, share.NamedPath{Name: sh.Name(), Root: sh.sh.Config().Path})
+	}
+	return out
 }
 
 // NewWithShares builds the SMB service over a set of share specs, constructing
 // one Share per spec through the storage seam. An invalid triple fails the build
 // loudly here rather than mangling names at runtime.
 func NewWithShares(logger log.Logger, specs ...ShareSpec) (*Service, error) {
-	s := &Service{logger: logger}
+	s := New(logger)
 	for _, spec := range specs {
 		sh, err := NewShare(spec)
 		if err != nil {
@@ -206,8 +242,10 @@ func (s *Service) Shares() []share.Info {
 
 // AddShare builds and binds a new share. The spec is validated by share.Build
 // (bad triple / missing param fails before binding); a duplicate name is rejected.
+// The share is built over the shared FS-mutation bus for its host path (§10d) when a
+// bus resolver is wired.
 func (s *Service) AddShare(spec fs.ShareSpec) error {
-	built, err := share.Build(spec, nil)
+	built, err := share.Build(spec, s.busForSpec(spec))
 	if err != nil {
 		return err
 	}
@@ -224,7 +262,7 @@ func (s *Service) AddShare(spec fs.ShareSpec) error {
 // nothing) and swaps it in. In-flight tree connects holding the old handle ride
 // it out until they disconnect.
 func (s *Service) UpdateShare(name string, spec fs.ShareSpec) error {
-	built, err := share.Build(spec, nil)
+	built, err := share.Build(spec, s.busForSpec(spec))
 	if err != nil {
 		return err
 	}
@@ -267,6 +305,29 @@ func (s *Service) SetShareResolver(resolve func() ([]ShareSpec, error)) {
 	s.mu.Unlock()
 }
 
+// SetBusResolver installs the closure that maps a share's spec to the shared
+// FS-mutation bus for its host path (§10d). The compose registry supplies it (one
+// bus per distinct host path, shared with a same-path AFP volume) so a mutation by
+// one service reaches the other. A nil resolver (or one returning nil) means each
+// share gets a private bus — no cross-service coordination. Idempotent; safe before
+// Start. Affects shares built after it is set (AddShare / a reconcile / a rebuild).
+func (s *Service) SetBusResolver(resolve func(fs.ShareSpec) bus.Bus) {
+	s.mu.Lock()
+	s.busFor = resolve
+	s.mu.Unlock()
+}
+
+// busForSpec resolves the shared bus for a spec, or nil when no resolver is wired.
+func (s *Service) busForSpec(spec fs.ShareSpec) bus.Bus {
+	s.mu.Lock()
+	resolve := s.busFor
+	s.mu.Unlock()
+	if resolve == nil {
+		return nil
+	}
+	return resolve(spec)
+}
+
 // ApplyConfig hot-applies a changed share set (§11b): the SMB "config" is the set of
 // repeated share sections (config.Model.Lists[SharesKey]), not a singleton section,
 // so the passed section payload is ignored — ApplyConfig re-resolves the whole
@@ -306,7 +367,7 @@ func (s *Service) ReconcileShares(desired []ShareSpec) error {
 			return share.ErrDuplicateShare
 		}
 		seen[key] = true
-		sh, err := NewShare(spec)
+		sh, err := NewShareWithBus(spec, s.busForSpec(spec.Share))
 		if err != nil {
 			return err
 		}
@@ -327,8 +388,28 @@ func (s *Service) Start(ctx context.Context) error {
 		return nil
 	}
 	s.running = true
+	s.subscribeReactorLocked()
 	s.logf("SMB service started (shares bound; session-establishment dispatch: negotiate/setup/treeconnect)")
 	return nil
+}
+
+// subscribeReactorLocked attaches the §10d reactor to each distinct FS bus among the
+// current shares (compose hands one bus per host path, so two shares on one path
+// resolve to one bus — subscribed once). Caller holds s.mu. A no-op when no bus
+// resolver is wired (every share is isolated).
+func (s *Service) subscribeReactorLocked() {
+	if s.busFor == nil || s.reactor == nil {
+		return
+	}
+	seen := make(map[bus.Bus]bool, len(s.shares))
+	for _, sh := range s.shares {
+		b := s.busFor(sh.sh.Config())
+		if b == nil || seen[b] {
+			continue
+		}
+		seen[b] = true
+		s.reactor.Subscribe(b)
+	}
 }
 
 // Stop brings the service down, tearing down any SMB-owned session transports
@@ -343,8 +424,12 @@ func (s *Service) Stop(ctx context.Context) error {
 	}
 	s.running = false
 	closers := append([]circuitCloser(nil), s.closers...)
+	reactor := s.reactor
 	s.mu.Unlock()
 
+	if reactor != nil {
+		reactor.Stop()
+	}
 	for _, c := range closers {
 		c.closeCircuits()
 	}
