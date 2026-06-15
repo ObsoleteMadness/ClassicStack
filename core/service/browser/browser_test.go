@@ -119,6 +119,21 @@ func TestObserveAnnouncementBuildsBrowseList(t *testing.T) {
 	}
 }
 
+// TestServerEntriesCarriesSelfDescription proves the §4-bis server description set via
+// SetDescription rides the browser's own ServerEntries row (the comment a Windows
+// browse list shows next to our name).
+func TestServerEntriesCarriesSelfDescription(t *testing.T) {
+	svc, _ := newBrowser(t)
+	svc.SetDescription("ClassicStack file server")
+	entries := svc.ServerEntries()
+	if len(entries) == 0 {
+		t.Fatal("ServerEntries returned no rows")
+	}
+	if entries[0].Name != "CLASSICSTACK" || entries[0].Comment != "ClassicStack file server" {
+		t.Fatalf("self entry = %+v, want name CLASSICSTACK comment 'ClassicStack file server'", entries[0])
+	}
+}
+
 // TestSelfSourcedDatagramDropped proves a frame sourced from our own name (a
 // looped-back broadcast) is ignored — no browse-list entry, no storm.
 func TestSelfSourcedDatagramDropped(t *testing.T) {

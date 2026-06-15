@@ -27,9 +27,10 @@ var _ config.Codec = (*Codec)(nil)
 // wellKnown mirrors the typed Model fields for TOML (un)marshalling. Component
 // sections are handled separately via the schema registry.
 type wellKnown struct {
-	Logging config.LoggingSection   `toml:"logging"`
-	Router  config.RouterSection    `toml:"router"`
-	Bridge  config.InterfaceSection `toml:"bridge"`
+	Identity config.Identity         `toml:"identity"`
+	Logging  config.LoggingSection   `toml:"logging"`
+	Router   config.RouterSection    `toml:"router"`
+	Bridge   config.InterfaceSection `toml:"bridge"`
 }
 
 // Marshal renders the model: the well-known sections under their fixed keys, then
@@ -37,9 +38,10 @@ type wellKnown struct {
 func (c *Codec) Marshal(m *config.Model) ([]byte, error) {
 	// Build a top-level table so go-toml emits one [section] per entry.
 	top := map[string]any{
-		"logging": m.Logging,
-		"router":  m.Router,
-		"bridge":  m.Bridge,
+		"identity": m.Identity,
+		"logging":  m.Logging,
+		"router":   m.Router,
+		"bridge":   m.Bridge,
 	}
 	for key, sec := range m.Sections {
 		top[key] = sec
@@ -64,6 +66,7 @@ func (c *Codec) Unmarshal(data []byte, m *config.Model) error {
 	if err := gotoml.Unmarshal(data, &wk); err != nil {
 		return err
 	}
+	m.Identity = wk.Identity
 	m.Logging = wk.Logging
 	m.Router = wk.Router
 	m.Bridge = wk.Bridge

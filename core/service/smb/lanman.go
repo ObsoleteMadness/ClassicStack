@@ -40,7 +40,9 @@ const (
 
 // SV_TYPE_* bits NetServerEnum2 filters on ([MS-SRVS]).
 const (
-	svTypeDomainEnum uint32 = 0x80000000
+	svTypeWorkstation uint32 = 0x00000001 // SV_TYPE_WORKSTATION
+	svTypeServer      uint32 = 0x00000002 // SV_TYPE_SERVER
+	svTypeDomainEnum  uint32 = 0x80000000 // SV_TYPE_DOMAIN_ENUM
 )
 
 const lanmanPipe = "\\PIPE\\LANMAN"
@@ -174,8 +176,12 @@ func netServerEnum2Filter(area []byte) uint32 {
 func (s *Service) handleNetServerEnum2(h protocol.Header, area []byte) []byte {
 	provider := s.browseProvider()
 	if provider == nil {
-		// No browser wired — answer an empty success so the client does not hang.
-		return buildNetServerEnum2Response(h, nil)
+		// No browser wired (e.g. a NetBIOS-less direct-TCP :445 deployment): there is
+		// no browse list, but the server can still report ITSELF so a client browsing
+		// \\server sees a named entry with its comment (§4-bis). Reported as a
+		// workstation+server so it shows in the list.
+		self := BrowseServer{Name: s.serverName(), Type: svTypeServer | svTypeWorkstation, Comment: s.description()}
+		return buildNetServerEnum2Response(h, []BrowseServer{self})
 	}
 	if !provider.Available() {
 		return buildRAPError(h, rapStatusReqNotAccepted)

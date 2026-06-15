@@ -15,6 +15,7 @@ type Section interface {
 // (named-instance) sections — e.g. one AFP volume per share — live in Lists keyed by the schema
 // key, each instance distinguished by its InstanceName().
 type Model struct {
+	Identity Identity // server hostname/workgroup/description (§4-bis); owned by no service
 	Logging  LoggingSection
 	Router   RouterSection
 	Bridge   InterfaceSection
@@ -34,6 +35,7 @@ func NewModel() *Model {
 // a change never mutates the live model.
 func (m *Model) Clone() *Model {
 	c := &Model{
+		Identity: m.Identity.Clone(),
 		Logging:  m.Logging,
 		Router:   m.Router,
 		Bridge:   m.Bridge,

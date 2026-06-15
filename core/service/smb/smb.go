@@ -65,6 +65,8 @@ const Name = "SMB"
 type Service struct {
 	logger  log.Logger
 	shares  []*Share
+	server  string         // server name (the §4-bis identity hostname); default CLASSICSTACK
+	desc    string         // server comment/remark (the §4-bis identity description); optional
 	wg      string         // workgroup/domain advertised in NEGOTIATE (default WORKGROUP)
 	browser BrowseProvider // browse-list source for IPC$ NetServerEnum2 (the browser service); optional
 	auth    Authenticator  // credential validator consulted at SESSION_SETUP; nil = guest-only
@@ -129,6 +131,44 @@ func (s *Service) SetWorkgroup(wg string) {
 	s.mu.Lock()
 	s.wg = wg
 	s.mu.Unlock()
+}
+
+// SetServerName sets the server name SMB reports for itself (the §4-bis identity
+// hostname). The compose registry hands it the one Identity.Hostname; SMB does not
+// own or default it beyond a fallback. Unset defaults to CLASSICSTACK. Idempotent.
+func (s *Service) SetServerName(name string) {
+	s.mu.Lock()
+	s.server = name
+	s.mu.Unlock()
+}
+
+// SetDescription sets the server comment/remark (the §4-bis identity description) SMB
+// reports for itself — the comment a Windows browse list shows next to the server.
+// Empty = no comment. Idempotent.
+func (s *Service) SetDescription(desc string) {
+	s.mu.Lock()
+	s.desc = desc
+	s.mu.Unlock()
+}
+
+// serverName returns the configured server name, defaulting to CLASSICSTACK when
+// unset (the same fallback the browser uses, so a NetBIOS-less :445-only deployment
+// still reports a name).
+func (s *Service) serverName() string {
+	s.mu.Lock()
+	name := s.server
+	s.mu.Unlock()
+	if name != "" {
+		return name
+	}
+	return "CLASSICSTACK"
+}
+
+// description returns the configured server comment (may be empty).
+func (s *Service) description() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.desc
 }
 
 // ShareByName returns the share with the given tree name, if bound. Used by the

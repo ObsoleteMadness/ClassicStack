@@ -69,6 +69,7 @@ type Service struct {
 	logger    log.Logger
 	sink      MailslotSink
 	server    string // our server name (the identity, §4-bis)
+	desc      string // our server comment (the identity description, §4-bis); optional
 	workgroup string
 
 	mu            sync.Mutex
@@ -112,6 +113,16 @@ func New(logger log.Logger, sink MailslotSink, server, workgroup string) *Servic
 
 // Name returns the component name.
 func (s *Service) Name() string { return Name }
+
+// SetDescription sets the server comment the browser advertises for itself (its self
+// entry in ServerEntries / the comment a Windows browse list shows). It comes from
+// the shared config.Identity.Description (§4-bis); the compose registry hands it the
+// one value. Empty = no comment. Idempotent; safe before Start.
+func (s *Service) SetDescription(desc string) {
+	s.mu.Lock()
+	s.desc = desc
+	s.mu.Unlock()
+}
 
 // Start brings the browser up: record the start time (election uptime) and emit a
 // first host announcement, then a periodic announce loop. Idempotent (§3).
@@ -192,7 +203,7 @@ func (s *Service) ServerEntries() []ServerEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]ServerEntry, 0, len(s.servers)+1)
-	out = append(out, ServerEntry{Name: s.server, Type: proto.ServerTypeWorkstationSet})
+	out = append(out, ServerEntry{Name: s.server, Type: proto.ServerTypeWorkstationSet, Comment: s.desc})
 	for name, rec := range s.servers {
 		if name == s.server {
 			continue

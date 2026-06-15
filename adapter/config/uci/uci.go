@@ -34,6 +34,10 @@ func (c *Codec) Marshal(m *config.Model) ([]byte, error) {
 	// Write package declaration
 	buf.WriteString("package classicstack\n\n")
 
+	// Marshal well-known identity section (server hostname/workgroup/description, §4-bis)
+	if err := c.marshalSection(&buf, "identity", "", m.Identity); err != nil {
+		return nil, err
+	}
 	// Marshal well-known logging section
 	if err := c.marshalSection(&buf, "logging", "", m.Logging); err != nil {
 		return nil, err
@@ -171,6 +175,10 @@ func (c *Codec) Unmarshal(data []byte, m *config.Model) error {
 
 	for _, sec := range sections {
 		switch sec.Type {
+		case "identity":
+			if err := unmarshalStruct(sec, &m.Identity); err != nil {
+				return err
+			}
 		case "logging":
 			if err := unmarshalStruct(sec, &m.Logging); err != nil {
 				return err

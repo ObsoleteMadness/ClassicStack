@@ -59,6 +59,7 @@ func TestRoundTrip(t *testing.T) {
 	registerFake("Beta")
 
 	m := config.NewModel()
+	m.Identity = config.Identity{Hostname: "CLASSICSTACK", Workgroup: "MYGROUP", Description: "test server"}
 	m.Logging = config.LoggingSection{Level: "debug"}
 	m.Router = config.RouterSection{DefaultZone: "MyZone"}
 	m.Bridge = config.InterfaceSection{Name: "br-lan", Addr: "10.0.0.1"}
@@ -76,6 +77,9 @@ func TestRoundTrip(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
+	if got.Identity != m.Identity {
+		t.Errorf("Identity: got %+v want %+v", got.Identity, m.Identity)
+	}
 	if got.Logging != m.Logging {
 		t.Errorf("Logging: got %+v want %+v", got.Logging, m.Logging)
 	}

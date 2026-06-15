@@ -31,6 +31,13 @@ func init() {
 		} else if svc, err = smb.NewWithShares(logger, specs...); err != nil {
 			return nil, err
 		}
+		// Server identity is one top-level value (§4-bis): SMB advertises the shared
+		// Identity.Hostname/Workgroup/Description — no per-service name field, so SMB
+		// and NetBIOS cannot diverge. These hold even with NetBIOS absent (direct-TCP
+		// :445): SMB still reports a name and comment in NetServerEnum2.
+		svc.SetServerName(m.Identity.Hostname)
+		svc.SetWorkgroup(m.Identity.Workgroup)
+		svc.SetDescription(m.Identity.Description)
 		// Wire the hot-apply resolver: a Reconfigure of an SMB share section then
 		// reconciles the live share set against the model via share.Manager
 		// (Add/Update/Remove) without restarting the service (§11b).

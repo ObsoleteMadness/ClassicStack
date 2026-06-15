@@ -553,6 +553,10 @@ type Identity struct {
                        // intrinsic to the field).
     Workgroup string   // SMB NEGOTIATE domain + browser DomainAnnounce. Default WORKGROUP.
                        // Also NetBIOS-flavoured but, like Hostname, used by SMB without NetBIOS.
+    Description string // free-text server comment (the remark a Windows browse list shows next
+                       // to the server name). SMB packs it in its NetServerEnum2 self record;
+                       // the browser carries it on its self announcement. Optional, empty = none.
+                       // NOT NetBIOS-constrained (a comment, not a name).
 }
 ```
 
@@ -581,10 +585,15 @@ the field still drives SMB's advertised name. `Workgroup` flows the same way.
   re-claim the name on every transport) and for direct-TCP SMB's advertised name — a
   `RestartRequired` from the affected services' `Reconfigure`, not a hot-apply.
 
-This is recorded now; the field + the SMB `SetServerName` + the compose wiring land with the
-config sections in **M8a** (no config sections exist before then). Until M8a, NetBIOS takes its
-name via constructor and SMB advertises only the workgroup — the disconnect is known and
-deliberately not patched piecemeal ahead of the config layer.
+**Landed (M8a, 2026-06-15):** `config.Identity{Hostname, Workgroup, Description}` is a well-known
+top-level `Model` field (round-trips through both codecs). The registry reads it once and hands
+the values to the enabled consumers: `reg_smb.go` calls `SetServerName`/`SetWorkgroup`/
+`SetDescription` (a NetBIOS-less :445 SMB still self-reports name+comment in NetServerEnum2);
+`reg_netbios.go` builds `netbios.NewService(logger, Identity.NetBIOSName())` when the hostname is
+non-empty; the browser carries `Description` on its self `ServerEntry` (wired via `SetDescription`
+once the browser is registry-wired — M8/M10 compose). `Identity.Validate` is the baseline
+(no path/control chars); `Identity.ValidateForNetBIOS` is the ≤15-byte consumer constraint applied
+only when NetBIOS is enabled. No per-service hostname field exists, so consumers cannot diverge.
 
 ### Schema registration (so new transports don't edit a central struct)
 

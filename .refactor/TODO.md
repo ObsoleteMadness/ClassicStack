@@ -689,8 +689,29 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > `SetShareResolver`, closing over the model and `SpecsFromModel`); **no resolver wired (a unit-level
 > service) → `ApplyConfig` returns `ErrNeedsRestart`** so the supervisor falls back to its rebuild
 > path. So editing one share in the UI now reconciles live (no AFP/SMB restart, in-flight sessions
-> undisturbed) instead of rebuilding the whole service. **Still M8a:** server identity (§4-bis),
-> §10d shared-bus; `secret`-param form masking (mostly UI/M8).
+> undisturbed) instead of rebuilding the whole service. **Still M8a:** server identity (§4-bis,
+> landed in the follow-on below), §10d shared-bus; `secret`-param form masking (mostly UI/M8).
+
+> **M8a notes (server identity §4-bis — partial M8a):** the one-source-of-truth server identity.
+> **`core/config/identity.go`**: `config.Identity{Hostname, Workgroup, Description}` is a well-known
+> top-level `Model` field (alongside Logging/Router/Bridge — NOT on the SMB/NetBIOS section), value
+> type, rides `Model.Clone`. **Description** (user-requested) is the free-text server comment a
+> Windows browse list shows next to the name — NOT NetBIOS-constrained. `Validate()` = baseline
+> (no path/control chars); `ValidateForNetBIOS()` = the ≤15-byte rule as a CONSUMER constraint
+> (run only when NetBIOS is enabled — a 20-char name is legal for SMB-:445 / AFP-only); `NetBIOSName()`
+> = upper-cased+trimmed (over-length is a validate failure, not silent truncation). **Codecs:** both
+> TOML and UCI round-trip an `identity` well-known section (`adapter/config/{toml,uci}`), covered in
+> the existing well-known round-trip tests. **Consumers wired by the registry (one read, no
+> divergence):** `reg_smb.go` → `SetServerName`/`SetWorkgroup`/`SetDescription` (SMB now self-reports
+> name+comment in NetServerEnum2 even with NO browser/NetBIOS — the no-provider branch returns the
+> self entry, covering direct-TCP :445); `reg_netbios.go` → `netbios.NewService(logger, NetBIOSName())`
+> when the hostname is non-empty (else the nameless `New`); the browser carries `Description` on its
+> self `ServerEntry` via a new `SetDescription` (browser isn't registry-wired yet — M8/M10 compose —
+> but the setter + self-entry comment are in). **No per-service hostname field exists**, so SMB and
+> NetBIOS cannot diverge. **NOTE:** no central `Model.Validate()` Apply-time hook exists yet, so
+> `ValidateForNetBIOS` is provided but not yet called by an Apply path — wire it when control-plane
+> Apply validation lands. **Still M8a:** §10d same-host-path AFP+SMB shared-bus; `secret`-param form
+> masking (UI/M8).
 
 > **M8 notes (config-codec round-trip + UCI fix — partial M8):** the TOML/UCI codecs and the
 > file/UCI stores were already built (B6/D4/D6); this slice adds the missing **real-section**

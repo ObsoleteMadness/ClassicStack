@@ -119,16 +119,20 @@ func TestNetServerEnum2DomainEnumMixed(t *testing.T) {
 	}
 }
 
-// TestNetServerEnum2NoProvider proves that with no browser wired, the pipe answers
-// an empty success rather than dropping or erroring.
+// TestNetServerEnum2NoProvider proves that with no browser wired (e.g. a NetBIOS-less
+// direct-TCP :445 deployment), the pipe still reports the server ITSELF — one entry
+// carrying the §4-bis server name — so a client browsing \\server sees a named entry
+// rather than an empty list.
 func TestNetServerEnum2NoProvider(t *testing.T) {
 	svc := &Service{shares: []*Share{newTestShare(t)}}
+	svc.SetServerName("MYSERVER")
+	svc.SetDescription("the test server")
 	sess := newSession()
 	tid := sess.allocTID(&treeConnect{ipc: true})
 	reply := svc.Dispatch(sess, lanmanReq(tid, rapNetServerEnum2, 0))
 	status, returned, _ := rapParams(t, reply)
-	if status != 0 || returned != 0 {
-		t.Fatalf("no-provider: status=%d returned=%d, want 0/0", status, returned)
+	if status != 0 || returned != 1 {
+		t.Fatalf("no-provider self-report: status=%d returned=%d, want 0/1", status, returned)
 	}
 }
 

@@ -16,6 +16,7 @@ func TestUCICodec_RoundTrip(t *testing.T) {
 	})
 
 	m := config.NewModel()
+	m.Identity = config.Identity{Hostname: "CLASSICSTACK", Workgroup: "ETHERGRP", Description: "uci test server"}
 	m.Logging = config.LoggingSection{Level: "info"}
 	m.Router = config.RouterSection{DefaultZone: "EtherZone"}
 	m.Bridge = config.InterfaceSection{Name: "br-lan", Addr: "192.168.1.1"}
@@ -32,6 +33,9 @@ func TestUCICodec_RoundTrip(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
+	if got.Identity != m.Identity {
+		t.Errorf("Identity: got %+v want %+v", got.Identity, m.Identity)
+	}
 	if got.Logging != m.Logging {
 		t.Errorf("Logging: got %+v want %+v", got.Logging, m.Logging)
 	}
