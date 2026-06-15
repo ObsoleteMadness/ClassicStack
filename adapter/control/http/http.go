@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -16,6 +17,17 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/control"
 )
+
+// statusForErr maps a control error to an HTTP status. control.ErrUnavailable —
+// "not in this build / no store wired" — becomes 501 Not Implemented, which the
+// client maps back to control.ErrUnavailable so errors.Is works across the wire.
+// Everything else is a 500.
+func statusForErr(err error) int {
+	if errors.Is(err, control.ErrUnavailable) {
+		return http.StatusNotImplemented
+	}
+	return http.StatusInternalServerError
+}
 
 // Client is the HTTP control Client interface.
 type Client = inproc.Client
@@ -52,12 +64,20 @@ func (s *Server) Start() error {
 	s.addr = l.Addr().String() // update to resolved address (e.g. if :0 was used)
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/config", s.handleConfig)
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/start", s.handleStart)
 	mux.HandleFunc("/stop", s.handleStop)
 	mux.HandleFunc("/restart", s.handleRestart)
+	mux.HandleFunc("/save", s.handleSave)
 	mux.HandleFunc("/list_fs_types", s.handleListFSTypes)
+	mux.HandleFunc("/list_interfaces", s.handleListInterfaces)
+	mux.HandleFunc("/list_zones", s.handleListZones)
 	mux.HandleFunc("/reconfigure", s.handleReconfigure)
+	mux.HandleFunc("/users", s.handleUsers)
+	mux.HandleFunc("/set_user", s.handleSetUser)
+	mux.HandleFunc("/set_user_disabled", s.handleSetUserDisabled)
+	mux.HandleFunc("/remove_user", s.handleRemoveUser)
 	mux.HandleFunc("/subscribe", s.handleSubscribe)
 
 	s.server = &http.Server{Handler: mux}
@@ -198,6 +218,137 @@ func (s *Server) handleReconfigure(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	m, err := s.plane.Config()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(m)
+}
+
+func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	rev, err := s.plane.Save(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), statusForErr(err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(struct {
+		Revision string `json:"revision"`
+	}{Revision: rev})
+}
+
+func (s *Server) handleListInterfaces(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	res, err := s.plane.ListInterfaces()
+	if err != nil {
+		http.Error(w, err.Error(), statusForErr(err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
+}
+
+func (s *Server) handleListZones(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	res, err := s.plane.Diagnostics().ListZones(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), statusForErr(err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
+}
+
+func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	res, err := s.plane.Users()
+	if err != nil {
+		http.Error(w, err.Error(), statusForErr(err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
+}
+
+func (s *Server) handleSetUser(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Name     string `json:"name"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.plane.SetUser(body.Name, body.Password); err != nil {
+		http.Error(w, err.Error(), statusForErr(err))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleSetUserDisabled(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Name     string `json:"name"`
+		Disabled bool   `json:"disabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.plane.SetUserDisabled(body.Name, body.Disabled); err != nil {
+		http.Error(w, err.Error(), statusForErr(err))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleRemoveUser(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.plane.RemoveUser(body.Name); err != nil {
+		http.Error(w, err.Error(), statusForErr(err))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -259,9 +410,35 @@ func (c *AdapterClient) post(path string, body any) error {
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP error: %s", res.Status)
+		return errForStatus(res.StatusCode, res.Status)
 	}
 	return nil
+}
+
+// getJSON GETs path and decodes the JSON body into dest, mapping 501 to
+// control.ErrUnavailable (the round-trip of the "not in this build" sentinel).
+func (c *AdapterClient) getJSON(path string, dest any) error {
+	res, err := c.client.Get(c.baseURL + path)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return errForStatus(res.StatusCode, res.Status)
+	}
+	if dest == nil {
+		return nil
+	}
+	return json.NewDecoder(res.Body).Decode(dest)
+}
+
+// errForStatus turns a non-200 into an error, surfacing control.ErrUnavailable for
+// 501 so a caller can errors.Is it exactly as the in-process adapter reports it.
+func errForStatus(code int, status string) error {
+	if code == http.StatusNotImplemented {
+		return control.ErrUnavailable
+	}
+	return fmt.Errorf("HTTP error: %s", status)
 }
 
 func bytesReader(b []byte) *strings.Reader {
@@ -321,6 +498,80 @@ func (c *AdapterClient) ListFSTypes() ([]string, error) {
 	var out []string
 	err = json.NewDecoder(res.Body).Decode(&out)
 	return out, err
+}
+
+// Config fetches a snapshot of the live config model.
+func (c *AdapterClient) Config() (*config.Model, error) {
+	m := config.NewModel()
+	if err := c.getJSON("/config", m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// Save validates and persists the live model server-side, returning the revision.
+func (c *AdapterClient) Save(ctx context.Context) (string, error) {
+	_ = ctx
+	res, err := c.client.Post(c.baseURL+"/save", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return "", errForStatus(res.StatusCode, res.Status)
+	}
+	var out struct {
+		Revision string `json:"revision"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	return out.Revision, nil
+}
+
+// ListInterfaces returns the enumerable network interfaces.
+func (c *AdapterClient) ListInterfaces() ([]control.InterfaceInfo, error) {
+	var out []control.InterfaceInfo
+	err := c.getJSON("/list_interfaces", &out)
+	return out, err
+}
+
+// ListZones runs the Diagnostics zone probe (control.ErrUnavailable when unsupported).
+func (c *AdapterClient) ListZones(ctx context.Context) ([]string, error) {
+	_ = ctx
+	var out []string
+	err := c.getJSON("/list_zones", &out)
+	return out, err
+}
+
+// Users lists stored identities (control.ErrUnavailable when no store is wired).
+func (c *AdapterClient) Users() ([]control.UserInfo, error) {
+	var out []control.UserInfo
+	err := c.getJSON("/users", &out)
+	return out, err
+}
+
+// SetUser adds a user or resets a password.
+func (c *AdapterClient) SetUser(name, password string) error {
+	return c.post("/set_user", struct {
+		Name     string `json:"name"`
+		Password string `json:"password"`
+	}{Name: name, Password: password})
+}
+
+// SetUserDisabled parks/unparks an account.
+func (c *AdapterClient) SetUserDisabled(name string, disabled bool) error {
+	return c.post("/set_user_disabled", struct {
+		Name     string `json:"name"`
+		Disabled bool   `json:"disabled"`
+	}{Name: name, Disabled: disabled})
+}
+
+// RemoveUser deletes a user.
+func (c *AdapterClient) RemoveUser(name string) error {
+	return c.post("/remove_user", struct {
+		Name string `json:"name"`
+	}{Name: name})
 }
 
 // Subscribe returns event stream.

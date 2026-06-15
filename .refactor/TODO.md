@@ -820,6 +820,24 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > `pkg/logbuf` — is still gated on the M8/M10 compose cutover (can't run while `internal/app` is the
 > live runtime); this slice delivers the sink that cutover will install.
 
+> **M8 notes (control front-ends catch-up — partial M8):** the http/ubus/inproc control adapters had
+> drifted behind the `control.Plane` contract (they covered only status/start/stop/restart/reconfigure/
+> list_fs_types/subscribe). This slice brings all three up to the full Plane surface: **`Config`,
+> `Save`, `ListInterfaces`, `ListZones` (the Diagnostics probe), and the Users CRUD (`Users`/`SetUser`/
+> `SetUserDisabled`/`RemoveUser`)**. The shared `inproc.Client` interface — the contract the E3 parity
+> test drives all three through — gained those methods; inproc forwards straight to the Plane, http adds
+> routes+handlers+client methods, ubus adds JSON-RPC method cases+client calls. **`Save` now runs
+> `Model.Validate` server-side** (the M8a hook), so an invalid config is rejected at the front-end.
+> **`control.ErrUnavailable` round-trips** as a recognisable sentinel: http maps it to HTTP **501** (client
+> reconstitutes it via `errForStatus`), ubus matches the error string (`errFromUbus`), so a UI can
+> `errors.Is(err, control.ErrUnavailable)` the same way over every transport — the "not in this build /
+> no store wired" shape the Users/Diagnostics methods carry. Tests: `parity_test.go` gained
+> `TestMultiFrontEndParity_NewMethods` (Config/ListFSTypes/ListZones/Users ErrUnavailable parity across
+> all three) and `TestMultiFrontEndParity_UserCRUD` (full add→list→disable→remove cycle round-tripped
+> across http+ubus+inproc against a user-store-bearing supervisor). **Still M8:** the SPA / web UI in the
+> new ring (none exists in `adapter/` yet; legacy `service/webui` is old-ring); the logging cutover
+> (blocked on M10). **Still M8a:** `secret`-param form masking (UI/M8).
+
 ---
 
 ## How to claim a task

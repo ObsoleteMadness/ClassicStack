@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -147,3 +148,150 @@ func TestMultiFrontEndParity(t *testing.T) {
 		}
 	}
 }
+
+// newParityClients spins up all three front-ends over one Plane and returns the
+// client trio plus a cleanup. Mirrors the setup in TestMultiFrontEndParity.
+func newParityClients(t *testing.T, plane control.Plane) (map[string]inproc.Client, func()) {
+	t.Helper()
+	httpSrv := httpctrl.NewServer(plane, "127.0.0.1:0")
+	if err := httpSrv.Start(); err != nil {
+		t.Fatalf("http start: %v", err)
+	}
+	tmpDir, err := os.MkdirTemp("", "ctrl-parity")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	sockPath := filepath.Join(tmpDir, "ubus.sock")
+	ubusSrv := ubus.NewServer(plane, sockPath)
+	if err := ubusSrv.Start(); err != nil {
+		t.Fatalf("ubus start: %v", err)
+	}
+	clients := map[string]inproc.Client{
+		"inproc": inproc.New(plane),
+		"http":   httpctrl.NewClient("http://" + httpSrv.Addr()),
+		"ubus":   ubus.NewClient(sockPath),
+	}
+	cleanup := func() {
+		httpSrv.Stop()
+		ubusSrv.Stop()
+		_ = os.RemoveAll(tmpDir)
+	}
+	return clients, cleanup
+}
+
+// TestMultiFrontEndParity_NewMethods checks the methods the catch-up added — Config,
+// ListFSTypes, and the ErrUnavailable-bearing ListZones / Users — return parity
+// results across inproc/http/ubus, including the ErrUnavailable sentinel round-trip.
+func TestMultiFrontEndParity_NewMethods(t *testing.T) {
+	m := config.NewModel()
+	m.Identity = config.Identity{Hostname: "CLASSICSTACK", Workgroup: "WG"}
+	telemetry := bus.New(8)
+	sup := supervisor.New(m, telemetry)
+	// No user store wired and the default Diagnostics → Users / ListZones are
+	// control.ErrUnavailable; that sentinel must survive every transport.
+	plane := control.New(sup, nil, nil, telemetry)
+
+	clients, cleanup := newParityClients(t, plane)
+	defer cleanup()
+
+	// Config: every front-end returns the same hostname.
+	for name, c := range clients {
+		got, err := c.Config()
+		if err != nil {
+			t.Fatalf("[%s] Config: %v", name, err)
+		}
+		if got.Identity.Hostname != "CLASSICSTACK" {
+			t.Errorf("[%s] Config hostname = %q, want CLASSICSTACK", name, got.Identity.Hostname)
+		}
+	}
+
+	// ListFSTypes parity (empty here, but every transport agrees and errors are nil).
+	for name, c := range clients {
+		if _, err := c.ListFSTypes(); err != nil {
+			t.Fatalf("[%s] ListFSTypes: %v", name, err)
+		}
+	}
+
+	// ListZones: default Diagnostics is unavailable → ErrUnavailable on all three.
+	for name, c := range clients {
+		_, err := c.ListZones(context.Background())
+		if !errors.Is(err, control.ErrUnavailable) {
+			t.Errorf("[%s] ListZones err = %v, want ErrUnavailable", name, err)
+		}
+	}
+
+	// Users CRUD: no store wired → ErrUnavailable on all three, on every verb.
+	for name, c := range clients {
+		if _, err := c.Users(); !errors.Is(err, control.ErrUnavailable) {
+			t.Errorf("[%s] Users err = %v, want ErrUnavailable", name, err)
+		}
+		if err := c.SetUser("alice", "pw"); !errors.Is(err, control.ErrUnavailable) {
+			t.Errorf("[%s] SetUser err = %v, want ErrUnavailable", name, err)
+		}
+		if err := c.SetUserDisabled("alice", true); !errors.Is(err, control.ErrUnavailable) {
+			t.Errorf("[%s] SetUserDisabled err = %v, want ErrUnavailable", name, err)
+		}
+		if err := c.RemoveUser("alice"); !errors.Is(err, control.ErrUnavailable) {
+			t.Errorf("[%s] RemoveUser err = %v, want ErrUnavailable", name, err)
+		}
+	}
+}
+
+// TestMultiFrontEndParity_UserCRUD drives the full add→list→disable→remove cycle
+// through each front-end against a Plane whose supervisor DOES expose a user store,
+// proving the user-admin surface round-trips over http and ubus, not just in-proc.
+func TestMultiFrontEndParity_UserCRUD(t *testing.T) {
+	telemetry := bus.New(8)
+	sup := &userStoreSupervisor{
+		Supervisor: supervisor.New(config.NewModel(), telemetry),
+		users:      map[string]bool{}, // name → disabled
+	}
+	plane := control.New(sup, nil, nil, telemetry)
+
+	clients, cleanup := newParityClients(t, plane)
+	defer cleanup()
+
+	// Add via http, observe via ubus, disable via inproc, remove via http.
+	if err := clients["http"].SetUser("bob", "secret"); err != nil {
+		t.Fatalf("http SetUser: %v", err)
+	}
+	users, err := clients["ubus"].Users()
+	if err != nil || len(users) != 1 || users[0].Name != "bob" {
+		t.Fatalf("ubus Users after add = %v, err %v", users, err)
+	}
+	if err := clients["inproc"].SetUserDisabled("bob", true); err != nil {
+		t.Fatalf("inproc SetUserDisabled: %v", err)
+	}
+	users, _ = clients["http"].Users()
+	if len(users) != 1 || !users[0].Disabled {
+		t.Fatalf("Users after disable = %v, want bob disabled", users)
+	}
+	if err := clients["http"].RemoveUser("bob"); err != nil {
+		t.Fatalf("http RemoveUser: %v", err)
+	}
+	if users, _ := clients["inproc"].Users(); len(users) != 0 {
+		t.Fatalf("Users after remove = %v, want empty", users)
+	}
+}
+
+// userStoreSupervisor is a supervisor.Supervisor that also satisfies
+// control.UserAdmin, so the Plane exposes the user surface (otherwise it reports
+// ErrUnavailable). It delegates lifecycle/model to the embedded real supervisor.
+type userStoreSupervisor struct {
+	*supervisor.Supervisor
+	users map[string]bool
+}
+
+func (s *userStoreSupervisor) Users() ([]control.UserInfo, error) {
+	out := make([]control.UserInfo, 0, len(s.users))
+	for name, disabled := range s.users {
+		out = append(out, control.UserInfo{Name: name, Disabled: disabled})
+	}
+	return out, nil
+}
+func (s *userStoreSupervisor) SetUser(name, _ string) error { s.users[name] = false; return nil }
+func (s *userStoreSupervisor) SetUserDisabled(name string, d bool) error {
+	s.users[name] = d
+	return nil
+}
+func (s *userStoreSupervisor) RemoveUser(name string) error { delete(s.users, name); return nil }

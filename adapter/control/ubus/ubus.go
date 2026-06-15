@@ -225,6 +225,72 @@ func (s *Server) handleConn(conn net.Conn) {
 			} else {
 				methodErr = err
 			}
+		case "config":
+			m, err := s.plane.Config()
+			if err != nil {
+				methodErr = err
+			} else {
+				res = m
+			}
+		case "save":
+			rev, err := s.plane.Save(ctx)
+			if err != nil {
+				methodErr = err
+			} else {
+				res = struct {
+					Revision string `json:"revision"`
+				}{Revision: rev}
+			}
+		case "list_interfaces":
+			ifaces, err := s.plane.ListInterfaces()
+			if err != nil {
+				methodErr = err
+			} else {
+				res = ifaces
+			}
+		case "list_zones":
+			zones, err := s.plane.Diagnostics().ListZones(ctx)
+			if err != nil {
+				methodErr = err
+			} else {
+				res = zones
+			}
+		case "users":
+			users, err := s.plane.Users()
+			if err != nil {
+				methodErr = err
+			} else {
+				res = users
+			}
+		case "set_user":
+			var args struct {
+				Name     string `json:"name"`
+				Password string `json:"password"`
+			}
+			if err := json.Unmarshal(req.Params, &args); err == nil {
+				methodErr = s.plane.SetUser(args.Name, args.Password)
+			} else {
+				methodErr = err
+			}
+		case "set_user_disabled":
+			var args struct {
+				Name     string `json:"name"`
+				Disabled bool   `json:"disabled"`
+			}
+			if err := json.Unmarshal(req.Params, &args); err == nil {
+				methodErr = s.plane.SetUserDisabled(args.Name, args.Disabled)
+			} else {
+				methodErr = err
+			}
+		case "remove_user":
+			var args struct {
+				Name string `json:"name"`
+			}
+			if err := json.Unmarshal(req.Params, &args); err == nil {
+				methodErr = s.plane.RemoveUser(args.Name)
+			} else {
+				methodErr = err
+			}
 		default:
 			methodErr = fmt.Errorf("unknown method: %s", req.Method)
 		}
@@ -280,13 +346,23 @@ func (c *AdapterClient) call(method string, params any, dest any) error {
 		return err
 	}
 	if resp.Error != "" {
-		return fmt.Errorf("ubus error: %s", resp.Error)
+		return errFromUbus(resp.Error)
 	}
 
 	if dest != nil && len(resp.Result) > 0 {
 		return json.Unmarshal(resp.Result, dest)
 	}
 	return nil
+}
+
+// errFromUbus reconstitutes a transported error string. control.ErrUnavailable is
+// surfaced as itself so a caller can errors.Is it across the socket exactly as the
+// in-process adapter reports it; any other string is wrapped opaquely.
+func errFromUbus(msg string) error {
+	if msg == control.ErrUnavailable.Error() {
+		return control.ErrUnavailable
+	}
+	return fmt.Errorf("ubus error: %s", msg)
 }
 
 // Status retrieves the unit status.
@@ -330,6 +406,70 @@ func (c *AdapterClient) ListFSTypes() ([]string, error) {
 	var out []string
 	err := c.call("list_fs_types", nil, &out)
 	return out, err
+}
+
+// Config fetches a snapshot of the live config model.
+func (c *AdapterClient) Config() (*config.Model, error) {
+	m := config.NewModel()
+	if err := c.call("config", nil, m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// Save validates and persists the live model server-side, returning the revision.
+func (c *AdapterClient) Save(ctx context.Context) (string, error) {
+	_ = ctx
+	var out struct {
+		Revision string `json:"revision"`
+	}
+	err := c.call("save", nil, &out)
+	return out.Revision, err
+}
+
+// ListInterfaces returns the enumerable network interfaces.
+func (c *AdapterClient) ListInterfaces() ([]control.InterfaceInfo, error) {
+	var out []control.InterfaceInfo
+	err := c.call("list_interfaces", nil, &out)
+	return out, err
+}
+
+// ListZones runs the Diagnostics zone probe (control.ErrUnavailable when unsupported).
+func (c *AdapterClient) ListZones(ctx context.Context) ([]string, error) {
+	_ = ctx
+	var out []string
+	err := c.call("list_zones", nil, &out)
+	return out, err
+}
+
+// Users lists stored identities (control.ErrUnavailable when no store is wired).
+func (c *AdapterClient) Users() ([]control.UserInfo, error) {
+	var out []control.UserInfo
+	err := c.call("users", nil, &out)
+	return out, err
+}
+
+// SetUser adds a user or resets a password.
+func (c *AdapterClient) SetUser(name, password string) error {
+	return c.call("set_user", struct {
+		Name     string `json:"name"`
+		Password string `json:"password"`
+	}{Name: name, Password: password}, nil)
+}
+
+// SetUserDisabled parks/unparks an account.
+func (c *AdapterClient) SetUserDisabled(name string, disabled bool) error {
+	return c.call("set_user_disabled", struct {
+		Name     string `json:"name"`
+		Disabled bool   `json:"disabled"`
+	}{Name: name, Disabled: disabled}, nil)
+}
+
+// RemoveUser deletes a user.
+func (c *AdapterClient) RemoveUser(name string) error {
+	return c.call("remove_user", struct {
+		Name string `json:"name"`
+	}{Name: name}, nil)
 }
 
 // Subscribe listens for live telemetry.
