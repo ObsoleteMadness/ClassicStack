@@ -155,6 +155,51 @@ func TestPlane_UserAdminDelegates(t *testing.T) {
 	}
 }
 
+func TestPlane_SaveRejectsInvalidHostname(t *testing.T) {
+	m := config.NewModel()
+	m.Identity = config.Identity{Hostname: "bad/name"} // path separator → baseline fail
+	sup := &fakeSupervisor{model: m}
+	store := &fakeStore{}
+	p := New(sup, fakeCodec{}, store, bus.New(2))
+
+	if _, err := p.Save(context.Background()); err == nil {
+		t.Fatal("Save should reject a hostname with a path separator")
+	}
+	if store.data != nil {
+		t.Fatal("invalid model must not reach the store")
+	}
+}
+
+func TestPlane_SaveNetBIOSHostnameRuleGated(t *testing.T) {
+	const longName = "THIS-NAME-IS-WAY-TOO-LONG" // > 15 bytes, baseline-legal
+
+	// NetBIOS NOT enabled (no such unit) → the ≤15-byte rule does not apply; Save OK.
+	mOff := config.NewModel()
+	mOff.Identity = config.Identity{Hostname: longName}
+	pOff := New(&fakeSupervisor{model: mOff}, fakeCodec{}, &fakeStore{}, bus.New(2))
+	if _, err := pOff.Save(context.Background()); err != nil {
+		t.Fatalf("Save with NetBIOS off should accept a long hostname: %v", err)
+	}
+
+	// NetBIOS enabled → the consumer rule applies; Save rejected.
+	mOn := config.NewModel()
+	mOn.Identity = config.Identity{Hostname: longName}
+	supOn := &fakeSupervisor{model: mOn, units: []Unit{{Name: "NetBIOS", Enabled: true}}}
+	pOn := New(supOn, fakeCodec{}, &fakeStore{}, bus.New(2))
+	if _, err := pOn.Save(context.Background()); err == nil {
+		t.Fatal("Save with NetBIOS enabled should reject an over-length hostname")
+	}
+
+	// NetBIOS present but DISABLED → rule does not apply; Save OK.
+	mDis := config.NewModel()
+	mDis.Identity = config.Identity{Hostname: longName}
+	supDis := &fakeSupervisor{model: mDis, units: []Unit{{Name: "NetBIOS", Enabled: false}}}
+	pDis := New(supDis, fakeCodec{}, &fakeStore{}, bus.New(2))
+	if _, err := pDis.Save(context.Background()); err != nil {
+		t.Fatalf("Save with NetBIOS disabled should accept a long hostname: %v", err)
+	}
+}
+
 func TestPlane_SubscribeStateTopic(t *testing.T) {
 	tb := bus.New(4)
 	sup := &fakeSupervisor{model: config.NewModel()}

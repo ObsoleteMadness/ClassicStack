@@ -39,6 +39,49 @@ func (s *barSection) Validate() error {
 	return nil
 }
 
+func TestModelValidate(t *testing.T) {
+	// Happy path: clean identity + a valid section.
+	m := NewModel()
+	m.Identity = Identity{Hostname: "CLASSICSTACK", Workgroup: "WG"}
+	m.Set(&barSection{Count: 1})
+	if err := m.Validate(ValidateOptions{}); err != nil {
+		t.Fatalf("valid model should pass: %v", err)
+	}
+
+	// Bad identity (control char) → rejected regardless of NetBIOS.
+	bad := NewModel()
+	bad.Identity = Identity{Hostname: "bad\x01name"}
+	if err := bad.Validate(ValidateOptions{}); err == nil {
+		t.Fatal("identity with a control char should fail Validate")
+	}
+
+	// Bad section → rejected.
+	badSec := NewModel()
+	badSec.Set(&barSection{Count: -1})
+	if err := badSec.Validate(ValidateOptions{}); err == nil {
+		t.Fatal("a section that fails its own Validate should fail Model.Validate")
+	}
+
+	// Bad repeated instance → rejected too.
+	badList := NewModel()
+	badList.SetList("Bars", []Section{&barSection{Count: -1}})
+	if err := badList.Validate(ValidateOptions{}); err == nil {
+		t.Fatal("a repeated instance that fails Validate should fail Model.Validate")
+	}
+}
+
+func TestModelValidateNetBIOSGated(t *testing.T) {
+	m := NewModel()
+	m.Identity = Identity{Hostname: "THIS-NAME-IS-WAY-TOO-LONG"} // > 15 bytes, baseline-legal
+
+	if err := m.Validate(ValidateOptions{NetBIOSEnabled: false}); err != nil {
+		t.Fatalf("NetBIOS off: long hostname should be allowed: %v", err)
+	}
+	if err := m.Validate(ValidateOptions{NetBIOSEnabled: true}); err == nil {
+		t.Fatal("NetBIOS on: over-length hostname should be rejected")
+	}
+}
+
 func TestRegisterAndSchemas(t *testing.T) {
 	Register(SectionSchema{Key: "Foo", New: func() Section { return &fooSection{} }})
 	Register(SectionSchema{Key: "Bar", New: func() Section { return &barSection{} }})

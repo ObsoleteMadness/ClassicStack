@@ -708,9 +708,9 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > when the hostname is non-empty (else the nameless `New`); the browser carries `Description` on its
 > self `ServerEntry` via a new `SetDescription` (browser isn't registry-wired yet — M8/M10 compose —
 > but the setter + self-entry comment are in). **No per-service hostname field exists**, so SMB and
-> NetBIOS cannot diverge. **NOTE:** no central `Model.Validate()` Apply-time hook exists yet, so
-> `ValidateForNetBIOS` is provided but not yet called by an Apply path — wire it when control-plane
-> Apply validation lands. **Still M8a:** §10d same-host-path AFP+SMB shared-bus (landed in the
+> NetBIOS cannot diverge. **NOTE (now resolved — see the Model.Validate note below):** when this
+> slice landed there was no central Apply-time hook, so `ValidateForNetBIOS` was defined but uncalled;
+> that gap is now closed. **Still M8a:** §10d same-host-path AFP+SMB shared-bus (landed in the
 > follow-on below); `secret`-param form masking (UI/M8).
 
 > **M8a notes (§10d same-host-path AFP+SMB coordination — coordination seam landed, wire push
@@ -775,6 +775,21 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > real-fsnotify publish with Origin/HostPath/Op, idempotent Start/Stop, missing-root-skipped) +
 > `core/config` HostPaths dedup. The §10d/§10e pair is now complete. **Still M8a:** `secret`-param
 > masking (UI/M8); wire a central `Model.Validate()` Apply hook (calls `Identity.ValidateForNetBIOS`).
+
+> **M8a notes (Model.Validate Apply hook — landed; closes the §4-bis caveat):** the whole-model
+> validation the commit path runs. `config.Model.Validate(config.ValidateOptions)` (core/config):
+> runs `Identity.Validate` (baseline), then every registered section's `Validate` (singletons in
+> `Sections` + each repeated instance in `Lists`, via the schema's `Validate` when registered else the
+> section's own — codecs do NOT call schema.Validate, so this is the real validation entry point),
+> then `Identity.ValidateForNetBIOS` **only when `opts.NetBIOSEnabled`**. `ValidateOptions` carries the
+> cross-cutting facts the model can't infer (NetBIOS has no config section — it's enabled by being
+> built/wired); the zero value = no consumer constraints (right for SMB-:445 / AFP-only).
+> `control.Plane.Save` calls Validate before `codec.Marshal`, deriving `NetBIOSEnabled` from the
+> supervisor `Status()` (a `NetBIOS` unit's `Enabled`; matched by the string `"NetBIOS"` so core/control
+> imports no service pkg). An invalid section / over-length-under-NetBIOS hostname is now rejected
+> before it reaches the store. Tests: `core/config` (Validate happy/bad-identity/bad-section/bad-repeated,
+> NetBIOS-gated) + `core/control` (Save rejects bad hostname; NetBIOS rule gated on enabled/disabled/absent).
+> **Remaining M8a:** `secret`-param form masking (UI/M8) — the last core M8a item.
 
 > **M8 notes (config-codec round-trip + UCI fix — partial M8):** the TOML/UCI codecs and the
 > file/UCI stores were already built (B6/D4/D6); this slice adds the missing **real-section**

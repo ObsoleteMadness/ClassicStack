@@ -55,6 +55,66 @@ func (m *Model) Clone() *Model {
 	return c
 }
 
+// ValidateOptions carries the cross-cutting facts Model.Validate needs that the
+// model alone cannot determine — chiefly which CONSUMER services are enabled, so a
+// consumer-gated rule (the NetBIOS ≤15-byte hostname limit, §4-bis) applies only when
+// that consumer is in play. The caller (the control plane / compose, which knows
+// which components are built and enabled) supplies it; core/config has no service
+// knowledge of its own. The zero value validates with no consumer constraints — the
+// right default for an SMB-over-:445 / AFP-only server.
+type ValidateOptions struct {
+	// NetBIOSEnabled gates the NetBIOS-specific hostname rules. NetBIOS has no config
+	// section of its own (it is enabled by being built/wired), so the model cannot
+	// infer this — the plane derives it from the live component set.
+	NetBIOSEnabled bool
+}
+
+// Validate checks the whole model before it is committed (the control-plane Apply /
+// Save path, §4 / §4-bis). It runs, in order:
+//
+//  1. Identity.Validate — the always-on baseline hostname check.
+//  2. every registered section's Validate — singletons in Sections and each repeated
+//     instance in Lists, via the schema registry's Validate when one is registered
+//     (it may wrap the section's own), else the section's own Validate.
+//  3. Identity.ValidateForNetBIOS — the consumer-gated rule, only when
+//     opts.NetBIOSEnabled, with NetBIOS named as the constraint source in its error.
+//
+// It returns the first error encountered, so a bad section or an over-length hostname
+// under NetBIOS is rejected before it goes live, rather than mangling a name on the
+// wire. A nil/empty model validates clean.
+func (m *Model) Validate(opts ValidateOptions) error {
+	if err := m.Identity.Validate(); err != nil {
+		return err
+	}
+	for _, s := range m.Sections {
+		if err := validateSection(s); err != nil {
+			return err
+		}
+	}
+	for _, list := range m.Lists {
+		for _, s := range list {
+			if err := validateSection(s); err != nil {
+				return err
+			}
+		}
+	}
+	if opts.NetBIOSEnabled {
+		if err := m.Identity.ValidateForNetBIOS(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateSection runs the schema-registered Validate for a section's key when one
+// exists (it may apply richer cross-field checks), else the section's own Validate.
+func validateSection(s Section) error {
+	if sch, ok := SchemaFor(s.Key()); ok && sch.Validate != nil {
+		return sch.Validate(s)
+	}
+	return s.Validate()
+}
+
 // Get returns the registered section under key, if present.
 func (m *Model) Get(key string) (Section, bool) {
 	s, ok := m.Sections[key]

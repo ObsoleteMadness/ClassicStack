@@ -127,11 +127,37 @@ func (p *plane) Save(ctx context.Context) (revision string, err error) {
 	if p.codec == nil || p.store == nil {
 		return "", errPersistence
 	}
-	data, err := p.codec.Marshal(p.sup.Model())
+	m := p.sup.Model()
+	// Validate the whole model before persisting it: reject an invalid section or a
+	// hostname that violates a consumer-gated rule (the NetBIOS ≤15-byte limit, §4-bis)
+	// before it reaches the store, rather than serialising a config that would mangle a
+	// name on the wire. NetBIOSEnabled is derived from the live component set, since
+	// NetBIOS carries no config section of its own.
+	if err := m.Validate(config.ValidateOptions{NetBIOSEnabled: p.netbiosEnabled()}); err != nil {
+		return "", err
+	}
+	data, err := p.codec.Marshal(m)
 	if err != nil {
 		return "", err
 	}
 	return p.store.Save(data)
+}
+
+// netbiosComponentName is the component name the supervisor reports for the NetBIOS
+// service in Status(). Matched by string (not an import of the service package) to
+// keep core/control free of service dependencies. Mirrors netbios.Name.
+const netbiosComponentName = "NetBIOS"
+
+// netbiosEnabled reports whether the NetBIOS service is present and configured-enabled
+// in the live component set, so Model.Validate applies the NetBIOS hostname rule only
+// when NetBIOS is actually in play (§4-bis).
+func (p *plane) netbiosEnabled() bool {
+	for _, u := range p.sup.Status() {
+		if u.Name == netbiosComponentName {
+			return u.Enabled
+		}
+	}
+	return false
 }
 
 func (p *plane) Start(ctx context.Context, name string) error   { return p.sup.Start(ctx, name) }

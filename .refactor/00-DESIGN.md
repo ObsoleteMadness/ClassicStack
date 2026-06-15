@@ -595,6 +595,16 @@ once the browser is registry-wired — M8/M10 compose). `Identity.Validate` is t
 (no path/control chars); `Identity.ValidateForNetBIOS` is the ≤15-byte consumer constraint applied
 only when NetBIOS is enabled. No per-service hostname field exists, so consumers cannot diverge.
 
+**Apply-time validation wired (M8a, 2026-06-15):** `config.Model.Validate(config.ValidateOptions)`
+is the whole-model check the commit path runs. It runs `Identity.Validate` (baseline), then every
+registered section's `Validate` (singletons + each repeated instance, via the schema's `Validate`
+when registered, else the section's own), then `Identity.ValidateForNetBIOS` **only when
+`opts.NetBIOSEnabled`**. `control.Plane.Save` calls it before marshalling, deriving `NetBIOSEnabled`
+from the live component set (`Status()` reports a `NetBIOS` unit's `Enabled` — NetBIOS carries no
+config section, so the model can't infer it; the plane supplies it). An invalid section or an
+over-length hostname under NetBIOS is now rejected before it reaches the store. This closes the
+earlier gap where `ValidateForNetBIOS` was defined but never called.
+
 ### Schema registration (so new transports don't edit a central struct)
 
 Today adding a transport means editing `config.Model`, `appConfig`, `appConfigFromModel`,
