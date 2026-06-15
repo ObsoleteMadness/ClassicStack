@@ -52,3 +52,79 @@ func TestUCICodec_RoundTrip(t *testing.T) {
 		t.Errorf("EtherTalk: got %+v want %+v", gotSec, wantSec)
 	}
 }
+
+// uciFakeVolume is a repeated (named-instance) section for the UCI repeated-block test.
+type uciFakeVolume struct {
+	VName   string   `toml:"name"`
+	Path    string   `toml:"path"`
+	RO      bool     `toml:"read_only"`
+	Allowed []string `toml:"allowed_users"`
+}
+
+func (s *uciFakeVolume) Key() string          { return "UCIVolumes" }
+func (s *uciFakeVolume) InstanceName() string { return s.VName }
+func (s *uciFakeVolume) Clone() config.Section {
+	cp := *s
+	cp.Allowed = append([]string(nil), s.Allowed...)
+	return &cp
+}
+func (s *uciFakeVolume) Validate() error { return nil }
+
+func TestUCICodec_RepeatedSections(t *testing.T) {
+	config.Register(config.SectionSchema{
+		Key:      "UCIVolumes",
+		Repeated: true,
+		New:      func() config.Section { return &uciFakeVolume{} },
+	})
+
+	m := config.NewModel()
+	m.AddInstance(&uciFakeVolume{VName: "public", Path: "/srv/public", Allowed: []string{"alice", "bob"}})
+	m.AddInstance(&uciFakeVolume{VName: "private", Path: "/srv/private", RO: true})
+
+	codec := New()
+	data, err := codec.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	got := config.NewModel()
+	if err := codec.Unmarshal(data, got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	list := got.List("UCIVolumes")
+	if len(list) != 2 {
+		t.Fatalf("got %d instances, want 2 (data:\n%s)", len(list), data)
+	}
+	pub := list[0].(*uciFakeVolume)
+	priv := list[1].(*uciFakeVolume)
+	if pub.VName != "public" || pub.Path != "/srv/public" || len(pub.Allowed) != 2 {
+		t.Errorf("public round-trip: %+v", pub)
+	}
+	if priv.VName != "private" || priv.Path != "/srv/private" || !priv.RO {
+		t.Errorf("private round-trip: %+v", priv)
+	}
+}
+
+// TestUCICodec_BlockNameAuthoritative proves the UCI block name overrides a divergent
+// name field on unmarshal (the block name is the authoritative instance key).
+func TestUCICodec_BlockNameAuthoritative(t *testing.T) {
+	config.Register(config.SectionSchema{
+		Key:      "UCIVolumes",
+		Repeated: true,
+		New:      func() config.Section { return &uciFakeVolume{} },
+	})
+	// A block named 'renamed' whose inner option name says 'stale'.
+	data := []byte("package classicstack\n\nconfig ucivolumes 'renamed'\n\toption name 'stale'\n\toption path '/p'\n\n")
+	got := config.NewModel()
+	if err := New().Unmarshal(data, got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	list := got.List("UCIVolumes")
+	if len(list) != 1 {
+		t.Fatalf("got %d instances, want 1", len(list))
+	}
+	if name := list[0].(*uciFakeVolume).VName; name != "renamed" {
+		t.Errorf("block name should win: got %q, want renamed", name)
+	}
+}

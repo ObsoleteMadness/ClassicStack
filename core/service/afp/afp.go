@@ -61,6 +61,10 @@ import (
 // space has no free id left.
 var errVolumeIDsExhausted = errors.New("afp: volume id space exhausted")
 
+// ErrVolumeNameRequired is returned by VolumeSection.Validate when a configured
+// volume carries no display name.
+var ErrVolumeNameRequired = errors.New("afp: volume name is required")
+
 const (
 	// Name is the component name for the AFP service.
 	Name = "AFP"

@@ -29,6 +29,31 @@ func registerFake(key string) {
 	})
 }
 
+// fakeVolume is a repeated (named-instance) section for the array-of-tables test.
+type fakeVolume struct {
+	VName   string   `toml:"name"`
+	Path    string   `toml:"path"`
+	RO      bool     `toml:"read_only"`
+	Allowed []string `toml:"allowed_users"`
+}
+
+func (s *fakeVolume) Key() string          { return "FakeVolumes" }
+func (s *fakeVolume) InstanceName() string { return s.VName }
+func (s *fakeVolume) Clone() config.Section {
+	cp := *s
+	cp.Allowed = append([]string(nil), s.Allowed...)
+	return &cp
+}
+func (s *fakeVolume) Validate() error { return nil }
+
+func registerFakeVolumes() {
+	config.Register(config.SectionSchema{
+		Key:      "FakeVolumes",
+		Repeated: true,
+		New:      func() config.Section { return &fakeVolume{} },
+	})
+}
+
 func TestRoundTrip(t *testing.T) {
 	registerFake("Alpha")
 	registerFake("Beta")
@@ -70,5 +95,38 @@ func TestRoundTrip(t *testing.T) {
 		if !reflect.DeepEqual(want, gotSec) {
 			t.Errorf("section %s: got %+v want %+v", key, gotSec, want)
 		}
+	}
+}
+
+func TestRepeatedSectionRoundTrip(t *testing.T) {
+	registerFakeVolumes()
+
+	m := config.NewModel()
+	m.AddInstance(&fakeVolume{VName: "public", Path: "/srv/public", Allowed: []string{"alice"}})
+	m.AddInstance(&fakeVolume{VName: "private", Path: "/srv/private", RO: true})
+
+	c := New()
+	data, err := c.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var got config.Model
+	if err := c.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	list := got.List("FakeVolumes")
+	if len(list) != 2 {
+		t.Fatalf("got %d instances, want 2 (data:\n%s)", len(list), data)
+	}
+	// Order is preserved.
+	pub := list[0].(*fakeVolume)
+	priv := list[1].(*fakeVolume)
+	if pub.VName != "public" || pub.Path != "/srv/public" || len(pub.Allowed) != 1 || pub.Allowed[0] != "alice" {
+		t.Errorf("public round-trip: %+v", pub)
+	}
+	if priv.VName != "private" || priv.Path != "/srv/private" || !priv.RO {
+		t.Errorf("private round-trip: %+v", priv)
 	}
 }

@@ -258,3 +258,62 @@ func TestCodecStoreRoundTrip(t *testing.T) {
 		t.Fatalf("Bar round-trip: %+v", bar)
 	}
 }
+
+// --- repeated (named-instance) sections ---
+
+type volSection struct {
+	VName string
+	Path  string
+}
+
+func (s *volSection) Key() string          { return "Vols" }
+func (s *volSection) InstanceName() string { return s.VName }
+func (s *volSection) Clone() Section       { c := *s; return &c }
+func (s *volSection) Validate() error      { return nil }
+
+func TestAddInstanceAndList(t *testing.T) {
+	m := NewModel()
+	m.AddInstance(&volSection{VName: "a", Path: "/a"})
+	m.AddInstance(&volSection{VName: "b", Path: "/b"})
+	if got := len(m.List("Vols")); got != 2 {
+		t.Fatalf("List len = %d, want 2", got)
+	}
+	// Same-name AddInstance replaces in place (order preserved).
+	m.AddInstance(&volSection{VName: "a", Path: "/a2"})
+	list := m.List("Vols")
+	if len(list) != 2 || list[0].(*volSection).Path != "/a2" {
+		t.Fatalf("replace failed: %+v", list)
+	}
+}
+
+func TestInstanceLookupAndRemove(t *testing.T) {
+	m := NewModel()
+	m.AddInstance(&volSection{VName: "a"})
+	m.AddInstance(&volSection{VName: "b"})
+
+	if _, ok := m.Instance("Vols", "b"); !ok {
+		t.Fatal("Instance(b) not found")
+	}
+	if _, ok := m.Instance("Vols", "zzz"); ok {
+		t.Fatal("Instance(zzz) should not be found")
+	}
+	if !m.RemoveInstance("Vols", "a") {
+		t.Fatal("RemoveInstance(a) should report present")
+	}
+	if m.RemoveInstance("Vols", "a") {
+		t.Fatal("second RemoveInstance(a) should report absent")
+	}
+	if got := len(m.List("Vols")); got != 1 {
+		t.Fatalf("after remove List len = %d, want 1", got)
+	}
+}
+
+func TestCloneCopiesLists(t *testing.T) {
+	m := NewModel()
+	m.AddInstance(&volSection{VName: "a", Path: "/a"})
+	c := m.Clone()
+	c.List("Vols")[0].(*volSection).Path = "/changed"
+	if m.List("Vols")[0].(*volSection).Path != "/a" {
+		t.Fatal("Clone aliased the repeated-section list")
+	}
+}

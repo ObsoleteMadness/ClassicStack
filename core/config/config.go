@@ -11,17 +11,23 @@ type Section interface {
 }
 
 // Model is the single in-memory source of truth. Well-known sections are typed fields for
-// ergonomics; component sections live in Sections keyed by Section.Key().
+// ergonomics; singleton component sections live in Sections keyed by Section.Key(); repeated
+// (named-instance) sections — e.g. one AFP volume per share — live in Lists keyed by the schema
+// key, each instance distinguished by its InstanceName().
 type Model struct {
 	Logging  LoggingSection
 	Router   RouterSection
 	Bridge   InterfaceSection
-	Sections map[string]Section // registered component sections
+	Sections map[string]Section   // registered singleton component sections
+	Lists    map[string][]Section // registered repeated (named-instance) sections
 }
 
-// NewModel returns an empty model with an initialised Sections map.
+// NewModel returns an empty model with initialised Sections / Lists maps.
 func NewModel() *Model {
-	return &Model{Sections: make(map[string]Section)}
+	return &Model{
+		Sections: make(map[string]Section),
+		Lists:    make(map[string][]Section),
+	}
 }
 
 // Clone returns a deep copy. Each component Section deep-copies via its own Clone, so staging
@@ -32,9 +38,17 @@ func (m *Model) Clone() *Model {
 		Router:   m.Router,
 		Bridge:   m.Bridge,
 		Sections: make(map[string]Section, len(m.Sections)),
+		Lists:    make(map[string][]Section, len(m.Lists)),
 	}
 	for k, s := range m.Sections {
 		c.Sections[k] = s.Clone()
+	}
+	for k, list := range m.Lists {
+		cp := make([]Section, len(list))
+		for i, s := range list {
+			cp[i] = s.Clone()
+		}
+		c.Lists[k] = cp
 	}
 	return c
 }
@@ -51,6 +65,75 @@ func (m *Model) Set(s Section) {
 		m.Sections = make(map[string]Section)
 	}
 	m.Sections[s.Key()] = s
+}
+
+// --- Repeated (named-instance) sections ----------------------------------------------------
+
+// NamedSection is the capability a Section implements when it is one instance of a repeated
+// section (e.g. a single AFP volume among several). InstanceName is the per-instance key the
+// codec writes as the section name (UCI `config volume 'public'`, TOML array-of-tables) and the
+// supervisor addresses the share by. Key() still returns the shared schema key ("AFPVolumes").
+type NamedSection interface {
+	Section
+	InstanceName() string
+}
+
+// List returns the repeated sections registered under key (the registered instances of a
+// repeated schema), or nil if none. The slice is the live one; callers that mutate it should
+// Clone the model first.
+func (m *Model) List(key string) []Section {
+	if m.Lists == nil {
+		return nil
+	}
+	return m.Lists[key]
+}
+
+// SetList replaces the whole instance set for a repeated section key.
+func (m *Model) SetList(key string, sections []Section) {
+	if m.Lists == nil {
+		m.Lists = make(map[string][]Section)
+	}
+	m.Lists[key] = sections
+}
+
+// AddInstance appends (or, when an instance of the same InstanceName already exists, replaces)
+// one named instance under its Key(). It is the repeated-section analogue of Set.
+func (m *Model) AddInstance(s NamedSection) {
+	if m.Lists == nil {
+		m.Lists = make(map[string][]Section)
+	}
+	key := s.Key()
+	list := m.Lists[key]
+	for i, existing := range list {
+		if ns, ok := existing.(NamedSection); ok && ns.InstanceName() == s.InstanceName() {
+			list[i] = s
+			m.Lists[key] = list
+			return
+		}
+	}
+	m.Lists[key] = append(list, s)
+}
+
+// Instance returns the named instance under key, if present.
+func (m *Model) Instance(key, name string) (Section, bool) {
+	for _, s := range m.List(key) {
+		if ns, ok := s.(NamedSection); ok && ns.InstanceName() == name {
+			return s, true
+		}
+	}
+	return nil, false
+}
+
+// RemoveInstance drops the named instance under key, reporting whether it was present.
+func (m *Model) RemoveInstance(key, name string) bool {
+	list := m.List(key)
+	for i, s := range list {
+		if ns, ok := s.(NamedSection); ok && ns.InstanceName() == name {
+			m.Lists[key] = append(list[:i:i], list[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // EffectiveInterface resolves a component's interface, folding bridge inheritance +
@@ -99,10 +182,17 @@ type InterfaceProvider interface {
 
 // SectionSchema registers a component's config shape so codecs can round-trip it without
 // knowing the type. New returns a zero section; Validate may wrap Section.Validate.
+//
+// Repeated marks a schema whose key carries MANY named instances (e.g. one AFP volume per
+// share) rather than a single section. The codec then reads/writes the instances from/to
+// Model.Lists[Key] (UCI: repeated `config <type> '<name>'` blocks; TOML: an array-of-tables),
+// and New() must return a NamedSection. A singleton schema (Repeated == false) lives in
+// Model.Sections[Key] as before.
 type SectionSchema struct {
 	Key      string
 	New      func() Section
 	Validate func(Section) error
+	Repeated bool
 }
 
 var (

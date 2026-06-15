@@ -60,7 +60,7 @@ func (c *Codec) Marshal(m *config.Model) ([]byte, error) {
 		}
 	}
 
-	// Marshal component sections
+	// Marshal singleton component sections
 	for _, key := range keys {
 		sec := m.Sections[key]
 		typeName := strings.ToLower(key)
@@ -69,7 +69,42 @@ func (c *Codec) Marshal(m *config.Model) ([]byte, error) {
 		}
 	}
 
+	// Marshal repeated (named-instance) sections: one `config <type> '<name>'` block
+	// per instance, the natural UCI idiom (e.g. config volume 'public'). Keys are
+	// sorted for deterministic output; instances keep their model (document) order.
+	listKeys := make([]string, 0, len(m.Lists))
+	for k := range m.Lists {
+		if len(m.Lists[k]) > 0 {
+			listKeys = append(listKeys, k)
+		}
+	}
+	sortStrings(listKeys)
+	for _, key := range listKeys {
+		typeName := strings.ToLower(key)
+		for _, sec := range m.Lists[key] {
+			name := ""
+			if ns, ok := sec.(config.NamedSection); ok {
+				name = ns.InstanceName()
+			}
+			if err := c.marshalSection(&buf, typeName, name, sec); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	return buf.Bytes(), nil
+}
+
+// sortStrings is a tiny in-place string sort (the codec already sorts component keys
+// with an inline bubble; centralising it keeps both call sites consistent).
+func sortStrings(s []string) {
+	for i := 0; i < len(s); i++ {
+		for j := i + 1; j < len(s); j++ {
+			if s[i] > s[j] {
+				s[i], s[j] = s[j], s[i]
+			}
+		}
+	}
 }
 
 func (c *Codec) marshalSection(buf *bytes.Buffer, typeName, name string, sec any) error {
@@ -130,8 +165,9 @@ func (c *Codec) Unmarshal(data []byte, m *config.Model) error {
 		return err
 	}
 
-	// Reset model sections map
+	// Reset model section maps
 	m.Sections = make(map[string]config.Section)
+	m.Lists = make(map[string][]config.Section)
 
 	for _, sec := range sections {
 		switch sec.Type {
@@ -148,21 +184,66 @@ func (c *Codec) Unmarshal(data []byte, m *config.Model) error {
 				return err
 			}
 		default:
-			// Match component sections
+			// Match component sections (singleton → Sections; repeated → Lists).
 			for _, schema := range config.Schemas() {
-				if strings.ToLower(schema.Key) == sec.Type || schema.Key == sec.Name {
-					typedSec := schema.New()
-					if err := unmarshalStruct(sec, typedSec); err != nil {
-						return err
-					}
-					m.Sections[schema.Key] = typedSec
-					break
+				if strings.ToLower(schema.Key) != sec.Type && schema.Key != sec.Name {
+					continue
 				}
+				typedSec := schema.New()
+				if err := unmarshalStruct(sec, typedSec); err != nil {
+					return err
+				}
+				if schema.Repeated {
+					// The UCI block name is the authoritative instance key, so a
+					// NamedSection whose name field went unset (or diverged) is
+					// reconciled to the block name here.
+					applyInstanceName(typedSec, sec.Name)
+					m.Lists[schema.Key] = append(m.Lists[schema.Key], typedSec)
+				} else {
+					m.Sections[schema.Key] = typedSec
+				}
+				break
 			}
 		}
 	}
 
 	return nil
+}
+
+// applyInstanceName reconciles a repeated section's name field with the UCI block
+// name when they differ (the block name is authoritative). It re-marshals the block
+// name into the field named by the section's NamedSection key via the same struct
+// path the option loop uses, so no per-type knowledge leaks into the codec.
+func applyInstanceName(sec config.Section, blockName string) {
+	if blockName == "" {
+		return
+	}
+	ns, ok := sec.(config.NamedSection)
+	if !ok || ns.InstanceName() == blockName {
+		return
+	}
+	// Find the struct field tagged with the same value the instance name reads from
+	// and set it to the block name. We locate it by matching the current
+	// InstanceName() against the field values, falling back to a "name" tag.
+	v := reflect.ValueOf(sec)
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return
+	}
+	typ := v.Type()
+	for i := 0; i < typ.NumField(); i++ {
+		tag := strings.Split(typ.Field(i).Tag.Get("toml"), ",")[0]
+		if tag != "name" {
+			continue
+		}
+		f := v.Field(i)
+		if f.Kind() == reflect.String && f.CanSet() {
+			f.SetString(blockName)
+		}
+		return
+	}
 }
 
 func parseUCI(data []byte) ([]uciSection, error) {

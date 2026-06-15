@@ -8,6 +8,8 @@
 package toml
 
 import (
+	"strings"
+
 	gotoml "github.com/pelletier/go-toml/v2"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
@@ -42,6 +44,15 @@ func (c *Codec) Marshal(m *config.Model) ([]byte, error) {
 	for key, sec := range m.Sections {
 		top[key] = sec
 	}
+	// Repeated (named-instance) sections render as an array-of-tables under the
+	// lowercased schema key (e.g. [[afpvolumes]]), one table per instance. go-toml
+	// emits a []Section as a TOML array; each element marshals via its own tags.
+	for key, list := range m.Lists {
+		if len(list) == 0 {
+			continue
+		}
+		top[strings.ToLower(key)] = list
+	}
 	return gotoml.Marshal(top)
 }
 
@@ -66,7 +77,16 @@ func (c *Codec) Unmarshal(data []byte, m *config.Model) error {
 	if m.Sections == nil {
 		m.Sections = make(map[string]config.Section)
 	}
+	if m.Lists == nil {
+		m.Lists = make(map[string][]config.Section)
+	}
 	for _, schema := range config.Schemas() {
+		if schema.Repeated {
+			if err := unmarshalRepeated(raw, schema, m); err != nil {
+				return err
+			}
+			continue
+		}
 		sub, ok := raw[schema.Key]
 		if !ok {
 			continue
@@ -81,6 +101,33 @@ func (c *Codec) Unmarshal(data []byte, m *config.Model) error {
 			return err
 		}
 		m.Sections[schema.Key] = sec
+	}
+	return nil
+}
+
+// unmarshalRepeated decodes a repeated schema's array-of-tables (keyed by the
+// lowercased schema key) into one NamedSection per element, appended in document
+// order. A document with no such table leaves the instance list empty.
+func unmarshalRepeated(raw map[string]any, schema config.SectionSchema, m *config.Model) error {
+	sub, ok := raw[strings.ToLower(schema.Key)]
+	if !ok {
+		return nil
+	}
+	elems, ok := sub.([]any)
+	if !ok {
+		// A single inline table (not an array) is tolerated as one instance.
+		elems = []any{sub}
+	}
+	for _, el := range elems {
+		elBytes, err := gotoml.Marshal(el)
+		if err != nil {
+			return err
+		}
+		sec := schema.New()
+		if err := gotoml.Unmarshal(elBytes, sec); err != nil {
+			return err
+		}
+		m.Lists[schema.Key] = append(m.Lists[schema.Key], sec)
 	}
 	return nil
 }

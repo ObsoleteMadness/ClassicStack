@@ -635,6 +635,30 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > / sqlite user stores under `adapter/auth/*`; file-level ACLs / per-user read-only; AFP DHX & SMB
 > NTLM challenge UAMs.
 
+> **M8a notes (AFP volume config sections — partial M8a):** the `config→[]fs.ShareSpec` mapper
+> for AFP is in, as **repeated named sections** (the operator writes one block per volume, the
+> idiomatic UCI/TOML form). **`core/config` gained a MultiSection concept**: a `SectionSchema`
+> may set `Repeated: true`; repeated instances live in a new `Model.Lists[key][]Section` (parallel
+> to singleton `Sections`), each distinguished by a `NamedSection.InstanceName()`; Model gained
+> `List`/`SetList`/`AddInstance` (replace-by-name)/`Instance`/`RemoveInstance`, and `Clone`
+> deep-copies the lists. Pure stdlib — archtest + TinyGo gates stay green. **Both codecs round-trip
+> repeated sections**: TOML as an array-of-tables under the lowercased key (`[[afpvolumes]]`), UCI
+> as repeated `config <type> '<name>'` blocks (the UCI block name is authoritative on read — a
+> divergent inner `option name` is reconciled to it). **`core/service/afp`**: `VolumeSection` (a
+> flat, codec-friendly NamedSection view of `fs.ShareSpec` — typed `path`/`fs_type`/`fork_backend`/
+> `filename_codec`/`name_engine`/`metastore`/`read_only`/`allowed_users`, plus an `options` list of
+> `key=value` entries → `ShareSpec.Extra` for backend-specific params) + `Spec()`/`SpecsFromModel`
+> mapper; `RegisterVolumes()` (called from `reg_afp.go`, like `auth.Register`, so the section
+> exists exactly when AFP is built). **`reg_afp.go`** now builds one Volume per configured section
+> via `NewWithVolumes` (allocating ids 1..N), failing loudly on a bad spec; a model with no volumes
+> yields the historical zero-volume service. The AFP service already carried the full `share.Manager`
+> surface (`AddShare`/`UpdateShare`/`RemoveShare`/`Shares`) from M7c, so dynamic add/update/remove
+> is in place. **Still M8a, NOT done by this slice:** the SMB **share** config sections (same
+> mapper, SMB-side), the supervisor `Reconfigure` path that drives `share.Manager` Add/Update/Remove
+> from a changed volume section (the registry builds the full set at boot/rebuild today; per-section
+> hot-apply of one volume is the next step), `ParamsFor`-generated per-fs_type form masking of
+> `secret` params, server identity (§4-bis), and the §10d shared-bus coordination.
+
 > **M8 notes (config-codec round-trip + UCI fix — partial M8):** the TOML/UCI codecs and the
 > file/UCI stores were already built (B6/D4/D6); this slice adds the missing **real-section**
 > round-trip coverage and fixes a latent codec bug it surfaced. The new M8a `Auth` section now has
