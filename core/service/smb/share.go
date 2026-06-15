@@ -24,10 +24,13 @@ type Share struct {
 	sh *share.Share
 }
 
-// ShareSpec names an SMB share and the seam components to build it from.
+// ShareSpec names an SMB share and the seam components to build it from. Description
+// is the operator remark NetShareEnum reports (the share comment); it is SMB-specific
+// (not carried on fs.ShareSpec) and applied to the built share via SetDescription.
 type ShareSpec struct {
-	Name  string
-	Share fs.ShareSpec
+	Name        string
+	Description string
+	Share       fs.ShareSpec
 }
 
 // NewShare builds one Share from a spec by assembling the share stack through the
@@ -38,6 +41,9 @@ func NewShare(spec ShareSpec) (*Share, error) {
 	built, err := share.Build(spec.Share, nil)
 	if err != nil {
 		return nil, err
+	}
+	if spec.Description != "" {
+		built.SetDescription(spec.Description)
 	}
 	return &Share{sh: built}, nil
 }

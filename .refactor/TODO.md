@@ -654,10 +654,25 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > yields the historical zero-volume service. The AFP service already carried the full `share.Manager`
 > surface (`AddShare`/`UpdateShare`/`RemoveShare`/`Shares`) from M7c, so dynamic add/update/remove
 > is in place. **Still M8a, NOT done by this slice:** the SMB **share** config sections (same
-> mapper, SMB-side), the supervisor `Reconfigure` path that drives `share.Manager` Add/Update/Remove
-> from a changed volume section (the registry builds the full set at boot/rebuild today; per-section
-> hot-apply of one volume is the next step), `ParamsFor`-generated per-fs_type form masking of
-> `secret` params, server identity (§4-bis), and the §10d shared-bus coordination.
+> mapper, SMB-side — landed in the follow-on below), the supervisor `Reconfigure` path that drives
+> `share.Manager` Add/Update/Remove from a changed volume section (the registry builds the full set
+> at boot/rebuild today; per-section hot-apply of one volume is the next step),
+> `ParamsFor`-generated per-fs_type form masking of `secret` params, server identity (§4-bis), and
+> the §10d shared-bus coordination.
+
+> **M8a notes (SMB share config sections — partial M8a):** the SMB-side mirror of the AFP-volume
+> slice, reusing the `core/config` repeated-section machinery. **`core/service/smb`**: `ShareSection`
+> (the same flat NamedSection field shape as `afp.VolumeSection` — typed `path`/`fs_type`/
+> `fork_backend`/`filename_codec`/`name_engine`/`metastore`/`read_only`/`allowed_users` + an
+> `options` `key=value` list → `ShareSpec.Extra`, plus one SMB-specific field: `description`, the
+> NetShareEnum remark, which AFP volumes have no equivalent for) + `Spec()`/`SpecsFromModel` +
+> `RegisterShares()` (called from `reg_smb.go`). `smb.ShareSpec` gained a `Description` field and
+> `NewShare` applies it via `built.SetDescription` (description is SMB-specific, NOT carried on
+> `fs.ShareSpec`). **`reg_smb.go`** now builds one Share per configured section via `NewWithShares`,
+> failing loudly on a bad spec; a model with no shares yields the historical zero-share service. The
+> SMB `share.Manager` surface (Add/Update/RemoveShare) was already in from M7c. Both file services
+> are now config-driven through the same repeated-section mechanism. **Still M8a:** the supervisor
+> `Reconfigure`→`share.Manager` hot-apply path, server identity (§4-bis), §10d shared-bus.
 
 > **M8 notes (config-codec round-trip + UCI fix — partial M8):** the TOML/UCI codecs and the
 > file/UCI stores were already built (B6/D4/D6); this slice adds the missing **real-section**
