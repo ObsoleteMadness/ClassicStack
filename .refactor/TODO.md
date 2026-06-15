@@ -650,6 +650,20 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > control front-ends + SPA; and the AFP/SMB **volume** config sections / multi-share UCI named
 > sections (M8a, the `config→[]fs.ShareSpec` mapper).
 
+> **M8 notes (bus log sink — partial M8):** the `log` telemetry-topic SOURCE is in:
+> **`adapter/log/bus`** is a `core/log.Sink` that republishes each log `Record` as a
+> `bus.LogRecord` on `bus.TopicLog`, translating `core/log.Field` → `bus.Field` (typed, no
+> reflection). This is what the control plane's `Subscribe("log")` → SSE/ubus log viewer consumes —
+> the new-ring equivalent of the legacy `pkg/logbuf` broadcaster. It lives in the **adapter ring by
+> design** (§6c: "the bus sink is just one sink — the logger does not depend on the bus"), so
+> `core/log` stays bus-free (verified: `go list -deps ./core/log` carries no `core/bus`) and a CLI /
+> embedded build can log to stderr/UART with no bus linked. Handles the logger's scratch-buffer
+> field aliasing (copies fields into the published event), retunes its threshold live via a
+> `*LevelVar`, and no-ops on a nil bus. Race-tested. **The actual logging CUTOVER** — pointing the
+> live runtime's loggers at this sink + a stderr/file sink, retiring `netlog`/`pkg/logging`/
+> `pkg/logbuf` — is still gated on the M8/M10 compose cutover (can't run while `internal/app` is the
+> live runtime); this slice delivers the sink that cutover will install.
+
 ---
 
 ## How to claim a task
