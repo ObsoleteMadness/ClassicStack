@@ -135,6 +135,59 @@ func TestEffectiveInterface(t *testing.T) {
 	}
 }
 
+// TestEffectiveInterface_ResolvesNamespace proves a port's named interface is
+// resolved against the Interfaces namespace: a port that names a serial interface
+// gets that entry's Kind/Device/Baud, one that names a bridge gets its Members, and
+// a bare undeclared name resolves to a plain nic.
+func TestEffectiveInterface_ResolvesNamespace(t *testing.T) {
+	m := NewModel()
+	m.SetInterface(InterfaceSection{Name: "ttyUSB-attic", Kind: IfaceKindSerial, Device: "/dev/ttyUSB0", Baud: 1000000})
+	m.SetInterface(InterfaceSection{Name: "br-lan", Kind: IfaceKindBridge, Members: []string{"eth0", "eth1"}})
+
+	// Names a serial interface → full serial entry.
+	m.Set(&fooSection{Iface: InterfaceSection{Name: "ttyUSB-attic"}})
+	got := m.EffectiveInterface("Foo")
+	if got.EffectiveKind() != IfaceKindSerial || got.Device != "/dev/ttyUSB0" || got.Baud != 1000000 {
+		t.Fatalf("serial ref should resolve to the namespace entry, got %+v", got)
+	}
+
+	// Names a bridge interface → bridge entry with members.
+	m.Set(&fooSection{Iface: InterfaceSection{Name: "br-lan"}})
+	got = m.EffectiveInterface("Foo")
+	if got.EffectiveKind() != IfaceKindBridge || len(got.Members) != 2 {
+		t.Fatalf("bridge ref should resolve to the namespace entry, got %+v", got)
+	}
+
+	// A bare, undeclared name is a plain nic (no [[Interface]] block required).
+	m.Set(&fooSection{Iface: InterfaceSection{Name: "eth9"}})
+	got = m.EffectiveInterface("Foo")
+	if got.Name != "eth9" || got.EffectiveKind() != IfaceKindNIC {
+		t.Fatalf("undeclared name should resolve to a nic, got %+v", got)
+	}
+}
+
+// TestInterfaceNamespaceAccessors covers Set/Interface/Clone of the namespace.
+func TestInterfaceNamespaceAccessors(t *testing.T) {
+	m := NewModel()
+	m.SetInterface(InterfaceSection{Name: "br-lan", Kind: IfaceKindBridge, Members: []string{"eth0"}})
+	m.SetInterface(InterfaceSection{}) // empty name is ignored
+	if _, ok := m.Interface(""); ok {
+		t.Fatal("empty-name interface should not be stored")
+	}
+	got, ok := m.Interface("br-lan")
+	if !ok || len(got.Members) != 1 {
+		t.Fatalf("Interface(br-lan) = %+v, %v", got, ok)
+	}
+
+	// Clone must deep-copy Members so a mutation does not leak across the clone.
+	c := m.Clone()
+	got.Members[0] = "MUTATED"
+	cl, _ := c.Interface("br-lan")
+	if cl.Members[0] == "MUTATED" {
+		t.Fatal("Clone shares the Members slice with the original")
+	}
+}
+
 func TestValidate(t *testing.T) {
 	if err := (&barSection{Count: -1}).Validate(); err == nil {
 		t.Fatal("expected validation error for negative count")

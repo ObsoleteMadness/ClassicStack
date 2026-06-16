@@ -76,7 +76,7 @@ func (c *Codec) Unmarshal(data []byte, m *config.Model) error {
 	m.AdminAuth = wk.AdminAuth
 	m.Logging = wk.Logging
 	m.Router = wk.Router
-	m.Bridge = wk.Bridge
+	m.Bridge = normalizeIface(wk.Bridge)
 
 	// Decode the raw document so we can re-marshal each component sub-table and
 	// feed it into its typed section (allocated from the schema registry).
@@ -113,6 +113,17 @@ func (c *Codec) Unmarshal(data []byte, m *config.Model) error {
 		m.Sections[schema.Key] = sec
 	}
 	return nil
+}
+
+// normalizeIface canonicalises a decoded InterfaceSection so a round-trip is
+// value-equal to the source: gotoml decodes an absent/empty list as a non-nil
+// empty slice, which would differ from a source nil. Collapse an empty Members
+// back to nil.
+func normalizeIface(s config.InterfaceSection) config.InterfaceSection {
+	if len(s.Members) == 0 {
+		s.Members = nil
+	}
+	return s
 }
 
 // unmarshalRepeated decodes a repeated schema's array-of-tables (keyed by the

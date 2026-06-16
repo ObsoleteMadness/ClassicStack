@@ -122,7 +122,7 @@ func TestRoundTrip(t *testing.T) {
 	if got.Router != m.Router {
 		t.Errorf("Router: got %+v want %+v", got.Router, m.Router)
 	}
-	if got.Bridge != m.Bridge {
+	if !reflect.DeepEqual(got.Bridge, m.Bridge) {
 		t.Errorf("Bridge: got %+v want %+v", got.Bridge, m.Bridge)
 	}
 	for _, key := range []string{"Alpha", "Beta"} {

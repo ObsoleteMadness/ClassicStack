@@ -268,6 +268,19 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > byte framers). Build order: config layer → opener dispatch → registry one-factory→N → router
 > membership → (then) IPX/NetBEUI device-link injection on the new shape. Decisions D1–D9 in the
 > design doc.
+>
+> **M11.1 (landed — interface namespace, config layer):** `core/config` now has the named interface
+> namespace. `InterfaceSection` gains `Kind` (`nic`/`serial`/`bridge`, `EffectiveKind()` defaults ""→nic)
+> + the per-kind superset fields (serial `Device`/`Baud`, bridge `Members`) + a `Clone()` (it is no
+> longer `==`-comparable, so the codec round-trip tests moved to `reflect.DeepEqual` and the TOML codec
+> normalises an empty `Members` back to nil). `Model.Interfaces map[string]InterfaceSection` is the
+> namespace with `SetInterface`/`Interface` accessors and deep-Clone. `EffectiveInterface` now resolves
+> the port's named ref through `ResolveInterface`: a namespace entry of that name wins (carrying its
+> kind/params), a bare undeclared name is a plain nic, and the single `Model.Bridge` remains the
+> inherited DEFAULT (back-compat). Tests: namespace resolution (serial/bridge/bare-nic), accessor +
+> deep-clone. NEXT in M11: (a) codec round-trip for the `[[Interface]]` blocks themselves; (b) port
+> sections → `NamedSection` instances in `Model.Lists`; (c) opener dispatch by interface kind; (d)
+> registry one-factory→N; (e) `[Router].members`.
 
 > **M1 notes (what landed / deferred):**
 > - **Landed:** real `core/link` decorators (`Filter`/`Dedup`/`Bridge`+`BridgeWiFi`, ported

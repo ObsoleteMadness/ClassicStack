@@ -20,8 +20,13 @@ type Model struct {
 	Logging   LoggingSection
 	Router    RouterSection
 	Bridge    InterfaceSection
-	Sections  map[string]Section   // registered singleton component sections
-	Lists     map[string][]Section // registered repeated (named-instance) sections
+	// Interfaces is the named interface namespace (§M11): NIC / serial / bridge
+	// entries a port references by name. A bridge is just one entry here, which
+	// generalises the single Bridge field — Bridge remains the DEFAULT interface a
+	// port inherits when it names none (back-compat during the M11 transition).
+	Interfaces map[string]InterfaceSection
+	Sections   map[string]Section   // registered singleton component sections
+	Lists      map[string][]Section // registered repeated (named-instance) sections
 }
 
 // NewModel returns an empty model with initialised Sections / Lists maps.
@@ -40,9 +45,15 @@ func (m *Model) Clone() *Model {
 		AdminAuth: m.AdminAuth.Clone(),
 		Logging:   m.Logging,
 		Router:    m.Router,
-		Bridge:    m.Bridge,
+		Bridge:    m.Bridge.Clone(),
 		Sections:  make(map[string]Section, len(m.Sections)),
 		Lists:     make(map[string][]Section, len(m.Lists)),
+	}
+	if m.Interfaces != nil {
+		c.Interfaces = make(map[string]InterfaceSection, len(m.Interfaces))
+		for k, iface := range m.Interfaces {
+			c.Interfaces[k] = iface.Clone()
+		}
 	}
 	for k, s := range m.Sections {
 		c.Sections[k] = s.Clone()
@@ -290,22 +301,65 @@ func (m *Model) RemoveInstance(key, name string) bool {
 	return false
 }
 
-// EffectiveInterface resolves a component's interface, folding bridge inheritance +
-// per-section override (§4/§9d) — a PURE function, re-runnable on every reconfigure.
+// EffectiveInterface resolves a component's interface, folding the named interface
+// namespace + per-section override + bridge inheritance (§4/§9d, §M11) — a PURE
+// function, re-runnable on every reconfigure.
 //
-// Resolution: start from the global Bridge interface; if the named section carries an
-// InterfaceProvider override with a non-empty Name, that override wins (per-section override
-// beats bridge inheritance).
+// Resolution order:
+//  1. If the section carries an InterfaceProvider override with a non-empty Name,
+//     that name is the reference; otherwise the section inherits — fall through to
+//     the default Bridge interface.
+//  2. The reference name is looked up in the Interfaces NAMESPACE: a matching entry
+//     (with its Kind/params) wins, so a port that names "ttyUSB-attic" gets the
+//     serial interface's device/baud, and one that names "br-lan" gets the bridge.
+//  3. A name with no namespace entry resolves to a bare nic-kind InterfaceSection of
+//     that name (a plain "eth0" needs no [[Interface]] block — back-compat).
 func (m *Model) EffectiveInterface(sectionKey string) InterfaceSection {
-	eff := m.Bridge
+	ref := m.Bridge
 	if s, ok := m.Sections[sectionKey]; ok {
 		if ip, ok := s.(InterfaceProvider); ok {
 			if ov := ip.Interface(); ov.Name != "" {
-				return ov
+				ref = ov
 			}
 		}
 	}
-	return eff
+	return m.ResolveInterface(ref)
+}
+
+// ResolveInterface resolves a partial interface reference (typically just a Name)
+// against the Interfaces namespace: a registered entry of that name wins (returning
+// its full Kind/params), otherwise the reference is returned as-is (a bare,
+// un-declared name is a plain nic). A reference with no Name is returned unchanged.
+func (m *Model) ResolveInterface(ref InterfaceSection) InterfaceSection {
+	if ref.Name == "" {
+		return ref
+	}
+	if m.Interfaces != nil {
+		if got, ok := m.Interfaces[ref.Name]; ok {
+			return got
+		}
+	}
+	return ref
+}
+
+// Interface returns the named namespace entry, if present.
+func (m *Model) Interface(name string) (InterfaceSection, bool) {
+	if m.Interfaces == nil {
+		return InterfaceSection{}, false
+	}
+	got, ok := m.Interfaces[name]
+	return got, ok
+}
+
+// SetInterface adds or replaces a namespace entry under its Name.
+func (m *Model) SetInterface(s InterfaceSection) {
+	if s.Name == "" {
+		return
+	}
+	if m.Interfaces == nil {
+		m.Interfaces = make(map[string]InterfaceSection)
+	}
+	m.Interfaces[s.Name] = s
 }
 
 // --- Well-known section value types (typed fields on Model for ergonomics). ---
@@ -320,10 +374,50 @@ type RouterSection struct {
 	DefaultZone string
 }
 
-// InterfaceSection names a network interface a component (or the bridge) binds to.
+// Interface kinds (Model.Interfaces / InterfaceSection.Kind). A port references an
+// interface by name; the interface's KIND — not the port type — selects which link
+// opener the compose layer uses (pcap for nic, adapter/serial for serial, the bridge
+// decorator for bridge). An empty Kind on a NIC is the historical default and is
+// treated as IfaceKindNIC.
+const (
+	IfaceKindNIC    = "nic"    // a network interface (eth0); opened via pcap/rawsock/tap
+	IfaceKindSerial = "serial" // a UART/serial device (COM3, /dev/ttyUSB0); opened via adapter/serial
+	IfaceKindBridge = "bridge" // a virtual interface aggregating member NICs (the shared Bridge)
+)
+
+// InterfaceSection names an interface a component binds to. It is a SUPERSET across
+// kinds (the same "placeholder accepts anything" stance the port Section takes): a
+// nic reads Name/Addr, a serial reads Device/Baud, a bridge reads Members; each
+// ignores the fields that do not apply to its Kind.
 type InterfaceSection struct {
-	Name string // "eth0", "br-lan", "" = unset
-	Addr string // optional pinned address
+	Name string // namespace key the interface is referenced by ("eth0", "br-lan", "ttyUSB-attic"); "" = unset
+	Kind string // "" / "nic" / "serial" / "bridge" (see IfaceKind*); "" == nic
+	Addr string // nic: optional pinned address
+
+	// Serial-kind parameters.
+	Device string // serial: OS device path ("COM3", "/dev/ttyUSB0")
+	Baud   int    // serial: line speed (0 → adapter default)
+
+	// Bridge-kind parameters.
+	Members []string // bridge: the member interface names it aggregates
+}
+
+// EffectiveKind returns the interface's kind, defaulting an empty Kind to nic (the
+// historical meaning of a bare interface name).
+func (s InterfaceSection) EffectiveKind() string {
+	if s.Kind == "" {
+		return IfaceKindNIC
+	}
+	return s.Kind
+}
+
+// Clone returns a deep copy (Members is the only reference-typed field).
+func (s InterfaceSection) Clone() InterfaceSection {
+	cp := s
+	if s.Members != nil {
+		cp.Members = append([]string(nil), s.Members...)
+	}
+	return cp
 }
 
 // InterfaceProvider is the optional capability a component Section implements when it can
