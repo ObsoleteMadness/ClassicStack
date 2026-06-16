@@ -120,6 +120,24 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 
 **Phase 2 DoD:** see exit criteria in [02-PHASE-migration.md](02-PHASE-migration.md).
 
+> **Compose runtime root (landed — shared foundation for M9/M-ng/M10):** the single
+> assembly the interactive binary, the Windows service wrapper, and the Unix daemon
+> will all share, re-expressing the D5 skeleton main's inline loop as a reusable
+> `compose/runtime` package. `runtime.Load(store, codec)` builds a `config.Model`
+> (missing file → defaults; present → codec-decoded), `runtime.Build(Options{Model,
+> Telemetry})` constructs every registered non-stub component, registers each with the
+> supervisor under filtered hard-dependency edges (an edge whose target isn't built is
+> dropped, so a minimal build doesn't fail the topo sort), and returns a `Runtime`
+> exposing `Start`/`Stop`/`Supervisor()`/`Model()`/`Built()`. Store+Codec are
+> **injected** (not chosen by the root) so a TOML/file, UCI/ubus, or in-mem build picks
+> its own adapters at the cmd edge; the component set is behind an unexported
+> `componentSource` seam so tests inject a fake instead of polluting the global
+> registry. `cmd/classicstack-ng` now boots through it (smoke-verified: builds
+> `[AFP MacIP NetBIOS Router SMB]`, starts Router-before-AFP, all running). **NOT yet:**
+> real device-link injection (ports still inert — M10), TOML-load wired into the ng main
+> (M10), flag parsing, svc/daemon consumers (M9). The data-path cross-wiring hook
+> (service↔router, transport↔service) lives here when M-ng lands.
+
 > **M1 notes (what landed / deferred):**
 > - **Landed:** real `core/link` decorators (`Filter`/`Dedup`/`Bridge`+`BridgeWiFi`, ported
 >   from `port/rawlink/bridge_link.go`, stdlib-only/reflection-free, archtest-clean);
