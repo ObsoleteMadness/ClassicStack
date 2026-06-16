@@ -63,6 +63,8 @@ Each subsystem follows the same **strangler recipe**:
 - **Source:** `port/ethertalk`, `port/localtalk/*`, `port/ipx`, `port/netbeui`.
 - **Done when:** a port comes up over a real link, claims its address, meters throughput to
   the telemetry bus, and survives Stop→Start and Reconfigure.
+- **Note:** M3 builds ports as singletons; the singleton→**named repeated instance** + interface
+  namespace generalisation is M11.
 
 ## M4. Router + tables
 - **Migrate:** AppleTalk router, RoutingTable (with the event-driven membership: Attach/Detach
@@ -71,6 +73,8 @@ Each subsystem follows the same **strangler recipe**:
 - **Source:** `router/*`.
 - **Done when:** routed ports attach/detach cleanly; aging works; ZIP/RTMP answer; the
   routing-table snapshot tests pass against the new router.
+- **Note:** explicit membership-by-name (`[Router].members`, per router type; unlisted enabled
+  instances run standalone) lands with the named-instance config in M11.
 
 ## M5. DDP services
 - **Migrate:** MacIP gateway, IPXGW, AEP/NBP — as real `core/service` components riding the
@@ -260,6 +264,28 @@ Each subsystem follows the same **strangler recipe**:
 - **Done when:** one binary, new architecture, full test suite + capture-replay green;
   `internal/app` is gone; line count is **down**.
 
+## M11. Named port instances + interface namespace
+Full design: [03-DESIGN-named-ports-and-interfaces.md](03-DESIGN-named-ports-and-interfaces.md).
+M3–M10 build ports as **singletons** (one `[EtherTalk]`/`[LToUDP]`/`[TashTalk]`/`[IPX]` per key);
+M11 generalises them to **named, repeated instances** bound to a **named interface namespace**.
+Implement bottom-up so each layer rests on the new config shape:
+- **Config layer first:** port sections become `NamedSection` (gain `name`, move to `Model.Lists`);
+  add the `[[Interface]]` namespace (kinds `nic`/`serial`/`bridge`) and fold the single
+  `Model.Bridge` into it (`EffectiveInterface` resolves by name); add `[Router].members`
+  (per router type; empty = none join, opt-in). TOML/UCI round-trip via the existing
+  array-of-tables / repeated-block machinery.
+- **Opener dispatch:** interface-kind → opener table (pcap / `adapter/serial` / rawsock); the
+  shared `adapter/serial` opener lands here and tashtalk/ppp/slip reduce to byte-stream framers.
+- **Registry/supervisor:** one factory → **N components**, one per instance, addressed by
+  instance name; the supervisor enumerates `Model.Lists[key]`.
+- **Router membership:** Attach/Detach driven only for instances named in `[Router].members`
+  (builds on the event-driven membership from M4/§3).
+- **Do the IPX/NetBEUI device-link injection here**, against the named-instance shape, not the
+  singleton one.
+- **Done when:** several EtherTalk/TashTalk/IPX instances run at once on distinct interfaces,
+  each its own segment; `[Router].members` controls attachment; standalone (unlisted) instances
+  receive but don't route; TOML/UCI round-trip; conformance harness exercises multi-instance.
+
 ## Client tools (any time after M2)
 - **Add:** `cmd/csecho` (AEP over a link, §12) and `cmd/csnetsend` (NetBIOS) as proofs of the
   protocol-reuse claim — each links core + one adapter only (small binary).
@@ -275,3 +301,5 @@ Each subsystem follows the same **strangler recipe**:
 - [ ] TinyGo build of a minimal embedded target links and runs; sqlite-free build works.
 - [ ] Per-protocol security notes present (Verification #9); intentional-weakness paths annotated.
 - [ ] Net lines of code reduced vs. the pre-refactor tree.
+- [ ] (M11) Ports are named repeated instances over a named interface namespace; `[Router].members`
+      governs attachment; multiple instances per transport run at once on distinct interfaces.

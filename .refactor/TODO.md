@@ -249,10 +249,25 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > (EtherTalk pcap, LToUDP multicast, TashTalk serial) can move real frames from config.
 >
 > **NEXT (slice B follow-ons):**
-> (2) IPX/NetBEUI device-link injection (their factories take a pre-resolved `[6]byte` MAC from
-> config now, but still no FrameLink); (3) transport↔service cross-wire seams (SMB-over-NetBIOS via
-> SessionConsumer/DatagramConsumer, IPXGW SetIPXRouter); (4) flag parsing + retiring `internal/app`
-> + the logging cutover (rest of M10).
+> (3) transport↔service cross-wire seams (SMB-over-NetBIOS via SessionConsumer/DatagramConsumer,
+> IPXGW SetIPXRouter); (4) flag parsing + retiring `internal/app` + the logging cutover (rest of
+> M10).
+> NOTE: the **IPX/NetBEUI device-link injection** (was follow-on (2)) is REASSIGNED to M11 — do it
+> against the named-instance shape, not the current singleton, so we don't build something we
+> immediately re-shape. See the M11 entry below.
+>
+> **M11 — named port instances + interface namespace (design agreed, NOT started):** full design in
+> [03-DESIGN-named-ports-and-interfaces.md](03-DESIGN-named-ports-and-interfaces.md); phase entry in
+> [02-PHASE-migration.md](02-PHASE-migration.md) §M11. Ports (EtherTalk/LToUDP/TashTalk/IPX) become
+> **named repeated instances** (`config.NamedSection` + `Model.Lists`) bound to a **named interface
+> namespace** (kinds `nic`/`serial`/`bridge`; a serial port is an interface too; a bridge is one
+> named interface — generalises `Model.Bridge`). Router membership is **explicit by instance name**
+> via `[Router].members` (per router type; empty = none join, opt-in; unlisted enabled instances run
+> standalone). `core/link.FrameLink` + the `LinkOpener` seam are UNCHANGED — only dispatch generalises
+> to an **interface-kind → opener** table (shared `adapter/serial` opener; tashtalk/ppp/slip become
+> byte framers). Build order: config layer → opener dispatch → registry one-factory→N → router
+> membership → (then) IPX/NetBEUI device-link injection on the new shape. Decisions D1–D9 in the
+> design doc.
 
 > **M1 notes (what landed / deferred):**
 > - **Landed:** real `core/link` decorators (`Filter`/`Dedup`/`Bridge`+`BridgeWiFi`, ported

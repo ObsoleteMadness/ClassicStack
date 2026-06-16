@@ -265,6 +265,17 @@ in core changes. PPP/SLIP, pcap, and TAP differ only in which `FrameLink` adapte
 bottom of the `→ framing → DatagramLink` chain — no port or service rewrite, per the charter's
 adaptable pillar.
 
+**The interface a port binds to is itself a first-class, named entity** — and a
+**serial port is an interface too, just not a network one.** See
+[03-DESIGN-named-ports-and-interfaces.md](03-DESIGN-named-ports-and-interfaces.md):
+interfaces form a **named namespace** (NIC / serial / bridge), a port references
+one **by name**, and the interface's *kind* (not the port type) selects which
+`FrameLink` opener is used (pcap / `adapter/serial` / rawsock / …). The
+`FrameLink` interface and the injected `LinkOpener` seam are unchanged — only the
+*dispatch* generalises to an interface-kind → opener table, and the per-protocol
+serial framers (tashtalk/ppp/slip) sit over one shared `adapter/serial` byte
+opener.
+
 ---
 
 ## 3. Unified component model (ports AND services AND protocols-as-transports)
@@ -489,6 +500,15 @@ directly-connected routes live and die with port membership — no aging delay. 
 supervisor drives Attach/Detach as ports start/stop, which is close to today's
 `routerHook` adopt/detach but expressed as one explicit contract instead of three.
 
+**Who attaches is explicit, by name.** A port is not auto-joined because it is
+enabled — membership is declared. See
+[03-DESIGN-named-ports-and-interfaces.md](03-DESIGN-named-ports-and-interfaces.md):
+ports are **named, repeated instances** bound to a **named interface** (NIC,
+serial, or bridge), and the router's **`[Router].members`** list names the
+instances that join it (per router type — AppleTalk / IPX / NetBEUI). An enabled
+instance not listed runs standalone; an empty list joins none (opt-in). The
+supervisor still drives Attach/Detach, but only for the named members.
+
 ---
 
 ## 4. Configuration — model is pure, formats are adapters
@@ -671,6 +691,16 @@ codec knowing it exists. This kills the `appConfig` ↔ `Model` double-conversio
 **Eliminate `appConfig`.** Components consume their own typed section straight from the
 model at wiring time. The `resolveProtocolInterface` / bridge-inheritance logic becomes a
 small pure helper on the model (`(*Model).EffectiveInterface(section)`), not a glue layer.
+
+**Ports are repeated, named instances, not singletons.** The transport sections
+(`EtherTalk`/`LToUDP`/`TashTalk`/`IPX`) graduate from one-per-key singletons in
+`Model.Sections` to **repeated named-instance sections** in `Model.Lists` — the
+same `NamedSection` machinery AFP volumes / SMB shares already use — and the
+single `Model.Bridge` generalises into a **named interface namespace** a port
+references by name. `EffectiveInterface` resolves against that namespace.
+[03-DESIGN-named-ports-and-interfaces.md](03-DESIGN-named-ports-and-interfaces.md)
+is the full treatment (schema, interface kinds, one-factory→N-instances, and the
+explicit `[Router].members`).
 
 ---
 
