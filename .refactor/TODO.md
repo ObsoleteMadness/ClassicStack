@@ -195,14 +195,32 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > stamping the LLAP SOURCE node outbound, and supplying the network to reconstruct an inbound
 > SHORT-header datagram (whose header omits it). A test asserts the header choice tracks the
 > datagram, not the port's claimed net.
-> **STILL inert at the factory:** LocalTalk is NOT NIC-bound (LToUDP multicast / serial, not the
-> pcap opener), so there's no FrameLink to frame yet — the LToUDP + TashTalk-serial FrameLink
-> adapters are the next piece, and that slice wires `framing.LocalTalk{Addr: <the port>}` + the
-> transport opener into the factory.
+> **LToUDP FrameLink (landed — slice B follow-on (1b), LToUDP half):** `adapter/link/ltoudp` is the
+> LToUDP `core/link.FrameLink`: LocalTalk frames tunnelled over IPv4 multicast 239.192.76.84:1954.
+> The 4-byte per-process sender ID is the ADAPTER's concern — prepended on `Write`, stripped on
+> `Read`, and own-echo frames are dropped inside `Read` (loopback is on so we receive our own
+> sends) — so the LLAP framer above sees only clean peer LLAP frames. Ported the legacy socket setup
+> (SO_REUSEADDR via an OS-split `setSockOptReuseAddr`, TTL 1, loopback on, fat buffers, join-on-any
+> when no iface) onto the FrameLink seam; `Read` uses a read deadline → `link.ErrTimeout` so the
+> runport loop can poll Stop. It's a pure-Go adapter (net + x/net/ipv4, no cgo), so it sits OUTSIDE
+> the cs-tinygo gate (like pcap) but needs no `pcap` tag — a tag-free build can run LocalTalk.
+> **Wired live:** the localtalk factory now builds `framing.LocalTalk{Addr: live}` where `live` is a
+> new `framing.LiveAddr` (late-bound, concurrency-safe) Set to the constructed port (the port's
+> runport `Network()/Node()` IS the framer's `Addr` shape), and opens the LToUDP transport via a
+> swappable `ltoudpOpen` seam per Start (survives Stop→Start). LocalTalk deliberately does NOT
+> consult the shared Bridge or `ctx.Opener` for its link — it opens LToUDP directly; `ctx.Opener` is
+> read only as the "device backends enabled" switch (nil → inert, honouring the conformance/
+> graceful-degradation contract). The Section's `Iface` for LToUDP is the local IPv4 ADDRESS to
+> bind/join on, not a NIC name. Tests: factory go-live / ignores-bridge / nil-opener-inert /
+> reopen-on-restart, plus adapter round-trip + own-echo-drop + closed-terminal (graceful skip when
+> no multicast NIC), plus `LiveAddr` unit test.
 >
-> **NEXT (slice B follow-ons):** (1b) **LToUDP + serial FrameLink** adapters (`adapter/link/ltoudp`
-> over UDP multicast 239.192.76.84:1954 with the 4-byte sender-ID dedup; `adapter/link/tashtalk`
-> over serial) + wire `framing.LocalTalk` into the localtalk factory to bring LocalTalk live;
+> **STILL inert at the factory:** the SERIAL half — `adapter/link/tashtalk` over a serial line — is
+> the remaining LocalTalk transport; the framer + LiveAddr seam it needs already exist (LToUDP
+> proved them), so it's a transport-opener swap.
+>
+> **NEXT (slice B follow-ons):** (1c) **TashTalk-serial FrameLink** (`adapter/link/tashtalk` over
+> serial at 1 Mbit/s) reusing the LLAP framer + LiveAddr seam, wired as a second localtalk transport;
 > (2) IPX/NetBEUI device-link injection (their factories take a pre-resolved `[6]byte` MAC from
 > config now, but still no FrameLink); (3) transport↔service cross-wire seams (SMB-over-NetBIOS via
 > SessionConsumer/DatagramConsumer, IPXGW SetIPXRouter); (4) flag parsing + retiring `internal/app`

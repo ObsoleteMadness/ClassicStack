@@ -161,6 +161,35 @@ func TestLocalTalk_ShortFrameRejected(t *testing.T) {
 	}
 }
 
+// TestLiveAddr proves the late-bound LiveAddr reports the unclaimed state until
+// Set, then tracks its source — the seam the compose factory uses to point the
+// framer at the port after the port is constructed.
+func TestLiveAddr(t *testing.T) {
+	var live LiveAddr
+	if live.Network() != 0 || live.Node() != 0 {
+		t.Fatalf("unbound LiveAddr = net %d node %d, want 0/0", live.Network(), live.Node())
+	}
+	live.Set(NewStaticAddr(0x00CC, 0x42))
+	if live.Network() != 0x00CC || live.Node() != 0x42 {
+		t.Fatalf("bound LiveAddr = net 0x%X node 0x%X, want 0x00CC/0x42", live.Network(), live.Node())
+	}
+	// A framer built around the LiveAddr stamps the bound node on outbound frames.
+	framer := &LocalTalk{Addr: &live}
+	dl := framer.mustLink(t)
+	frame, err := dl.encode(ddp.Datagram{DestNetwork: 9, SrcNetwork: 9, DestNode: 0x10, DestSocket: 1, SrcSocket: 1, DDPType: 1})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if frame[1] != 0x42 {
+		t.Fatalf("LLAP src node = 0x%02X, want bound 0x42", frame[1])
+	}
+	// Reverting to nil source returns to unclaimed.
+	live.Set(nil)
+	if live.Node() != 0 {
+		t.Fatalf("LiveAddr after Set(nil) node = 0x%X, want 0", live.Node())
+	}
+}
+
 // mustLink builds the datagram link over a throwaway loopback for encode/decode
 // unit tests that don't drive the FrameLink.
 func (e *LocalTalk) mustLink(t *testing.T) *ltDatagramLink {

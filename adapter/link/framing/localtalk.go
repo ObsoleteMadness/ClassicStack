@@ -2,6 +2,7 @@ package framing
 
 import (
 	"errors"
+	"sync"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/ddp"
@@ -93,6 +94,48 @@ func (s staticAddr) Node() uint8     { return s.node }
 
 // NewStaticAddr returns an Addr reporting a fixed network/node.
 func NewStaticAddr(network uint16, node uint8) Addr { return staticAddr{net: network, node: node} }
+
+// LiveAddr is a late-bound, concurrency-safe Addr: the framer needs an Addr at
+// construction, but the live source (the LocalTalk port) only exists after the
+// port is built — and its claimed node/network change over the port's life as
+// node-claim completes. The compose factory builds the framer with a LiveAddr,
+// constructs the port, then Set()s the port as the source. A LiveAddr with no
+// source reports the unclaimed state (network 0, node 0), so a framer is safe to
+// use before Set. Reads (Network/Node) run on the port read/write goroutines
+// while Set runs once at wiring time, so the source pointer is guarded.
+type LiveAddr struct {
+	mu  sync.RWMutex
+	src Addr
+}
+
+// Set binds the live source. A nil src reverts to the unclaimed state.
+func (a *LiveAddr) Set(src Addr) {
+	a.mu.Lock()
+	a.src = src
+	a.mu.Unlock()
+}
+
+// Network reports the source's network, or 0 when unbound.
+func (a *LiveAddr) Network() uint16 {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.src == nil {
+		return 0
+	}
+	return a.src.Network()
+}
+
+// Node reports the source's node, or 0 when unbound.
+func (a *LiveAddr) Node() uint8 {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.src == nil {
+		return 0
+	}
+	return a.src.Node()
+}
+
+var _ Addr = (*LiveAddr)(nil)
 
 // Framing wraps a FrameLink as a DatagramLink doing LLAP DDP framing. It
 // satisfies link.Framer.
