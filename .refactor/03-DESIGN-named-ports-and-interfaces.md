@@ -169,17 +169,51 @@ time:
 The AFP-volume / SMB-share path already solved "N instances from one schema key"
 at the *service* level; this applies the same pattern to *ports*.
 
-### 3d. Router membership by instance name, per router type
+### 3d. Router membership is EXPLICIT, by instance name
 
-Each port instance joins a router. Which one is a property of the port type:
+Which router a port *can* join is a property of the port type:
 
 - EtherTalk / LToUDP / TashTalk → the **AppleTalk router**.
 - IPX → the **IPX router** (mini-router).
 - NetBEUI → the **NetBEUI mini-router**.
 
-Membership is by the instance's name. The existing router-port wiring (generic
-today) keys on the component name, so multiple named instances slot in without the
-router learning about transports.
+But *whether* an enabled instance joins is **declared explicitly, by name** — it is
+NOT inferred from "the port is enabled." The AppleTalk router section carries a
+**`members`** list naming the port instances that join it:
+
+```toml
+[[EtherTalk]]
+name = "et-lab"
+iface = "eth0"
+[[TashTalk]]
+name = "tt-attic"
+iface = "ttyUSB-attic"
+
+[Router]
+members = ["et-lab", "tt-attic"]   # these join the AppleTalk router
+default_zone = "Lab"
+```
+
+Semantics (decided):
+
+- **An enabled instance NOT in `members` runs standalone** — it comes up and
+  receives/sends on its own segment, but is not part of the router: no RTMP/ZIP
+  participation, no inter-port forwarding. (The legacy `[Router].ports` had this
+  standalone notion; we keep it but key it on instance names.)
+- **Empty / unspecified `members` means NONE join** — membership is opt-IN, not
+  opt-out. This deliberately DIVERGES from the legacy default ("empty = bind every
+  enabled transport"). The greenfield stance is explicit-over-implicit: a config
+  must name its router members, so what the router does is never a surprise
+  inferred from which ports happen to be enabled. The cost — a fresh config gets
+  no routing until `members` is populated — is accepted; tooling/first-run setup
+  should seed `members` with the enabled instances rather than relying on a
+  defaulted "all".
+- The same shape applies per router type (the IPX router gets its own
+  `members`-style list); a port's type still constrains which router's list it may
+  legally appear in.
+
+The existing router-port wiring already keys on the component name, so naming
+instances in `members` slots them in without the router learning about transports.
 
 ## 4. Migration / compatibility
 
@@ -190,6 +224,11 @@ router learning about transports.
 - A singleton with no `name` can default its instance name to the schema key
   (`EtherTalk` → instance `"EtherTalk"`), so a minimal config still works and the
   conformance harness keeps a deterministic name.
+- **Router-membership default flips** vs legacy: legacy empty `[Router].ports`
+  meant "bind every enabled transport"; the new empty `members` means "none join"
+  (D9). A migrated config that relied on the old default must list its members
+  explicitly. First-run/setup tooling should populate `members` from the enabled
+  instances so a fresh install still routes.
 
 ## 5. Decisions captured
 
@@ -202,6 +241,8 @@ router learning about transports.
 | D5 | Interface **kind is explicit** (`nic`/`serial`/`bridge`) | Port type no longer implies one medium; the interface drives opener selection; future-proof. |
 | D6 | `FrameLink` and the `LinkOpener` seam are **unchanged**; opener selection moves to an **interface-kind → opener** table | The abstraction is already correct; only the dispatch generalises. |
 | D7 | Serial becomes an **interface kind** with a shared `adapter/serial` opener; tashtalk/ppp/slip are framers over the byte stream | Removes per-adapter `serial.Open` duplication; the right home for the UART split. |
+| D8 | Router membership is **explicit by instance name** via `[Router].members` (per router type); an enabled instance not listed runs standalone | Explicit-over-implicit: the router's behaviour is never inferred from which ports are enabled. |
+| D9 | **Empty `members` = NONE join** (opt-in) | Diverges from legacy "empty = all"; no surprise routing. First-run setup seeds members rather than defaulting to all. |
 
 ## 6. Out of scope (here)
 
