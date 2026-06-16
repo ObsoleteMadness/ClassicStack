@@ -902,6 +902,9 @@ every front-end is an adapter over it. The contract is deliberately shaped as th
 Front-ends are adapters; none imports another:
 
 - `adapter/control/http` — REST + SSE + embedded SPA (desktop browser UI), build-tagged.
+  Gated by the web-admin credential over HTTP Basic auth (first-run setup, then Basic) — see
+  §4-ter. (ubus/in-process front-ends carry no Basic-auth gate: their trust boundaries are the
+  `ubus.sock` unix permissions and in-process call locality, respectively.)
 - `adapter/control/ubus` — OpenWRT: registers a `classicstack` object on **`ubus.sock`**.
 - `adapter/control/cli` / in-process — tools call `Plane` methods directly, no socket at all.
 
