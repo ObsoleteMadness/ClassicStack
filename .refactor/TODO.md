@@ -181,12 +181,32 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > name="en0"` + an iface-less `[EtherTalk]` opens `en0`; unit tests cover inherit-vs-override at
 > both the config layer (`EffectiveInterface`) and the factory layer.
 >
-> **NEXT (slice B follow-ons):** (1) an **LLAP framer** in `adapter/link/framing` so LocalTalk can
-> go live the same way (its factory + schema are wired but it stays inert — only the Ethernet/SNAP
-> framer exists today); (2) IPX/NetBEUI device-link injection (their factories take a pre-resolved
-> `[6]byte` MAC from config now, but still no FrameLink); (3) transport↔service cross-wire seams
-> (SMB-over-NetBIOS via SessionConsumer/DatagramConsumer, IPXGW SetIPXRouter); (4) flag parsing +
-> retiring `internal/app` + the logging cutover (rest of M10).
+>
+> **LLAP framer (landed — slice B follow-on (1)):** `adapter/link/framing.LocalTalk` is the
+> LLAP↔DDP Framer for the LocalTalk transports (per spec/09): a 3-byte LLAP header (dst/src node,
+> type) + a short-header (0x01, intra-network) or long-header (0x02, inter-network) DDP datagram.
+> Short+long encode/decode are real and round-trip-tested; LLAP CONTROL frames (ENQ/ACK node-claim)
+> are skipped on read and node acquisition is DEFERRED (the EtherTalk-AARP analogue). Key design
+> point, per the steer that **this is the AppleTalk router's job too**: the short-vs-long choice is
+> a ROUTING decision the router already made (it set Dest/SrcNetwork when it chose this port via
+> `Route → port.Unicast/Broadcast`), so the framer reads the datagram's own network fields
+> (`DestNetwork == SrcNetwork → short`) and does NOT re-judge against the port's number. The framer
+> takes a small `Addr` (live network/node) for only the two things genuinely not in the datagram:
+> stamping the LLAP SOURCE node outbound, and supplying the network to reconstruct an inbound
+> SHORT-header datagram (whose header omits it). A test asserts the header choice tracks the
+> datagram, not the port's claimed net.
+> **STILL inert at the factory:** LocalTalk is NOT NIC-bound (LToUDP multicast / serial, not the
+> pcap opener), so there's no FrameLink to frame yet — the LToUDP + TashTalk-serial FrameLink
+> adapters are the next piece, and that slice wires `framing.LocalTalk{Addr: <the port>}` + the
+> transport opener into the factory.
+>
+> **NEXT (slice B follow-ons):** (1b) **LToUDP + serial FrameLink** adapters (`adapter/link/ltoudp`
+> over UDP multicast 239.192.76.84:1954 with the 4-byte sender-ID dedup; `adapter/link/tashtalk`
+> over serial) + wire `framing.LocalTalk` into the localtalk factory to bring LocalTalk live;
+> (2) IPX/NetBEUI device-link injection (their factories take a pre-resolved `[6]byte` MAC from
+> config now, but still no FrameLink); (3) transport↔service cross-wire seams (SMB-over-NetBIOS via
+> SessionConsumer/DatagramConsumer, IPXGW SetIPXRouter); (4) flag parsing + retiring `internal/app`
+> + the logging cutover (rest of M10).
 
 > **M1 notes (what landed / deferred):**
 > - **Landed:** real `core/link` decorators (`Filter`/`Dedup`/`Bridge`+`BridgeWiFi`, ported
