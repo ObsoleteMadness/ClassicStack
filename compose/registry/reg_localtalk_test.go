@@ -22,6 +22,15 @@ func swapLtoudpOpen(t *testing.T, fn func(iface string) (link.FrameLink, error))
 	t.Cleanup(func() { ltoudpOpen = prev })
 }
 
+// swapTashtalkOpen replaces the TashTalk serial open seam for the duration of a
+// test, restoring it on cleanup.
+func swapTashtalkOpen(t *testing.T, fn func(dev string) (link.FrameLink, error)) {
+	t.Helper()
+	prev := tashtalkOpen
+	tashtalkOpen = fn
+	t.Cleanup(func() { tashtalkOpen = prev })
+}
+
 func enabledLocalTalkModel(iface string) *config.Model {
 	m := config.NewModel()
 	m.Set(&port.Section{SKey: localtalk.Name, Iface: iface, IsEnabled: true})
@@ -67,6 +76,41 @@ func TestLocalTalkFactory_GoesLiveOnLToUDP(t *testing.T) {
 	}
 	if !fl.closed.Load() {
 		t.Fatal("Stop did not close the opened LToUDP link")
+	}
+}
+
+// TestLocalTalkFactory_SerialTransport proves transport = "serial" dispatches to
+// the TashTalk serial open seam with the section's Iface as the device path —
+// NOT to LToUDP. The LToUDP seam must NOT be touched.
+func TestLocalTalkFactory_SerialTransport(t *testing.T) {
+	var openedDev atomic.Value
+	var ltoudpCalled atomic.Bool
+	swapTashtalkOpen(t, func(dev string) (link.FrameLink, error) {
+		openedDev.Store(dev)
+		return &idleFrameLink{}, nil
+	})
+	swapLtoudpOpen(t, func(string) (link.FrameLink, error) {
+		ltoudpCalled.Store(true)
+		return &idleFrameLink{}, nil
+	})
+
+	m := config.NewModel()
+	m.Set(&port.Section{SKey: localtalk.Name, Iface: "COM3", Transport: port.TransportSerial, IsEnabled: true})
+
+	c, ok, err := Build(localtalk.Name, &BuildContext{Model: m, Opener: anyOpener()})
+	if err != nil || !ok || c == nil {
+		t.Fatalf("Build(LocalTalk serial) = (%v, %v, %v)", c, ok, err)
+	}
+	ctx := context.Background()
+	if err := c.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer c.Stop(ctx)
+	if got := openedDev.Load(); got != "COM3" {
+		t.Fatalf("TashTalk opened device %v, want COM3", got)
+	}
+	if ltoudpCalled.Load() {
+		t.Fatal("LToUDP seam was called for a serial-transport LocalTalk port")
 	}
 }
 

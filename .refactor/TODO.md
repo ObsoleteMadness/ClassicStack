@@ -215,12 +215,30 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > reopen-on-restart, plus adapter round-trip + own-echo-drop + closed-terminal (graceful skip when
 > no multicast NIC), plus `LiveAddr` unit test.
 >
-> **STILL inert at the factory:** the SERIAL half — `adapter/link/tashtalk` over a serial line — is
-> the remaining LocalTalk transport; the framer + LiveAddr seam it needs already exist (LToUDP
-> proved them), so it's a transport-opener swap.
+> **TashTalk-serial FrameLink (landed — slice B follow-on (1c), serial half):** `adapter/link/tashtalk`
+> is the second LocalTalk `core/link.FrameLink`: a LocalTalk segment via TashTalk hardware over USB
+> serial at 1 Mbit/s (spec/08). The host↔device framing — 0x01 start marker, 0x00-escaping (0x00 0xFF
+> = data null, 0x00 0xFD = end-of-frame), and a 2-byte CRC-16/X-25 FCS — is the ADAPTER's concern:
+> `Read` runs the IDLE/IN_FRAME/ESCAPED state machine (state on the frameLink so a frame, or even a
+> lone escape prefix, split across serial reads still reassembles) + FCS check and hands up a clean
+> LLAP frame; `Write` prepends 0x01 + appends the FCS (outbound is NOT escape-encoded per spec). So
+> the SAME LLAP framer + LiveAddr seam drive it, unchanged from LToUDP. Open sends the 1024-null +
+> 0x02 reset init; a Windows-only `normalizeSerialPortName` adds the `\\.\COMn` prefix. Imports
+> `jacobsa/go-serial`, so OUTSIDE the cs-tinygo gate (like pcap/ltoudp). Node-claim (the host pushing
+> the claimed node to the firmware) stays DEFERRED with the core's M3 node-claim, same as LToUDP/AARP.
+> **Transport selection:** a new `Section.Transport` field (`"" | "ltoudp" | "serial"`, validated;
+> default LToUDP) — the user picked an explicit field over inferring from `iface`. The localtalk
+> factory dispatches on it via `localTalkOpener(sec)` (a second swappable `tashtalkOpen` seam next to
+> `ltoudpOpen`); for serial `sec.Iface` is the device path, for LToUDP the IPv4 bind addr. Tests:
+> adapter Write-framing / Read-decode / reassemble-across-chunks / bad-FCS-discarded / short-discarded
+> / closed-terminal / init-sequence (all over an in-memory fake serial, no hardware); factory
+> serial-dispatch (TashTalk seam called, LToUDP not); Section transport-validate; TOML round-trip
+> carries the new field.
 >
-> **NEXT (slice B follow-ons):** (1c) **TashTalk-serial FrameLink** (`adapter/link/tashtalk` over
-> serial at 1 Mbit/s) reusing the LLAP framer + LiveAddr seam, wired as a second localtalk transport;
+> **LocalTalk is now FULLY LIVE** over both transports. With this, every AppleTalk-bearing port
+> (EtherTalk pcap, LocalTalk LToUDP + serial) can move real frames from config.
+>
+> **NEXT (slice B follow-ons):**
 > (2) IPX/NetBEUI device-link injection (their factories take a pre-resolved `[6]byte` MAC from
 > config now, but still no FrameLink); (3) transport↔service cross-wire seams (SMB-over-NetBIOS via
 > SessionConsumer/DatagramConsumer, IPXGW SetIPXRouter); (4) flag parsing + retiring `internal/app`

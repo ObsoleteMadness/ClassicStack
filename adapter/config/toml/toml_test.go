@@ -22,6 +22,7 @@ func TestPortSectionRoundTrip(t *testing.T) {
 	want := &port.Section{
 		SKey: "EtherTalk", Iface: "eth0", IsEnabled: true,
 		MAC: "00:11:22:aa:bb:cc", SeedNetwork: 10, SeedNetworkEnd: 20, SeedZone: "Engineering",
+		Transport: "ltoudp",
 	}
 	m.Set(want)
 

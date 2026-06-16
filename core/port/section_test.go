@@ -80,10 +80,19 @@ func TestSectionValidate(t *testing.T) {
 	if err := (&Section{SeedNetwork: 42}).Validate(); err != nil {
 		t.Fatalf("single seed Validate = %v, want nil", err)
 	}
+	// Transport: "", "ltoudp", "serial" are valid; anything else is rejected.
+	for _, tr := range []string{"", TransportLToUDP, TransportSerial} {
+		if err := (&Section{Transport: tr}).Validate(); err != nil {
+			t.Fatalf("Transport %q Validate = %v, want nil", tr, err)
+		}
+	}
+	if err := (&Section{Transport: "carrier-pigeon"}).Validate(); !errors.Is(err, ErrBadTransport) {
+		t.Fatalf("bad transport Validate = %v, want ErrBadTransport", err)
+	}
 }
 
 func TestSectionCloneCopiesNewFields(t *testing.T) {
-	orig := &Section{SKey: "EtherTalk", Iface: "eth0", IsEnabled: true, MAC: "00:11:22:aa:bb:cc", SeedNetwork: 10, SeedNetworkEnd: 20, SeedZone: "Eng"}
+	orig := &Section{SKey: "EtherTalk", Iface: "eth0", IsEnabled: true, MAC: "00:11:22:aa:bb:cc", SeedNetwork: 10, SeedNetworkEnd: 20, SeedZone: "Eng", Transport: "ltoudp"}
 	cp, ok := orig.Clone().(*Section)
 	if !ok {
 		t.Fatal("Clone did not return *Section")
