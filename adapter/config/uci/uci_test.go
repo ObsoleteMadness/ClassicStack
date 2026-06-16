@@ -57,6 +57,28 @@ func TestUCICodec_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestUCICodec_InterfaceNamespaceRoundTrip proves the named interface namespace
+// survives a UCI `config interface '<name>'` round-trip (nic, serial, bridge).
+func TestUCICodec_InterfaceNamespaceRoundTrip(t *testing.T) {
+	m := config.NewModel()
+	m.SetInterface(config.InterfaceSection{Name: "eth0", Kind: config.IfaceKindNIC, Addr: "10.0.0.2"})
+	m.SetInterface(config.InterfaceSection{Name: "ttyUSB-attic", Kind: config.IfaceKindSerial, Device: "/dev/ttyUSB0", Baud: 1000000})
+	m.SetInterface(config.InterfaceSection{Name: "br-lan", Kind: config.IfaceKindBridge, Members: []string{"eth0", "eth1"}})
+
+	codec := New()
+	data, err := codec.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got config.Model
+	if err := codec.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(got.Interfaces, m.Interfaces) {
+		t.Fatalf("Interfaces round-trip:\n got  %+v\n want %+v", got.Interfaces, m.Interfaces)
+	}
+}
+
 // uciFakeVolume is a repeated (named-instance) section for the UCI repeated-block test.
 type uciFakeVolume struct {
 	VName   string   `toml:"name"`

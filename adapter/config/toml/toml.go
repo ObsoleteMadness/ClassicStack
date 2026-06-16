@@ -8,6 +8,7 @@
 package toml
 
 import (
+	"sort"
 	"strings"
 
 	gotoml "github.com/pelletier/go-toml/v2"
@@ -32,6 +33,10 @@ type wellKnown struct {
 	Logging   config.LoggingSection   `toml:"logging"`
 	Router    config.RouterSection    `toml:"router"`
 	Bridge    config.InterfaceSection `toml:"bridge"`
+	// Interfaces is the [[interface]] array-of-tables: the named interface
+	// namespace (§M11). Marshal builds it separately (sorted) so this field is read
+	// only on Unmarshal.
+	Interfaces []config.InterfaceSection `toml:"interface"`
 }
 
 // Marshal renders the model: the well-known sections under their fixed keys, then
@@ -48,6 +53,20 @@ func (c *Codec) Marshal(m *config.Model) ([]byte, error) {
 	// no empty credential block (and first-run detection stays unambiguous).
 	if m.AdminAuth.Configured() {
 		top["adminauth"] = m.AdminAuth
+	}
+	// The named interface namespace (§M11) renders as an array-of-tables under
+	// [[interface]], one table per entry, sorted by name for deterministic output.
+	if len(m.Interfaces) > 0 {
+		names := make([]string, 0, len(m.Interfaces))
+		for name := range m.Interfaces {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		ifaces := make([]config.InterfaceSection, 0, len(names))
+		for _, name := range names {
+			ifaces = append(ifaces, m.Interfaces[name])
+		}
+		top["interface"] = ifaces
 	}
 	for key, sec := range m.Sections {
 		top[key] = sec
@@ -77,6 +96,9 @@ func (c *Codec) Unmarshal(data []byte, m *config.Model) error {
 	m.Logging = wk.Logging
 	m.Router = wk.Router
 	m.Bridge = normalizeIface(wk.Bridge)
+	for _, iface := range wk.Interfaces {
+		m.SetInterface(normalizeIface(iface))
+	}
 
 	// Decode the raw document so we can re-marshal each component sub-table and
 	// feed it into its typed section (allocated from the schema registry).

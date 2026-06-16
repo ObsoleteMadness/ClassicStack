@@ -138,6 +138,29 @@ func TestRoundTrip(t *testing.T) {
 	}
 }
 
+// TestInterfaceNamespaceRoundTrip proves the named interface namespace survives a
+// TOML [[interface]] array-of-tables round-trip — a nic, a serial, and a bridge
+// entry decode back to the same Interfaces map.
+func TestInterfaceNamespaceRoundTrip(t *testing.T) {
+	m := config.NewModel()
+	m.SetInterface(config.InterfaceSection{Name: "eth0", Kind: config.IfaceKindNIC, Addr: "10.0.0.2"})
+	m.SetInterface(config.InterfaceSection{Name: "ttyUSB-attic", Kind: config.IfaceKindSerial, Device: "/dev/ttyUSB0", Baud: 1000000})
+	m.SetInterface(config.InterfaceSection{Name: "br-lan", Kind: config.IfaceKindBridge, Members: []string{"eth0", "eth1"}})
+
+	c := New()
+	data, err := c.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got config.Model
+	if err := c.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(got.Interfaces, m.Interfaces) {
+		t.Fatalf("Interfaces round-trip:\n got  %+v\n want %+v", got.Interfaces, m.Interfaces)
+	}
+}
+
 func TestRepeatedSectionRoundTrip(t *testing.T) {
 	registerFakeVolumes()
 

@@ -278,9 +278,17 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > the port's named ref through `ResolveInterface`: a namespace entry of that name wins (carrying its
 > kind/params), a bare undeclared name is a plain nic, and the single `Model.Bridge` remains the
 > inherited DEFAULT (back-compat). Tests: namespace resolution (serial/bridge/bare-nic), accessor +
-> deep-clone. NEXT in M11: (a) codec round-trip for the `[[Interface]]` blocks themselves; (b) port
-> sections → `NamedSection` instances in `Model.Lists`; (c) opener dispatch by interface kind; (d)
-> registry one-factory→N; (e) `[Router].members`.
+> deep-clone.
+>
+> **M11.2 (landed — codec round-trip for the namespace):** both codecs now persist `Model.Interfaces`.
+> TOML emits a `[[interface]]` array-of-tables (sorted by name; `wellKnown.Interfaces` decodes it,
+> empty `Members` normalised to nil). UCI emits one `config interface '<name>'` block per entry
+> (sorted), the block name authoritative on read (`iface.Name = sec.Name`); the existing reflective
+> `marshalSection`/`unmarshalStruct` handle Kind/Device/Baud/Members generically (string/int/list), so
+> no per-field codec code. `InterfaceSection` stays tag-free in core (go-toml default lowercasing).
+> Tests: namespace round-trip (nic/serial/bridge) in both TOML and UCI. NEXT in M11: (b) port sections
+> → `NamedSection` instances in `Model.Lists`; (c) opener dispatch by interface kind; (d) registry
+> one-factory→N; (e) `[Router].members`.
 
 > **M1 notes (what landed / deferred):**
 > - **Landed:** real `core/link` decorators (`Filter`/`Dedup`/`Bridge`+`BridgeWiFi`, ported

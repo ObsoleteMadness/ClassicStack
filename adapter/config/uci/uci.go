@@ -58,6 +58,19 @@ func (c *Codec) Marshal(m *config.Model) ([]byte, error) {
 		return nil, err
 	}
 
+	// Marshal the named interface namespace (§M11): one `config interface '<name>'`
+	// block per entry, sorted by name for deterministic output.
+	ifaceNames := make([]string, 0, len(m.Interfaces))
+	for name := range m.Interfaces {
+		ifaceNames = append(ifaceNames, name)
+	}
+	sortStrings(ifaceNames)
+	for _, name := range ifaceNames {
+		if err := c.marshalSection(&buf, "interface", name, m.Interfaces[name]); err != nil {
+			return nil, err
+		}
+	}
+
 	// Sort component keys for deterministic marshalling
 	keys := make([]string, 0, len(m.Sections))
 	for k := range m.Sections {
@@ -202,6 +215,15 @@ func (c *Codec) Unmarshal(data []byte, m *config.Model) error {
 			if err := unmarshalStruct(sec, &m.Bridge); err != nil {
 				return err
 			}
+		case "interface":
+			// One named interface-namespace entry (§M11). The UCI block name is the
+			// authoritative interface name.
+			var iface config.InterfaceSection
+			if err := unmarshalStruct(sec, &iface); err != nil {
+				return err
+			}
+			iface.Name = sec.Name
+			m.SetInterface(iface)
 		default:
 			// Match component sections (singleton → Sections; repeated → Lists).
 			for _, schema := range config.Schemas() {
