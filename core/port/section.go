@@ -43,6 +43,18 @@ type Section struct {
 // Key returns the section key (matches the component/registry name).
 func (s *Section) Key() string { return s.SKey }
 
+// Interface makes a port Section a config.InterfaceProvider: its Iface is a
+// per-port OVERRIDE of the shared Bridge interface (§4/§9d). An empty Iface
+// yields an empty InterfaceSection, so Model.EffectiveInterface falls through to
+// the Bridge NIC — i.e. several ports with no iface of their own all bind to the
+// one shared interface, and only a port that names its own iface diverges.
+func (s *Section) Interface() config.InterfaceSection {
+	return config.InterfaceSection{Name: s.Iface}
+}
+
+// compile-time assertion: *Section is an InterfaceProvider (bridge override).
+var _ config.InterfaceProvider = (*Section)(nil)
+
 // Clone returns a deep copy.
 func (s *Section) Clone() config.Section {
 	cp := *s

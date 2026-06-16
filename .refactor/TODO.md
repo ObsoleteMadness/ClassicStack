@@ -172,6 +172,15 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > EtherTalk to the router, and on Start reaches `pcap.Open("eth0")` (failing cleanly with
 > `pcap: built without the 'pcap' tag` on a tagless build — proof the injection is real, not inert).
 >
+> **Shared-Bridge interface resolution (landed — slice B amendment):** the EtherTalk factory was
+> reading `Section.Iface` raw, bypassing the §4/§9d shared-Bridge concept. Fixed: `*port.Section`
+> now implements `config.InterfaceProvider` (its `Iface` is a per-port OVERRIDE), and the factory
+> resolves the NIC via `Model.EffectiveInterface(key)` (new `registry.effectiveIface` helper). So a
+> port with no `iface` of its own **inherits the global `[bridge]` NIC** (several ports share one
+> interface) and only a port that names its own iface diverges. Verified end-to-end: `[bridge]
+> name="en0"` + an iface-less `[EtherTalk]` opens `en0`; unit tests cover inherit-vs-override at
+> both the config layer (`EffectiveInterface`) and the factory layer.
+>
 > **NEXT (slice B follow-ons):** (1) an **LLAP framer** in `adapter/link/framing` so LocalTalk can
 > go live the same way (its factory + schema are wired but it stays inert — only the Ethernet/SNAP
 > framer exists today); (2) IPX/NetBEUI device-link injection (their factories take a pre-resolved

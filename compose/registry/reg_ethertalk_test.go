@@ -71,6 +71,43 @@ func TestEtherTalkFactory_OpenerGoesLive(t *testing.T) {
 	}
 }
 
+// TestEtherTalkFactory_InheritsBridgeInterface proves the shared-Bridge concept:
+// an EtherTalk section with NO iface of its own inherits the global Bridge NIC, so
+// the opener is called with the bridge interface — several ports could thus share
+// one NIC. A section that DOES name an iface overrides the bridge.
+func TestEtherTalkFactory_InheritsBridgeInterface(t *testing.T) {
+	check := func(t *testing.T, sectionIface, bridge, want string) {
+		t.Helper()
+		var openedIface atomic.Value
+		opener := func(iface string) (link.FrameLink, error) {
+			openedIface.Store(iface)
+			return &idleFrameLink{}, nil
+		}
+		m := config.NewModel()
+		m.Bridge = config.InterfaceSection{Name: bridge}
+		m.Set(&port.Section{SKey: ethertalk.Name, Iface: sectionIface, IsEnabled: true})
+
+		c, ok, err := Build(ethertalk.Name, &BuildContext{Model: m, Opener: opener})
+		if err != nil || !ok || c == nil {
+			t.Fatalf("Build = (%v, %v, %v)", c, ok, err)
+		}
+		ctx := context.Background()
+		if err := c.Start(ctx); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		defer c.Stop(ctx)
+		if got := openedIface.Load(); got != want {
+			t.Fatalf("opened iface = %v, want %v", got, want)
+		}
+	}
+	t.Run("inherits bridge when iface empty", func(t *testing.T) {
+		check(t, "", "br0", "br0")
+	})
+	t.Run("override beats bridge", func(t *testing.T) {
+		check(t, "eth9", "br0", "eth9")
+	})
+}
+
 // TestEtherTalkFactory_NilOpenerInert proves the graceful-degradation contract: a
 // nil Opener (no device backend in this build) still builds an enabled port, but it
 // comes up inert — no opener is ever invoked.

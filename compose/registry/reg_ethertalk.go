@@ -32,12 +32,13 @@ func init() {
 			return ethertalk.New(ctx.Model, nil, nil, ctx.Router, logger)
 		}
 
-		// LIVE: bind the configured interface to a per-Start FrameLink opener and an
+		// LIVE: bind the EFFECTIVE interface (shared Bridge NIC unless this port
+		// overrides it — see effectiveIface) to a per-Start FrameLink opener and an
 		// Ethernet/SNAP framer stamped with the configured station MAC. NewFromOpener
 		// reopens the device on every Start (a closed libpcap handle is terminal), so
 		// the port survives a UI Stop→Start. A blank/invalid MAC leaves SrcMAC nil and
 		// the framer falls back to the AppleTalk broadcast MAC (pre-AARP behaviour).
-		opener := openerFor(ctx.Opener, sec.Iface)
+		opener := openerFor(ctx.Opener, effectiveIface(ctx.Model, ethertalk.Name))
 		framer := etherTalkFramer(sec)
 		return ethertalk.NewFromOpener(ctx.Model, opener, framer, ctx.Router, logger)
 	})

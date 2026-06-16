@@ -102,6 +102,19 @@ func sectionMAC(m *config.Model, key string) [6]byte {
 	return mac
 }
 
+// effectiveIface resolves the interface a port binds to, folding shared-Bridge
+// inheritance with the port's own override (Model.EffectiveInterface): a port whose
+// section names no iface of its own inherits the global Bridge NIC, so several
+// ports share one interface; a port that sets its iface overrides. This is the
+// resolution every port factory must use rather than reading Section.Iface raw, so
+// the shared-bridge concept (§4/§9d) actually governs which NIC a port opens.
+func effectiveIface(m *config.Model, key string) string {
+	if m == nil {
+		return ""
+	}
+	return m.EffectiveInterface(key).Name
+}
+
 // Names returns the registered component names, sorted for deterministic iteration.
 func Names() []string {
 	mu.RLock()
