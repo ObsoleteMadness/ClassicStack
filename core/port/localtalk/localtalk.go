@@ -46,10 +46,36 @@ func New(m *config.Model, frame link.FrameLink, framer link.Framer, rtr router.R
 		return nil, errors.New("localtalk: frame link supplied without a framer")
 	}
 
-	open := buildLinkFactory(frame, framer)
+	return newPort(sec, buildLinkFactory(frame, framer), rtr, logger), nil
+}
+
+// NewFromOpener builds the LocalTalk port from a per-Start FrameLink opener
+// rather than a single pre-opened FrameLink. opener is called on every Start to
+// obtain a FRESH LocalTalk link, which framer then wraps as a DDP DatagramLink
+// via LLAP — so the port survives a Stop→Start by reopening the transport. It is
+// the constructor the composition layer uses once it can build a real device
+// link from config; core stays free of the transport adapter because opener is
+// injected.
+//
+// A nil opener yields the inert form; a non-nil opener with a nil framer is an
+// error. Returns (nil, nil) when the section is disabled.
+func NewFromOpener(m *config.Model, opener func() (link.FrameLink, error), framer link.Framer, rtr router.Router, logger log.Logger) (component.Component, error) {
+	sec := port.SectionFromModel(m, Name)
+	if !sec.IsEnabled {
+		return nil, nil
+	}
+	if opener != nil && framer == nil {
+		return nil, errors.New("localtalk: frame opener supplied without a framer")
+	}
+	return newPort(sec, buildOpenerFactory(opener, framer), rtr, logger), nil
+}
+
+// newPort wires the runport base and stamps the rx-port owner identity (see the
+// ethertalk equivalent).
+func newPort(sec *port.Section, open runport.LinkFactory, rtr router.Router, logger log.Logger) *Port {
 	p := &Port{Port: runport.New(sec, open, rtr, logger)}
 	p.SetOwner(p)
-	return p, nil
+	return p
 }
 
 // buildLinkFactory returns a runport.LinkFactory that frames the injected
@@ -59,6 +85,22 @@ func buildLinkFactory(frame link.FrameLink, framer link.Framer) runport.LinkFact
 		return func() (link.DatagramLink, error) { return nil, nil }
 	}
 	return func() (link.DatagramLink, error) {
+		return framer.Framing(frame)
+	}
+}
+
+// buildOpenerFactory returns a runport.LinkFactory that, on each Start, opens a
+// FRESH FrameLink from opener and frames it. A nil opener yields a nil-link
+// factory (inert).
+func buildOpenerFactory(opener func() (link.FrameLink, error), framer link.Framer) runport.LinkFactory {
+	if opener == nil {
+		return func() (link.DatagramLink, error) { return nil, nil }
+	}
+	return func() (link.DatagramLink, error) {
+		frame, err := opener()
+		if err != nil {
+			return nil, err
+		}
 		return framer.Framing(frame)
 	}
 }

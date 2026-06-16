@@ -153,9 +153,31 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > datagram pushed through the router reaches a cross-wired service). A factory tolerates a nil
 > collaborator (standalone/unit build) by building the inert form, so graceful degradation holds.
 > All 10 `reg_*` factories + the stub + the registry/runtime tests moved to the new signature.
-> **NEXT (slice B):** real port config schema (MAC/framing/seed-net) + pcap/framing device-link
-> injection so ports come up LIVE on a NIC — the piece that lets a real Mac/PC connect.
-> Transport↔service seams (SMB-over-NetBIOS, IPXGW) are a sibling cross-wire follow-on.
+>
+> **Port config schema + device-link injection (landed — M10 slice B, the live-on-a-NIC piece):**
+> `core/port.Section` gained the per-transport fields a live link needs — `MAC` (colon/dash-hex,
+> parsed by a hand-rolled `ParseMAC` so core stays free of `net`), `SeedNetwork`/`SeedNetworkEnd`,
+> `SeedZone` — with `Validate` (rejects a malformed MAC / inverted seed range) and TOML round-trip
+> (toml-adapter test proves an `[EtherTalk]` table decodes back to the same `*port.Section`). The
+> registry `reg_*.go` for each port now also `config.Register`s its section schema (same build tag
+> as the factory) so a codec can round-trip it. A new `BuildContext.Opener` (`LinkOpener =
+> func(iface) (link.FrameLink, error)`) is the device-link seam: the **cmd edge** (`classicstack-ng`
+> main) selects the concrete opener — `pcap.Open(DefaultEtherTalkConfig)` under `-tags pcap`, the
+> stub otherwise — and injects it through `runtime.Options.Opener`, so compose/runtime pull in NO
+> cgo. The EtherTalk factory builds a per-Start opener closure + `framing.EtherTalk{SrcMAC}` from
+> the section and calls the new `ethertalk.NewFromOpener`, which reopens the device on EVERY Start
+> (a closed libpcap handle is terminal — survives a UI Stop→Start). ng main now loads `server.toml`
+> via `runtime.Load(file.Store, toml.Codec)`. **End-to-end verified:** with EtherTalk enabled in
+> `server.toml`, the ng binary builds `[AFP EtherTalk MacIP NetBIOS Router SMB]`, cross-wires
+> EtherTalk to the router, and on Start reaches `pcap.Open("eth0")` (failing cleanly with
+> `pcap: built without the 'pcap' tag` on a tagless build — proof the injection is real, not inert).
+>
+> **NEXT (slice B follow-ons):** (1) an **LLAP framer** in `adapter/link/framing` so LocalTalk can
+> go live the same way (its factory + schema are wired but it stays inert — only the Ethernet/SNAP
+> framer exists today); (2) IPX/NetBEUI device-link injection (their factories take a pre-resolved
+> `[6]byte` MAC from config now, but still no FrameLink); (3) transport↔service cross-wire seams
+> (SMB-over-NetBIOS via SessionConsumer/DatagramConsumer, IPXGW SetIPXRouter); (4) flag parsing +
+> retiring `internal/app` + the logging cutover (rest of M10).
 
 > **M1 notes (what landed / deferred):**
 > - **Landed:** real `core/link` decorators (`Filter`/`Dedup`/`Bridge`+`BridgeWiFi`, ported

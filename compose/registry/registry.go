@@ -7,8 +7,20 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
+	"github.com/ObsoleteMadness/ClassicStack/core/link"
+	"github.com/ObsoleteMadness/ClassicStack/core/port"
 	"github.com/ObsoleteMadness/ClassicStack/core/router"
 )
+
+// LinkOpener opens a raw L2 FrameLink for the named interface. It is the seam by
+// which a port factory obtains a real device link WITHOUT core/ or this registry
+// importing the pcap/cgo adapter: the compose runtime root selects the concrete
+// opener (libpcap under the `pcap` tag, a stub otherwise) at the cmd edge and
+// injects it here — exactly as the config Store/Codec are injected rather than
+// imported. It is called per Start (a fresh handle each time) so a reopened port
+// gets a new link. nil means no device backend in this build → ports come up
+// inert-but-routed (the graceful-degradation contract of BuildContext).
+type LinkOpener func(iface string) (link.FrameLink, error)
 
 // BuildContext carries everything a factory needs to build a FULLY-WIRED component:
 // the config model plus the shared collaborators a component binds to (§14). It
@@ -34,6 +46,11 @@ type BuildContext struct {
 	Router *router.RouterImpl
 	// Telemetry is the bus stats/state/log are published on. May be nil.
 	Telemetry bus.Bus
+	// Opener builds a raw device FrameLink for a port's configured interface. nil
+	// when no device backend is in this build (e.g. a tag-free / TinyGo build, or
+	// a unit test): a port factory then builds the inert form. The runtime root
+	// injects the concrete opener (pcap or its stub) at the cmd edge.
+	Opener LinkOpener
 }
 
 // Factory builds a fully-wired component from its BuildContext. Returns the
@@ -67,6 +84,22 @@ func Build(name string, ctx *BuildContext) (component.Component, bool, error) {
 	}
 	c, err := f(ctx)
 	return c, true, err
+}
+
+// sectionMAC resolves a port's configured station MAC from the model as a fixed
+// [6]byte (the form the frame-port constructors take). An absent or malformed MAC
+// yields the zero address — the constructor then falls back to the interface's own
+// hardware address at open time. Shared by the IPX/NetBEUI factories.
+func sectionMAC(m *config.Model, key string) [6]byte {
+	sec := port.SectionFromModel(m, key)
+	if sec.MAC == "" {
+		return [6]byte{}
+	}
+	mac, err := port.ParseMAC(sec.MAC)
+	if err != nil {
+		return [6]byte{}
+	}
+	return mac
 }
 
 // Names returns the registered component names, sorted for deterministic iteration.

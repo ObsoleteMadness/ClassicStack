@@ -5,7 +5,43 @@ import (
 	"testing"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
+	"github.com/ObsoleteMadness/ClassicStack/core/port"
 )
+
+// TestPortSectionRoundTrip proves the real *port.Section — with the slice-B
+// per-transport fields (mac, seed network/zone) — survives a TOML marshal/unmarshal
+// cycle, so an [EtherTalk] table in server.toml decodes back to the same section the
+// port factory reads. It registers the port schema the way the compose registry does.
+func TestPortSectionRoundTrip(t *testing.T) {
+	config.Register(config.SectionSchema{
+		Key: "EtherTalk",
+		New: func() config.Section { return &port.Section{SKey: "EtherTalk"} },
+	})
+
+	m := config.NewModel()
+	want := &port.Section{
+		SKey: "EtherTalk", Iface: "eth0", IsEnabled: true,
+		MAC: "00:11:22:aa:bb:cc", SeedNetwork: 10, SeedNetworkEnd: 20, SeedZone: "Engineering",
+	}
+	m.Set(want)
+
+	c := New()
+	data, err := c.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got config.Model
+	if err := c.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	sec, ok := got.Get("EtherTalk")
+	if !ok {
+		t.Fatal("EtherTalk section missing after round-trip")
+	}
+	if !reflect.DeepEqual(sec, want) {
+		t.Fatalf("port section round-trip: got %+v want %+v", sec, want)
+	}
+}
 
 // fakeSection is a registered component section for the round-trip test.
 type fakeSection struct {

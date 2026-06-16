@@ -8,9 +8,13 @@ import (
 	"syscall"
 	"time"
 
+	configtoml "github.com/ObsoleteMadness/ClassicStack/adapter/config/toml"
+	"github.com/ObsoleteMadness/ClassicStack/adapter/link/pcap"
+	storefile "github.com/ObsoleteMadness/ClassicStack/adapter/store/file"
+	"github.com/ObsoleteMadness/ClassicStack/compose/registry"
 	"github.com/ObsoleteMadness/ClassicStack/compose/runtime"
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
-	"github.com/ObsoleteMadness/ClassicStack/core/config"
+	"github.com/ObsoleteMadness/ClassicStack/core/link"
 
 	// Blank-import components to trigger registry self-registration via init()
 	_ "github.com/ObsoleteMadness/ClassicStack/compose/registry" // tag stub
@@ -28,10 +32,16 @@ import (
 func main() {
 	fmt.Println("Starting ClassicStack-NG...")
 
-	// 1. Config model. A TOML/UCI-driven load via runtime.Load(store, codec) is the
-	//    M10 cutover; for now the ng harness starts from defaults. (Real device-link
-	//    injection is also M10 — every port still comes up inert until then.)
-	m := config.NewModel()
+	// 1. Config model: load server.toml (file Store + TOML Codec). A missing file
+	//    yields defaults (runtime.Load returns the default model for an empty store),
+	//    so the ng harness still boots with no config present. The Store/Codec are
+	//    chosen HERE at the cmd edge; compose/runtime stays adapter-agnostic.
+	const configPath = "server.toml"
+	m, err := runtime.Load(storefile.New(configPath), configtoml.New())
+	if err != nil {
+		fmt.Printf("Failed to load %s: %v\n", configPath, err)
+		os.Exit(1)
+	}
 
 	// 2. Telemetry bus + a subscriber that narrates state transitions.
 	telemetry := bus.New(32)
@@ -46,7 +56,11 @@ func main() {
 	}()
 
 	// 3. Build the runtime: every registered component, dependency-ordered, supervised.
-	rt, err := runtime.Build(runtime.Options{Model: m, Telemetry: telemetry})
+	//    The pcap opener is selected HERE at the cmd edge: under the `pcap` build tag
+	//    it is the real libpcap link, otherwise the stub returns ErrUnavailable and
+	//    ports come up inert. The runtime/compose packages stay free of cgo because
+	//    the opener is injected, not imported by them.
+	rt, err := runtime.Build(runtime.Options{Model: m, Telemetry: telemetry, Opener: pcapOpener})
 	if err != nil {
 		fmt.Printf("Failed to build runtime: %v\n", err)
 		os.Exit(1)
@@ -84,4 +98,13 @@ func main() {
 		fmt.Printf("Error stopping runtime: %v\n", err)
 	}
 	fmt.Println("ClassicStack-NG stopped.")
+}
+
+// pcapOpener is the runtime's LinkOpener: it opens a raw Ethernet FrameLink for a
+// port's configured interface via libpcap (the low-latency EtherTalk profile).
+// Under the `pcap` build tag this is a real capture handle; without it the stub
+// returns pcap.ErrUnavailable and the port stays inert. It is called per Start so
+// a reopened port gets a fresh handle.
+var pcapOpener registry.LinkOpener = func(iface string) (link.FrameLink, error) {
+	return pcap.Open(pcap.DefaultEtherTalkConfig(iface))
 }

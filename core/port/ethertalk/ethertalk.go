@@ -50,13 +50,40 @@ func New(m *config.Model, frame link.FrameLink, framer link.Framer, rtr router.R
 		return nil, errors.New("ethertalk: frame link supplied without a framer")
 	}
 
-	open := buildLinkFactory(frame, framer)
+	return newPort(sec, buildLinkFactory(frame, framer), rtr, logger), nil
+}
+
+// NewFromOpener builds the EtherTalk port from a per-Start FrameLink opener
+// rather than a single pre-opened FrameLink. opener is called on every Start to
+// obtain a FRESH raw-Ethernet link, which framer then wraps as a DDP
+// DatagramLink — so the port survives a Stop→Start by reopening the device (a
+// libpcap handle, once Closed on Stop, cannot be reused; see the pcap
+// port-restart lifecycle). It is the constructor the composition layer uses once
+// it can build a real device link from config; core stays free of the pcap/cgo
+// adapter because opener is injected.
+//
+// A nil opener yields the inert form (no data path); a non-nil opener with a nil
+// framer is an error (a raw link cannot become DDP without framing). Returns
+// (nil, nil) when the section is disabled.
+func NewFromOpener(m *config.Model, opener func() (link.FrameLink, error), framer link.Framer, rtr router.Router, logger log.Logger) (component.Component, error) {
+	sec := port.SectionFromModel(m, Name)
+	if !sec.IsEnabled {
+		return nil, nil
+	}
+	if opener != nil && framer == nil {
+		return nil, errors.New("ethertalk: frame opener supplied without a framer")
+	}
+	return newPort(sec, buildOpenerFactory(opener, framer), rtr, logger), nil
+}
+
+// newPort wires the runport base and stamps the rx-port owner identity. The
+// rx-port handed to router.Inbound must be this outer *Port (the router uses it
+// to avoid echoing a datagram back out the interface it arrived on); it exists
+// only after runport.New, so SetOwner runs here.
+func newPort(sec *port.Section, open runport.LinkFactory, rtr router.Router, logger log.Logger) *Port {
 	p := &Port{Port: runport.New(sec, open, rtr, logger)}
-	// The rx-port identity handed to router.Inbound must be this outer *Port (the
-	// router uses it to avoid echoing a datagram back out the interface it
-	// arrived on). It exists only after runport.New, so set it now.
 	p.SetOwner(p)
-	return p, nil
+	return p
 }
 
 // buildLinkFactory returns a runport.LinkFactory that frames the injected
@@ -66,6 +93,22 @@ func buildLinkFactory(frame link.FrameLink, framer link.Framer) runport.LinkFact
 		return func() (link.DatagramLink, error) { return nil, nil }
 	}
 	return func() (link.DatagramLink, error) {
+		return framer.Framing(frame)
+	}
+}
+
+// buildOpenerFactory returns a runport.LinkFactory that, on each Start, opens a
+// FRESH FrameLink from opener and frames it — so a reopened device gets a new
+// handle. A nil opener yields a nil-link factory (inert).
+func buildOpenerFactory(opener func() (link.FrameLink, error), framer link.Framer) runport.LinkFactory {
+	if opener == nil {
+		return func() (link.DatagramLink, error) { return nil, nil }
+	}
+	return func() (link.DatagramLink, error) {
+		frame, err := opener()
+		if err != nil {
+			return nil, err
+		}
 		return framer.Framing(frame)
 	}
 }

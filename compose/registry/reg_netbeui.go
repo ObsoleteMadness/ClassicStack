@@ -4,16 +4,23 @@ package registry
 
 import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
+	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
+	"github.com/ObsoleteMadness/ClassicStack/core/port"
 	"github.com/ObsoleteMadness/ClassicStack/core/port/netbeui"
 )
 
 func init() {
+	config.Register(config.SectionSchema{
+		Key: netbeui.Name,
+		New: func() config.Section { return &port.Section{SKey: netbeui.Name} },
+	})
+
 	Register(netbeui.Name, func(ctx *BuildContext) (component.Component, error) {
 		logger := log.New(netbeui.Name, log.NewStderrSink(log.NewLevelVar(log.Info)))
-		// Frame port: no device link/srcMAC injected yet (the real link from config
-		// is the next slice). Feeds its own NetBEUI mini-router, not the AppleTalk
-		// router, so no ctx.Router. Inert until the link lands.
-		return netbeui.New(ctx.Model, nil, [6]byte{}, logger)
+		// Feeds its own NetBEUI mini-router, not the AppleTalk router, so no
+		// ctx.Router. The configured station MAC is threaded from the section; the
+		// device FrameLink is the sibling follow-on. Inert-but-configured until then.
+		return netbeui.New(ctx.Model, nil, sectionMAC(ctx.Model, netbeui.Name), logger)
 	})
 }

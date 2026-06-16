@@ -80,6 +80,12 @@ type Options struct {
 	// Telemetry is the bus state/stats/log are published on. A nil bus disables
 	// publication (the supervisor and stats subscriber both tolerate nil).
 	Telemetry bus.Bus
+	// Opener builds a raw device FrameLink for a port's configured interface. It is
+	// threaded into every factory's BuildContext so a port can come up LIVE on a
+	// NIC. nil (the default) keeps ports inert-but-routed — the cmd edge injects the
+	// concrete opener (pcap under the `pcap` tag, else its stub) so this package
+	// pulls in no cgo/libpcap dependency, mirroring the injected Store/Codec.
+	Opener registry.LinkOpener
 	// source enumerates/builds components. nil → the global compose/registry. Set
 	// only by tests (kept unexported so the production API is the registry path).
 	source componentSource
@@ -145,6 +151,7 @@ func Build(opts Options) (*Runtime, error) {
 		Model:     opts.Model,
 		Router:    rtr,
 		Telemetry: opts.Telemetry,
+		Opener:    opts.Opener,
 	}
 
 	// First pass: build the components, recording which names actually exist so the
