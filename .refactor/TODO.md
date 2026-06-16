@@ -286,9 +286,26 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > (sorted), the block name authoritative on read (`iface.Name = sec.Name`); the existing reflective
 > `marshalSection`/`unmarshalStruct` handle Kind/Device/Baud/Members generically (string/int/list), so
 > no per-field codec code. `InterfaceSection` stays tag-free in core (go-toml default lowercasing).
-> Tests: namespace round-trip (nic/serial/bridge) in both TOML and UCI. NEXT in M11: (b) port sections
-> → `NamedSection` instances in `Model.Lists`; (c) opener dispatch by interface kind; (d) registry
-> one-factory→N; (e) `[Router].members`.
+> Tests: namespace round-trip (nic/serial/bridge) in both TOML and UCI.
+>
+> **M11.b (landed — ports are named repeated instances, one-factory→N):** transport ports
+> (EtherTalk/LToUDP/TashTalk/IPX/NetBEUI) are now repeated named instances, not singletons.
+> `port.Section` is a `config.NamedSection`: gains `Name` (`toml:"name"`), `InstanceName()` (falls back
+> to `SKey` so a singleton/default keeps a stable identity), schema `Key()` still the shared type key.
+> The runport/frameport `Name()` now reports `InstanceName()` so each instance is its own supervised,
+> addressable component. `port.InstanceFromModel(m, key, instance)` resolves one instance from
+> `Model.Lists` (falls back to the singleton `SectionFromModel` when instance=="" or absent — back-compat);
+> `Model.EffectiveInterfaceFor(sec)` resolves a specific instance's interface (instances share a key so
+> can't be found by key alone). Each core port gained a section-taking `NewInstance`/`NewInstanceFromOpener`
+> (the old `New*`/`NewNamed` delegate). Registry: `RegisterPort(key, factory)` marks a repeated port; the
+> port factories register `Repeated: true` schemas and resolve `ctx.Instance`; `BuildContext.Instance`
+> selects which instance; `registry.Instances(model)` expands the registry into `[]ComponentID` (one per
+> singleton, one per named port instance). The runtime build loop iterates `Instances`, builds one
+> component per ID with `ctx.Instance` set, registers under the instance name, and rejects duplicate
+> names. Tests: `Instances` expansion + multi-named-instance build (two EtherTalk on eth0/eth1, distinct
+> components opening their own iface); conformance harness exercises all keys incl. LToUDP/TashTalk as
+> repeated. NEXT in M11: (c) opener dispatch by interface kind + shared `adapter/serial`; (d)
+> `[Router].members` explicit membership; (then) IPX/NetBEUI device-link injection on this shape.
 
 > **M1 notes (what landed / deferred):**
 > - **Landed:** real `core/link` decorators (`Filter`/`Dedup`/`Bridge`+`BridgeWiFi`, ported

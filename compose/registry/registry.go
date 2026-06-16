@@ -51,6 +51,13 @@ type BuildContext struct {
 	// a unit test): a port factory then builds the inert form. The runtime root
 	// injects the concrete opener (pcap or its stub) at the cmd edge.
 	Opener LinkOpener
+	// Instance is the per-instance name a REPEATED port factory should build (§M11):
+	// a transport is a repeated section, so the runtime calls the factory once per
+	// instance with Instance set to that instance's name, and the factory resolves
+	// its section via port.InstanceFromModel(Model, key, Instance). Empty means the
+	// singleton/default instance (a non-port factory, or a port config that still
+	// uses a single section), so existing factories keep working unchanged.
+	Instance string
 }
 
 // Factory builds a fully-wired component from its BuildContext. Returns the
@@ -60,6 +67,11 @@ type Factory func(*BuildContext) (component.Component, error)
 var (
 	mu        sync.RWMutex
 	factories = map[string]Factory{}
+	// portKeys marks the registry keys that are REPEATED port schemas (§M11): the
+	// runtime expands each into one component per named instance in Model.Lists[key],
+	// rather than building a single component under the key. A key absent here is a
+	// singleton (one component, BuildContext.Instance empty).
+	portKeys = map[string]bool{}
 )
 
 // Register records a name->factory mapping. Call from a build-tagged init(): a component whose
@@ -72,9 +84,31 @@ func Register(name string, f Factory) {
 	factories[name] = f
 }
 
+// RegisterPort records a REPEATED port factory under its schema key: the runtime
+// expands it into one component per named instance (Instances), each built with
+// BuildContext.Instance set. Otherwise identical to Register. Call from a port
+// package's build-tagged init().
+func RegisterPort(key string, f Factory) {
+	mu.Lock()
+	defer mu.Unlock()
+	factories[key] = f
+	portKeys[key] = true
+}
+
+// IsPort reports whether key was registered as a repeated port schema.
+func IsPort(key string) bool {
+	mu.RLock()
+	defer mu.RUnlock()
+	return portKeys[key]
+}
+
 // Build constructs the named component from the context. ok=false means the name was never
 // registered (a clean not-found, NOT an error — the caller logs "requested but not built").
 // A registered factory that returns (nil, nil) for a disabled section yields (nil, true, nil).
+//
+// For a repeated port key the name is the SCHEMA key and ctx.Instance selects which
+// instance to build; the runtime drives this once per instance (see Instances). A
+// singleton leaves ctx.Instance empty.
 func Build(name string, ctx *BuildContext) (component.Component, bool, error) {
 	mu.RLock()
 	f, ok := factories[name]
@@ -86,12 +120,54 @@ func Build(name string, ctx *BuildContext) (component.Component, bool, error) {
 	return c, true, err
 }
 
+// ComponentID identifies one component to build: its registry Key plus, for a
+// repeated port, the Instance name (empty for a singleton). Name is the identity the
+// built component reports and the supervisor addresses it by.
+type ComponentID struct {
+	Key      string // registry/schema key ("EtherTalk", "AFP", "Router")
+	Instance string // repeated-port instance name ("et-lab"); "" for a singleton
+	Name     string // component identity: Instance for a port, else Key
+}
+
+// Instances expands the registered components against the model into the full set
+// of components to build: a singleton yields one ComponentID (Name == Key); a
+// repeated port key yields one per named instance in Model.Lists[key]. A repeated
+// port with NO instances in the model yields none (nothing enabled to build) —
+// callers that want a default singleton must add an instance. Order is deterministic
+// (Names() is sorted; instances keep model/document order).
+func Instances(m *config.Model) []ComponentID {
+	var out []ComponentID
+	for _, key := range Names() {
+		if !IsPort(key) {
+			out = append(out, ComponentID{Key: key, Name: key})
+			continue
+		}
+		for _, s := range m.List(key) {
+			inst := ""
+			if ns, ok := s.(config.NamedSection); ok {
+				inst = ns.InstanceName()
+			}
+			if inst == "" {
+				inst = key
+			}
+			out = append(out, ComponentID{Key: key, Instance: inst, Name: inst})
+		}
+	}
+	return out
+}
+
 // sectionMAC resolves a port's configured station MAC from the model as a fixed
 // [6]byte (the form the frame-port constructors take). An absent or malformed MAC
 // yields the zero address — the constructor then falls back to the interface's own
 // hardware address at open time. Shared by the IPX/NetBEUI factories.
 func sectionMAC(m *config.Model, key string) [6]byte {
-	sec := port.SectionFromModel(m, key)
+	return sectionMACFor(port.SectionFromModel(m, key))
+}
+
+// sectionMACFor resolves a port instance's configured station MAC as a fixed
+// [6]byte (the section-taking form, for repeated instances). An absent or malformed
+// MAC yields the zero address.
+func sectionMACFor(sec *port.Section) [6]byte {
 	if sec.MAC == "" {
 		return [6]byte{}
 	}
@@ -100,19 +176,6 @@ func sectionMAC(m *config.Model, key string) [6]byte {
 		return [6]byte{}
 	}
 	return mac
-}
-
-// effectiveIface resolves the interface a port binds to, folding shared-Bridge
-// inheritance with the port's own override (Model.EffectiveInterface): a port whose
-// section names no iface of its own inherits the global Bridge NIC, so several
-// ports share one interface; a port that sets its iface overrides. This is the
-// resolution every port factory must use rather than reading Section.Iface raw, so
-// the shared-bridge concept (§4/§9d) actually governs which NIC a port opens.
-func effectiveIface(m *config.Model, key string) string {
-	if m == nil {
-		return ""
-	}
-	return m.EffectiveInterface(key).Name
 }
 
 // Names returns the registered component names, sorted for deterministic iteration.

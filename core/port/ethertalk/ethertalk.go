@@ -42,14 +42,21 @@ type Port struct {
 // until the router is wired in M4). Returns (nil, nil) when the section is
 // disabled.
 func New(m *config.Model, frame link.FrameLink, framer link.Framer, rtr router.Router, logger log.Logger) (component.Component, error) {
-	sec := port.SectionFromModel(m, Name)
+	return NewInstance(port.SectionFromModel(m, Name), frame, framer, rtr, logger)
+}
+
+// NewInstance builds the real EtherTalk port from an already-resolved section — the
+// repeated-INSTANCE form (§M11): the compose factory resolves one instance from
+// Model.Lists and hands it here, so the port names itself from the instance's
+// InstanceName(). Semantics are otherwise New's: nil frame → inert; a non-nil frame
+// with a nil framer is an error; a disabled section yields (nil, nil).
+func NewInstance(sec *port.Section, frame link.FrameLink, framer link.Framer, rtr router.Router, logger log.Logger) (component.Component, error) {
 	if !sec.IsEnabled {
 		return nil, nil
 	}
 	if frame != nil && framer == nil {
 		return nil, errors.New("ethertalk: frame link supplied without a framer")
 	}
-
 	return newPort(sec, buildLinkFactory(frame, framer), rtr, logger), nil
 }
 
@@ -66,7 +73,14 @@ func New(m *config.Model, frame link.FrameLink, framer link.Framer, rtr router.R
 // framer is an error (a raw link cannot become DDP without framing). Returns
 // (nil, nil) when the section is disabled.
 func NewFromOpener(m *config.Model, opener func() (link.FrameLink, error), framer link.Framer, rtr router.Router, logger log.Logger) (component.Component, error) {
-	sec := port.SectionFromModel(m, Name)
+	return NewInstanceFromOpener(port.SectionFromModel(m, Name), opener, framer, rtr, logger)
+}
+
+// NewInstanceFromOpener is the repeated-INSTANCE form of NewFromOpener (§M11): it
+// takes an already-resolved section (one instance from Model.Lists) and the per-Start
+// opener. A nil opener yields the inert form; a non-nil opener with a nil framer is an
+// error; a disabled section yields (nil, nil).
+func NewInstanceFromOpener(sec *port.Section, opener func() (link.FrameLink, error), framer link.Framer, rtr router.Router, logger log.Logger) (component.Component, error) {
 	if !sec.IsEnabled {
 		return nil, nil
 	}

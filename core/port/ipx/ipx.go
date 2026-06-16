@@ -52,7 +52,14 @@ type Port struct {
 // address, stamped on outbound Ethernet frames. Returns (nil, nil) when the
 // section is disabled.
 func New(m *config.Model, frame link.FrameLink, srcMAC [6]byte, logger log.Logger) (component.Component, error) {
-	sec := port.SectionFromModel(m, Name)
+	return NewInstance(port.SectionFromModel(m, Name), frame, srcMAC, logger)
+}
+
+// NewInstance builds an IPX port from an already-resolved section — the
+// repeated-INSTANCE form (§M11): the compose factory resolves one instance from
+// Model.Lists and hands it here, so the port names itself from the instance's
+// InstanceName(). Returns (nil, nil) when the section is disabled.
+func NewInstance(sec *port.Section, frame link.FrameLink, srcMAC [6]byte, logger log.Logger) (component.Component, error) {
 	if !sec.IsEnabled {
 		return nil, nil
 	}

@@ -60,14 +60,17 @@ var hardDeps = map[string][]string{
 // global registry singleton. Build takes the shared BuildContext so a factory
 // receives its collaborators (the router et al), not just the model.
 type componentSource interface {
-	Names() []string
+	// Instances expands the registry against the model into the components to build:
+	// one ComponentID per singleton, and one per named instance of a repeated port
+	// (§M11). The runtime builds each with BuildContext.Instance set from the ID.
+	Instances(m *config.Model) []registry.ComponentID
 	Build(name string, ctx *registry.BuildContext) (component.Component, bool, error)
 }
 
 // registrySource adapts the package-level compose/registry to componentSource.
 type registrySource struct{}
 
-func (registrySource) Names() []string { return registry.Names() }
+func (registrySource) Instances(m *config.Model) []registry.ComponentID { return registry.Instances(m) }
 func (registrySource) Build(name string, ctx *registry.BuildContext) (component.Component, bool, error) {
 	return registry.Build(name, ctx)
 }
@@ -155,22 +158,31 @@ func Build(opts Options) (*Runtime, error) {
 	}
 
 	// First pass: build the components, recording which names actually exist so the
-	// dependency edges can be filtered to built-both-ends pairs.
+	// dependency edges can be filtered to built-both-ends pairs. Instances expands
+	// repeated ports (§M11) into one build per named instance — a singleton yields
+	// one ComponentID (Name == Key); a port yields one per instance — so several
+	// EtherTalk/TashTalk/IPX instances each become their own supervised component,
+	// addressed by instance name.
 	comps := make(map[string]component.Component)
 	var order []string
-	for _, name := range src.Names() {
-		if stubNames[name] {
+	for _, id := range src.Instances(opts.Model) {
+		if stubNames[id.Key] {
 			continue
 		}
-		c, ok, err := src.Build(name, ctx)
+		ictx := *ctx
+		ictx.Instance = id.Instance
+		c, ok, err := src.Build(id.Key, &ictx)
 		if err != nil {
-			return nil, fmt.Errorf("runtime: build %q: %w", name, err)
+			return nil, fmt.Errorf("runtime: build %q: %w", id.Name, err)
 		}
 		if !ok || c == nil {
 			continue // not in this build, or disabled section
 		}
-		comps[name] = c
-		order = append(order, name)
+		if _, dup := comps[id.Name]; dup {
+			return nil, fmt.Errorf("runtime: duplicate component name %q (instance %q of %q)", id.Name, id.Instance, id.Key)
+		}
+		comps[id.Name] = c
+		order = append(order, id.Name)
 	}
 
 	// Cross-wire the runtime data path against the shared router: register DDP

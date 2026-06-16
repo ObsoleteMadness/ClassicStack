@@ -78,8 +78,9 @@ func New(sec *port.Section, open LinkFactory, sink FrameSink, logger log.Logger)
 	return &Port{sec: sec, open: open, sink: sink, logger: logger, recent: make(map[uint64]time.Time)}
 }
 
-// Name returns the component name (the section key).
-func (p *Port) Name() string { return p.sec.SKey }
+// Name returns the component identity: the section's instance name (§M11), which
+// for a singleton/default port falls back to the schema key.
+func (p *Port) Name() string { return p.sec.InstanceName() }
 
 // Start opens the link and spawns the read loop. Idempotent (§3). A nil link is
 // a successful inert start.

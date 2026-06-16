@@ -29,13 +29,17 @@ func init() {
 // transport via openerFor (the per-Start FrameLink opener built from the port's
 // section). The two segments share this body; only the key + transport differ.
 func registerLocalTalk(key string, openerFor func(sec *port.Section) func() (link.FrameLink, error)) {
+	// Repeated schema: several named instances per segment key — e.g. multiple
+	// TashTalk dongles, each its own serial line and segment (§M11).
 	config.Register(config.SectionSchema{
-		Key: key,
-		New: func() config.Section { return &port.Section{SKey: key} },
+		Key:      key,
+		New:      func() config.Section { return &port.Section{SKey: key} },
+		Repeated: true,
 	})
 
-	Register(key, func(ctx *BuildContext) (component.Component, error) {
-		logger := log.New(key, log.NewStderrSink(log.NewLevelVar(log.Info)))
+	RegisterPort(key, func(ctx *BuildContext) (component.Component, error) {
+		sec := port.InstanceFromModel(ctx.Model, key, ctx.Instance)
+		logger := log.New(sec.InstanceName(), log.NewStderrSink(log.NewLevelVar(log.Info)))
 
 		// ctx.Opener is the "live device backends enabled" switch (the runtime root
 		// injects it at the cmd edge; nil in a tag-free build or a unit test). When
@@ -44,7 +48,7 @@ func registerLocalTalk(key string, openerFor func(sec *port.Section) func() (lin
 		// rather than opening a real socket/port. The conformance harness relies on
 		// this.
 		if ctx.Opener == nil {
-			return localtalk.NewNamed(key, ctx.Model, nil, nil, ctx.Router, logger)
+			return localtalk.NewInstance(sec, nil, nil, ctx.Router, logger)
 		}
 
 		// LIVE. A LocalTalk segment is NOT NIC-bound: it rides its own transport
@@ -53,8 +57,7 @@ func registerLocalTalk(key string, openerFor func(sec *port.Section) func() (lin
 		// pure-Go adapter rather than calling ctx.Opener. The shared Bridge is
 		// deliberately NOT consulted — that concept is for the L2/NIC ports
 		// (EtherTalk/IPX/NetBEUI), not for a UDP-tunnelled or serial segment.
-		sec := port.SectionFromModel(ctx.Model, key)
-
+		//
 		// LiveAddr is bound to the port after construction so the LLAP framer can read
 		// the port's claimed node/network (for outbound source-node stamping and
 		// inbound short-header reconstruction); the short/long header CHOICE is the
@@ -62,7 +65,7 @@ func registerLocalTalk(key string, openerFor func(sec *port.Section) func() (lin
 		live := &framing.LiveAddr{}
 		framer := &framing.LocalTalk{Addr: live, CalcChecksum: true}
 
-		comp, err := localtalk.NewFromOpenerNamed(key, ctx.Model, openerFor(sec), framer, ctx.Router, logger)
+		comp, err := localtalk.NewInstanceFromOpener(sec, openerFor(sec), framer, ctx.Router, logger)
 		if err != nil || comp == nil {
 			return comp, err
 		}

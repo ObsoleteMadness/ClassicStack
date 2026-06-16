@@ -17,9 +17,18 @@ import (
 // stage/round-trip/ApplyConfig path rather than one section type per transport —
 // the same "placeholder accepts anything" stance the schema already takes.
 type Section struct {
-	// SKey is the section/component key ("EtherTalk", "LocalTalk", …).
+	// SKey is the section/SCHEMA key shared by every instance of a transport
+	// ("EtherTalk", "LToUDP", "IPX", …). It is the registry/codec key, NOT the
+	// per-instance identity — see Name.
 	SKey string `toml:"-"`
-	// Iface is the bound interface ("eth0", "ipx:0550", …).
+	// Name is the per-INSTANCE identity (§M11): a transport is a repeated section,
+	// so one EtherTalk may have several named instances ("et-lab", "et-dmz"), each
+	// its own port/segment/router member. "" means the lone default instance, whose
+	// identity falls back to SKey (a singleton config still works).
+	Name string `toml:"name"`
+	// Iface is the NAME of the interface this instance binds to ("eth0", "br-lan",
+	// "ttyUSB-attic"); resolved against the interface namespace (§M11). Empty
+	// inherits the default Bridge interface.
 	Iface string `toml:"iface"`
 	// IsEnabled mirrors the configured-enabled flag (≠ running).
 	IsEnabled bool `toml:"enabled"`
@@ -40,8 +49,23 @@ type Section struct {
 	SeedZone string `toml:"seed_zone"`
 }
 
-// Key returns the section key (matches the component/registry name).
+// Key returns the shared SCHEMA key (the registry/codec key, matched per transport
+// type — "EtherTalk"). Every instance of a transport shares it.
 func (s *Section) Key() string { return s.SKey }
+
+// InstanceName returns the per-instance identity (config.NamedSection): Name when
+// set, else the schema key so a singleton/default port keeps a stable, deterministic
+// name ("EtherTalk"). It is the name the supervisor addresses the component by and
+// the name a [Router].members list references.
+func (s *Section) InstanceName() string {
+	if s.Name != "" {
+		return s.Name
+	}
+	return s.SKey
+}
+
+// compile-time assertion: *Section is a NamedSection (a repeated transport instance).
+var _ config.NamedSection = (*Section)(nil)
 
 // Interface makes a port Section a config.InterfaceProvider: its Iface is a
 // per-port OVERRIDE of the shared Bridge interface (§4/§9d). An empty Iface
@@ -140,8 +164,10 @@ func hexNibble(c byte) (byte, bool) {
 // compile-time assertion: *Section satisfies config.Section.
 var _ config.Section = (*Section)(nil)
 
-// SectionFromModel resolves the placeholder Section registered under key, falling
-// back to a fresh default when the model has none.
+// SectionFromModel resolves the SINGLETON section under key (Model.Sections),
+// falling back to a fresh default when the model has none. It is the back-compat
+// resolver for a transport with one default instance; InstanceFromModel is the
+// repeated-instance form.
 func SectionFromModel(m *config.Model, key string) *Section {
 	if m != nil {
 		if s, ok := m.Get(key); ok {
@@ -151,4 +177,21 @@ func SectionFromModel(m *config.Model, key string) *Section {
 		}
 	}
 	return &Section{SKey: key}
+}
+
+// InstanceFromModel resolves one repeated port instance (Model.Lists[key]) by its
+// instance name. An empty instance name, or no matching instance, falls through to
+// the singleton SectionFromModel — so a config that still uses a single [EtherTalk]
+// section (no instance name) keeps working, and a fresh default is returned when
+// neither is present. This is the resolver a port factory uses with
+// BuildContext.Instance.
+func InstanceFromModel(m *config.Model, key, instance string) *Section {
+	if m != nil && instance != "" {
+		if s, ok := m.Instance(key, instance); ok {
+			if ps, ok := s.(*Section); ok {
+				return ps
+			}
+		}
+	}
+	return SectionFromModel(m, key)
 }

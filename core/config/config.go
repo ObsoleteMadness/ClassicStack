@@ -315,12 +315,23 @@ func (m *Model) RemoveInstance(key, name string) bool {
 //  3. A name with no namespace entry resolves to a bare nic-kind InterfaceSection of
 //     that name (a plain "eth0" needs no [[Interface]] block — back-compat).
 func (m *Model) EffectiveInterface(sectionKey string) InterfaceSection {
-	ref := m.Bridge
 	if s, ok := m.Sections[sectionKey]; ok {
-		if ip, ok := s.(InterfaceProvider); ok {
-			if ov := ip.Interface(); ov.Name != "" {
-				ref = ov
-			}
+		return m.EffectiveInterfaceFor(s)
+	}
+	return m.ResolveInterface(m.Bridge)
+}
+
+// EffectiveInterfaceFor resolves the effective interface for a SPECIFIC section
+// value — the form a repeated transport INSTANCE needs, since instances live in
+// Model.Lists keyed by schema key (several share one key) and so cannot be found by
+// key alone. Resolution is identical to EffectiveInterface: the section's
+// InterfaceProvider override (its named iface) wins, else inherit the default
+// Bridge; the chosen reference is then resolved through the interface namespace.
+func (m *Model) EffectiveInterfaceFor(s Section) InterfaceSection {
+	ref := m.Bridge
+	if ip, ok := s.(InterfaceProvider); ok {
+		if ov := ip.Interface(); ov.Name != "" {
+			ref = ov
 		}
 	}
 	return m.ResolveInterface(ref)

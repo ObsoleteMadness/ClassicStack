@@ -16,31 +16,37 @@ func init() {
 	// Register the config schema so a TOML/UCI codec can round-trip the [EtherTalk]
 	// section (iface/mac/seed) into a *port.Section. Gated by the same tag as the
 	// factory, so a build without EtherTalk neither builds nor round-trips it.
+	// Repeated schema: one [[EtherTalk]] array-of-tables, several named instances —
+	// each a distinct EtherTalk segment bound to its own interface (§M11).
 	config.Register(config.SectionSchema{
-		Key: ethertalk.Name,
-		New: func() config.Section { return &port.Section{SKey: ethertalk.Name} },
+		Key:      ethertalk.Name,
+		New:      func() config.Section { return &port.Section{SKey: ethertalk.Name} },
+		Repeated: true,
 	})
 
-	Register(ethertalk.Name, func(ctx *BuildContext) (component.Component, error) {
-		logger := log.New(ethertalk.Name, log.NewStderrSink(log.NewLevelVar(log.Info)))
-		sec := port.SectionFromModel(ctx.Model, ethertalk.Name)
+	RegisterPort(ethertalk.Name, func(ctx *BuildContext) (component.Component, error) {
+		// Resolve THIS instance (ctx.Instance) from the model; the component names
+		// itself from the instance name via the runport.
+		sec := port.InstanceFromModel(ctx.Model, ethertalk.Name, ctx.Instance)
+		logger := log.New(sec.InstanceName(), log.NewStderrSink(log.NewLevelVar(log.Info)))
 
 		// No device backend in this build (nil Opener) → the inert-but-routed form,
 		// the same graceful degradation as before: the port satisfies the lifecycle
 		// and is attached to the router, but moves no frames until an opener exists.
 		if ctx.Opener == nil {
-			return ethertalk.New(ctx.Model, nil, nil, ctx.Router, logger)
+			return ethertalk.NewInstance(sec, nil, nil, ctx.Router, logger)
 		}
 
-		// LIVE: bind the EFFECTIVE interface (shared Bridge NIC unless this port
-		// overrides it — see effectiveIface) to a per-Start FrameLink opener and an
-		// Ethernet/SNAP framer stamped with the configured station MAC. NewFromOpener
-		// reopens the device on every Start (a closed libpcap handle is terminal), so
-		// the port survives a UI Stop→Start. A blank/invalid MAC leaves SrcMAC nil and
-		// the framer falls back to the AppleTalk broadcast MAC (pre-AARP behaviour).
-		opener := openerFor(ctx.Opener, effectiveIface(ctx.Model, ethertalk.Name))
+		// LIVE: bind the EFFECTIVE interface (this instance's named iface, resolved
+		// against the interface namespace — Bridge default when it names none) to a
+		// per-Start FrameLink opener and an Ethernet/SNAP framer stamped with the
+		// configured station MAC. NewFromOpener reopens the device on every Start (a
+		// closed libpcap handle is terminal), so the port survives a UI Stop→Start. A
+		// blank/invalid MAC leaves SrcMAC nil and the framer falls back to the
+		// AppleTalk broadcast MAC (pre-AARP behaviour).
+		opener := openerFor(ctx.Opener, ctx.Model.EffectiveInterfaceFor(sec).Name)
 		framer := etherTalkFramer(sec)
-		return ethertalk.NewFromOpener(ctx.Model, opener, framer, ctx.Router, logger)
+		return ethertalk.NewInstanceFromOpener(sec, opener, framer, ctx.Router, logger)
 	})
 }
 

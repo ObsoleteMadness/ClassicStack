@@ -161,3 +161,50 @@ func TestEtherTalkFactory_OpenerReopensOnRestart(t *testing.T) {
 		t.Fatal("first link not closed on Stop #1")
 	}
 }
+
+// TestEtherTalkInstances_MultipleNamed proves the §M11 named-instance path: a model
+// with TWO named EtherTalk instances on different interfaces expands (via Instances)
+// to two distinct components, each named after its instance and opening its OWN
+// interface. This is the multi-drop case the singleton shape could not express.
+func TestEtherTalkInstances_MultipleNamed(t *testing.T) {
+	m := config.NewModel()
+	m.AddInstance(&port.Section{SKey: ethertalk.Name, Name: "et-lab", Iface: "eth0", IsEnabled: true})
+	m.AddInstance(&port.Section{SKey: ethertalk.Name, Name: "et-dmz", Iface: "eth1", IsEnabled: true})
+
+	// Instances must expand the one EtherTalk key into the two named instances.
+	var got []string
+	for _, id := range Instances(m) {
+		if id.Key == ethertalk.Name {
+			got = append(got, id.Instance)
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("Instances expanded EtherTalk to %v, want [et-lab et-dmz]", got)
+	}
+
+	// Build each instance; each opens its own interface and names itself.
+	opened := map[string]string{} // component name → opened iface
+	for _, id := range Instances(m) {
+		if id.Key != ethertalk.Name {
+			continue
+		}
+		var iface atomic.Value
+		opener := func(i string) (link.FrameLink, error) { iface.Store(i); return &idleFrameLink{}, nil }
+		c, ok, err := Build(id.Key, &BuildContext{Model: m, Instance: id.Instance, Opener: opener})
+		if err != nil || !ok || c == nil {
+			t.Fatalf("Build(%s/%s) = (%v, %v, %v)", id.Key, id.Instance, c, ok, err)
+		}
+		if c.Name() != id.Instance {
+			t.Fatalf("instance %q built a component named %q", id.Instance, c.Name())
+		}
+		ctx := context.Background()
+		if err := c.Start(ctx); err != nil {
+			t.Fatalf("Start %s: %v", id.Instance, err)
+		}
+		opened[c.Name()] = iface.Load().(string)
+		c.Stop(ctx)
+	}
+	if opened["et-lab"] != "eth0" || opened["et-dmz"] != "eth1" {
+		t.Fatalf("instances opened the wrong interfaces: %v", opened)
+	}
+}

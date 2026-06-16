@@ -82,8 +82,10 @@ func (p *Port) SetOwner(owner router.RoutedPort) {
 	p.mu.Unlock()
 }
 
-// Name returns the component name (the section key).
-func (p *Port) Name() string { return p.sec.SKey }
+// Name returns the component identity: the section's instance name (§M11), which
+// for a singleton/default port falls back to the schema key — so a single-instance
+// config still reports "EtherTalk", while named instances report "et-lab" etc.
+func (p *Port) Name() string { return p.sec.InstanceName() }
 
 // Start opens the link and spawns the read loop. Idempotent (§3): starting a
 // started port is a no-op. A nil link from the factory is a successful inert

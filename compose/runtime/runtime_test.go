@@ -23,12 +23,19 @@ type fakeSource map[string]registry_factory
 
 type registry_factory func(*registry.BuildContext) (component.Component, error)
 
-func (s fakeSource) Names() []string {
-	out := make([]string, 0, len(s))
+// Instances treats every fake entry as a singleton (Name == Key, no instance
+// expansion) — the runtime's repeated-port expansion is exercised in the registry
+// tests; here we only need the singleton path.
+func (s fakeSource) Instances(*config.Model) []registry.ComponentID {
+	names := make([]string, 0, len(s))
 	for n := range s {
-		out = append(out, n)
+		names = append(names, n)
 	}
-	sort.Strings(out)
+	sort.Strings(names)
+	out := make([]registry.ComponentID, 0, len(names))
+	for _, n := range names {
+		out = append(out, registry.ComponentID{Key: n, Name: n})
+	}
 	return out
 }
 
