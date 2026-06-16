@@ -23,8 +23,21 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/router"
 )
 
-// Name is the component/section key for the LocalTalk port.
-const Name = "LocalTalk"
+// Component/section keys for the LocalTalk ports. LToUDP and TashTalk are
+// DISTINCT AppleTalk segments — each its own network number, zone, node space,
+// and node-claim — reached over different transports (UDP multicast vs serial),
+// NOT two ways onto one segment. So they are two ports with two keys, and a
+// router can bridge both at once. Both are served by this one transport-agnostic
+// package (LLAP framing + runport); the transport differs only in the FrameLink
+// the compose factory injects.
+const (
+	NameLToUDP   = "LToUDP"   // LocalTalk-over-UDP-multicast segment
+	NameTashTalk = "TashTalk" // physical LocalTalk segment via TashTalk serial
+
+	// Name is retained for callers/tests that predate the segment split; it names
+	// the LToUDP segment (the historical default LocalTalk transport).
+	Name = NameLToUDP
+)
 
 // Port is the real LocalTalk port. It embeds the runport base (lifecycle, read
 // loop, metering, RoutedPort data half) and adds the LocalTalk framing.
@@ -32,13 +45,20 @@ type Port struct {
 	*runport.Port
 }
 
-// New builds the real LocalTalk port. frame is the LocalTalk FrameLink (nil →
-// inert until compose injects a transport link). framer turns that into a DDP
-// DatagramLink via LLAP (nil with a non-nil frame is an error). rtr is the
-// router the port delivers inbound datagrams to (nil → drop until M4). Returns
-// (nil, nil) when the section is disabled.
+// New builds the real LocalTalk port for the default (LToUDP) segment key. See
+// NewNamed for the key-parameterised form.
 func New(m *config.Model, frame link.FrameLink, framer link.Framer, rtr router.Router, logger log.Logger) (component.Component, error) {
-	sec := port.SectionFromModel(m, Name)
+	return NewNamed(Name, m, frame, framer, rtr, logger)
+}
+
+// NewNamed builds the real LocalTalk port for segment key (NameLToUDP or
+// NameTashTalk). frame is the LocalTalk FrameLink (nil → inert until compose
+// injects a transport link). framer turns that into a DDP DatagramLink via LLAP
+// (nil with a non-nil frame is an error). rtr is the router the port delivers
+// inbound datagrams to (nil → drop until M4). Returns (nil, nil) when the
+// section is disabled.
+func NewNamed(key string, m *config.Model, frame link.FrameLink, framer link.Framer, rtr router.Router, logger log.Logger) (component.Component, error) {
+	sec := port.SectionFromModel(m, key)
 	if !sec.IsEnabled {
 		return nil, nil
 	}
@@ -49,18 +69,25 @@ func New(m *config.Model, frame link.FrameLink, framer link.Framer, rtr router.R
 	return newPort(sec, buildLinkFactory(frame, framer), rtr, logger), nil
 }
 
-// NewFromOpener builds the LocalTalk port from a per-Start FrameLink opener
-// rather than a single pre-opened FrameLink. opener is called on every Start to
-// obtain a FRESH LocalTalk link, which framer then wraps as a DDP DatagramLink
-// via LLAP — so the port survives a Stop→Start by reopening the transport. It is
-// the constructor the composition layer uses once it can build a real device
-// link from config; core stays free of the transport adapter because opener is
-// injected.
+// NewFromOpener builds the LocalTalk port for the default (LToUDP) segment key
+// from a per-Start FrameLink opener. See NewFromOpenerNamed for the
+// key-parameterised form.
+func NewFromOpener(m *config.Model, opener func() (link.FrameLink, error), framer link.Framer, rtr router.Router, logger log.Logger) (component.Component, error) {
+	return NewFromOpenerNamed(Name, m, opener, framer, rtr, logger)
+}
+
+// NewFromOpenerNamed builds the LocalTalk port for segment key from a per-Start
+// FrameLink opener rather than a single pre-opened FrameLink. opener is called
+// on every Start to obtain a FRESH LocalTalk link, which framer then wraps as a
+// DDP DatagramLink via LLAP — so the port survives a Stop→Start by reopening the
+// transport. It is the constructor the composition layer uses once it can build
+// a real device link from config; core stays free of the transport adapter
+// because opener is injected.
 //
 // A nil opener yields the inert form; a non-nil opener with a nil framer is an
 // error. Returns (nil, nil) when the section is disabled.
-func NewFromOpener(m *config.Model, opener func() (link.FrameLink, error), framer link.Framer, rtr router.Router, logger log.Logger) (component.Component, error) {
-	sec := port.SectionFromModel(m, Name)
+func NewFromOpenerNamed(key string, m *config.Model, opener func() (link.FrameLink, error), framer link.Framer, rtr router.Router, logger log.Logger) (component.Component, error) {
+	sec := port.SectionFromModel(m, key)
 	if !sec.IsEnabled {
 		return nil, nil
 	}

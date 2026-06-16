@@ -226,17 +226,27 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > 0x02 reset init; a Windows-only `normalizeSerialPortName` adds the `\\.\COMn` prefix. Imports
 > `jacobsa/go-serial`, so OUTSIDE the cs-tinygo gate (like pcap/ltoudp). Node-claim (the host pushing
 > the claimed node to the firmware) stays DEFERRED with the core's M3 node-claim, same as LToUDP/AARP.
-> **Transport selection:** a new `Section.Transport` field (`"" | "ltoudp" | "serial"`, validated;
-> default LToUDP) — the user picked an explicit field over inferring from `iface`. The localtalk
-> factory dispatches on it via `localTalkOpener(sec)` (a second swappable `tashtalkOpen` seam next to
-> `ltoudpOpen`); for serial `sec.Iface` is the device path, for LToUDP the IPv4 bind addr. Tests:
-> adapter Write-framing / Read-decode / reassemble-across-chunks / bad-FCS-discarded / short-discarded
-> / closed-terminal / init-sequence (all over an in-memory fake serial, no hardware); factory
-> serial-dispatch (TashTalk seam called, LToUDP not); Section transport-validate; TOML round-trip
-> carries the new field.
 >
-> **LocalTalk is now FULLY LIVE** over both transports. With this, every AppleTalk-bearing port
-> (EtherTalk pcap, LocalTalk LToUDP + serial) can move real frames from config.
+> **Segment model — TWO ports, not one with a switch (corrected after the steer that "tashtalk and
+> LToUDP represent distinct network segments over different transports"):** LToUDP and TashTalk are
+> DISTINCT AppleTalk segments — each its own network number, zone, node space, and node-claim — so a
+> router can bridge BOTH at once. They are therefore registered as two independent components/keys
+> (`localtalk.NameLToUDP = "LToUDP"`, `localtalk.NameTashTalk = "TashTalk"`), matching the legacy
+> `[LToUdp]`/`[TashTalk]` split. The `Section.Transport` field from the first cut was REVERTED — the
+> segment key, not a per-section switch, selects the transport. The one transport-agnostic
+> `core/port/localtalk` package serves both via key-parameterised `NewNamed`/`NewFromOpenerNamed`
+> (the runport names itself from `sec.SKey`); `New`/`NewFromOpener` remain as LToUDP-default wrappers.
+> The compose `registerLocalTalk(key, openerFor)` helper registers each segment, sharing the
+> LiveAddr-binding factory body; `ltoudpOpener`/`tashtalkOpener` build the per-Start opener from the
+> section (LToUDP `Iface` = IPv4 bind addr; TashTalk `Iface` = serial device path). Both seams
+> (`ltoudpOpen`/`tashtalkOpen`) stay swappable for tests. Tests: adapter Write-framing / Read-decode /
+> reassemble-across-chunks / bad-FCS-discarded / short-discarded / closed-terminal / init-sequence
+> (in-memory fake serial, no hardware); factory LToUDP-go-live / TashTalk-go-live / segments-are-
+> distinct (both run at once, each its own transport) / ignores-bridge / nil-opener-inert (both keys)
+> / reopen-on-restart; conformance harness now exercises both `LToUDP` and `TashTalk`.
+>
+> **LocalTalk is now FULLY LIVE** as two distinct segments. With this, every AppleTalk-bearing port
+> (EtherTalk pcap, LToUDP multicast, TashTalk serial) can move real frames from config.
 >
 > **NEXT (slice B follow-ons):**
 > (2) IPX/NetBEUI device-link injection (their factories take a pre-resolved `[6]byte` MAC from

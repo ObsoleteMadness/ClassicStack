@@ -31,24 +31,24 @@ func swapTashtalkOpen(t *testing.T, fn func(dev string) (link.FrameLink, error))
 	t.Cleanup(func() { tashtalkOpen = prev })
 }
 
-func enabledLocalTalkModel(iface string) *config.Model {
+func enabledSegmentModel(key, iface string) *config.Model {
 	m := config.NewModel()
-	m.Set(&port.Section{SKey: localtalk.Name, Iface: iface, IsEnabled: true})
+	m.Set(&port.Section{SKey: key, Iface: iface, IsEnabled: true})
 	return m
 }
 
 // anyOpener returns a BuildContext-level Opener so the factory takes the LIVE
-// path. LocalTalk does NOT call this opener (it opens LToUDP directly); it is
-// only the "device backends enabled" switch.
+// path. A LocalTalk segment does NOT call this opener (it opens its own
+// transport directly); it is only the "device backends enabled" switch.
 func anyOpener() LinkOpener {
 	return func(string) (link.FrameLink, error) { return &idleFrameLink{}, nil }
 }
 
-// TestLocalTalkFactory_GoesLiveOnLToUDP proves the factory builds a LIVE port
-// using the LToUDP transport (its own iface address, NOT the bridge or the pcap
-// opener): starting it opens an LToUDP link for the configured interface, and
-// stopping it closes that link.
-func TestLocalTalkFactory_GoesLiveOnLToUDP(t *testing.T) {
+// TestLToUDPFactory_GoesLive proves the LToUDP port builds a LIVE port using the
+// LToUDP transport (its own iface address, NOT the bridge or the pcap opener):
+// starting it opens an LToUDP link for the configured interface, stopping it
+// closes that link.
+func TestLToUDPFactory_GoesLive(t *testing.T) {
 	var openedIface atomic.Value
 	fl := &idleFrameLink{}
 	swapLtoudpOpen(t, func(iface string) (link.FrameLink, error) {
@@ -56,12 +56,15 @@ func TestLocalTalkFactory_GoesLiveOnLToUDP(t *testing.T) {
 		return fl, nil
 	})
 
-	c, ok, err := Build(localtalk.Name, &BuildContext{
-		Model:  enabledLocalTalkModel("192.168.1.5"),
+	c, ok, err := Build(localtalk.NameLToUDP, &BuildContext{
+		Model:  enabledSegmentModel(localtalk.NameLToUDP, "192.168.1.5"),
 		Opener: anyOpener(),
 	})
 	if err != nil || !ok || c == nil {
-		t.Fatalf("Build(LocalTalk) = (%v, %v, %v), want live component", c, ok, err)
+		t.Fatalf("Build(LToUDP) = (%v, %v, %v), want live component", c, ok, err)
+	}
+	if c.Name() != localtalk.NameLToUDP {
+		t.Fatalf("component Name = %q, want %q", c.Name(), localtalk.NameLToUDP)
 	}
 
 	ctx := context.Background()
@@ -79,28 +82,33 @@ func TestLocalTalkFactory_GoesLiveOnLToUDP(t *testing.T) {
 	}
 }
 
-// TestLocalTalkFactory_SerialTransport proves transport = "serial" dispatches to
-// the TashTalk serial open seam with the section's Iface as the device path —
-// NOT to LToUDP. The LToUDP seam must NOT be touched.
-func TestLocalTalkFactory_SerialTransport(t *testing.T) {
+// TestTashTalkFactory_GoesLive proves the TashTalk port is a DISTINCT component
+// that opens the SERIAL transport with the section's Iface as the device path —
+// never LToUDP.
+func TestTashTalkFactory_GoesLive(t *testing.T) {
 	var openedDev atomic.Value
 	var ltoudpCalled atomic.Bool
+	fl := &idleFrameLink{}
 	swapTashtalkOpen(t, func(dev string) (link.FrameLink, error) {
 		openedDev.Store(dev)
-		return &idleFrameLink{}, nil
+		return fl, nil
 	})
 	swapLtoudpOpen(t, func(string) (link.FrameLink, error) {
 		ltoudpCalled.Store(true)
 		return &idleFrameLink{}, nil
 	})
 
-	m := config.NewModel()
-	m.Set(&port.Section{SKey: localtalk.Name, Iface: "COM3", Transport: port.TransportSerial, IsEnabled: true})
-
-	c, ok, err := Build(localtalk.Name, &BuildContext{Model: m, Opener: anyOpener()})
+	c, ok, err := Build(localtalk.NameTashTalk, &BuildContext{
+		Model:  enabledSegmentModel(localtalk.NameTashTalk, "COM3"),
+		Opener: anyOpener(),
+	})
 	if err != nil || !ok || c == nil {
-		t.Fatalf("Build(LocalTalk serial) = (%v, %v, %v)", c, ok, err)
+		t.Fatalf("Build(TashTalk) = (%v, %v, %v)", c, ok, err)
 	}
+	if c.Name() != localtalk.NameTashTalk {
+		t.Fatalf("component Name = %q, want %q", c.Name(), localtalk.NameTashTalk)
+	}
+
 	ctx := context.Background()
 	if err := c.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -110,15 +118,51 @@ func TestLocalTalkFactory_SerialTransport(t *testing.T) {
 		t.Fatalf("TashTalk opened device %v, want COM3", got)
 	}
 	if ltoudpCalled.Load() {
-		t.Fatal("LToUDP seam was called for a serial-transport LocalTalk port")
+		t.Fatal("LToUDP seam was called for the TashTalk segment")
 	}
 }
 
-// TestLocalTalkFactory_IgnoresBridge proves LocalTalk does NOT consult the shared
-// Bridge: even with a bridge NIC set and an empty section iface, the LToUDP open
-// gets the empty iface (join-on-any), never the bridge name. LToUDP is a
-// UDP-tunnelled segment, not an L2/NIC port.
-func TestLocalTalkFactory_IgnoresBridge(t *testing.T) {
+// TestLocalTalkSegments_AreDistinct proves LToUDP and TashTalk are two separate
+// components that can run at once, each opening its OWN transport — modelling two
+// distinct AppleTalk segments, not one port with a transport switch.
+func TestLocalTalkSegments_AreDistinct(t *testing.T) {
+	var ltoudpDev, ttDev atomic.Value
+	swapLtoudpOpen(t, func(iface string) (link.FrameLink, error) {
+		ltoudpDev.Store(iface)
+		return &idleFrameLink{}, nil
+	})
+	swapTashtalkOpen(t, func(dev string) (link.FrameLink, error) {
+		ttDev.Store(dev)
+		return &idleFrameLink{}, nil
+	})
+
+	m := config.NewModel()
+	m.Set(&port.Section{SKey: localtalk.NameLToUDP, Iface: "", IsEnabled: true})
+	m.Set(&port.Section{SKey: localtalk.NameTashTalk, Iface: "/dev/ttyUSB0", IsEnabled: true})
+
+	ctx := context.Background()
+	for _, key := range []string{localtalk.NameLToUDP, localtalk.NameTashTalk} {
+		c, ok, err := Build(key, &BuildContext{Model: m, Opener: anyOpener()})
+		if err != nil || !ok || c == nil {
+			t.Fatalf("Build(%s) = (%v, %v, %v)", key, c, ok, err)
+		}
+		if err := c.Start(ctx); err != nil {
+			t.Fatalf("Start(%s): %v", key, err)
+		}
+		defer c.Stop(ctx)
+	}
+	if ltoudpDev.Load() != "" {
+		t.Fatalf("LToUDP opened %v, want empty", ltoudpDev.Load())
+	}
+	if ttDev.Load() != "/dev/ttyUSB0" {
+		t.Fatalf("TashTalk opened %v, want /dev/ttyUSB0", ttDev.Load())
+	}
+}
+
+// TestLToUDPFactory_IgnoresBridge proves a LocalTalk segment does NOT consult the
+// shared Bridge: even with a bridge NIC set and an empty section iface, the
+// LToUDP open gets the empty iface (join-on-any), never the bridge name.
+func TestLToUDPFactory_IgnoresBridge(t *testing.T) {
 	var openedIface atomic.Value
 	swapLtoudpOpen(t, func(iface string) (link.FrameLink, error) {
 		openedIface.Store(iface)
@@ -126,9 +170,9 @@ func TestLocalTalkFactory_IgnoresBridge(t *testing.T) {
 	})
 	m := config.NewModel()
 	m.Bridge = config.InterfaceSection{Name: "br0"}
-	m.Set(&port.Section{SKey: localtalk.Name, Iface: "", IsEnabled: true})
+	m.Set(&port.Section{SKey: localtalk.NameLToUDP, Iface: "", IsEnabled: true})
 
-	c, ok, err := Build(localtalk.Name, &BuildContext{Model: m, Opener: anyOpener()})
+	c, ok, err := Build(localtalk.NameLToUDP, &BuildContext{Model: m, Opener: anyOpener()})
 	if err != nil || !ok || c == nil {
 		t.Fatalf("Build = (%v, %v, %v)", c, ok, err)
 	}
@@ -143,36 +187,36 @@ func TestLocalTalkFactory_IgnoresBridge(t *testing.T) {
 }
 
 // TestLocalTalkFactory_NilOpenerInert proves the graceful-degradation contract: a
-// nil Opener builds an enabled port that comes up inert — the LToUDP transport is
-// never opened (no socket bound), so it is safe in a tag-free build / the
-// conformance harness.
+// nil Opener builds an enabled port that comes up inert — neither transport is
+// opened — so it is safe in a tag-free build / the conformance harness. Covers
+// both segment keys.
 func TestLocalTalkFactory_NilOpenerInert(t *testing.T) {
-	var opened atomic.Bool
-	swapLtoudpOpen(t, func(string) (link.FrameLink, error) {
-		opened.Store(true)
-		return &idleFrameLink{}, nil
-	})
+	var ltoudpOpened, ttOpened atomic.Bool
+	swapLtoudpOpen(t, func(string) (link.FrameLink, error) { ltoudpOpened.Store(true); return &idleFrameLink{}, nil })
+	swapTashtalkOpen(t, func(string) (link.FrameLink, error) { ttOpened.Store(true); return &idleFrameLink{}, nil })
 
-	c, ok, err := Build(localtalk.Name, &BuildContext{Model: enabledLocalTalkModel("eth0")})
-	if err != nil || !ok || c == nil {
-		t.Fatalf("Build(LocalTalk) = (%v, %v, %v), want inert component", c, ok, err)
-	}
 	ctx := context.Background()
-	if err := c.Start(ctx); err != nil {
-		t.Fatalf("Start (inert): %v", err)
+	for _, key := range []string{localtalk.NameLToUDP, localtalk.NameTashTalk} {
+		c, ok, err := Build(key, &BuildContext{Model: enabledSegmentModel(key, "x")})
+		if err != nil || !ok || c == nil {
+			t.Fatalf("Build(%s) = (%v, %v, %v), want inert component", key, c, ok, err)
+		}
+		if err := c.Start(ctx); err != nil {
+			t.Fatalf("Start (inert) %s: %v", key, err)
+		}
+		if err := c.Stop(ctx); err != nil {
+			t.Fatalf("Stop (inert) %s: %v", key, err)
+		}
 	}
-	if err := c.Stop(ctx); err != nil {
-		t.Fatalf("Stop (inert): %v", err)
-	}
-	if opened.Load() {
-		t.Fatal("nil Opener still opened an LToUDP socket; should stay inert")
+	if ltoudpOpened.Load() || ttOpened.Load() {
+		t.Fatal("nil Opener still opened a transport; should stay inert")
 	}
 }
 
-// TestLocalTalkFactory_ReopensOnRestart proves a Stop→Start reopens the LToUDP
-// transport: the open seam is called once per Start (a closed socket is
-// terminal), so the port survives a UI restart with a fresh link.
-func TestLocalTalkFactory_ReopensOnRestart(t *testing.T) {
+// TestLToUDPFactory_ReopensOnRestart proves a Stop→Start reopens the transport:
+// the open seam is called once per Start (a closed socket is terminal), so the
+// port survives a UI restart with a fresh link.
+func TestLToUDPFactory_ReopensOnRestart(t *testing.T) {
 	var calls atomic.Int32
 	links := []*idleFrameLink{{}, {}}
 	swapLtoudpOpen(t, func(string) (link.FrameLink, error) {
@@ -180,7 +224,7 @@ func TestLocalTalkFactory_ReopensOnRestart(t *testing.T) {
 		return links[n-1], nil
 	})
 
-	c, ok, err := Build(localtalk.Name, &BuildContext{Model: enabledLocalTalkModel(""), Opener: anyOpener()})
+	c, ok, err := Build(localtalk.NameLToUDP, &BuildContext{Model: enabledSegmentModel(localtalk.NameLToUDP, ""), Opener: anyOpener()})
 	if err != nil || !ok || c == nil {
 		t.Fatalf("Build = (%v, %v, %v)", c, ok, err)
 	}

@@ -113,7 +113,7 @@ func TestComponentConformance(t *testing.T) {
 			if cf, ok := c.(component.Configurable); ok {
 				// Test Configurable hot-apply and restart paths
 				// If it's a port, changing binding needs restart, enabled applies live.
-				if name == "EtherTalk" || name == "LocalTalk" || name == "IPX" || name == "NetBEUI" {
+				if name == "EtherTalk" || name == "LToUDP" || name == "TashTalk" || name == "IPX" || name == "NetBEUI" {
 					// Hot-apply check (same iface, IsEnabled changes)
 					secLive := &port.Section{SKey: name, Iface: "eth0", IsEnabled: false}
 					if err := cf.ApplyConfig(secLive); err != nil {

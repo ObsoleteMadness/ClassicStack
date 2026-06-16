@@ -38,21 +38,7 @@ type Section struct {
 	SeedNetworkEnd uint16 `toml:"seed_network_end"`
 	// SeedZone is the default zone name this port seeds ("" = non-seed / inherit).
 	SeedZone string `toml:"seed_zone"`
-
-	// Transport selects the physical medium for a port that has more than one
-	// (currently only LocalTalk: LToUDP multicast vs TashTalk serial). "" defaults
-	// to the port's primary transport (LocalTalk → LToUDP). The meaning of Iface
-	// follows from it: for LToUDP it is the local IPv4 ADDRESS to bind/join on, for
-	// serial it is the device path (COM3, /dev/ttyUSB0). Single-transport ports
-	// (EtherTalk/IPX/NetBEUI) ignore this field.
-	Transport string `toml:"transport"`
 }
-
-// LocalTalk transport selectors carried in Section.Transport.
-const (
-	TransportLToUDP = "ltoudp" // LocalTalk over UDP multicast (the default)
-	TransportSerial = "serial" // LocalTalk over a TashTalk serial line
-)
 
 // Key returns the section key (matches the component/registry name).
 func (s *Section) Key() string { return s.SKey }
@@ -88,20 +74,11 @@ func (s *Section) Validate() error {
 	if s.SeedNetworkEnd != 0 && s.SeedNetworkEnd < s.SeedNetwork {
 		return ErrSeedRange
 	}
-	switch s.Transport {
-	case "", TransportLToUDP, TransportSerial:
-		// "" = port default; the two named selectors are the only valid values.
-	default:
-		return ErrBadTransport
-	}
 	return nil
 }
 
 // ErrSeedRange reports a seed network range whose end precedes its start.
 var ErrSeedRange = errors.New("port: seed_network_end precedes seed_network")
-
-// ErrBadTransport reports a Transport value that is not "" or a known selector.
-var ErrBadTransport = errors.New(`port: transport must be "", "ltoudp", or "serial"`)
 
 // ErrBadMAC reports a MAC string that is not six colon- or dash-separated hex octets.
 var ErrBadMAC = errors.New("port: MAC must be six hex octets, e.g. 00:11:22:aa:bb:cc")
