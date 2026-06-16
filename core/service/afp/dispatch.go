@@ -73,16 +73,20 @@ func newAFPSession() *afpSession {
 // login/info calls) is rejected with the spec result code rather than a panic, so
 // one bad request cannot disturb the session.
 //
+// It operates on the transport-neutral afpSession (the per-circuit AFP state), NOT
+// on an ASP *session — command dispatch carries no transport knowledge, so the same
+// engine serves an ASP circuit or a future DSI circuit (the §3-bis split; see
+// conn.go). The ASP layer reaches it through Conn.Command.
+//
 // The command byte is block[0]; AFP request arguments follow. Most decoders here
 // keep the command byte (offsets match Inside Macintosh's "Request block" tables,
 // which count from the command byte); FPLogin is the historical exception whose
 // arguments are documented from byte 1, so its handler is passed block[1:].
-func (s *Service) dispatchAFP(sess *session, block []byte) (reply []byte, result int32) {
+func (s *Service) dispatchAFP(a *afpSession, block []byte) (reply []byte, result int32) {
 	if len(block) == 0 {
 		return nil, afpErrParamErr
 	}
 	cmd := block[0]
-	a := sess.afp
 
 	switch cmd {
 	case cmdGetSrvrInfo:

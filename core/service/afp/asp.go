@@ -11,15 +11,16 @@ import (
 
 // session is one ASP session: a client that has completed OpenSession. The
 // session id (1–255) is the demux key the client stamps into every subsequent
-// Command/Write. afp carries the per-session AFP state (the logged-in user and
-// the open volumes) so the AFP layer holds no socket knowledge.
+// Command/Write. The transport-neutral AFP command core lives behind conn (the
+// per-circuit Conn from conn.go); the session adds only the ASP transport state
+// (socket/address/timer), so the AFP layer holds no socket knowledge.
 type session struct {
 	id     uint8
 	wss    uint8     // workstation session socket (for server tickles / attention)
 	net    uint16    // client network — server-initiated packets address here
 	node   uint8     // client node
 	lastRx time.Time // updated on every inbound packet for the maintenance timer
-	afp    *afpSession
+	conn   *Conn     // the transport-agnostic AFP command circuit (conn.go)
 }
 
 // sessionTable holds the live ASP sessions keyed by session id, and allocates new
@@ -35,9 +36,10 @@ func newSessionTable() *sessionTable {
 	return &sessionTable{byID: make(map[uint8]*session), nextID: 1}
 }
 
-// open allocates a session id and registers a new session. It returns ok=false
-// if all 255 ids are in use (the client sees SPErrorNoMoreSessions / ServerBusy).
-func (t *sessionTable) open(wss uint8, net uint16, node uint8, afp *afpSession) (*session, bool) {
+// open allocates a session id and registers a new session bound to the given AFP
+// command circuit. It returns ok=false if all 255 ids are in use (the client sees
+// SPErrorNoMoreSessions / ServerBusy).
+func (t *sessionTable) open(wss uint8, net uint16, node uint8, conn *Conn) (*session, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if len(t.byID) >= 255 {
@@ -53,7 +55,7 @@ func (t *sessionTable) open(wss uint8, net uint16, node uint8, afp *afpSession) 
 		}
 		id++
 	}
-	s := &session{id: id, wss: wss, net: net, node: node, lastRx: time.Now(), afp: afp}
+	s := &session{id: id, wss: wss, net: net, node: node, lastRx: time.Now(), conn: conn}
 	t.byID[id] = s
 	t.nextID = id + 1
 	return s, true
@@ -129,7 +131,7 @@ func (s *Service) handleOpenSession(req atpRequest) {
 		return
 	}
 
-	sess, ok := s.sessions.open(open.WSSSocket, req.d.SrcNetwork, req.d.SrcNode, newAFPSession())
+	sess, ok := s.sessions.open(open.WSSSocket, req.d.SrcNetwork, req.d.SrcNode, s.NewConn())
 	if !ok {
 		reply.ErrorCode = asp.SPErrorServerBusy
 		req.respond(s.rtr, reply.MarshalUserData(), nil)
@@ -144,8 +146,8 @@ func (s *Service) handleOpenSession(req atpRequest) {
 // FPCloseFork does not leak file handles.
 func (s *Service) handleCloseSession(req atpRequest) {
 	pkt := asp.ParseCloseSessPacket(req.userData)
-	if sess, ok := s.sessions.get(pkt.SessionID); ok && sess.afp != nil {
-		sess.afp.forks.closeAll()
+	if sess, ok := s.sessions.get(pkt.SessionID); ok && sess.conn != nil {
+		sess.conn.Close()
 	}
 	s.sessions.close(pkt.SessionID)
 	req.respond(s.rtr, asp.CloseSessReplyUserData(), nil)
@@ -175,7 +177,7 @@ func (s *Service) handleCommand(req atpRequest) {
 	}
 	sess.lastRx = time.Now()
 
-	reply, result := s.dispatchAFP(sess, cmd.CmdBlock)
+	reply, result := sess.conn.Command(cmd.CmdBlock)
 	req.respond(s.rtr, int32ToUserData(result), reply)
 }
 
@@ -203,8 +205,8 @@ func (s *Service) handleWrite(req atpRequest) {
 	want, hdrLen := writeDataCount(pkt.CmdBlock)
 	if want <= 0 {
 		// No data to fetch (zero-length FPWrite, or a non-write block): run it
-		// straight through the dispatcher and reply in one shot.
-		reply, result := s.dispatchAFP(sess, pkt.CmdBlock)
+		// straight through the command circuit and reply in one shot.
+		reply, result := sess.conn.Command(pkt.CmdBlock)
 		req.respond(s.rtr, int32ToUserData(result), reply)
 		return
 	}
@@ -271,7 +273,7 @@ func (s *Service) handleDataResponse(resp atpResponse) {
 	pw.sess.lastRx = time.Now()
 
 	block := appendWriteData(pw.cmdBlk, pw.hdrLen, pw.data)
-	reply, result := s.dispatchAFP(pw.sess, block)
+	reply, result := pw.sess.conn.Command(block)
 	pw.orig.respond(s.rtr, int32ToUserData(result), reply)
 }
 
