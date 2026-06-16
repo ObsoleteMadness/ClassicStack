@@ -15,12 +15,13 @@ type Section interface {
 // (named-instance) sections — e.g. one AFP volume per share — live in Lists keyed by the schema
 // key, each instance distinguished by its InstanceName().
 type Model struct {
-	Identity Identity // server hostname/workgroup/description (§4-bis); owned by no service
-	Logging  LoggingSection
-	Router   RouterSection
-	Bridge   InterfaceSection
-	Sections map[string]Section   // registered singleton component sections
-	Lists    map[string][]Section // registered repeated (named-instance) sections
+	Identity  Identity  // server hostname/workgroup/description (§4-bis); owned by no service
+	AdminAuth AdminAuth // web-management-interface admin credential (§4-ter); username + salted hash
+	Logging   LoggingSection
+	Router    RouterSection
+	Bridge    InterfaceSection
+	Sections  map[string]Section   // registered singleton component sections
+	Lists     map[string][]Section // registered repeated (named-instance) sections
 }
 
 // NewModel returns an empty model with initialised Sections / Lists maps.
@@ -35,12 +36,13 @@ func NewModel() *Model {
 // a change never mutates the live model.
 func (m *Model) Clone() *Model {
 	c := &Model{
-		Identity: m.Identity.Clone(),
-		Logging:  m.Logging,
-		Router:   m.Router,
-		Bridge:   m.Bridge,
-		Sections: make(map[string]Section, len(m.Sections)),
-		Lists:    make(map[string][]Section, len(m.Lists)),
+		Identity:  m.Identity.Clone(),
+		AdminAuth: m.AdminAuth.Clone(),
+		Logging:   m.Logging,
+		Router:    m.Router,
+		Bridge:    m.Bridge,
+		Sections:  make(map[string]Section, len(m.Sections)),
+		Lists:     make(map[string][]Section, len(m.Lists)),
 	}
 	for k, s := range m.Sections {
 		c.Sections[k] = s.Clone()
@@ -84,6 +86,9 @@ type ValidateOptions struct {
 // wire. A nil/empty model validates clean.
 func (m *Model) Validate(opts ValidateOptions) error {
 	if err := m.Identity.Validate(); err != nil {
+		return err
+	}
+	if err := m.AdminAuth.Validate(); err != nil {
 		return err
 	}
 	for _, s := range m.Sections {

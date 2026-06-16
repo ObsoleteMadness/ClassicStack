@@ -265,6 +265,16 @@ func (s *Supervisor) dependents(name string) []string {
 // Model returns the shared in-memory model.
 func (s *Supervisor) Model() *config.Model { return s.model }
 
+// SetAdminAuth stamps the web-management-interface admin credential (§4-ter) into the
+// shared model under the supervisor lock. The control plane calls it from SetAdmin,
+// then persists the model via the Save path. The credential is hash-only (the HTTP
+// adapter derived it); no plaintext reaches here.
+func (s *Supervisor) SetAdminAuth(a config.AdminAuth) {
+	s.mu.Lock()
+	s.model.AdminAuth = a
+	s.mu.Unlock()
+}
+
 // SetUserStore wires the authentication store the user-administration surface
 // (control.UserAdmin, driven by the web UI) operates on. The compose root builds
 // the store once (registry.BuildUserStore) and hands it here as well as to each

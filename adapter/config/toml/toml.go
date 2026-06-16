@@ -27,10 +27,11 @@ var _ config.Codec = (*Codec)(nil)
 // wellKnown mirrors the typed Model fields for TOML (un)marshalling. Component
 // sections are handled separately via the schema registry.
 type wellKnown struct {
-	Identity config.Identity         `toml:"identity"`
-	Logging  config.LoggingSection   `toml:"logging"`
-	Router   config.RouterSection    `toml:"router"`
-	Bridge   config.InterfaceSection `toml:"bridge"`
+	Identity  config.Identity         `toml:"identity"`
+	AdminAuth config.AdminAuth        `toml:"adminauth"`
+	Logging   config.LoggingSection   `toml:"logging"`
+	Router    config.RouterSection    `toml:"router"`
+	Bridge    config.InterfaceSection `toml:"bridge"`
 }
 
 // Marshal renders the model: the well-known sections under their fixed keys, then
@@ -42,6 +43,11 @@ func (c *Codec) Marshal(m *config.Model) ([]byte, error) {
 		"logging":  m.Logging,
 		"router":   m.Router,
 		"bridge":   m.Bridge,
+	}
+	// Only emit [adminauth] once an admin is configured, so a fresh server.toml has
+	// no empty credential block (and first-run detection stays unambiguous).
+	if m.AdminAuth.Configured() {
+		top["adminauth"] = m.AdminAuth
 	}
 	for key, sec := range m.Sections {
 		top[key] = sec
@@ -67,6 +73,7 @@ func (c *Codec) Unmarshal(data []byte, m *config.Model) error {
 		return err
 	}
 	m.Identity = wk.Identity
+	m.AdminAuth = wk.AdminAuth
 	m.Logging = wk.Logging
 	m.Router = wk.Router
 	m.Bridge = wk.Bridge

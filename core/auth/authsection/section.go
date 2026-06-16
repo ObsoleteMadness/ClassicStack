@@ -1,4 +1,11 @@
-package auth
+// Package authsection holds the user-store config section ("Auth") that selects and
+// locates the file-service user store. It lives in its own package — split out of
+// core/auth — because it imports core/config, while core/config now imports core/auth
+// (for the pure PBKDF2 helpers behind config.AdminAuth.Verify). Keeping the section
+// here breaks what would otherwise be an import cycle (config → auth → config) and
+// preserves the rule that core/auth's contract + crypto stay config-free and
+// TinyGo-clean.
+package authsection
 
 import "github.com/ObsoleteMadness/ClassicStack/core/config"
 

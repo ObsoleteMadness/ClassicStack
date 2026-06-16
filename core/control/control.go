@@ -40,6 +40,16 @@ type Plane interface {
 	SetUserDisabled(name string, disabled bool) error
 	RemoveUser(name string) error
 
+	// Web-management-interface admin credential (§4-ter). AdminConfigured reports
+	// whether an admin has been set — the HTTP front-end uses it to drive first-run
+	// setup vs. enforce Basic auth. SetAdmin stores an already-derived credential
+	// (the adapter ring generates the salt and hashes the password; the plane never
+	// sees plaintext beyond forwarding the hash-only DTO) and persists it via the
+	// Save path, returning the new config revision. Unlike the file-service user
+	// store, AdminAuth always exists on the model, so these are never ErrUnavailable.
+	AdminConfigured() bool
+	SetAdmin(ctx context.Context, a config.AdminAuth) (revision string, err error)
+
 	Subscribe(topics ...string) (<-chan bus.Event, func())
 }
 
@@ -84,6 +94,9 @@ type Supervisor interface {
 	Status() []Unit
 	ListInterfaces() ([]InterfaceInfo, error)
 	ListFSTypes() []string
+	// SetAdminAuth stamps the web-admin credential (§4-ter) into the model under the
+	// supervisor's lock. The plane calls it from SetAdmin, then persists via Save.
+	SetAdminAuth(a config.AdminAuth)
 }
 
 // Diagnostics is the optional read-only probe surface.
@@ -157,15 +170,21 @@ func (p *plane) unmaskAgainstLive(name string, section config.Section) config.Se
 
 func (p *plane) Save(ctx context.Context) (revision string, err error) {
 	_ = ctx
+	return p.persist()
+}
+
+// persist validates the live model and writes it to the store, returning the new
+// revision. It is the shared body behind Save and SetAdmin (which stamps the admin
+// credential into the model first, then persists). Validation rejects an invalid
+// section or a hostname that violates a consumer-gated rule (the NetBIOS ≤15-byte
+// limit, §4-bis) before it reaches the store, rather than serialising a config that
+// would mangle a name on the wire. NetBIOSEnabled is derived from the live component
+// set, since NetBIOS carries no config section of its own.
+func (p *plane) persist() (revision string, err error) {
 	if p.codec == nil || p.store == nil {
 		return "", errPersistence
 	}
 	m := p.sup.Model()
-	// Validate the whole model before persisting it: reject an invalid section or a
-	// hostname that violates a consumer-gated rule (the NetBIOS ≤15-byte limit, §4-bis)
-	// before it reaches the store, rather than serialising a config that would mangle a
-	// name on the wire. NetBIOSEnabled is derived from the live component set, since
-	// NetBIOS carries no config section of its own.
 	if err := m.Validate(config.ValidateOptions{NetBIOSEnabled: p.netbiosEnabled()}); err != nil {
 		return "", err
 	}
@@ -174,6 +193,24 @@ func (p *plane) Save(ctx context.Context) (revision string, err error) {
 		return "", err
 	}
 	return p.store.Save(data)
+}
+
+// AdminConfigured reports whether a web-admin credential is set (§4-ter). The HTTP
+// front-end reads it to choose first-run setup vs. enforce Basic auth.
+func (p *plane) AdminConfigured() bool {
+	m := p.sup.Model()
+	return m != nil && m.AdminAuth.Configured()
+}
+
+// SetAdmin stamps an already-derived admin credential into the model and persists it,
+// returning the new config revision. The credential is hash-only (the adapter ring
+// generated the salt and hashed the password); the plane never handles plaintext. This
+// is the "set + auto-save" the first-run /setup handler drives — one call both records
+// the admin and writes server.toml.
+func (p *plane) SetAdmin(ctx context.Context, a config.AdminAuth) (revision string, err error) {
+	_ = ctx
+	p.sup.SetAdminAuth(a)
+	return p.persist()
 }
 
 // netbiosComponentName is the component name the supervisor reports for the NetBIOS

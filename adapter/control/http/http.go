@@ -78,9 +78,12 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/set_user", s.handleSetUser)
 	mux.HandleFunc("/set_user_disabled", s.handleSetUserDisabled)
 	mux.HandleFunc("/remove_user", s.handleRemoveUser)
+	mux.HandleFunc("/setup", s.handleSetup)
 	mux.HandleFunc("/subscribe", s.handleSubscribe)
 
-	s.server = &http.Server{Handler: mux}
+	// Wrap every route in the web-admin access gate (§4-ter): first-run setup until an
+	// admin is configured, HTTP Basic auth thereafter.
+	s.server = &http.Server{Handler: s.authGate(mux)}
 
 	s.wg.Add(1)
 	go func() {
@@ -392,12 +395,41 @@ type AdapterClient struct {
 	client  *http.Client
 }
 
-// NewClient returns a new HTTP client adapter.
+// NewClient returns a new HTTP client adapter with no credentials — the form used for
+// first-run (/setup) and for a server with no admin gate.
 func NewClient(baseURL string) *AdapterClient {
 	return &AdapterClient{
 		baseURL: strings.TrimSuffix(baseURL, "/"),
 		client:  &http.Client{Timeout: 10 * time.Second},
 	}
+}
+
+// NewClientWithAuth returns a client that attaches HTTP Basic credentials to every
+// request (including the SSE subscribe stream) via a RoundTripper, so a gated server
+// accepts it. Used once an admin is configured.
+func NewClientWithAuth(baseURL, user, pass string) *AdapterClient {
+	return &AdapterClient{
+		baseURL: strings.TrimSuffix(baseURL, "/"),
+		client: &http.Client{
+			Timeout:   10 * time.Second,
+			Transport: &basicAuthTransport{user: user, pass: pass, base: http.DefaultTransport},
+		},
+	}
+}
+
+// basicAuthTransport injects an Authorization: Basic header on every request, so all
+// client paths (the helper-based ones and the direct Get/Post/SSE ones) carry creds
+// without per-method edits.
+type basicAuthTransport struct {
+	user, pass string
+	base       http.RoundTripper
+}
+
+func (t *basicAuthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Clone so we never mutate the caller's request (RoundTripper contract).
+	r2 := req.Clone(req.Context())
+	r2.SetBasicAuth(t.user, t.pass)
+	return t.base.RoundTrip(r2)
 }
 
 var _ Client = (*AdapterClient)(nil)
@@ -509,6 +541,42 @@ func (c *AdapterClient) Config() (*config.Model, error) {
 	return m, nil
 }
 
+// Setup creates the first-run admin credential (POST /setup), returning the new config
+// revision. HTTP-only surface (Basic auth is an HTTP-transport concern), so it is on
+// the concrete client, not the shared Client interface. Fails (409) if already set.
+func (c *AdapterClient) Setup(user, password string) (string, error) {
+	body, _ := json.Marshal(struct {
+		User     string `json:"user"`
+		Password string `json:"password"`
+	}{User: user, Password: password})
+	res, err := c.client.Post(c.baseURL+"/setup", "application/json", bytesReader(body))
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return "", errForStatus(res.StatusCode, res.Status)
+	}
+	var out struct {
+		Revision string `json:"revision"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	return out.Revision, nil
+}
+
+// SetupRequired reports whether the server is in first-run state (no admin set). It
+// probes /status: a 409 means setup is required, 200/401 means an admin exists.
+func (c *AdapterClient) SetupRequired() (bool, error) {
+	res, err := c.client.Get(c.baseURL + "/status")
+	if err != nil {
+		return false, err
+	}
+	defer res.Body.Close()
+	return res.StatusCode == http.StatusConflict, nil
+}
+
 // Save validates and persists the live model server-side, returning the revision.
 func (c *AdapterClient) Save(ctx context.Context) (string, error) {
 	_ = ctx
@@ -582,7 +650,7 @@ func (c *AdapterClient) Subscribe(topics ...string) (<-chan bus.Event, func(), e
 		return nil, nil, err
 	}
 
-	res, err := http.DefaultClient.Do(req)
+	res, err := c.client.Do(req)
 	if err != nil {
 		return nil, nil, err
 	}

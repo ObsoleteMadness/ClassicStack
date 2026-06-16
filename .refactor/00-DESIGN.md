@@ -605,6 +605,46 @@ config section, so the model can't infer it; the plane supplies it). An invalid 
 over-length hostname under NetBIOS is now rejected before it reaches the store. This closes the
 earlier gap where `ValidateForNetBIOS` was defined but never called.
 
+### §4-ter — web-management-interface admin credential
+
+The web management interface (the new-ring HTTP control adapter) is protected by a **single
+web-admin credential** gated with **HTTP Basic auth** — deliberately the simplest credible scheme
+(no sessions, cookies, or JWT), matching the compatibility-server/honest-security posture
+(charter §55-56). It is distinct from the file-service user store (`auth.UserStore`, the AFP/SMB
+share users): there is exactly one admin, and it lives in the config model.
+
+**`config.AdminAuth{User, SaltHex, HashHex}`** is a well-known typed field on `Model` (a peer of
+`Identity` — §4-bis), round-tripping through the TOML/UCI codecs into `server.toml` (the
+`[adminauth]` block is emitted only once `Configured()`, so a fresh config stays in first-run
+state). It stores a **salted PBKDF2-SHA256 hash, never a plaintext password** — a hash at rest in
+config is acceptable (it is not a recoverable secret), so unlike a backend password it is NOT
+redacted by `config.SecretMasker` (masking it would also break `Verify` on a `Config()`
+round-trip). `AdminAuth.Verify(user, pass)` uses the pure `core/auth` helpers (constant-time, no
+`crypto/rand`), keeping `core/config` reflection-free.
+
+**Ring split (the constraint that shapes the wiring):** salt generation lives in the adapter ring
+(`adapter/control/http`, which owns `crypto/rand`), not in `core/config`. The `/setup` handler
+generates the salt, derives the hash, and hands a **hash-only** `config.AdminAuth` to
+`control.Plane.SetAdmin`, which stamps it into the model (`Supervisor.SetAdminAuth`) and persists
+via the existing Save path (validate → marshal → store). The plane never sees plaintext beyond
+forwarding the hash DTO. **Note:** giving `core/config` a dependency on `core/auth`'s pure crypto
+required splitting the file-service `Auth` config section out of `core/auth` into
+`core/auth/authsection` (it imports `core/config`), breaking what would otherwise be a
+`config → auth → config` cycle; `core/auth`'s contract + PBKDF2 stay config-free and TinyGo-clean.
+
+**First-run gate (`adapter/control/http.authGate`):** until an admin is configured, every route
+except `POST /setup` returns **409 `{"setup_required":true}`** (409 not 401, so the browser does
+not pop a useless auth dialog with no admin to authenticate against). `POST /setup` creates the
+admin and auto-saves. Once configured, `/setup` is sealed (409 already-configured) and every route
+requires valid Basic credentials, verified constant-time against the stored hash; a miss returns
+**401 + `WWW-Authenticate: Basic`** so the browser's native dialog handles login (the point of
+choosing Basic auth — no custom login form). **Security caveat (documented, not hidden):** Basic
+auth sends credentials base64-encoded, not encrypted, and the HTTP adapter has no TLS of its own,
+so it must run over loopback or behind TLS termination. The HTTP client gained
+`NewClientWithAuth` (a Basic-auth `RoundTripper` covering all requests incl. the SSE stream) and
+`Setup`/`SetupRequired`; the legacy `service/webui` stays unauthenticated (old ring, retired at
+M10). Landed M8, 2026-06-16.
+
 ### Schema registration (so new transports don't edit a central struct)
 
 Today adding a transport means editing `config.Model`, `appConfig`, `appConfigFromModel`,

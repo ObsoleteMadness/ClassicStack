@@ -5,6 +5,7 @@ package registry
 import (
 	"github.com/ObsoleteMadness/ClassicStack/adapter/auth/local"
 	"github.com/ObsoleteMadness/ClassicStack/core/auth"
+	"github.com/ObsoleteMadness/ClassicStack/core/auth/authsection"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 )
 
@@ -21,7 +22,7 @@ import (
 func init() {
 	// Register the Auth config section so codecs round-trip it. Kept here (not in
 	// an auth-package init) so the section exists exactly when a file service does.
-	auth.Register()
+	authsection.Register()
 }
 
 // BuildUserStore constructs the configured user store from the model's Auth
@@ -31,9 +32,9 @@ func init() {
 // auth.UserStore — a full management surface (the web UI's user CRUD) and the
 // Authenticator the AFP/SMB login paths consult.
 func BuildUserStore(m *config.Model) (auth.UserStore, error) {
-	sec := auth.SectionFromModel(m)
+	sec := authsection.SectionFromModel(m)
 	switch sec.EffectiveBackend() {
-	case auth.BackendLocal:
+	case authsection.BackendLocal:
 		return local.Open(sec.EffectivePath())
 	default:
 		// Unknown/unbuilt backend → fall back to the always-present local store.

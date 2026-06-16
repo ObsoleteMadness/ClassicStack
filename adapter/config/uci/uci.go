@@ -38,6 +38,13 @@ func (c *Codec) Marshal(m *config.Model) ([]byte, error) {
 	if err := c.marshalSection(&buf, "identity", "", m.Identity); err != nil {
 		return nil, err
 	}
+	// Marshal the well-known web-admin credential (§4-ter), only once configured so a
+	// fresh config has no empty adminauth block (first-run detection stays clean).
+	if m.AdminAuth.Configured() {
+		if err := c.marshalSection(&buf, "adminauth", "", m.AdminAuth); err != nil {
+			return nil, err
+		}
+	}
 	// Marshal well-known logging section
 	if err := c.marshalSection(&buf, "logging", "", m.Logging); err != nil {
 		return nil, err
@@ -177,6 +184,10 @@ func (c *Codec) Unmarshal(data []byte, m *config.Model) error {
 		switch sec.Type {
 		case "identity":
 			if err := unmarshalStruct(sec, &m.Identity); err != nil {
+				return err
+			}
+		case "adminauth":
+			if err := unmarshalStruct(sec, &m.AdminAuth); err != nil {
 				return err
 			}
 		case "logging":

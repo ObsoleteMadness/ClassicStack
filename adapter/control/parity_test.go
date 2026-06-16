@@ -13,11 +13,30 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/adapter/control/inproc"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/control/ubus"
 	"github.com/ObsoleteMadness/ClassicStack/compose/supervisor"
+	"github.com/ObsoleteMadness/ClassicStack/core/auth"
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/control"
 	"github.com/ObsoleteMadness/ClassicStack/core/port"
 )
+
+// parityAdminUser/Pass seed the HTTP server's web-admin gate so the parity flows can
+// authenticate; inproc/ubus carry no Basic-auth gate (different trust boundaries).
+const (
+	parityAdminUser = "admin"
+	parityAdminPass = "parity-pw"
+)
+
+// seedAdmin stamps a configured AdminAuth into the model so the gated HTTP front-end
+// admits NewClientWithAuth(parityAdminUser, parityAdminPass).
+func seedAdmin(m *config.Model) {
+	salt := make([]byte, auth.SaltLen)
+	for i := range salt {
+		salt[i] = byte(i + 1)
+	}
+	cred := auth.DeriveCredential(parityAdminPass, salt)
+	m.AdminAuth = config.AdminAuth{User: parityAdminUser, SaltHex: cred.SaltHex(), HashHex: cred.HashHex()}
+}
 
 type dummyComp struct {
 	name    string
@@ -36,6 +55,7 @@ func TestMultiFrontEndParity(t *testing.T) {
 	})
 
 	m := config.NewModel()
+	seedAdmin(m) // configure the web-admin gate so the HTTP client can authenticate
 	telemetry := bus.New(16)
 	sup := supervisor.New(m, telemetry)
 
@@ -69,7 +89,7 @@ func TestMultiFrontEndParity(t *testing.T) {
 	// Build the 3 Client adapters
 	clients := map[string]inproc.Client{
 		"inproc": inproc.New(plane),
-		"http":   httpctrl.NewClient("http://" + httpSrv.Addr()),
+		"http":   httpctrl.NewClientWithAuth("http://"+httpSrv.Addr(), parityAdminUser, parityAdminPass),
 		"ubus":   ubus.NewClient(sockPath),
 	}
 
@@ -168,7 +188,7 @@ func newParityClients(t *testing.T, plane control.Plane) (map[string]inproc.Clie
 	}
 	clients := map[string]inproc.Client{
 		"inproc": inproc.New(plane),
-		"http":   httpctrl.NewClient("http://" + httpSrv.Addr()),
+		"http":   httpctrl.NewClientWithAuth("http://"+httpSrv.Addr(), parityAdminUser, parityAdminPass),
 		"ubus":   ubus.NewClient(sockPath),
 	}
 	cleanup := func() {
@@ -185,6 +205,7 @@ func newParityClients(t *testing.T, plane control.Plane) (map[string]inproc.Clie
 func TestMultiFrontEndParity_NewMethods(t *testing.T) {
 	m := config.NewModel()
 	m.Identity = config.Identity{Hostname: "CLASSICSTACK", Workgroup: "WG"}
+	seedAdmin(m) // gate the HTTP front-end so its authed client is admitted
 	telemetry := bus.New(8)
 	sup := supervisor.New(m, telemetry)
 	// No user store wired and the default Diagnostics → Users / ListZones are
@@ -242,8 +263,10 @@ func TestMultiFrontEndParity_NewMethods(t *testing.T) {
 // proving the user-admin surface round-trips over http and ubus, not just in-proc.
 func TestMultiFrontEndParity_UserCRUD(t *testing.T) {
 	telemetry := bus.New(8)
+	m := config.NewModel()
+	seedAdmin(m) // gate the HTTP front-end so its authed client is admitted
 	sup := &userStoreSupervisor{
-		Supervisor: supervisor.New(config.NewModel(), telemetry),
+		Supervisor: supervisor.New(m, telemetry),
 		users:      map[string]bool{}, // name → disabled
 	}
 	plane := control.New(sup, nil, nil, telemetry)

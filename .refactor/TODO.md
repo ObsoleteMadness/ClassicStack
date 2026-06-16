@@ -859,6 +859,30 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > SPA's secret-input form hint (render a password field for a `Secret` param) is the only remaining piece
 > and is M8/webui (front-end markup over the already-exposed `ListFSTypes`/`ParamsFor` schema).
 
+> **M8 notes (web-admin Basic auth + first-run setup — landed):** the new-ring HTTP control adapter
+> ([adapter/control/http](adapter/control/http)) was world-open; it is now gated by a single web-admin
+> credential over **HTTP Basic auth** (no sessions/JWT — honest-security posture). **`config.AdminAuth`**
+> (§4-ter) is a new well-known typed `Model` field (peer of `Identity`): `User` + salted PBKDF2-SHA256
+> `SaltHex`/`HashHex`, round-tripping through TOML+UCI into `server.toml` (`[adminauth]` emitted only once
+> `Configured()`). It stores a **hash, never plaintext**, and is deliberately NOT a `SecretMasker` field
+> (a hash is not a reversible secret, and masking would break Verify on a `Config()` round-trip).
+> `AdminAuth.Verify` uses pure `core/auth` helpers (no `crypto/rand`) so `core/config` stays
+> reflection-free. **Ring split:** salt generation lives in `adapter/control/http` (`/setup` derives the
+> hash); `control.Plane.SetAdmin` (+ `Supervisor.SetAdminAuth`) stamps the hash-only DTO into the model
+> and auto-saves via the existing Save path. **This required moving the file-service `Auth` section out of
+> `core/auth` → new `core/auth/authsection`** to break a `config→auth→config` cycle (core/auth's
+> contract+PBKDF2 stay config-free/TinyGo-clean). **Gate (`authGate`):** first-run → every route but
+> `POST /setup` returns 409 `{"setup_required":true}`; post-setup → `/setup` sealed (409), all routes
+> require Basic creds (401 + `WWW-Authenticate` on miss, constant-time verify). HTTP client gained
+> `NewClientWithAuth` (Basic-auth RoundTripper covering SSE too) + `Setup`/`SetupRequired`. **Caveat
+> documented:** Basic auth is base64 not encrypted + the adapter has no TLS → loopback/TLS-terminated
+> only. Tests: `core/config` (AdminAuth Verify/Validate/Configured/Clone), TOML+UCI `[adminauth]`
+> round-trip, `core/control` (SetAdmin stamps+persists, AdminConfigured, rejects-invalid),
+> `adapter/control/http` (first-run 409, /setup persists `server.toml` with hash & no plaintext,
+> post-setup 401/200, /setup-refused-once-set, authed client round-trip), parity tests seed an admin +
+> use the authed client. **Still M8:** legacy `service/webui` stays unauthed (old ring, M10); TLS for the
+> new-ring HTTP adapter; the SPA (which binds to this `/setup` + 409/401 contract).
+
 ---
 
 ## How to claim a task

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ObsoleteMadness/ClassicStack/core/auth"
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 )
@@ -39,6 +40,11 @@ func (s *fakeSupervisor) ListInterfaces() ([]InterfaceInfo, error) {
 	return []InterfaceInfo{{Name: "eth0", Addr: "10.0.0.1"}}, nil
 }
 func (s *fakeSupervisor) ListFSTypes() []string { return []string{"memfs"} }
+func (s *fakeSupervisor) SetAdminAuth(a config.AdminAuth) {
+	if s.model != nil {
+		s.model.AdminAuth = a
+	}
+}
 
 type fakeCodec struct{ marshalErr error }
 
@@ -292,6 +298,59 @@ func TestPlane_ReconfigureUnmasksSecrets(t *testing.T) {
 	}
 	if got := sup.gotSection.(*secretSection).secret; got != "newpw" {
 		t.Fatalf("Reconfigure clobbered an edited secret: %q", got)
+	}
+}
+
+// TestPlane_SetAdminRoundTrip asserts SetAdmin stamps the credential into the model,
+// flips AdminConfigured, and persists through the store (the auto-save first-run uses).
+func TestPlane_SetAdminRoundTrip(t *testing.T) {
+	m := config.NewModel()
+	sup := &fakeSupervisor{model: m}
+	store := &fakeStore{}
+	p := New(sup, fakeCodec{}, store, bus.New(2))
+
+	if p.AdminConfigured() {
+		t.Fatal("fresh model should report no admin configured")
+	}
+
+	salt := make([]byte, auth.SaltLen)
+	for i := range salt {
+		salt[i] = byte(i + 3)
+	}
+	cred := auth.DeriveCredential("pw", salt)
+	a := config.AdminAuth{User: "admin", SaltHex: cred.SaltHex(), HashHex: cred.HashHex()}
+
+	rev, err := p.SetAdmin(context.Background(), a)
+	if err != nil {
+		t.Fatalf("SetAdmin: %v", err)
+	}
+	if rev != "rev-1" {
+		t.Fatalf("SetAdmin revision = %q, want rev-1", rev)
+	}
+	if !p.AdminConfigured() {
+		t.Fatal("AdminConfigured should be true after SetAdmin")
+	}
+	if m.AdminAuth.User != "admin" || !m.AdminAuth.Verify("admin", "pw") {
+		t.Fatalf("model AdminAuth not stamped/verifying: %+v", m.AdminAuth)
+	}
+	if store.data == nil {
+		t.Fatal("SetAdmin should have persisted the model to the store")
+	}
+}
+
+// TestPlane_SetAdminRejectsInvalid asserts SetAdmin validates before persisting — a
+// model with a bad existing section (or here, a bad admin username) is not written.
+func TestPlane_SetAdminRejectsInvalid(t *testing.T) {
+	m := config.NewModel()
+	store := &fakeStore{}
+	p := New(&fakeSupervisor{model: m}, fakeCodec{}, store, bus.New(2))
+
+	bad := config.AdminAuth{User: "ad\x00min", SaltHex: "00", HashHex: "00"}
+	if _, err := p.SetAdmin(context.Background(), bad); err == nil {
+		t.Fatal("SetAdmin should reject an invalid credential")
+	}
+	if store.data != nil {
+		t.Fatal("invalid credential must not reach the store")
 	}
 }
 
