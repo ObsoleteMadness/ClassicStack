@@ -38,7 +38,7 @@ func TestComponentConformance(t *testing.T) {
 			})
 
 			// 2. Build component
-			c, ok, err := Build(name, m)
+			c, ok, err := Build(name, &BuildContext{Model: m})
 			if err != nil {
 				t.Fatalf("Build(%s) returned error: %v", name, err)
 			}

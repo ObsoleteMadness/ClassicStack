@@ -28,6 +28,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
+	"github.com/ObsoleteMadness/ClassicStack/core/router"
 )
 
 // stubNames are registry entries that are test/skeleton scaffolding, never part of
@@ -56,18 +57,19 @@ var hardDeps = map[string][]string{
 // componentSource enumerates and builds the components a Runtime assembles. The
 // production source is the global compose/registry; tests inject their own so they
 // neither depend on whatever build-tagged components registered nor pollute the
-// global registry singleton.
+// global registry singleton. Build takes the shared BuildContext so a factory
+// receives its collaborators (the router et al), not just the model.
 type componentSource interface {
 	Names() []string
-	Build(name string, m *config.Model) (component.Component, bool, error)
+	Build(name string, ctx *registry.BuildContext) (component.Component, bool, error)
 }
 
 // registrySource adapts the package-level compose/registry to componentSource.
 type registrySource struct{}
 
 func (registrySource) Names() []string { return registry.Names() }
-func (registrySource) Build(name string, m *config.Model) (component.Component, bool, error) {
-	return registry.Build(name, m)
+func (registrySource) Build(name string, ctx *registry.BuildContext) (component.Component, bool, error) {
+	return registry.Build(name, ctx)
 }
 
 // Options configures a Runtime build.
@@ -91,7 +93,8 @@ type Runtime struct {
 	sup       *supervisor.Supervisor
 	model     *config.Model
 	telemetry bus.Bus
-	built     []string // names actually constructed (diagnostics)
+	rtr       *router.RouterImpl // the shared router (nil if none built); cross-wire target
+	built     []string           // names actually constructed (diagnostics)
 }
 
 // Load builds a config.Model from a Store + Codec. A missing store file yields the
@@ -127,6 +130,23 @@ func Build(opts Options) (*Runtime, error) {
 	}
 	sup := supervisor.New(opts.Model, opts.Telemetry)
 
+	// Build the shared AppleTalk router FIRST so it can be threaded into every
+	// dependent factory's BuildContext: ports bind to it as their inbound target,
+	// DDP services reply through it. Building it up-front (rather than letting the
+	// router factory run mid-loop) is what lets one instance reach every dependent.
+	// A build with no Router component registered leaves rtr nil and the DDP stack
+	// simply comes up unrouted (the graceful-degradation contract of BuildContext).
+	rtr, err := buildRouter(src, opts.Model)
+	if err != nil {
+		return nil, err
+	}
+
+	ctx := &registry.BuildContext{
+		Model:     opts.Model,
+		Router:    rtr,
+		Telemetry: opts.Telemetry,
+	}
+
 	// First pass: build the components, recording which names actually exist so the
 	// dependency edges can be filtered to built-both-ends pairs.
 	comps := make(map[string]component.Component)
@@ -135,7 +155,7 @@ func Build(opts Options) (*Runtime, error) {
 		if stubNames[name] {
 			continue
 		}
-		c, ok, err := src.Build(name, opts.Model)
+		c, ok, err := src.Build(name, ctx)
 		if err != nil {
 			return nil, fmt.Errorf("runtime: build %q: %w", name, err)
 		}
@@ -144,6 +164,14 @@ func Build(opts Options) (*Runtime, error) {
 		}
 		comps[name] = c
 		order = append(order, name)
+	}
+
+	// Cross-wire the runtime data path against the shared router: register DDP
+	// services on their sockets and attach the AppleTalk ports as routed members.
+	// This is the seam that makes AFP/SMB-over-DDP reachable and ports deliverable;
+	// transport↔service seams (SMB over NetBIOS, IPXGW) land as that wiring matures.
+	if rtr != nil {
+		crossWireRouter(rtr, comps)
 	}
 
 	// Second pass: register with the supervisor under filtered edges (only edges
@@ -157,8 +185,52 @@ func Build(opts Options) (*Runtime, error) {
 		sup:       sup,
 		model:     opts.Model,
 		telemetry: opts.Telemetry,
+		rtr:       rtr,
 		built:     order,
 	}, nil
+}
+
+// router returns the shared AppleTalk router (nil if none built). Unexported — it
+// is the cross-wire target, surfaced for tests; the control plane reaches routing
+// through the supervisor/diagnostics, not this.
+func (r *Runtime) router() *router.RouterImpl { return r.rtr }
+
+// buildRouter constructs the Router component (if registered) up-front so it can be
+// shared via the BuildContext. It is built with a context carrying no router (the
+// router factory returns a fresh instance when ctx.Router is nil). Returns (nil,
+// nil) when no Router is registered, or when the registered "Router" is not a
+// *router.RouterImpl (e.g. a test fake) — in that case there is simply no shareable
+// router instance, and the component is built normally in the main pass like any
+// other; the DDP stack comes up unrouted, the graceful-degradation contract.
+func buildRouter(src componentSource, m *config.Model) (*router.RouterImpl, error) {
+	c, ok, err := src.Build(router.Name, &registry.BuildContext{Model: m})
+	if err != nil {
+		return nil, fmt.Errorf("runtime: build %q: %w", router.Name, err)
+	}
+	if !ok || c == nil {
+		return nil, nil
+	}
+	rtr, _ := c.(*router.RouterImpl)
+	return rtr, nil
+}
+
+// crossWireRouter binds the built components to the shared router: DDP services
+// (router.Service) register on their sockets; AppleTalk ports (router.RoutedPort)
+// attach as routed members. The router itself is in comps under router.Name and is
+// skipped. Both bindings are best-effort by interface assertion, so a component
+// that is neither (e.g. SMB, a NetBIOS-transport service) is simply left alone.
+func crossWireRouter(rtr *router.RouterImpl, comps map[string]component.Component) {
+	for name, c := range comps {
+		if name == router.Name {
+			continue
+		}
+		if svc, ok := c.(router.Service); ok {
+			rtr.RegisterService(svc)
+		}
+		if p, ok := c.(router.RoutedPort); ok {
+			_ = rtr.Attach(p)
+		}
+	}
 }
 
 // builtDeps returns name's hard dependencies, dropping any whose target was not

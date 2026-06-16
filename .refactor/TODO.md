@@ -138,6 +138,25 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > (M10), flag parsing, svc/daemon consumers (M9). The data-path cross-wiring hook
 > (service↔router, transport↔service) lives here when M-ng lands.
 
+> **Factory build-context + router cross-wiring (landed — M10 slice A, the greenfield fix):**
+> the registry `Factory` signature changed from `func(*config.Model)` to
+> `func(*registry.BuildContext)` — a context carrying the model PLUS the shared collaborators a
+> component binds to (`Router`, `Telemetry`). This is the greenfield correction: the old
+> model-only signature could only build *inert/unrouted* components (why ports came up with a nil
+> router and macip returned a placeholder), so every factory was bolting wiring on afterward or
+> giving up. Now a factory is handed its collaborators and is born fully wired. The compose
+> `runtime.Build` builds the **shared Router first**, threads it into the `BuildContext` for every
+> other factory, then runs a **cross-wire pass** (`crossWireRouter`): each built `router.Service`
+> is `RegisterService`'d on its DDP socket and each `router.RoutedPort` is `Attach`ed. Result: the
+> AppleTalk services (AFP) are now reachable through the shared router — smoke-verified
+> (`Built: [AFP MacIP NetBIOS Router SMB]`, Router-first, AFP on socket 251) and unit-tested (a
+> datagram pushed through the router reaches a cross-wired service). A factory tolerates a nil
+> collaborator (standalone/unit build) by building the inert form, so graceful degradation holds.
+> All 10 `reg_*` factories + the stub + the registry/runtime tests moved to the new signature.
+> **NEXT (slice B):** real port config schema (MAC/framing/seed-net) + pcap/framing device-link
+> injection so ports come up LIVE on a NIC — the piece that lets a real Mac/PC connect.
+> Transport↔service seams (SMB-over-NetBIOS, IPXGW) are a sibling cross-wire follow-on.
+
 > **M1 notes (what landed / deferred):**
 > - **Landed:** real `core/link` decorators (`Filter`/`Dedup`/`Bridge`+`BridgeWiFi`, ported
 >   from `port/rawlink/bridge_link.go`, stdlib-only/reflection-free, archtest-clean);

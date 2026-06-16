@@ -6,7 +6,6 @@ import (
 	"context"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
-	"github.com/ObsoleteMadness/ClassicStack/core/config"
 )
 
 // taggedRegistered reflects whether the build-tag-gated factory is present in this build.
@@ -20,7 +19,7 @@ func (taggedStub) Start(context.Context) error { return nil }
 func (taggedStub) Stop(context.Context) error  { return nil }
 
 func init() {
-	Register("stub-tagged", func(*config.Model) (component.Component, error) {
+	Register("stub-tagged", func(*BuildContext) (component.Component, error) {
 		return taggedStub{}, nil
 	})
 }

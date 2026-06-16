@@ -4,13 +4,13 @@ package registry
 
 import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
-	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/netbios"
 )
 
 func init() {
-	Register(netbios.Name, func(m *config.Model) (component.Component, error) {
+	Register(netbios.Name, func(ctx *BuildContext) (component.Component, error) {
+		m := ctx.Model
 		logger := log.New(netbios.Name, log.NewStderrSink(log.NewLevelVar(log.Info)))
 		// Server identity is one top-level value (§4-bis): NetBIOS claims the shared
 		// Identity.Hostname as its workstation/file-server name (upper-cased, as

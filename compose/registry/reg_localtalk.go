@@ -4,16 +4,16 @@ package registry
 
 import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
-	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/port/localtalk"
 )
 
 func init() {
-	Register(localtalk.Name, func(m *config.Model) (component.Component, error) {
+	Register(localtalk.Name, func(ctx *BuildContext) (component.Component, error) {
 		logger := log.New(localtalk.Name, log.NewStderrSink(log.NewLevelVar(log.Info)))
-		// Registry path: inert until compose injects a transport link + LLAP
-		// framer + router (M8/M10). M3 exercises the real read loop via tests.
-		return localtalk.New(m, nil, nil, nil, logger)
+		// Router injected from context so an enabled port delivers inbound DDP to
+		// the shared router. Transport link + LLAP framer are still nil (the real
+		// link from config is the next slice); inert-but-routed until then.
+		return localtalk.New(ctx.Model, nil, nil, ctx.Router, logger)
 	})
 }

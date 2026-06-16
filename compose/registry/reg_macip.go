@@ -6,7 +6,6 @@ import (
 	"context"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
-	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/macip"
 )
 
@@ -23,7 +22,11 @@ func (p *macipPlaceholder) Start(context.Context) error { p.running = true; retu
 func (p *macipPlaceholder) Stop(context.Context) error  { p.running = false; return nil }
 
 func init() {
-	Register(macip.Name, func(m *config.Model) (component.Component, error) {
+	Register(macip.Name, func(ctx *BuildContext) (component.Component, error) {
+		// Still a placeholder: the real macip.Service needs its NBP service and
+		// IP-side egress injected too (seams not yet in the BuildContext) — having
+		// the router alone is not enough. Building it for real is a follow-on once
+		// those seams land; until then the name boots with this no-op.
 		return &macipPlaceholder{}, nil
 	})
 }

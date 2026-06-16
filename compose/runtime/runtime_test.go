@@ -7,9 +7,13 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/ObsoleteMadness/ClassicStack/compose/registry"
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
+	"github.com/ObsoleteMadness/ClassicStack/core/protocol/ddp"
+	"github.com/ObsoleteMadness/ClassicStack/core/router"
 )
 
 // fakeSource is an in-test componentSource: a name→factory map, so a Runtime test
@@ -17,7 +21,7 @@ import (
 // pollutes the global registry singleton.
 type fakeSource map[string]registry_factory
 
-type registry_factory func(*config.Model) (component.Component, error)
+type registry_factory func(*registry.BuildContext) (component.Component, error)
 
 func (s fakeSource) Names() []string {
 	out := make([]string, 0, len(s))
@@ -28,12 +32,12 @@ func (s fakeSource) Names() []string {
 	return out
 }
 
-func (s fakeSource) Build(name string, m *config.Model) (component.Component, bool, error) {
+func (s fakeSource) Build(name string, ctx *registry.BuildContext) (component.Component, bool, error) {
 	f, ok := s[name]
 	if !ok {
 		return nil, false, nil
 	}
-	c, err := f(m)
+	c, err := f(ctx)
 	return c, true, err
 }
 
@@ -137,11 +141,11 @@ func TestLoad_StoreErrorPropagates(t *testing.T) {
 func TestBuild_SkipsStubsAndSupervises(t *testing.T) {
 	log := &startLog{}
 	src := fakeSource{
-		"rt-solo": func(*config.Model) (component.Component, error) {
+		"rt-solo": func(*registry.BuildContext) (component.Component, error) {
 			return &recComponent{name: "rt-solo", log: log}, nil
 		},
 		// A reserved stub name must be skipped even though it is registered.
-		"stub-a": func(*config.Model) (component.Component, error) {
+		"stub-a": func(*registry.BuildContext) (component.Component, error) {
 			return &recComponent{name: "stub-a", log: log}, nil
 		},
 	}
@@ -179,7 +183,7 @@ func TestBuild_SkipsStubsAndSupervises(t *testing.T) {
 func TestBuild_HardDepOrdering(t *testing.T) {
 	log := &startLog{}
 	mk := func(name string) registry_factory {
-		return func(*config.Model) (component.Component, error) {
+		return func(*registry.BuildContext) (component.Component, error) {
 			return &recComponent{name: name, log: log}, nil
 		}
 	}
@@ -213,7 +217,7 @@ func TestBuild_HardDepOrdering(t *testing.T) {
 func TestBuild_DropsEdgeWhenDependencyAbsent(t *testing.T) {
 	log := &startLog{}
 	src := fakeSource{
-		"SMB": func(*config.Model) (component.Component, error) {
+		"SMB": func(*registry.BuildContext) (component.Component, error) {
 			return &recComponent{name: "SMB", log: log}, nil
 		},
 		// Deliberately omit NetBEUI from this test build.
@@ -235,7 +239,7 @@ func TestBuild_DropsEdgeWhenDependencyAbsent(t *testing.T) {
 // misconfigured component is not silently dropped).
 func TestBuild_FactoryErrorAborts(t *testing.T) {
 	src := fakeSource{
-		"rt-bad": func(*config.Model) (component.Component, error) {
+		"rt-bad": func(*registry.BuildContext) (component.Component, error) {
 			return nil, errors.New("bad spec")
 		},
 	}
@@ -248,5 +252,70 @@ func TestBuild_FactoryErrorAborts(t *testing.T) {
 func TestBuild_RequiresModel(t *testing.T) {
 	if _, err := Build(Options{Model: nil}); err == nil {
 		t.Fatal("expected Build to reject a nil model")
+	}
+}
+
+// --- cross-wire test: a DDP service in the build set is registered on the shared
+// router so the router dispatches an inbound datagram to it. ---
+
+// fakeDDPService is a minimal router.Service: it listens on a socket and records
+// the datagrams the router delivers to it.
+type fakeDDPService struct {
+	sock     uint8
+	received int
+}
+
+func (s *fakeDDPService) Name() string                { return "FakeDDP" }
+func (s *fakeDDPService) Start(context.Context) error { return nil }
+func (s *fakeDDPService) Stop(context.Context) error  { return nil }
+func (s *fakeDDPService) Socket() uint8               { return s.sock }
+func (s *fakeDDPService) Inbound(ddp.Datagram, router.RoutedPort) {
+	s.received++
+}
+
+// fakeFrom is a minimal rx port for driving router.Inbound (only Network()/Node()
+// are consulted on the local-delivery path).
+type fakeFrom struct{ router.RoutedPort }
+
+func (fakeFrom) Name() string    { return "FakeFrom" }
+func (fakeFrom) Network() uint16 { return 0 }
+func (fakeFrom) Node() uint8     { return 0 }
+
+// TestBuild_CrossWiresServiceOntoRouter proves the runtime root binds a built DDP
+// service to the shared router: a datagram addressed to the service's socket,
+// pushed through the router, reaches the service — which only happens if Build
+// called RegisterService during cross-wiring.
+func TestBuild_CrossWiresServiceOntoRouter(t *testing.T) {
+	const sock = 200
+	svc := &fakeDDPService{sock: sock}
+	src := fakeSource{
+		router.Name: func(*registry.BuildContext) (component.Component, error) {
+			return router.New(log.New(router.Name)), nil
+		},
+		"FakeDDP": func(*registry.BuildContext) (component.Component, error) {
+			return svc, nil
+		},
+	}
+
+	rt, err := Build(Options{Model: config.NewModel(), source: src})
+	if err != nil {
+		t.Fatalf("Build = %v", err)
+	}
+	// Start so the router is running (Inbound dispatch needs nothing more for a
+	// socket-local delivery, but Start mirrors real use).
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	defer rt.Stop(context.Background())
+
+	// Resolve the shared router from the build and drive a datagram to the socket.
+	rtr := rt.router()
+	if rtr == nil {
+		t.Fatal("runtime built no router")
+	}
+	rtr.Inbound(ddp.Datagram{DestSocket: sock}, fakeFrom{})
+
+	if svc.received != 1 {
+		t.Fatalf("service received %d datagrams, want 1 (not cross-wired onto the router)", svc.received)
 	}
 }

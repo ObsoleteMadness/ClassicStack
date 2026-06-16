@@ -4,7 +4,6 @@ package registry
 
 import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
-	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/smb"
 )
@@ -15,7 +14,8 @@ func init() {
 	// so the section exists exactly when the SMB service is built.
 	smb.RegisterShares()
 
-	Register(smb.Name, func(m *config.Model) (component.Component, error) {
+	Register(smb.Name, func(ctx *BuildContext) (component.Component, error) {
+		m := ctx.Model
 		logger := log.New(smb.Name, log.NewStderrSink(log.NewLevelVar(log.Info)))
 		// Build one Share per configured share section. A model with no shares
 		// yields a service with none (the historical zero-config default); a bad

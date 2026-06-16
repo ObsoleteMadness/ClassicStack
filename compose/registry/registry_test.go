@@ -17,7 +17,7 @@ func (c *stubComponent) Start(context.Context) error { return nil }
 func (c *stubComponent) Stop(context.Context) error  { return nil }
 
 func TestBuildUnregisteredReturnsNotFound(t *testing.T) {
-	c, ok, err := Build("definitely-not-registered", config.NewModel())
+	c, ok, err := Build("definitely-not-registered", &BuildContext{Model: config.NewModel()})
 	if err != nil {
 		t.Fatalf("unexpected error for unregistered name: %v", err)
 	}
@@ -30,15 +30,15 @@ func TestBuildUnregisteredReturnsNotFound(t *testing.T) {
 }
 
 func TestRegisterBuildNames(t *testing.T) {
-	Register("stub-a", func(*config.Model) (component.Component, error) {
+	Register("stub-a", func(*BuildContext) (component.Component, error) {
 		return &stubComponent{name: "stub-a"}, nil
 	})
 	// A disabled section: factory returns (nil, nil) but ok must still be true.
-	Register("stub-disabled", func(*config.Model) (component.Component, error) {
+	Register("stub-disabled", func(*BuildContext) (component.Component, error) {
 		return nil, nil
 	})
 
-	c, ok, err := Build("stub-a", config.NewModel())
+	c, ok, err := Build("stub-a", &BuildContext{Model: config.NewModel()})
 	if err != nil || !ok {
 		t.Fatalf("Build(stub-a) = (_, %v, %v), want (_, true, nil)", ok, err)
 	}
@@ -46,7 +46,7 @@ func TestRegisterBuildNames(t *testing.T) {
 		t.Fatalf("Build(stub-a) returned %v, want named stub-a", c)
 	}
 
-	dc, ok, err := Build("stub-disabled", config.NewModel())
+	dc, ok, err := Build("stub-disabled", &BuildContext{Model: config.NewModel()})
 	if err != nil || !ok {
 		t.Fatalf("Build(stub-disabled) = (_, %v, %v), want (_, true, nil)", ok, err)
 	}
@@ -65,7 +65,7 @@ func TestRegisterBuildNames(t *testing.T) {
 // TestBuildTagGatedRegistration proves the build-tag mechanism: stub_tagged.go registers
 // "stub-tagged" only under the `registrytag` build tag. Without the tag it must be absent.
 func TestBuildTagGatedRegistration(t *testing.T) {
-	_, ok, _ := Build("stub-tagged", config.NewModel())
+	_, ok, _ := Build("stub-tagged", &BuildContext{Model: config.NewModel()})
 	if ok != taggedRegistered {
 		t.Fatalf("Build(stub-tagged) ok=%v, want %v (taggedRegistered)", ok, taggedRegistered)
 	}

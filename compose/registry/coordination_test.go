@@ -24,11 +24,11 @@ func TestAFPSMBCoordinateOnSamePath(t *testing.T) {
 	m.AddInstance(&afp.VolumeSection{VName: "Shared", FSType: "local_fs", ForkBackend: "appledouble", FilenameCodec: "macroman-utf8", Path: root})
 	m.AddInstance(&smb.ShareSection{SName: "Shared", FSType: "local_fs", ForkBackend: "appledouble", FilenameCodec: "macroman-utf8", Path: root})
 
-	afpComp, ok, err := Build(afp.Name, m)
+	afpComp, ok, err := Build(afp.Name, &BuildContext{Model: m})
 	if err != nil || !ok {
 		t.Fatalf("Build(AFP) = (_, %v, %v)", ok, err)
 	}
-	smbComp, ok, err := Build(smb.Name, m)
+	smbComp, ok, err := Build(smb.Name, &BuildContext{Model: m})
 	if err != nil || !ok {
 		t.Fatalf("Build(SMB) = (_, %v, %v)", ok, err)
 	}

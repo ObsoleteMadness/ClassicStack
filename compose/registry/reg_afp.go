@@ -15,7 +15,8 @@ func init() {
 	// so the section exists exactly when the AFP service is built.
 	afp.RegisterVolumes()
 
-	Register(afp.Name, func(m *config.Model) (component.Component, error) {
+	Register(afp.Name, func(ctx *BuildContext) (component.Component, error) {
+		m := ctx.Model
 		logger := log.New(afp.Name, log.NewStderrSink(log.NewLevelVar(log.Info)))
 		// volSpecsFromModel maps the configured volume sections to VolumeSpecs with
 		// id 1..N in registration order. Shared by the initial build and the
@@ -29,6 +30,12 @@ func init() {
 			return out
 		}
 		svc := afp.New(logger)
+		// Bind the shared AppleTalk router so the AFP/ASP service replies and the
+		// runtime root can RegisterService it on its DDP socket. nil (a standalone
+		// build with no router) leaves it unrouted, the historical default.
+		if ctx.Router != nil {
+			svc.SetRouter(ctx.Router)
+		}
 		// §10d: build each volume over the shared FS-mutation bus for its host path,
 		// so a same-host-path SMB share sees this volume's mutations (and vice-versa).
 		// Set BEFORE the volumes are built so the initial set gets the shared bus too.

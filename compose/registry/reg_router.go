@@ -4,15 +4,20 @@ package registry
 
 import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
-	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/router"
 )
 
 func init() {
-	Register(router.Name, func(m *config.Model) (component.Component, error) {
-		// A placeholder router is always enabled in the registry if built, but
-		// can be configured via RouterSection. In Phase 1 we return it directly.
+	Register(router.Name, func(ctx *BuildContext) (component.Component, error) {
+		// The router is the shared collaborator every DDP port and service binds
+		// to. The runtime root builds it FIRST and threads it into the context, so
+		// the factory returns that one instance — every dependent then receives the
+		// same router. (A standalone Build with no pre-built router still works: we
+		// construct one on demand.)
+		if ctx.Router != nil {
+			return ctx.Router, nil
+		}
 		logger := log.New(router.Name, log.NewStderrSink(log.NewLevelVar(log.Info)))
 		return router.New(logger), nil
 	})
