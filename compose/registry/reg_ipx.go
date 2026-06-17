@@ -22,11 +22,15 @@ func init() {
 	RegisterPort(ipx.Name, func(ctx *BuildContext) (component.Component, error) {
 		sec := port.InstanceFromModel(ctx.Model, ipx.Name, ctx.Instance)
 		logger := log.New(sec.InstanceName(), log.NewStderrSink(log.NewLevelVar(log.Info)))
-		// The IPX port feeds its own mini-router, not the AppleTalk router, so it
-		// takes no ctx.Router. The configured station MAC is threaded from the
-		// section; the device FrameLink itself is the sibling follow-on (the frame
-		// port takes a pre-resolved MAC, not an opener), so the port is inert-but-
-		// configured until that lands.
-		return ipx.NewInstance(sec, nil, sectionMACFor(sec), logger)
+		// IPX is a NIC-bound transport (IPX-over-Ethernet), so — like EtherTalk — it
+		// dispatches on the kind=nic branch of the opener table (M11.c/D6): resolve
+		// this instance's effective interface and open it via the injected NIC opener.
+		// Unlike EtherTalk it rides NO link.Framer: the port does its own Ethernet
+		// encapsulation, so it takes the RAW NIC FrameLink. It feeds its own IPX
+		// mini-router, not the AppleTalk router (so no ctx.Router and no [Router]
+		// membership — that lands when the IPX mini-router itself joins compose). A
+		// nil opener (no NIC backend) yields the inert-but-configured form.
+		open := nicLinkOpener(ctx, ctx.Model.EffectiveInterfaceFor(sec).Name)
+		return ipx.NewInstanceFromOpener(sec, open, sectionMACFor(sec), logger)
 	})
 }

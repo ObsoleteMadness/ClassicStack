@@ -58,16 +58,31 @@ func New(m *config.Model, frame link.FrameLink, srcMAC [6]byte, logger log.Logge
 // NewInstance builds an IPX port from an already-resolved section — the
 // repeated-INSTANCE form (§M11): the compose factory resolves one instance from
 // Model.Lists and hands it here, so the port names itself from the instance's
-// InstanceName(). Returns (nil, nil) when the section is disabled.
+// InstanceName(). frame is a SINGLE pre-opened link (nil → inert); for a
+// restartable device link the compose factory uses NewInstanceFromOpener instead.
+// Returns (nil, nil) when the section is disabled.
 func NewInstance(sec *port.Section, frame link.FrameLink, srcMAC [6]byte, logger log.Logger) (component.Component, error) {
-	if !sec.IsEnabled {
-		return nil, nil
-	}
-	p := &Port{srcMAC: srcMAC}
 	open := func() (link.FrameLink, error) { return frame, nil }
 	if frame == nil {
 		open = func() (link.FrameLink, error) { return nil, nil }
 	}
+	return NewInstanceFromOpener(sec, open, srcMAC, logger)
+}
+
+// NewInstanceFromOpener builds an IPX port whose link is opened by a per-Start
+// factory (§M11.c device-link injection): the compose factory injects the NIC opener
+// resolved from the port's interface kind, so the port opens a FRESH link on every
+// Start and therefore survives a UI Stop→Start (a closed pcap handle is terminal —
+// see the pcap restart lifecycle). A nil opener (or one returning nil,nil) yields the
+// inert-but-configured form. Returns (nil, nil) when the section is disabled.
+func NewInstanceFromOpener(sec *port.Section, open func() (link.FrameLink, error), srcMAC [6]byte, logger log.Logger) (component.Component, error) {
+	if !sec.IsEnabled {
+		return nil, nil
+	}
+	if open == nil {
+		open = func() (link.FrameLink, error) { return nil, nil }
+	}
+	p := &Port{srcMAC: srcMAC}
 	p.Port = frameport.New(sec, open, p.onFrame, logger)
 	return p, nil
 }

@@ -345,9 +345,27 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > serial library stays OUT of the cs-tinygo gate (verified). Tests: serial-kind interface resolution
 > (device+baud from the namespace), tashtalk-over-stream via the framer seam, `NewStream` init +
 > nil-stream, `adapter/serial` empty-device + Windows COM mapping. ppp/slip framer conversion
-> DEFERRED (still stubs — converting incomplete code would be speculative). NEXT in M11: IPX/NetBEUI
-> device-link injection on the named-instance shape (their factories already take a resolved MAC; the
-> FrameLink + per-router `members` list land together).
+> DEFERRED (still stubs — converting incomplete code would be speculative).
+
+> **M11.e (landed — IPX/NetBEUI device-link injection; M11 CLOSEOUT):** the last M11 item.
+> `core/port/ipx` and `core/port/netbeui` each gain `NewInstanceFromOpener(sec, open, srcMAC,
+> logger)` — the restartable form: the per-Start `open` is passed straight to the frameport base
+> (which already opened its link via a factory each Start), so a closed device link is reopened on a
+> UI Stop→Start (the pcap-restart contract the AppleTalk ports already had). The old `NewInstance`
+> (single pre-opened `frame`) now wraps a closure over it and delegates, so both keep working. The
+> factories (`reg_ipx`/`reg_netbeui`) dispatch via `nicLinkOpener` (IPX/NetBEUI are NIC-bound —
+> IPX-over-Ethernet, NBF-over-802.2-LLC) resolving the instance's EFFECTIVE interface; unlike
+> EtherTalk they ride NO `link.Framer` (the ports do their own Ethernet/LLC encapsulation in
+> Send/onFrame), so they take the RAW NIC FrameLink. A nil opener → inert-but-configured. The
+> singleton `sectionMAC` helper was removed (both factories now use the instance form `sectionMACFor`).
+> Tests: go-live via opener, nil-opener inert, reopen-on-restart, and multi-named-instance (two IPX on
+> eth0/eth1) — each tagged to its own build tag with a local idle-link fake (no cross-tag dependency;
+> single-tag builds verified). DEFERRED (correctly, NOT an M11 gap): the IPX/NetBEUI mini-routers are
+> not yet COMPOSED (no IPX-router/NetBEUI-router component exists in compose — that is M4-era wiring),
+> so their `members`-style lists land when those mini-routers join compose, alongside the
+> SetDeliveryCallback cross-wire. **M11 is now complete:** named repeated port instances over a named
+> interface namespace; kind-driven opener dispatch (NIC/serial); explicit AppleTalk-router membership;
+> every transport (EtherTalk/LToUDP/TashTalk/IPX/NetBEUI) takes a live device link on the named shape.
 
 > **M1 notes (what landed / deferred):**
 > - **Landed:** real `core/link` decorators (`Filter`/`Dedup`/`Bridge`+`BridgeWiFi`, ported

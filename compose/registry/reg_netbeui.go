@@ -22,9 +22,15 @@ func init() {
 	RegisterPort(netbeui.Name, func(ctx *BuildContext) (component.Component, error) {
 		sec := port.InstanceFromModel(ctx.Model, netbeui.Name, ctx.Instance)
 		logger := log.New(sec.InstanceName(), log.NewStderrSink(log.NewLevelVar(log.Info)))
-		// Feeds its own NetBEUI mini-router, not the AppleTalk router, so no
-		// ctx.Router. The configured station MAC is threaded from the section; the
-		// device FrameLink is the sibling follow-on. Inert-but-configured until then.
-		return netbeui.NewInstance(sec, nil, sectionMACFor(sec), logger)
+		// NetBEUI is a NIC-bound transport (NBF-over-802.2-LLC on Ethernet), so — like
+		// EtherTalk/IPX — it dispatches on the kind=nic branch of the opener table
+		// (M11.c/D6): resolve this instance's effective interface and open it via the
+		// injected NIC opener. It rides NO link.Framer (the port does its own LLC/NBF
+		// encapsulation), so it takes the RAW NIC FrameLink. It is a NetBIOS transport
+		// feeding its own NetBEUI mini-router, not the AppleTalk router (no ctx.Router,
+		// no [Router] membership — that lands when the mini-router joins compose). A
+		// nil opener yields the inert-but-configured form.
+		open := nicLinkOpener(ctx, ctx.Model.EffectiveInterfaceFor(sec).Name)
+		return netbeui.NewInstanceFromOpener(sec, open, sectionMACFor(sec), logger)
 	})
 }

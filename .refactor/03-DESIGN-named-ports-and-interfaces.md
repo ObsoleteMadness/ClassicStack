@@ -275,3 +275,11 @@ instances in `members` slots them in without the router learning about transport
 - The IPX/NetBEUI device-link injection (TODO follow-on (2)) should be implemented
   **on top of** this model (named IPX instances) rather than against the singleton
   shape, to avoid building something we immediately re-shape.
+
+> **Status (landed, M11.e — M11 closeout):** IPX/NetBEUI device-link injection landed on
+> the named-instance shape — `NewInstanceFromOpener` (restartable) + `nicLinkOpener`
+> dispatch + raw FrameLink (no framer; the ports self-encapsulate). The IPX/NetBEUI
+> mini-routers are not yet composed, so their per-router `members` lists are deferred to
+> when those mini-routers join compose (the `SetDeliveryCallback` cross-wire is the seam).
+> With this, **M11 is complete**: every transport runs as a named instance over a typed
+> interface namespace, with kind-driven openers and explicit AppleTalk-router membership.

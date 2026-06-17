@@ -177,17 +177,11 @@ func Instances(m *config.Model) []ComponentID {
 	return out
 }
 
-// sectionMAC resolves a port's configured station MAC from the model as a fixed
-// [6]byte (the form the frame-port constructors take). An absent or malformed MAC
-// yields the zero address — the constructor then falls back to the interface's own
-// hardware address at open time. Shared by the IPX/NetBEUI factories.
-func sectionMAC(m *config.Model, key string) [6]byte {
-	return sectionMACFor(port.SectionFromModel(m, key))
-}
-
 // sectionMACFor resolves a port instance's configured station MAC as a fixed
-// [6]byte (the section-taking form, for repeated instances). An absent or malformed
-// MAC yields the zero address.
+// [6]byte (the form the frame-port constructors take, for repeated instances). An
+// absent or malformed MAC yields the zero address — the constructor then falls back
+// to the interface's own hardware address at open time. Shared by the IPX/NetBEUI
+// factories.
 func sectionMACFor(sec *port.Section) [6]byte {
 	if sec.MAC == "" {
 		return [6]byte{}

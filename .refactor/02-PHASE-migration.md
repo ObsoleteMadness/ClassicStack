@@ -284,11 +284,15 @@ Implement bottom-up so each layer rests on the new config shape:
   `[Router].members` (empty = none, opt-in); unlisted enabled instances run standalone. Attach
   is deferred to runtime Start (the router rejects attach while stopped, §3); Stop detaches.
   Builds on the event-driven membership from M4/§3.
-- **Do the IPX/NetBEUI device-link injection here**, against the named-instance shape, not the
-  singleton one.
-- **Done when:** several EtherTalk/TashTalk/IPX instances run at once on distinct interfaces,
-  each its own segment; `[Router].members` controls attachment; standalone (unlisted) instances
-  receive but don't route; TOML/UCI round-trip; conformance harness exercises multi-instance.
+- **IPX/NetBEUI device-link injection (landed, M11.e):** done against the named-instance shape.
+  Both ports gained `NewInstanceFromOpener` (restartable); the factories dispatch via `nicLinkOpener`
+  (NIC-bound) and take the raw FrameLink (they do their own encapsulation, no `link.Framer`). Their
+  per-router `members` lists are deferred until the IPX/NetBEUI mini-routers themselves join compose
+  (M4-era wiring not yet in compose) — not an M11 gap.
+- **Done (M11 complete):** several EtherTalk/TashTalk/IPX instances run at once on distinct
+  interfaces, each its own segment; the interface KIND drives opener selection (NIC/serial);
+  `[Router].members` controls AppleTalk-router attachment; standalone (unlisted) instances receive
+  but don't route; TOML/UCI round-trip; conformance harness exercises multi-instance.
 
 ## Client tools (any time after M2)
 - **Add:** `cmd/csecho` (AEP over a link, §12) and `cmd/csnetsend` (NetBIOS) as proofs of the
@@ -305,5 +309,7 @@ Implement bottom-up so each layer rests on the new config shape:
 - [ ] TinyGo build of a minimal embedded target links and runs; sqlite-free build works.
 - [ ] Per-protocol security notes present (Verification #9); intentional-weakness paths annotated.
 - [ ] Net lines of code reduced vs. the pre-refactor tree.
-- [ ] (M11) Ports are named repeated instances over a named interface namespace; `[Router].members`
-      governs attachment; multiple instances per transport run at once on distinct interfaces.
+- [x] (M11 — complete) Ports are named repeated instances over a named interface namespace; the
+      interface KIND drives opener selection (NIC/serial); `[Router].members` governs AppleTalk-router
+      attachment; multiple instances per transport run at once on distinct interfaces; every transport
+      (EtherTalk/LToUDP/TashTalk/IPX/NetBEUI) takes a live device link on the named shape.
