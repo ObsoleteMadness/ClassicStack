@@ -4,6 +4,7 @@ package registry
 
 import (
 	"context"
+	"io"
 	"sync/atomic"
 	"testing"
 
@@ -22,13 +23,15 @@ func swapLtoudpOpen(t *testing.T, fn func(iface string) (link.FrameLink, error))
 	t.Cleanup(func() { ltoudpOpen = prev })
 }
 
-// swapTashtalkOpen replaces the TashTalk serial open seam for the duration of a
-// test, restoring it on cleanup.
-func swapTashtalkOpen(t *testing.T, fn func(dev string) (link.FrameLink, error)) {
+// swapTashtalkFrame replaces the TashTalk SerialFramer (the byte-stream→FrameLink
+// wrapper) for the duration of a test, restoring it on cleanup. The device-open
+// itself is the injected ctx.Serial (see serialOpener), so a test drives the serial
+// path through both seams: ctx.Serial yields a fake stream; this frames it.
+func swapTashtalkFrame(t *testing.T, fn SerialFramer) {
 	t.Helper()
-	prev := tashtalkOpen
-	tashtalkOpen = fn
-	t.Cleanup(func() { tashtalkOpen = prev })
+	prev := tashtalkFrame
+	tashtalkFrame = fn
+	t.Cleanup(func() { tashtalkFrame = prev })
 }
 
 func enabledSegmentModel(key, iface string) *config.Model {
@@ -37,11 +40,29 @@ func enabledSegmentModel(key, iface string) *config.Model {
 	return m
 }
 
-// anyOpener returns a BuildContext-level Opener so the factory takes the LIVE
-// path. A LocalTalk segment does NOT call this opener (it opens its own
-// transport directly); it is only the "device backends enabled" switch.
+// nopStream is an io.ReadWriteCloser standing in for an open serial device in the
+// factory tests (the framing itself is tested in adapter/link/tashtalk).
+type nopStream struct{}
+
+func (nopStream) Read([]byte) (int, error)    { return 0, io.EOF }
+func (nopStream) Write(p []byte) (int, error) { return len(p), nil }
+func (nopStream) Close() error                { return nil }
+
+// anyOpener returns a BuildContext-level NIC Opener so a NIC-bound factory takes the
+// LIVE path. A LocalTalk segment does NOT call this opener (LToUDP opens its own
+// transport; TashTalk uses ctx.Serial) — it is only the "NIC backend enabled" switch.
 func anyOpener() LinkOpener {
 	return func(string) (link.FrameLink, error) { return &idleFrameLink{}, nil }
+}
+
+// serialOpenerRecording returns a SerialOpener that records the device it was asked
+// to open and yields a nop stream (so the TashTalk framer succeeds). The recorded
+// device is read back via the returned pointer.
+func serialOpenerRecording(dev *atomic.Value) SerialOpener {
+	return func(device string, _ uint) (io.ReadWriteCloser, error) {
+		dev.Store(device)
+		return nopStream{}, nil
+	}
 }
 
 // TestLToUDPFactory_GoesLive proves the LToUDP port builds a LIVE port using the
@@ -82,16 +103,15 @@ func TestLToUDPFactory_GoesLive(t *testing.T) {
 	}
 }
 
-// TestTashTalkFactory_GoesLive proves the TashTalk port is a DISTINCT component
-// that opens the SERIAL transport with the section's Iface as the device path —
-// never LToUDP.
+// TestTashTalkFactory_GoesLive proves the TashTalk port is a DISTINCT component that
+// opens the SERIAL transport via the injected serial opener (M11.c/D7) with the
+// section's Iface as the device path — never LToUDP, never the NIC opener.
 func TestTashTalkFactory_GoesLive(t *testing.T) {
 	var openedDev atomic.Value
-	var ltoudpCalled atomic.Bool
-	fl := &idleFrameLink{}
-	swapTashtalkOpen(t, func(dev string) (link.FrameLink, error) {
-		openedDev.Store(dev)
-		return fl, nil
+	var ltoudpCalled, framed atomic.Bool
+	swapTashtalkFrame(t, func(s io.ReadWriteCloser) (link.FrameLink, error) {
+		framed.Store(true)
+		return &idleFrameLink{}, nil
 	})
 	swapLtoudpOpen(t, func(string) (link.FrameLink, error) {
 		ltoudpCalled.Store(true)
@@ -100,7 +120,7 @@ func TestTashTalkFactory_GoesLive(t *testing.T) {
 
 	c, ok, err := Build(localtalk.NameTashTalk, &BuildContext{
 		Model:  enabledSegmentModel(localtalk.NameTashTalk, "COM3"),
-		Opener: anyOpener(),
+		Serial: serialOpenerRecording(&openedDev),
 	})
 	if err != nil || !ok || c == nil {
 		t.Fatalf("Build(TashTalk) = (%v, %v, %v)", c, ok, err)
@@ -117,8 +137,52 @@ func TestTashTalkFactory_GoesLive(t *testing.T) {
 	if got := openedDev.Load(); got != "COM3" {
 		t.Fatalf("TashTalk opened device %v, want COM3", got)
 	}
+	if !framed.Load() {
+		t.Fatal("TashTalk did not frame the opened serial stream")
+	}
 	if ltoudpCalled.Load() {
 		t.Fatal("LToUDP seam was called for the TashTalk segment")
+	}
+}
+
+// TestTashTalkFactory_ResolvesSerialInterface proves the M11.c/D7 dispatch: a
+// TashTalk instance whose iface NAMES a kind=serial interface in the namespace opens
+// the DEVICE and BAUD declared on that interface — not the raw section iface. This is
+// the §3b move (the interface, not the port, owns the device parameters).
+func TestTashTalkFactory_ResolvesSerialInterface(t *testing.T) {
+	var openedDev atomic.Value
+	var openedBaud atomic.Uint64
+	swapTashtalkFrame(t, func(io.ReadWriteCloser) (link.FrameLink, error) { return &idleFrameLink{}, nil })
+
+	m := config.NewModel()
+	m.SetInterface(config.InterfaceSection{
+		Name:   "ttyUSB-attic",
+		Kind:   config.IfaceKindSerial,
+		Device: "/dev/ttyUSB0",
+		Baud:   57600,
+	})
+	// The port references the interface by NAME; the device/baud come from the iface.
+	m.AddInstance(&port.Section{SKey: localtalk.NameTashTalk, Name: "tt-attic", Iface: "ttyUSB-attic", IsEnabled: true})
+
+	serial := func(device string, baud uint) (io.ReadWriteCloser, error) {
+		openedDev.Store(device)
+		openedBaud.Store(uint64(baud))
+		return nopStream{}, nil
+	}
+	c, ok, err := Build(localtalk.NameTashTalk, &BuildContext{Model: m, Instance: "tt-attic", Serial: serial})
+	if err != nil || !ok || c == nil {
+		t.Fatalf("Build(TashTalk/tt-attic) = (%v, %v, %v)", c, ok, err)
+	}
+	ctx := context.Background()
+	if err := c.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer c.Stop(ctx)
+	if got := openedDev.Load(); got != "/dev/ttyUSB0" {
+		t.Fatalf("opened device %v, want /dev/ttyUSB0 (from the named serial interface)", got)
+	}
+	if got := openedBaud.Load(); got != 57600 {
+		t.Fatalf("opened baud %d, want 57600 (from the named serial interface)", got)
 	}
 }
 
@@ -131,10 +195,7 @@ func TestLocalTalkSegments_AreDistinct(t *testing.T) {
 		ltoudpDev.Store(iface)
 		return &idleFrameLink{}, nil
 	})
-	swapTashtalkOpen(t, func(dev string) (link.FrameLink, error) {
-		ttDev.Store(dev)
-		return &idleFrameLink{}, nil
-	})
+	swapTashtalkFrame(t, func(io.ReadWriteCloser) (link.FrameLink, error) { return &idleFrameLink{}, nil })
 
 	m := config.NewModel()
 	m.Set(&port.Section{SKey: localtalk.NameLToUDP, Iface: "", IsEnabled: true})
@@ -142,7 +203,7 @@ func TestLocalTalkSegments_AreDistinct(t *testing.T) {
 
 	ctx := context.Background()
 	for _, key := range []string{localtalk.NameLToUDP, localtalk.NameTashTalk} {
-		c, ok, err := Build(key, &BuildContext{Model: m, Opener: anyOpener()})
+		c, ok, err := Build(key, &BuildContext{Model: m, Opener: anyOpener(), Serial: serialOpenerRecording(&ttDev)})
 		if err != nil || !ok || c == nil {
 			t.Fatalf("Build(%s) = (%v, %v, %v)", key, c, ok, err)
 		}
@@ -191,12 +252,13 @@ func TestLToUDPFactory_IgnoresBridge(t *testing.T) {
 // opened — so it is safe in a tag-free build / the conformance harness. Covers
 // both segment keys.
 func TestLocalTalkFactory_NilOpenerInert(t *testing.T) {
-	var ltoudpOpened, ttOpened atomic.Bool
+	var ltoudpOpened, ttFramed atomic.Bool
 	swapLtoudpOpen(t, func(string) (link.FrameLink, error) { ltoudpOpened.Store(true); return &idleFrameLink{}, nil })
-	swapTashtalkOpen(t, func(string) (link.FrameLink, error) { ttOpened.Store(true); return &idleFrameLink{}, nil })
+	swapTashtalkFrame(t, func(io.ReadWriteCloser) (link.FrameLink, error) { ttFramed.Store(true); return &idleFrameLink{}, nil })
 
 	ctx := context.Background()
 	for _, key := range []string{localtalk.NameLToUDP, localtalk.NameTashTalk} {
+		// No Opener and no Serial in the context: BOTH segments must come up inert.
 		c, ok, err := Build(key, &BuildContext{Model: enabledSegmentModel(key, "x")})
 		if err != nil || !ok || c == nil {
 			t.Fatalf("Build(%s) = (%v, %v, %v), want inert component", key, c, ok, err)
@@ -208,8 +270,8 @@ func TestLocalTalkFactory_NilOpenerInert(t *testing.T) {
 			t.Fatalf("Stop (inert) %s: %v", key, err)
 		}
 	}
-	if ltoudpOpened.Load() || ttOpened.Load() {
-		t.Fatal("nil Opener still opened a transport; should stay inert")
+	if ltoudpOpened.Load() || ttFramed.Load() {
+		t.Fatal("nil backends still opened a transport; should stay inert")
 	}
 }
 

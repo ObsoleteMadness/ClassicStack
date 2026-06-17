@@ -83,12 +83,17 @@ type Options struct {
 	// Telemetry is the bus state/stats/log are published on. A nil bus disables
 	// publication (the supervisor and stats subscriber both tolerate nil).
 	Telemetry bus.Bus
-	// Opener builds a raw device FrameLink for a port's configured interface. It is
-	// threaded into every factory's BuildContext so a port can come up LIVE on a
-	// NIC. nil (the default) keeps ports inert-but-routed — the cmd edge injects the
-	// concrete opener (pcap under the `pcap` tag, else its stub) so this package
-	// pulls in no cgo/libpcap dependency, mirroring the injected Store/Codec.
+	// Opener builds a raw NIC FrameLink for a port's configured interface (kind nic
+	// or bridge). It is threaded into every factory's BuildContext so a NIC port can
+	// come up LIVE. nil (the default) keeps NIC ports inert-but-routed — the cmd edge
+	// injects the concrete opener (pcap under the `pcap` tag, else its stub) so this
+	// package pulls in no cgo/libpcap dependency, mirroring the injected Store/Codec.
 	Opener registry.LinkOpener
+	// Serial opens a serial byte stream for a port whose interface kind is serial
+	// (TashTalk). Like Opener it is injected at the cmd edge (adapter/serial) and
+	// threaded into every BuildContext, so the kind→opener dispatch (M11.c) can pick
+	// NIC vs serial from the resolved interface. nil → serial ports come up inert.
+	Serial registry.SerialOpener
 	// source enumerates/builds components. nil → the global compose/registry. Set
 	// only by tests (kept unexported so the production API is the registry path).
 	source componentSource
@@ -156,6 +161,7 @@ func Build(opts Options) (*Runtime, error) {
 		Router:    rtr,
 		Telemetry: opts.Telemetry,
 		Opener:    opts.Opener,
+		Serial:    opts.Serial,
 	}
 
 	// First pass: build the components, recording which names actually exist so the

@@ -326,6 +326,29 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > (then) IPX/NetBEUI device-link injection. (The IPX/NetBEUI mini-routers get their own
 > `members`-style lists when their device-link injection lands — same shape, different router.)
 
+> **M11.c (landed — opener dispatch by interface kind + shared serial opener, §3a/3b/D6/D7):**
+> opener selection now flows from the resolved INTERFACE KIND, not the port type. New
+> `adapter/serial` is the one shared serial opener (`Open(Config{Device,Baud}) →
+> io.ReadWriteCloser`); it owns the jacobsa/go-serial dependency and the Windows `\\.\COMn`
+> name mapping (both moved out of `adapter/link/tashtalk`). `tashtalk` is now a FRAMER over the
+> byte stream: `Open(Config)` → `NewStream(io.ReadWriteCloser)` (sends the init sequence, frames
+> LLAP); it imports no serial library and its `portname_*` files were deleted. The dispatch lives
+> in `compose/registry/dispatch.go`: `BuildContext` gains `Serial SerialOpener` alongside the
+> existing `Opener` (renamed in docs to the NIC opener); `nicLinkOpener` (kind nic/bridge → pcap),
+> `serialLinkOpener` (kind serial → ctx.Serial + a `SerialFramer`), and `effectiveSerialInterface`
+> (reads device/baud from the named serial interface — §3b: the interface, not the port, owns the
+> device params). EtherTalk dispatches via `nicLinkOpener`; the LocalTalk factory's `segmentOpener`
+> hook makes TashTalk take the serial branch (`tashtalkFrame = tashtalk.NewStream`) while LToUDP
+> keeps its own multicast adapter (still gated on `Opener` as the backends-enabled flag).
+> `runtime.Options`/`BuildContext` thread `Serial`; the cmd edge (`classicstack-ng`) injects it via
+> `adapter/serial`. Graceful degradation preserved: a nil opener for the relevant kind → inert. The
+> serial library stays OUT of the cs-tinygo gate (verified). Tests: serial-kind interface resolution
+> (device+baud from the namespace), tashtalk-over-stream via the framer seam, `NewStream` init +
+> nil-stream, `adapter/serial` empty-device + Windows COM mapping. ppp/slip framer conversion
+> DEFERRED (still stubs — converting incomplete code would be speculative). NEXT in M11: IPX/NetBEUI
+> device-link injection on the named-instance shape (their factories already take a resolved MAC; the
+> FrameLink + per-router `members` list land together).
+
 > **M1 notes (what landed / deferred):**
 > - **Landed:** real `core/link` decorators (`Filter`/`Dedup`/`Bridge`+`BridgeWiFi`, ported
 >   from `port/rawlink/bridge_link.go`, stdlib-only/reflection-free, archtest-clean);

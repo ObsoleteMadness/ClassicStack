@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -10,6 +11,7 @@ import (
 
 	configtoml "github.com/ObsoleteMadness/ClassicStack/adapter/config/toml"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/pcap"
+	adapterserial "github.com/ObsoleteMadness/ClassicStack/adapter/serial"
 	storefile "github.com/ObsoleteMadness/ClassicStack/adapter/store/file"
 	"github.com/ObsoleteMadness/ClassicStack/compose/registry"
 	"github.com/ObsoleteMadness/ClassicStack/compose/runtime"
@@ -60,7 +62,7 @@ func main() {
 	//    it is the real libpcap link, otherwise the stub returns ErrUnavailable and
 	//    ports come up inert. The runtime/compose packages stay free of cgo because
 	//    the opener is injected, not imported by them.
-	rt, err := runtime.Build(runtime.Options{Model: m, Telemetry: telemetry, Opener: pcapOpener})
+	rt, err := runtime.Build(runtime.Options{Model: m, Telemetry: telemetry, Opener: pcapOpener, Serial: serialOpener})
 	if err != nil {
 		fmt.Printf("Failed to build runtime: %v\n", err)
 		os.Exit(1)
@@ -107,4 +109,13 @@ func main() {
 // a reopened port gets a fresh handle.
 var pcapOpener registry.LinkOpener = func(iface string) (link.FrameLink, error) {
 	return pcap.Open(pcap.DefaultEtherTalkConfig(iface))
+}
+
+// serialOpener is the runtime's SerialOpener: it opens a serial byte stream for a
+// `kind = "serial"` interface (device path + baud) via adapter/serial. The TashTalk
+// factory pairs it with the tashtalk framer (the kind→opener dispatch, M11.c/D7), so
+// the device-open lives here at the cmd edge while the framing stays in the adapter.
+// baud 0 means the adapter default (1 Mbit/s for TashTalk). Called per Start.
+var serialOpener registry.SerialOpener = func(device string, baud uint) (io.ReadWriteCloser, error) {
+	return adapterserial.Open(adapterserial.Config{Device: device, Baud: baud})
 }

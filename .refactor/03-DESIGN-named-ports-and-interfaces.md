@@ -145,6 +145,16 @@ resolved interface to the right `adapter/link/*` opener. The `LinkOpener` seam
 (injected at the cmd edge, keeping cgo out of compose) stays; it grows from "the
 pcap opener" into "the opener registry keyed by interface kind."
 
+> **Status (landed, M11.c):** the dispatch lives in `compose/registry/dispatch.go`.
+> `BuildContext` now carries TWO cmd-edge-injected openers: `Opener` (NIC FrameLink,
+> pcap) for kind=nic/bridge, and `Serial` (`SerialOpener`: device+baud →
+> `io.ReadWriteCloser`) for kind=serial. A factory resolves its instance's effective
+> interface and dispatches on `EffectiveKind()`: EtherTalk uses `nicLinkOpener`;
+> TashTalk uses `serialLinkOpener` + a `SerialFramer` (tashtalk.NewStream); LToUDP
+> rides its own multicast adapter (no device kind) but still gates on the `Opener`
+> "backends enabled" flag. A nil opener for the relevant kind → the inert-but-routed
+> form (graceful degradation preserved).
+
 ### 3b. Shared serial opener (the original UART question, now subsumed)
 
 `tashtalk`, `ppp`, `slip` each open their own UART today. With interfaces named and
@@ -153,6 +163,13 @@ parity) and a single `adapter/serial` opener returns the `io.ReadWriteCloser`;
 `tashtalk`/`ppp`/`slip` become **framers over that byte stream** (each supplying
 its escape rules), not device owners. This is the clean home for the
 serial-opener split — it falls out of treating serial as an interface kind.
+
+> **Status (landed, M11.c):** `adapter/serial` is the one shared serial opener
+> (`Open(Config{Device,Baud}) (io.ReadWriteCloser, error)`; it owns the
+> jacobsa/go-serial dependency + the Windows `\\.\COMn` name mapping). `tashtalk`
+> is now a framer over the byte stream (`NewStream(io.ReadWriteCloser)`); it imports
+> no serial library. ppp/slip are still stubs (their framer conversion is deferred,
+> as agreed — converting incomplete code would be speculative).
 
 ### 3c. Registry: one factory → N components
 

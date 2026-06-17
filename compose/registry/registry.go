@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"io"
 	"sort"
 	"sync"
 
@@ -12,15 +13,29 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/router"
 )
 
-// LinkOpener opens a raw L2 FrameLink for the named interface. It is the seam by
-// which a port factory obtains a real device link WITHOUT core/ or this registry
-// importing the pcap/cgo adapter: the compose runtime root selects the concrete
-// opener (libpcap under the `pcap` tag, a stub otherwise) at the cmd edge and
-// injects it here — exactly as the config Store/Codec are injected rather than
-// imported. It is called per Start (a fresh handle each time) so a reopened port
-// gets a new link. nil means no device backend in this build → ports come up
-// inert-but-routed (the graceful-degradation contract of BuildContext).
+// LinkOpener opens a raw L2 FrameLink for a NIC by name. It is the seam by which a
+// port factory obtains a real device link WITHOUT core/ or this registry importing
+// the pcap/cgo adapter: the compose runtime root selects the concrete opener (libpcap
+// under the `pcap` tag, a stub otherwise) at the cmd edge and injects it here —
+// exactly as the config Store/Codec are injected rather than imported. It is called
+// per Start (a fresh handle each time) so a reopened port gets a new link. nil means
+// no NIC backend in this build → NIC ports come up inert-but-routed (the
+// graceful-degradation contract of BuildContext).
 type LinkOpener func(iface string) (link.FrameLink, error)
+
+// SerialOpener opens a serial device (by path + baud) and returns the raw byte
+// stream — NOT a FrameLink. The transport framer (tashtalk today) wraps the stream
+// into a FrameLink. It is the §3b/D7 "shared serial opener" injected at the cmd edge
+// (adapter/serial) so this registry imports no serial library. nil → serial-kind
+// ports come up inert. baud 0 means "the opener's default".
+type SerialOpener func(device string, baud uint) (io.ReadWriteCloser, error)
+
+// SerialFramer wraps an open serial byte stream into a core/link.FrameLink for one
+// serial transport (tashtalk.NewStream). A factory whose interface kind is serial
+// pairs the injected SerialOpener with its own SerialFramer: open the device once,
+// frame the stream. Separating the two keeps the device-open (cgo-ish, cmd-edge
+// injected) from the pure-Go framing (the adapter), per the kind→opener split.
+type SerialFramer func(io.ReadWriteCloser) (link.FrameLink, error)
 
 // BuildContext carries everything a factory needs to build a FULLY-WIRED component:
 // the config model plus the shared collaborators a component binds to (§14). It
@@ -46,11 +61,17 @@ type BuildContext struct {
 	Router *router.RouterImpl
 	// Telemetry is the bus stats/state/log are published on. May be nil.
 	Telemetry bus.Bus
-	// Opener builds a raw device FrameLink for a port's configured interface. nil
-	// when no device backend is in this build (e.g. a tag-free / TinyGo build, or
-	// a unit test): a port factory then builds the inert form. The runtime root
-	// injects the concrete opener (pcap or its stub) at the cmd edge.
+	// Opener builds a raw NIC FrameLink for a port's configured interface (kind nic
+	// or bridge). nil when no NIC backend is in this build (e.g. a tag-free / TinyGo
+	// build, or a unit test): a NIC port factory then builds the inert form. The
+	// runtime root injects the concrete opener (pcap or its stub) at the cmd edge.
 	Opener LinkOpener
+	// Serial opens a serial byte stream for a port whose interface kind is serial
+	// (device path + baud). nil when no serial backend is in this build: a serial
+	// port factory then builds the inert form. Injected at the cmd edge
+	// (adapter/serial) alongside Opener, so the kind→opener dispatch (M11.c/D6) can
+	// pick NIC vs serial from the resolved interface rather than the port type.
+	Serial SerialOpener
 	// Instance is the per-instance name a REPEATED port factory should build (§M11):
 	// a transport is a repeated section, so the runtime calls the factory once per
 	// instance with Instance set to that instance's name, and the factory resolves

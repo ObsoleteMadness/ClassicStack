@@ -2,11 +2,8 @@ package tashtalk
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"sync"
-
-	serial "github.com/jacobsa/go-serial/serial"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 )
@@ -26,22 +23,7 @@ const (
 	// minLLAPFrame is the shortest valid inbound LLAP frame the state machine will
 	// dispatch (3-byte LLAP header + at least 2 bytes), AFTER the FCS is stripped.
 	minLLAPFrame = 3
-
-	// Serial line parameters (spec/08 §"Serial Connection Parameters").
-	baudRate           = 1000000
-	dataBits           = 8
-	stopBits           = 1
-	interCharTimeoutMs = 250
 )
-
-// Config holds parameters for opening a TashTalk serial link.
-type Config struct {
-	// Port is the OS serial device path (e.g. "COM3" or "/dev/ttyUSB0").
-	Port string
-}
-
-// DefaultConfig returns a Config for the given serial port path.
-func DefaultConfig(port string) Config { return Config{Port: port} }
 
 // frameLink implements core/link.FrameLink over a TashTalk serial connection. It
 // runs the inbound escape state machine + FCS check on Read and the outbound
@@ -67,29 +49,21 @@ type frameLink struct {
 // Compile-time assertion: *frameLink satisfies core/link.FrameLink.
 var _ link.FrameLink = (*frameLink)(nil)
 
-// Open opens the TashTalk serial port, sends the reset/init sequence, and
-// returns it as a core/link.FrameLink. The caller frames the result with the
-// LLAP framer. Mirrors the legacy TashTalkPort.Start serial setup.
-func Open(cfg Config) (link.FrameLink, error) {
-	if cfg.Port == "" {
-		return nil, errors.New("tashtalk: empty serial port name")
-	}
-	s, err := serial.Open(serial.OpenOptions{
-		PortName:              normalizeSerialPortName(cfg.Port),
-		BaudRate:              baudRate,
-		DataBits:              dataBits,
-		StopBits:              stopBits,
-		ParityMode:            serial.PARITY_NONE,
-		InterCharacterTimeout: interCharTimeoutMs,
-		MinimumReadSize:       1,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("tashtalk: open %s: %w", cfg.Port, err)
+// NewStream wraps an already-open serial byte stream in the TashTalk FrameLink: it
+// sends the reset/init sequence on the stream, then frames inbound/outbound LLAP per
+// spec/08. The device-open (port name, baud, 8N1) lives in adapter/serial (§3b/D7);
+// this adapter is a FRAMER over the byte stream and owns no serial-library
+// dependency. The caller frames the result further with the LLAP framer above.
+// A nil stream is rejected. On an init-write error the stream is closed and the
+// error returned.
+func NewStream(s io.ReadWriteCloser) (link.FrameLink, error) {
+	if s == nil {
+		return nil, errors.New("tashtalk: nil serial stream")
 	}
 	fl := &frameLink{s: s, rdBuf: make([]byte, 0, 1024)}
 	if _, err := s.Write(buildInitSequence()); err != nil {
 		_ = s.Close()
-		return nil, fmt.Errorf("tashtalk: init %s: %w", cfg.Port, err)
+		return nil, errors.New("tashtalk: init write failed: " + err.Error())
 	}
 	return fl, nil
 }

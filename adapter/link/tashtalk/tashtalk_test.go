@@ -96,6 +96,27 @@ func encodeInbound(llap []byte) []byte {
 	return out
 }
 
+// TestNewStreamSendsInit proves NewStream wraps a provided byte stream (the §3b/D7
+// shape: the device-open lives in adapter/serial, this is a framer over the stream)
+// and sends the reset/init sequence (1024 nulls + 0x02) on it. A nil stream is
+// rejected.
+func TestNewStreamSendsInit(t *testing.T) {
+	if _, err := NewStream(nil); err == nil {
+		t.Fatal("NewStream(nil) = nil error, want rejection")
+	}
+	fs := newFakeSerial()
+	fl, err := NewStream(fs)
+	if err != nil {
+		t.Fatalf("NewStream: %v", err)
+	}
+	if fl == nil {
+		t.Fatal("NewStream returned a nil FrameLink")
+	}
+	if got := fs.tx.Bytes(); !bytes.Equal(got, buildInitSequence()) {
+		t.Fatalf("init sequence on wrap = % X (len %d), want the 1024-null + 0x02 reset (len %d)", got, len(got), len(buildInitSequence()))
+	}
+}
+
 // TestWriteFraming proves Write emits 0x01 + frame + FCS (no escaping outbound,
 // per spec/08).
 func TestWriteFraming(t *testing.T) {

@@ -12,7 +12,12 @@
 // LLAP framer above therefore sees only clean LLAP frames, exactly as it does
 // over LToUDP.
 //
-// Ring: adapter. Imports github.com/jacobsa/go-serial; presents only the
-// core/link.FrameLink interface upward. It sits OUTSIDE the cs-tinygo gate (the
-// serial library is not TinyGo-safe), like the pcap/ltoudp adapters.
+// This adapter is a FRAMER over a serial byte stream, NOT a device owner (§3b/D7,
+// M11.c): NewStream wraps an already-open io.ReadWriteCloser (sending the reset/init
+// sequence) and frames over it. The serial device-open — port name, baud, 8N1 —
+// lives in adapter/serial, the one shared serial opener the compose layer dispatches
+// to for a `kind = "serial"` interface. So this package imports no serial library
+// and is stdlib-only at the byte-stream seam.
+//
+// Ring: adapter. Presents only the core/link.FrameLink interface upward.
 package tashtalk

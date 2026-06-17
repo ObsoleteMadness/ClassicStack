@@ -274,8 +274,10 @@ Implement bottom-up so each layer rests on the new config shape:
   `Model.Bridge` into it (`EffectiveInterface` resolves by name); add `[Router].members`
   (per router type; empty = none join, opt-in). TOML/UCI round-trip via the existing
   array-of-tables / repeated-block machinery.
-- **Opener dispatch:** interface-kind → opener table (pcap / `adapter/serial` / rawsock); the
-  shared `adapter/serial` opener lands here and tashtalk/ppp/slip reduce to byte-stream framers.
+- **Opener dispatch (landed, M11.c):** interface-kind → opener table (pcap for nic/bridge,
+  `adapter/serial` for serial); the shared `adapter/serial` opener landed and tashtalk reduced to a
+  byte-stream framer (`NewStream`). ppp/slip framer conversion deferred (still stubs). The dispatch
+  lives in `compose/registry/dispatch.go`; `BuildContext` carries `Opener` (NIC) + `Serial`.
 - **Registry/supervisor:** one factory → **N components**, one per instance, addressed by
   instance name; the supervisor enumerates `Model.Lists[key]`.
 - **Router membership (landed, M11.d):** Attach driven only for instances named in
