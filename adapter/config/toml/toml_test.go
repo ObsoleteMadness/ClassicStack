@@ -97,7 +97,7 @@ func TestRoundTrip(t *testing.T) {
 	m := config.NewModel()
 	m.Identity = config.Identity{Hostname: "CLASSICSTACK", Workgroup: "MYGROUP", Description: "test server"}
 	m.Logging = config.LoggingSection{Level: "debug"}
-	m.Router = config.RouterSection{DefaultZone: "MyZone"}
+	m.Router = config.RouterSection{DefaultZone: "MyZone", Members: []string{"et-lab", "tt-attic"}}
 	m.Bridge = config.InterfaceSection{Name: "br-lan", Addr: "10.0.0.1"}
 	m.Set(&fakeSection{SKey: "Alpha", Iface: "eth0", Port: 548, On: true})
 	m.Set(&fakeSection{SKey: "Beta", Iface: "eth1", Port: 139})
@@ -119,7 +119,7 @@ func TestRoundTrip(t *testing.T) {
 	if got.Logging != m.Logging {
 		t.Errorf("Logging: got %+v want %+v", got.Logging, m.Logging)
 	}
-	if got.Router != m.Router {
+	if !reflect.DeepEqual(got.Router, m.Router) {
 		t.Errorf("Router: got %+v want %+v", got.Router, m.Router)
 	}
 	if !reflect.DeepEqual(got.Bridge, m.Bridge) {

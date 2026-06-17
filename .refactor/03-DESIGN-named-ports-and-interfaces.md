@@ -215,6 +215,13 @@ Semantics (decided):
 The existing router-port wiring already keys on the component name, so naming
 instances in `members` slots them in without the router learning about transports.
 
+> **Status (landed, M11.d):** `config.RouterSection.Members []string` +
+> `IsMember(instance)`; the compose runtime selects only listed ports as router
+> members and attaches them at Start (the router rejects attach while stopped, §3),
+> detaching at Stop. Unlisted enabled ports run standalone; empty `members` = none.
+> The IPX/NetBEUI mini-routers get their own `members`-style lists when their
+> device-link injection lands (same shape, different router).
+
 ## 4. Migration / compatibility
 
 - The legacy `internal/app` config (`[LToUdp]`, `[TashTalk]`, `[EtherTalk]`

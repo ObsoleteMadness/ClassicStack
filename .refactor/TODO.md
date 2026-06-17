@@ -304,8 +304,27 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 > component per ID with `ctx.Instance` set, registers under the instance name, and rejects duplicate
 > names. Tests: `Instances` expansion + multi-named-instance build (two EtherTalk on eth0/eth1, distinct
 > components opening their own iface); conformance harness exercises all keys incl. LToUDP/TashTalk as
-> repeated. NEXT in M11: (c) opener dispatch by interface kind + shared `adapter/serial`; (d)
-> `[Router].members` explicit membership; (then) IPX/NetBEUI device-link injection on this shape.
+> repeated. NEXT in M11: (c) opener dispatch by interface kind + shared `adapter/serial`; (then)
+> IPX/NetBEUI device-link injection on this shape.
+
+> **M11.d (landed — explicit router membership, §3d/D8/D9):** `[Router].members` now names which
+> port instances join the AppleTalk router. `config.RouterSection` gains `Members []string`
+> (`toml:"members"`, `default_zone` for the existing zone field), plus `Clone()` (it is no longer
+> comparable) and `IsMember(instance)`. `Model.Clone` deep-copies the section. The runtime cross-wire
+> is now membership-gated and timing-correct: `crossWireRouter` registers DDP services unconditionally
+> (a service binds its socket regardless of routing) but only SELECTS the listed ports — an enabled
+> port NOT in `members` comes up standalone (built, supervised, live on its own segment, but never
+> attached → no RTMP/ZIP/forwarding); an empty `members` selects NONE (D9 opt-in, diverging from the
+> legacy "empty = bind all"). Port ATTACH is deferred to `Runtime.Start` because the router rejects
+> attach while stopped (§3); `Stop` detaches in turn. Fixed a latent bug exposed by this: the up-front
+> `buildRouter` instance is now REUSED as the supervised `router.Name` component (previously a second
+> router was built in the main loop, so the cross-wire target and the started router diverged and
+> members would have attached to a router that never ran). Codec round-trip: both TOML (`members = [...]`)
+> and UCI (`list members`) persist the field via the existing slice handling — no codec change needed.
+> Tests: runtime membership gate (only-listed attaches, empty=none, all-listed), codec round-trip with
+> populated members. NEXT in M11: (c) opener dispatch by interface kind + shared `adapter/serial`;
+> (then) IPX/NetBEUI device-link injection. (The IPX/NetBEUI mini-routers get their own
+> `members`-style lists when their device-link injection lands — same shape, different router.)
 
 > **M1 notes (what landed / deferred):**
 > - **Landed:** real `core/link` decorators (`Filter`/`Dedup`/`Bridge`+`BridgeWiFi`, ported

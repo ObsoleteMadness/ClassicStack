@@ -1,6 +1,9 @@
 package config
 
-import "sync"
+import (
+	"slices"
+	"sync"
+)
 
 // Section is one component's typed config (e.g. *EtherTalkSection). Clone returns a deep
 // copy so staging never mutates the live section. Validate checks the section in isolation.
@@ -44,7 +47,7 @@ func (m *Model) Clone() *Model {
 		Identity:  m.Identity.Clone(),
 		AdminAuth: m.AdminAuth.Clone(),
 		Logging:   m.Logging,
-		Router:    m.Router,
+		Router:    m.Router.Clone(),
 		Bridge:    m.Bridge.Clone(),
 		Sections:  make(map[string]Section, len(m.Sections)),
 		Lists:     make(map[string][]Section, len(m.Lists)),
@@ -380,9 +383,32 @@ type LoggingSection struct {
 	Level string // "debug"|"info"|"warn"|"error"
 }
 
-// RouterSection is the router config (zone defaults, seed ranges).
+// RouterSection is the AppleTalk router config (zone defaults, seed ranges) and
+// — §3d/D8 — the EXPLICIT membership list naming which port instances join the
+// router. Membership is opt-IN by instance name: an enabled port NOT listed in
+// Members comes up standalone (sends/receives on its own segment, but no
+// RTMP/ZIP/forwarding). An empty Members means NONE join (D9) — this diverges
+// from the legacy "empty = bind every enabled transport"; the greenfield stance
+// is explicit-over-implicit, so first-run setup seeds Members rather than
+// defaulting to all.
 type RouterSection struct {
-	DefaultZone string
+	DefaultZone string   `toml:"default_zone"`
+	Members     []string `toml:"members"` // instance names of the ports that join this router
+}
+
+// Clone returns a deep copy (Members is the only reference-typed field).
+func (s RouterSection) Clone() RouterSection {
+	cp := s
+	if s.Members != nil {
+		cp.Members = append([]string(nil), s.Members...)
+	}
+	return cp
+}
+
+// IsMember reports whether the named port instance is declared a member of the
+// router (§3d). Unlisted instances run standalone; an empty Members lists none.
+func (s RouterSection) IsMember(instance string) bool {
+	return slices.Contains(s.Members, instance)
 }
 
 // Interface kinds (Model.Interfaces / InterfaceSection.Kind). A port references an

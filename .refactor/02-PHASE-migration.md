@@ -278,8 +278,10 @@ Implement bottom-up so each layer rests on the new config shape:
   shared `adapter/serial` opener lands here and tashtalk/ppp/slip reduce to byte-stream framers.
 - **Registry/supervisor:** one factory → **N components**, one per instance, addressed by
   instance name; the supervisor enumerates `Model.Lists[key]`.
-- **Router membership:** Attach/Detach driven only for instances named in `[Router].members`
-  (builds on the event-driven membership from M4/§3).
+- **Router membership (landed, M11.d):** Attach driven only for instances named in
+  `[Router].members` (empty = none, opt-in); unlisted enabled instances run standalone. Attach
+  is deferred to runtime Start (the router rejects attach while stopped, §3); Stop detaches.
+  Builds on the event-driven membership from M4/§3.
 - **Do the IPX/NetBEUI device-link injection here**, against the named-instance shape, not the
   singleton one.
 - **Done when:** several EtherTalk/TashTalk/IPX instances run at once on distinct interfaces,

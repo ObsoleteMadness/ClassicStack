@@ -326,3 +326,97 @@ func TestBuild_CrossWiresServiceOntoRouter(t *testing.T) {
 		t.Fatalf("service received %d datagrams, want 1 (not cross-wired onto the router)", svc.received)
 	}
 }
+
+// fakeRoutedPort is a minimal component.Component + router.RoutedPort: it does no
+// real I/O, it exists so the runtime's membership gate (§3d) can be observed via
+// the router's Ports() set.
+type fakeRoutedPort struct{ name string }
+
+func (p *fakeRoutedPort) Name() string                        { return p.name }
+func (p *fakeRoutedPort) Start(context.Context) error         { return nil }
+func (p *fakeRoutedPort) Stop(context.Context) error          { return nil }
+func (p *fakeRoutedPort) Unicast(uint16, uint8, ddp.Datagram) {}
+func (p *fakeRoutedPort) Broadcast(ddp.Datagram)              {}
+func (p *fakeRoutedPort) Multicast([]byte, ddp.Datagram)      {}
+func (p *fakeRoutedPort) Network() uint16                     { return 0 }
+func (p *fakeRoutedPort) Node() uint8                         { return 0 }
+func (p *fakeRoutedPort) NetworkMin() uint16                  { return 0 }
+func (p *fakeRoutedPort) NetworkMax() uint16                  { return 0 }
+
+// attachedPorts returns the names of the ports currently attached to the router.
+func attachedPorts(rtr *router.RouterImpl) map[string]bool {
+	out := map[string]bool{}
+	for _, p := range rtr.Ports() {
+		out[p.Name()] = true
+	}
+	return out
+}
+
+// buildWithMembers assembles a runtime whose model has the given router members and
+// two named RoutedPorts, returning the shared router so a test can inspect which
+// ports were attached.
+func buildWithMembers(t *testing.T, members []string) *router.RouterImpl {
+	t.Helper()
+	m := config.NewModel()
+	m.Router = config.RouterSection{Members: members}
+	src := fakeSource{
+		router.Name: func(*registry.BuildContext) (component.Component, error) {
+			return router.New(log.New(router.Name)), nil
+		},
+		"et-lab": func(*registry.BuildContext) (component.Component, error) {
+			return &fakeRoutedPort{name: "et-lab"}, nil
+		},
+		"et-dmz": func(*registry.BuildContext) (component.Component, error) {
+			return &fakeRoutedPort{name: "et-dmz"}, nil
+		},
+	}
+	rt, err := Build(Options{Model: m, source: src})
+	if err != nil {
+		t.Fatalf("Build = %v", err)
+	}
+	rtr := rt.router()
+	if rtr == nil {
+		t.Fatal("runtime built no router")
+	}
+	// Membership attach is deferred to Start (the router rejects attach while
+	// stopped, §3) — so start the runtime before inspecting the attached set.
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	t.Cleanup(func() { rt.Stop(context.Background()) })
+	return rtr
+}
+
+// TestBuild_RouterMembersAttachesOnlyListed proves §3d/D8: only the port instances
+// NAMED in [Router].members are Attached to the router; an enabled-but-unlisted port
+// runs standalone (built and supervised, but not a router member).
+func TestBuild_RouterMembersAttachesOnlyListed(t *testing.T) {
+	rtr := buildWithMembers(t, []string{"et-lab"})
+	got := attachedPorts(rtr)
+	if !got["et-lab"] {
+		t.Errorf("et-lab is in members but was not attached: %v", got)
+	}
+	if got["et-dmz"] {
+		t.Errorf("et-dmz is NOT in members but was attached (should run standalone): %v", got)
+	}
+}
+
+// TestBuild_RouterEmptyMembersAttachesNone proves D9 (opt-in): an empty/unspecified
+// members list attaches NO ports — the deliberate divergence from the legacy
+// "empty = bind every enabled transport" default.
+func TestBuild_RouterEmptyMembersAttachesNone(t *testing.T) {
+	rtr := buildWithMembers(t, nil)
+	if got := attachedPorts(rtr); len(got) != 0 {
+		t.Errorf("empty members attached %v, want none (membership is opt-in)", got)
+	}
+}
+
+// TestBuild_RouterMembersAttachesAllListed proves both named instances join when
+// both appear in members (the multi-drop AppleTalk router case).
+func TestBuild_RouterMembersAttachesAllListed(t *testing.T) {
+	rtr := buildWithMembers(t, []string{"et-lab", "et-dmz"})
+	got := attachedPorts(rtr)
+	if !got["et-lab"] || !got["et-dmz"] {
+		t.Errorf("both listed ports should be attached, got %v", got)
+	}
+}

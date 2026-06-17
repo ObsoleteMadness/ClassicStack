@@ -102,8 +102,9 @@ type Runtime struct {
 	sup       *supervisor.Supervisor
 	model     *config.Model
 	telemetry bus.Bus
-	rtr       *router.RouterImpl // the shared router (nil if none built); cross-wire target
-	built     []string           // names actually constructed (diagnostics)
+	rtr       *router.RouterImpl  // the shared router (nil if none built); cross-wire target
+	members   []router.RoutedPort // ports declared in [Router].members, attached after the router starts (§3d)
+	built     []string            // names actually constructed (diagnostics)
 }
 
 // Load builds a config.Model from a Store + Codec. A missing store file yields the
@@ -169,6 +170,16 @@ func Build(opts Options) (*Runtime, error) {
 		if stubNames[id.Key] {
 			continue
 		}
+		// The Router was already built up-front (buildRouter) so it could be threaded
+		// into every dependent's BuildContext; reuse THAT instance as the supervised
+		// component rather than building a second one — otherwise the cross-wire target
+		// and the supervised (started) router diverge, and members attach to a router
+		// that never runs.
+		if id.Key == router.Name && rtr != nil {
+			comps[id.Name] = rtr
+			order = append(order, id.Name)
+			continue
+		}
 		ictx := *ctx
 		ictx.Instance = id.Instance
 		c, ok, err := src.Build(id.Key, &ictx)
@@ -186,11 +197,13 @@ func Build(opts Options) (*Runtime, error) {
 	}
 
 	// Cross-wire the runtime data path against the shared router: register DDP
-	// services on their sockets and attach the AppleTalk ports as routed members.
-	// This is the seam that makes AFP/SMB-over-DDP reachable and ports deliverable;
-	// transport↔service seams (SMB over NetBIOS, IPXGW) land as that wiring matures.
+	// services on their sockets now, and SELECT the [Router].members ports (§3d) to
+	// be attached once the router is running (deferred to Start). This is the seam
+	// that makes AFP/SMB-over-DDP reachable and ports deliverable; transport↔service
+	// seams (SMB over NetBIOS, IPXGW) land as that wiring matures.
+	var members []router.RoutedPort
 	if rtr != nil {
-		crossWireRouter(rtr, comps)
+		members = crossWireRouter(rtr, comps, opts.Model.Router)
 	}
 
 	// Second pass: register with the supervisor under filtered edges (only edges
@@ -205,6 +218,7 @@ func Build(opts Options) (*Runtime, error) {
 		model:     opts.Model,
 		telemetry: opts.Telemetry,
 		rtr:       rtr,
+		members:   members,
 		built:     order,
 	}, nil
 }
@@ -233,12 +247,23 @@ func buildRouter(src componentSource, m *config.Model) (*router.RouterImpl, erro
 	return rtr, nil
 }
 
-// crossWireRouter binds the built components to the shared router: DDP services
-// (router.Service) register on their sockets; AppleTalk ports (router.RoutedPort)
-// attach as routed members. The router itself is in comps under router.Name and is
-// skipped. Both bindings are best-effort by interface assertion, so a component
-// that is neither (e.g. SMB, a NetBIOS-transport service) is simply left alone.
-func crossWireRouter(rtr *router.RouterImpl, comps map[string]component.Component) {
+// crossWireRouter registers the built DDP services on the shared router and selects
+// which AppleTalk ports are router MEMBERS. Service registration happens here and is
+// unconditional — a service binds to its socket regardless of which ports route, and
+// RegisterService does not require a running router. Port ATTACH is deferred: the
+// router rejects attaching while stopped (§3 event-driven membership), so the member
+// ports are returned for Start to attach once the supervisor has brought the router
+// up, and Stop detaches them in turn.
+//
+// Membership is §3d/D8: only the port instances NAMED in [Router].members become
+// members. An enabled port NOT listed comes up standalone — built, supervised, and
+// live on its own segment, but never attached, so it takes no part in RTMP/ZIP or
+// inter-port forwarding. An empty members list selects NONE (D9, opt-in). The router
+// itself is in comps under router.Name and is skipped. Bindings are best-effort by
+// interface assertion, so a component that is neither service nor port (e.g. SMB) is
+// simply left alone.
+func crossWireRouter(rtr *router.RouterImpl, comps map[string]component.Component, rsec config.RouterSection) []router.RoutedPort {
+	var members []router.RoutedPort
 	for name, c := range comps {
 		if name == router.Name {
 			continue
@@ -246,10 +271,11 @@ func crossWireRouter(rtr *router.RouterImpl, comps map[string]component.Componen
 		if svc, ok := c.(router.Service); ok {
 			rtr.RegisterService(svc)
 		}
-		if p, ok := c.(router.RoutedPort); ok {
-			_ = rtr.Attach(p)
+		if p, ok := c.(router.RoutedPort); ok && rsec.IsMember(name) {
+			members = append(members, p)
 		}
 	}
+	return members
 }
 
 // builtDeps returns name's hard dependencies, dropping any whose target was not
@@ -269,11 +295,36 @@ func builtDeps(name string, comps map[string]component.Component) []string {
 	return out
 }
 
-// Start brings the whole stack up in dependency order.
-func (r *Runtime) Start(ctx context.Context) error { return r.sup.StartAll(ctx) }
+// Start brings the whole stack up in dependency order, then attaches the declared
+// router members (§3d). Attach is deferred to here because the router rejects
+// membership changes while stopped (§3); by now the supervisor's dependency order
+// has brought the Router up ahead of its members. A failed attach aborts Start so a
+// misrouted member is not silently dropped.
+func (r *Runtime) Start(ctx context.Context) error {
+	if err := r.sup.StartAll(ctx); err != nil {
+		return err
+	}
+	if r.rtr != nil {
+		for _, p := range r.members {
+			if err := r.rtr.Attach(p); err != nil {
+				return fmt.Errorf("runtime: attach router member %q: %w", p.Name(), err)
+			}
+		}
+	}
+	return nil
+}
 
-// Stop brings the whole stack down in reverse dependency order.
-func (r *Runtime) Stop(ctx context.Context) error { return r.sup.StopAll(ctx) }
+// Stop detaches the router members (reversing Start's attach) and then brings the
+// whole stack down in reverse dependency order. Detach is best-effort — a member
+// already withdrawn (e.g. by an individual Stop) must not block shutdown.
+func (r *Runtime) Stop(ctx context.Context) error {
+	if r.rtr != nil {
+		for _, p := range r.members {
+			_ = r.rtr.Detach(p)
+		}
+	}
+	return r.sup.StopAll(ctx)
+}
 
 // Supervisor returns the supervisor (the control.Supervisor surface the control
 // plane drives: Status/Start/Stop/Restart/Reconfigure/Users).
