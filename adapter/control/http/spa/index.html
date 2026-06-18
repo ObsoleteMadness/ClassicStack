@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClassicStack</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header>
+    <h1>ClassicStack</h1>
+    <span id="conn" class="badge">…</span>
+  </header>
+
+  <!-- The app is a set of native custom elements; cs-app swaps the active view
+       (setup / dashboard) based on the server's first-run gate. No framework. -->
+  <cs-app></cs-app>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>

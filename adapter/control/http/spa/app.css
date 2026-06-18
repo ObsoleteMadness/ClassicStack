@@ -1,0 +1,86 @@
+/* ClassicStack web-admin SPA — a small, dependency-free stylesheet. The look is
+   deliberately plain (system fonts, a calm palette); the point is the protocol
+   admin, not chrome. */
+:root {
+  --bg: #1a1d21;
+  --panel: #23272e;
+  --fg: #e6e6e6;
+  --muted: #9aa0a6;
+  --accent: #4a9eff;
+  --ok: #3fb950;
+  --bad: #f85149;
+  --border: #333a42;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+}
+header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+.badge {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--border);
+  color: var(--muted);
+}
+.badge.ok { background: rgba(63, 185, 80, .15); color: var(--ok); }
+.badge.bad { background: rgba(248, 81, 73, .15); color: var(--bad); }
+main, cs-app { display: block; padding: 20px; max-width: 960px; margin: 0 auto; }
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+}
+.panel h2 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.dot.run { background: var(--ok); }
+.dot.stop { background: var(--muted); }
+button {
+  font: inherit;
+  background: var(--border);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button:disabled { opacity: .5; cursor: default; }
+label { display: block; margin: 10px 0 4px; color: var(--muted); font-size: 13px; }
+input {
+  width: 100%;
+  font: inherit;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+.row { display: flex; gap: 8px; align-items: center; }
+.err { color: var(--bad); margin: 8px 0; }
+.muted { color: var(--muted); }
+pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  overflow: auto;
+  font-size: 12px;
+}

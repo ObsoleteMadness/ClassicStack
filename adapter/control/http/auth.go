@@ -30,6 +30,14 @@ const basicRealm = "ClassicStack"
 // real protection, with its limits documented rather than hidden.
 func (s *Server) authGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The SPA's static assets (index/app.js/app.css) are served unauthenticated so
+		// the page can LOAD and then drive setup (409) or prompt for Basic auth (401)
+		// from the browser. They carry no secrets; every data route stays gated below.
+		if spaStaticPath(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		configured := s.plane.AdminConfigured()
 
 		if r.URL.Path == "/setup" {

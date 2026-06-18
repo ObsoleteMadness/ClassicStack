@@ -83,8 +83,14 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/setup", s.handleSetup)
 	mux.HandleFunc("/subscribe", s.handleSubscribe)
 
+	// Mount the embedded SPA at "/" (webui||all builds only; a no-op otherwise). The
+	// specific API routes above win over "/" by ServeMux longest-prefix, so the page
+	// is served only for the static paths and the index.
+	s.mountSPA(mux)
+
 	// Wrap every route in the web-admin access gate (§4-ter): first-run setup until an
-	// admin is configured, HTTP Basic auth thereafter.
+	// admin is configured, HTTP Basic auth thereafter. The SPA's own static assets are
+	// exempted inside the gate so the page can load to drive setup/login.
 	s.server = &http.Server{Handler: s.authGate(mux)}
 
 	s.wg.Add(1)
