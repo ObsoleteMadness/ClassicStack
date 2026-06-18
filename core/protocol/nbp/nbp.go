@@ -128,6 +128,31 @@ func BuildLkUpRply(nbpID byte, network uint16, node, socket uint8, obj, typ, zon
 	return out
 }
 
+// BuildLkUp encodes a single-tuple lookup request. function is CtrlLkUp (a unicast
+// lookup to a known NBP responder) or CtrlBrRq (a broadcast request the local router
+// turns into LkUps); the network/node/socket are the REQUESTER's own reply address, to
+// which matching LkUp-Rply tuples are returned. obj/typ are the name pattern being
+// resolved ('=' wildcards either field); zone is the zone to search ('*' = the
+// requester's own zone). The returned slice is freshly allocated. Symmetric partner of
+// BuildLkUpRply — a name-lookup client (csnbp) drives this codec rather than hand-
+// rolling the wire bytes.
+func BuildLkUp(function, nbpID byte, network uint16, node, socket uint8, obj, typ, zone []byte) []byte {
+	out := make([]byte, 0, 12+len(obj)+len(typ)+len(zone))
+	out = append(out, (function<<4)|1)
+	out = append(out, nbpID)
+	out = append(out, byte(network>>8), byte(network))
+	out = append(out, node)
+	out = append(out, socket)
+	out = append(out, 0) // enumerator
+	out = append(out, byte(len(obj)))
+	out = append(out, obj...)
+	out = append(out, byte(len(typ)))
+	out = append(out, typ...)
+	out = append(out, byte(len(zone)))
+	out = append(out, zone...)
+	return out
+}
+
 // NameMatch reports whether the given pattern matches the registered name. NBP
 // uses '=' as the wildcard for object and type fields.
 func NameMatch(pattern, name []byte) bool {

@@ -89,6 +89,25 @@ func TestBuildLkUpRplyRoundTrip(t *testing.T) {
 	}
 }
 
+func TestBuildLkUpRoundTrip(t *testing.T) {
+	t.Parallel()
+	obj, typ, zone := []byte("="), []byte("AFPServer"), []byte("Eng")
+	out := BuildLkUp(CtrlLkUp, 0x99, 0x000A, 0x80, SASSocket, obj, typ, zone)
+	pkt, err := ParsePacket(out)
+	if err != nil {
+		t.Fatalf("ParsePacket: %v", err)
+	}
+	if pkt.Function != CtrlLkUp || pkt.TupleCount != 1 || pkt.NBPID != 0x99 {
+		t.Fatalf("header: %+v", pkt)
+	}
+	if pkt.Tuple.Network != 0x000A || pkt.Tuple.Node != 0x80 || pkt.Tuple.Socket != SASSocket {
+		t.Fatalf("addr: %+v", pkt.Tuple)
+	}
+	if !bytes.Equal(pkt.Tuple.Object, obj) || !bytes.Equal(pkt.Tuple.Type, typ) || !bytes.Equal(pkt.Tuple.Zone, zone) {
+		t.Fatalf("name: %+v", pkt.Tuple)
+	}
+}
+
 func TestNameMatch(t *testing.T) {
 	t.Parallel()
 	if !NameMatch([]byte{NameWildcard}, []byte("anything")) {
