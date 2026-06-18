@@ -8,6 +8,7 @@ import (
 	portnetbeui "github.com/ObsoleteMadness/ClassicStack/core/port/netbeui"
 	nbf "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbeui"
 	nbproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbios"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/browser"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/netbios"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/smb"
 )
@@ -55,11 +56,15 @@ func TestCrossWireTransports_NetBEUIToSMB(t *testing.T) {
 	nb := netbios.NewService(nil, "CLASSICSTACK")
 	sm := smb.New(nil)
 	port := &recordingNetBEUIPort{}
+	// Include the browser too, so the mailslot wiring runs alongside the session
+	// wiring and a regression in one is caught with the other.
+	br := browser.New(nil, nil, "CLASSICSTACK", "WORKGROUP")
 
 	comps := map[string]component.Component{
 		netbios.Name: nb,
 		smb.Name:     sm,
 		"NetBEUI":    port,
+		browser.Name: br,
 	}
 
 	crossWireTransports(comps)
@@ -83,6 +88,20 @@ func TestCrossWireTransports_NetBEUIToSMB(t *testing.T) {
 
 	if port.lastSent(nbf.CmdNameRecognized) == nil {
 		t.Fatal("CALL for our name was not answered with NAME_RECOGNIZED — engine not registered on the mini-router")
+	}
+
+	// The mailslot path must be wired too: starting the browser emits a HostAnnounce
+	// through its installed sink → the mailslot router → the NetBIOS SendDatagram →
+	// the NBF engine's datagram egress → a broadcast UI frame on the port. Observing
+	// the broadcast proves browser.SetSink ran AND the engine is registered as the
+	// datagram egress, i.e. the whole datagram path is connected by compose.
+	before := len(port.broadcast)
+	if err := br.Start(context.Background()); err != nil {
+		t.Fatalf("browser Start: %v", err)
+	}
+	defer br.Stop(context.Background())
+	if len(port.broadcast) == before {
+		t.Fatal("browser HostAnnounce did not reach the wire — mailslot/datagram path not wired")
 	}
 }
 

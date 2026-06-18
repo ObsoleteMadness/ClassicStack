@@ -124,6 +124,18 @@ func (s *Service) SetDescription(desc string) {
 	s.mu.Unlock()
 }
 
+// SetSink installs the outbound mailslot seam late, for compose: the browser
+// factory builds the service before the mailslot router exists (the router needs
+// the NetBIOS service), so the cross-wire injects the sink afterwards — mirroring
+// how AFP's SetRouter binds the shared router post-construction. A nil sink leaves
+// the browser receive-only (it records announcements but emits none). Set before
+// Start so the first host announcement has a sink. Idempotent.
+func (s *Service) SetSink(sink MailslotSink) {
+	s.mu.Lock()
+	s.sink = sink
+	s.mu.Unlock()
+}
+
 // Start brings the browser up: record the start time (election uptime) and emit a
 // first host announcement, then a periodic announce loop. Idempotent (§3).
 func (s *Service) Start(ctx context.Context) error {

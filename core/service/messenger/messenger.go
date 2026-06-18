@@ -84,6 +84,13 @@ func New(logger log.Logger, pub Publisher, sink MailslotSink, server, workgroup 
 // Name returns the component name.
 func (s *Service) Name() string { return Name }
 
+// SetSink installs the outbound mailslot seam late, for compose: the messenger
+// factory builds the service before the mailslot router exists, so the cross-wire
+// injects the sink afterwards (mirroring the browser's SetSink). Used only by the
+// send path (SendMessage / a future cmd/csnetsend); the receive path needs no sink.
+// Set before Start.
+func (s *Service) SetSink(sink MailslotSink) { s.sink = sink }
+
 // Start brings the messenger up. There is no background loop — it is purely
 // reactive to inbound mailslot writes — so Start just marks it running. Idempotent.
 func (s *Service) Start(ctx context.Context) error {

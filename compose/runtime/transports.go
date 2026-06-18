@@ -30,9 +30,14 @@ package runtime
 // identical but distinct interfaces, so neither package imports the other).
 
 import (
-	"github.com/ObsoleteMadness/ClassicStack/core/component"
+	mailslotwire "github.com/ObsoleteMadness/ClassicStack/core/protocol/mailslot"
 	ipxrouter "github.com/ObsoleteMadness/ClassicStack/core/router/ipx"
 	netbeuirouter "github.com/ObsoleteMadness/ClassicStack/core/router/netbeui"
+
+	"github.com/ObsoleteMadness/ClassicStack/core/component"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/browser"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/mailslot"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/messenger"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/netbios"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/smb"
 )
@@ -52,6 +57,7 @@ func crossWireTransports(comps map[string]component.Component) {
 
 	wireNetBEUI(nb, comps)
 	wireIPX(nb, comps)
+	wireMailslot(nb, comps)
 
 	// Install SMB as the upper-layer session consumer for BOTH families: every
 	// circuit the NBF/NBIPX engines bring up routes its reassembled SMB messages
@@ -115,6 +121,57 @@ func wireIPX(nb *netbios.Service, comps map[string]component.Component) {
 
 	eng := nb.NewIPXEngine(r)
 	_ = r.RegisterSocket(netbios.NBIPXSessionSocket, eng)
+}
+
+// wireMailslot stands up the NetBIOS connectionless-datagram path (§3-quater) when
+// a datagram consumer (browser/messenger) was built: build the mailslot dispatch
+// router over the NetBIOS service's SendDatagram egress, install it as the NetBIOS
+// DatagramConsumer (the inbound seam), and register each built consumer on it for
+// its mailslot name with the router as its outbound sink. With neither the browser
+// nor the messenger built it does nothing (no consumer to route datagrams to), so
+// the NetBIOS service drops connectionless datagrams after decode — the documented
+// optional-consumer contract.
+func wireMailslot(nb *netbios.Service, comps map[string]component.Component) {
+	br := browserService(comps)
+	ms := messengerService(comps)
+	if br == nil && ms == nil {
+		return
+	}
+
+	// The mailslot router is an internal dispatch object with no lifecycle of its
+	// own (like the mini-routers) — it is built here, not supervised. It sends
+	// through the NetBIOS service and is the NetBIOS DatagramConsumer for inbound.
+	r := mailslot.NewRouter(nb)
+	nb.SetDatagramConsumer(r)
+
+	if br != nil {
+		br.SetSink(r)
+		r.Register(mailslotwire.NameBrowse, br)
+	}
+	if ms != nil {
+		ms.SetSink(r)
+		r.Register(mailslotwire.NameMessenger, ms)
+	}
+}
+
+// browserService returns the built browser service, or nil when none was built.
+func browserService(comps map[string]component.Component) *browser.Service {
+	if c, ok := comps[browser.Name]; ok {
+		if s, ok := c.(*browser.Service); ok {
+			return s
+		}
+	}
+	return nil
+}
+
+// messengerService returns the built messenger service, or nil when none was built.
+func messengerService(comps map[string]component.Component) *messenger.Service {
+	if c, ok := comps[messenger.Name]; ok {
+		if s, ok := c.(*messenger.Service); ok {
+			return s
+		}
+	}
+	return nil
 }
 
 // netbiosService returns the built NetBIOS service, or nil when none was built.
