@@ -109,6 +109,15 @@ func (s *Service) localNames() []protocol.Name {
 	return append([]protocol.Name(nil), s.names...)
 }
 
+// LocalNames is the exported snapshot of the local NetBIOS name set, for compose:
+// when wiring the NBF engine onto the NetBEUI mini-router, the cross-wire registers
+// the engine as the per-name NameHandler for each local name (the session-
+// establishment CALL is a non-session frame addressed to one of our names). It is a
+// point-in-time copy; names claimed later (RegisterName) are picked up live by the
+// engine through localNames, but are NOT auto-registered on the router — compose
+// registers the set known at wiring time, matching how the NBF engine test wires it.
+func (s *Service) LocalNames() []protocol.Name { return s.localNames() }
+
 // NewNBFEngine builds the NBF (NetBEUI) session state machine bound to sender
 // (the core/router/netbeui mini-router, which it sends replies through). Compose
 // registers the returned engine on the mini-router as both its NameHandler (for

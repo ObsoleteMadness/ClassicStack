@@ -1,0 +1,101 @@
+package runtime
+
+import (
+	"context"
+	"testing"
+
+	"github.com/ObsoleteMadness/ClassicStack/core/component"
+	portnetbeui "github.com/ObsoleteMadness/ClassicStack/core/port/netbeui"
+	nbf "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbeui"
+	nbproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbios"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/netbios"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/smb"
+)
+
+// recordingNetBEUIPort is a test netbeui mini-router Port: it captures the inbound
+// delivery callback the cross-wire installs (proving AddPort ran) and records the
+// frames the engine sends back through it (proving the registered engine answered).
+type recordingNetBEUIPort struct {
+	cb        portnetbeui.DeliveryCallback
+	sent      []*nbf.Frame
+	broadcast []*nbf.Frame
+}
+
+func (p *recordingNetBEUIPort) Name() string                { return "test-netbeui" }
+func (p *recordingNetBEUIPort) Start(context.Context) error { return nil }
+func (p *recordingNetBEUIPort) Stop(context.Context) error  { return nil }
+func (p *recordingNetBEUIPort) SetDeliveryCallback(cb portnetbeui.DeliveryCallback) {
+	p.cb = cb
+}
+func (p *recordingNetBEUIPort) Send(_ [6]byte, f *nbf.Frame) error {
+	p.sent = append(p.sent, f)
+	return nil
+}
+func (p *recordingNetBEUIPort) SendBroadcast(f *nbf.Frame) error {
+	p.broadcast = append(p.broadcast, f)
+	return nil
+}
+
+// lastSent returns the most recent directed frame of the given command, or nil.
+func (p *recordingNetBEUIPort) lastSent(cmd uint8) *nbf.Frame {
+	for i := len(p.sent) - 1; i >= 0; i-- {
+		if p.sent[i].Command == cmd {
+			return p.sent[i]
+		}
+	}
+	return nil
+}
+
+// TestCrossWireTransports_NetBEUIToSMB proves the M-ng2 cross-wire stands up the
+// NetBEUI mini-router, attaches the port (so the delivery callback is installed),
+// registers the NBF session engine for the local name, and routes a session CALL
+// through to a NAME_RECOGNIZED reply — i.e. the whole port → mini-router → NBF
+// engine → (SMB consumer installed) path is connected by compose alone.
+func TestCrossWireTransports_NetBEUIToSMB(t *testing.T) {
+	nb := netbios.NewService(nil, "CLASSICSTACK")
+	sm := smb.New(nil)
+	port := &recordingNetBEUIPort{}
+
+	comps := map[string]component.Component{
+		netbios.Name: nb,
+		smb.Name:     sm,
+		"NetBEUI":    port,
+	}
+
+	crossWireTransports(comps)
+
+	// AddPort must have installed the inbound delivery callback on the port.
+	if port.cb == nil {
+		t.Fatal("cross-wire did not attach the NetBEUI port to the mini-router (no delivery callback)")
+	}
+
+	// Drive a CALL (NAME_QUERY) for our file-server name through the port's delivery
+	// callback, exactly as an inbound frame would. The engine, registered as the
+	// NameHandler for that name, must answer NAME_RECOGNIZED.
+	name := nbproto.NewName("CLASSICSTACK", nbproto.NameTypeFileServer)
+	clientName := nbproto.NewName("CLIENT", nbproto.NameTypeWorkstation)
+	nq := &nbf.Frame{Command: nbf.CmdNameQuery, Data2: 5, RspCorrelator: 0x1234}
+	copy(nq.DestinationName[:], name[:])
+	copy(nq.SourceName[:], clientName[:])
+
+	peer := [6]byte{0x02, 0, 0, 0, 0, 0x01}
+	port.cb(peer, nbf.NetBIOSMulticastMAC, nq)
+
+	if port.lastSent(nbf.CmdNameRecognized) == nil {
+		t.Fatal("CALL for our name was not answered with NAME_RECOGNIZED — engine not registered on the mini-router")
+	}
+}
+
+// TestCrossWireTransports_NoNetBIOS is a no-op when the NetBIOS service is absent:
+// the transports have nothing to carry, so a NetBEUI port is left unattached rather
+// than wired to a phantom router.
+func TestCrossWireTransports_NoNetBIOS(t *testing.T) {
+	port := &recordingNetBEUIPort{}
+	comps := map[string]component.Component{"NetBEUI": port}
+
+	crossWireTransports(comps)
+
+	if port.cb != nil {
+		t.Fatal("cross-wire attached a NetBEUI port with no NetBIOS service to feed")
+	}
+}

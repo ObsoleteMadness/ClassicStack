@@ -212,6 +212,14 @@ func Build(opts Options) (*Runtime, error) {
 		members = crossWireRouter(rtr, comps, opts.Model.Router)
 	}
 
+	// Cross-wire the NetBIOS transports (§M-ng2): stand up the IPX/NetBEUI mini-
+	// routers, attach their ports, register the NBF/NBIPX session engines, and
+	// install SMB as the upper-layer session consumer. Unlike the AppleTalk router
+	// these mini-routers have no lifecycle of their own (the ports own start/stop),
+	// so they are built here rather than supervised. A build without the NetBIOS
+	// service is a no-op.
+	crossWireTransports(comps)
+
 	// Second pass: register with the supervisor under filtered edges (only edges
 	// whose dependency is also built).
 	for _, name := range order {
