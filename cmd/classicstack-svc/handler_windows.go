@@ -11,7 +11,7 @@ import (
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/eventlog"
 
-	"github.com/ObsoleteMadness/ClassicStack/internal/app"
+	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/cli"
 )
 
 // acceptedControls are the SCM control requests the service responds to:
@@ -19,17 +19,17 @@ import (
 const acceptedControls = svc.AcceptStop | svc.AcceptShutdown
 
 // serviceHandler implements svc.Handler. It runs the ClassicStack run-core
-// (internal/app) in a goroutine and translates SCM Stop/Shutdown requests
+// (cmd/internal/cli) in a goroutine and translates SCM Stop/Shutdown requests
 // into context cancellation so the existing graceful shutdown path runs.
 type serviceHandler struct {
 	cfgPath string
-	version app.Version
+	version cli.Version
 	elog    *eventlog.Log
 }
 
 // Execute is invoked by svc.Run. It reports StartPending → Running, launches
-// app.Run, and waits for either the stack to exit on its own or an SCM
-// Stop/Shutdown, in which case it cancels the context and waits for app.Run
+// cli.Run, and waits for either the stack to exit on its own or an SCM
+// Stop/Shutdown, in which case it cancels the context and waits for cli.Run
 // to return before reporting Stopped.
 func (h *serviceHandler) Execute(_ []string, r <-chan svc.ChangeRequest, s chan<- svc.Status) (bool, uint32) {
 	const cmdsAccepted = acceptedControls
@@ -41,7 +41,7 @@ func (h *serviceHandler) Execute(_ []string, r <-chan svc.ChangeRequest, s chan<
 
 	runErr := make(chan error, 1)
 	go func() {
-		runErr <- app.Run(ctx, runArgs(h.cfgPath), h.version)
+		runErr <- cli.Run(ctx, runArgs(h.cfgPath), h.version)
 	}()
 
 	s <- svc.Status{State: svc.Running, Accepts: cmdsAccepted}
@@ -68,7 +68,7 @@ func (h *serviceHandler) Execute(_ []string, r <-chan svc.ChangeRequest, s chan<
 				h.info(1, "ClassicStack service stopping")
 				s <- svc.Status{State: svc.StopPending}
 				cancel()
-				// Wait for app.Run to finish its graceful Supervisor.Stop.
+				// Wait for cli.Run to finish its graceful Supervisor.Stop.
 				<-runErr
 				s <- svc.Status{State: svc.Stopped}
 				return false, 0

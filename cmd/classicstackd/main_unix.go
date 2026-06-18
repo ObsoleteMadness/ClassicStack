@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ObsoleteMadness/ClassicStack/internal/app"
+	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/cli"
 )
 
 const (
@@ -27,7 +27,7 @@ const (
 )
 
 func main() {
-	version := app.Version{Version: BuildVersion, Commit: BuildCommit, Date: BuildDate}
+	version := cli.Version{Version: BuildVersion, Commit: BuildCommit, Date: BuildDate}
 
 	args := os.Args[1:]
 	if len(args) == 0 {
@@ -56,7 +56,7 @@ Usage:
 }
 
 // dispatch routes a verb to its handler.
-func dispatch(cmd string, args []string, version app.Version) error {
+func dispatch(cmd string, args []string, version cli.Version) error {
 	switch cmd {
 	case "start":
 		return cmdStart(args)
@@ -110,14 +110,14 @@ func parseFlags(name string, args []string, withConfig bool) (daemonFlags, error
 
 // cmdRun runs the stack in the foreground, exactly like `classicstack
 // -config <path>`, stopping gracefully on SIGINT/SIGTERM.
-func cmdRun(args []string, version app.Version) error {
+func cmdRun(args []string, version cli.Version) error {
 	f, err := parseFlags("run", args, true)
 	if err != nil {
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return app.Run(ctx, []string{"-config", f.config}, version)
+	return cli.Run(ctx, []string{"-config", f.config}, version)
 }
 
 // cmdStart re-execs this binary as `run -config <cfg>` in a new session,

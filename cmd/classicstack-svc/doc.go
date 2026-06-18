@@ -3,7 +3,7 @@ Command classicstack-svc runs ClassicStack as a Windows service.
 
 It registers with the Service Control Manager and runs the same stack as the
 interactive classicstack binary, in-process, sharing the run-core in
-internal/app. Subcommands:
+cmd/internal/cli. Subcommands:
 
 	classicstack-svc install   -config <path>   register the service (auto-start)
 	classicstack-svc uninstall                  remove the service
