@@ -53,10 +53,19 @@ type MailslotSink interface {
 	SendMailslot(name string, src, dest nbproto.Name, body []byte, broadcast bool) error
 }
 
-// serverRecord is one observed browser/server: its advertised type bits and when
-// it was last seen (for ageing, future).
+// serverRecord is one observed browser/server: its advertised type bits, the OS and
+// app/browser-protocol versions and comment it announced, and when it was last seen
+// (for ageing, future). The version/comment fields come straight off the
+// HostAnnouncement frame ([MS-BRWS] §2.2.1) and feed the enriched browse listing
+// (ServerEntries → the csnetview "net view" tool); they are zero/empty for a server
+// known only from a domain announcement or backup-list mention.
 type serverRecord struct {
 	serverType uint32
+	osMajor    uint8
+	osMinor    uint8
+	verMajor   uint8
+	verMinor   uint8
+	comment    string
 	lastSeen   time.Time
 }
 
@@ -200,12 +209,17 @@ func (s *Service) announceLoop(ctx context.Context, done chan struct{}) {
 // --- query API (the read-only seam SMB's IPC$ \PIPE\LANMAN NetServerEnum2 uses) ---
 
 // ServerEntry is one row of the browse list: a server name, its advertised
-// SV_TYPE_* bits, and an optional comment. It is what SMB's NetServerEnum2 packs
-// into a SERVER_INFO_1 record.
+// SV_TYPE_* bits, an optional comment, and the OS/app versions it announced. SMB's
+// NetServerEnum2 packs the Name/Type/Comment into a SERVER_INFO_1 record (it does not
+// carry the versions); the OS/app versions feed the enriched csnetview listing.
 type ServerEntry struct {
-	Name    string
-	Type    uint32
-	Comment string
+	Name     string
+	Type     uint32
+	Comment  string
+	OSMajor  uint8
+	OSMinor  uint8
+	VerMajor uint8
+	VerMinor uint8
 }
 
 // ServerEntries returns the full browse list (ourselves first, then every observed
@@ -220,7 +234,15 @@ func (s *Service) ServerEntries() []ServerEntry {
 		if name == s.server {
 			continue
 		}
-		out = append(out, ServerEntry{Name: name, Type: rec.serverType})
+		out = append(out, ServerEntry{
+			Name:     name,
+			Type:     rec.serverType,
+			Comment:  rec.comment,
+			OSMajor:  rec.osMajor,
+			OSMinor:  rec.osMinor,
+			VerMajor: rec.verMajor,
+			VerMinor: rec.verMinor,
+		})
 	}
 	return out
 }

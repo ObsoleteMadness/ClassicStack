@@ -122,3 +122,15 @@ A volume whose backend does **not** advertise `Capabilities().CatSearch` (or doe
 **What we do:** the tokenizer now tracks whether the current token was opened with a quote (`quoted`) and emits an empty token at the next separator/EOL when it was, so `''` yields one empty-string token. An unquoted run of whitespace still collapses to nothing. TOML was never affected (go-toml represents empty strings natively).
 
 **Where:** `adapter/config/uci/uci.go` (`tokenize`); regression in `adapter/config/uci/auth_roundtrip_test.go` (`TestEmptyStringOptionRoundTrips`).
+
+## IPX
+
+### IPX Diagnostic Responder (socket 0x0456) — observation-based
+
+**No spec:** ClassicStack ships no formal document for Novell's IPX/SPX Diagnostic protocol (the wire behind the `IPXPING` reachability tool). The layout is from observation of NetWare diagnostic traffic and Novell's published Diagnostic Responder description; `core/protocol/macipx` already noted socket 0x0456 as "the NetWare diagnostic responder" in its opcode-0x10 listen registration.
+
+**Observed:** a Diagnostic *request* on socket 0x0456 carries a 1-byte exclusion-address count followed by that many 6-byte node IDs — nodes that should stay silent (the sender's own node and any already-known responders), so a broadcast diagnostic does not re-collect hosts. A directed reachability ping sends an empty list (count 0). A *response* carries a 1-byte component count followed by per-component records (a type byte plus a type-specific, length-free body); the reachability tool treats any well-formed response as "host alive". Real NetWare responders enumerate IPX/SPX/SAP/NetBIOS components; component bodies are type-implied, not length-prefixed.
+
+**What we do:** `core/service/ipxdiag` registers a `SocketHandler` on socket 0x0456 of the IPX mini-router that answers any request not naming our own node with the minimal response — a single IPX-component record (`diag.SimpleResponse`). `cmd/csipxping` is the client: it sends a directed (or broadcast) request and reports the round-trip time of each reply. The decoder treats component bodies as opaque (the last component absorbs the remainder), enough for reachability without modelling every NetWare component layout.
+
+**Where:** `core/protocol/ipx/diag/diag.go` (codec); `core/service/ipxdiag/ipxdiag.go` (responder); `cmd/csipxping/main.go` (client).

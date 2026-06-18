@@ -68,7 +68,15 @@ func (s *Service) observeAnnouncement(frame []byte, extraType uint32) {
 		return
 	}
 	s.mu.Lock()
-	s.servers[name] = serverRecord{serverType: a.ServerType | extraType, lastSeen: s.now()}
+	s.servers[name] = serverRecord{
+		serverType: a.ServerType | extraType,
+		osMajor:    a.OSVersionMajor,
+		osMinor:    a.OSVersionMinor,
+		verMajor:   a.VersionMajor,
+		verMinor:   a.VersionMinor,
+		comment:    a.Comment,
+		lastSeen:   s.now(),
+	}
 	s.mu.Unlock()
 }
 

@@ -119,6 +119,41 @@ func TestObserveAnnouncementBuildsBrowseList(t *testing.T) {
 	}
 }
 
+// TestObserveAnnouncementRetainsVersionAndComment proves the enriched browse listing
+// (the csnetview "net view" surface): an observed HostAnnouncement's OS/app versions
+// and comment are retained on the ServerEntries row, not just the type bits.
+func TestObserveAnnouncementRetainsVersionAndComment(t *testing.T) {
+	svc, _ := newBrowser(t)
+	body := proto.Announcement{
+		Op:             proto.OpHostAnnouncement,
+		ServerName:     "WIN95BOX",
+		ServerType:     proto.ServerTypeServer,
+		OSVersionMajor: 4,
+		OSVersionMinor: 0,
+		VersionMajor:   3,
+		VersionMinor:   10,
+		Comment:        "Bob's PC",
+	}.Marshal()
+	deliver(svc, "WIN95BOX", body)
+
+	var got *ServerEntry
+	for _, e := range svc.ServerEntries() {
+		if e.Name == "WIN95BOX" {
+			e := e
+			got = &e
+		}
+	}
+	if got == nil {
+		t.Fatal("WIN95BOX not in ServerEntries")
+	}
+	if got.OSMajor != 4 || got.OSMinor != 0 || got.VerMajor != 3 || got.VerMinor != 10 {
+		t.Fatalf("version fields = %d.%d / %d.%d, want 4.0 / 3.10", got.OSMajor, got.OSMinor, got.VerMajor, got.VerMinor)
+	}
+	if got.Comment != "Bob's PC" {
+		t.Fatalf("comment = %q, want 'Bob's PC'", got.Comment)
+	}
+}
+
 // TestServerEntriesCarriesSelfDescription proves the §4-bis server description set via
 // SetDescription rides the browser's own ServerEntries row (the comment a Windows
 // browse list shows next to our name).

@@ -35,7 +35,9 @@ import (
 	netbeuirouter "github.com/ObsoleteMadness/ClassicStack/core/router/netbeui"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
+	diagproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx/diag"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/browser"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/ipxdiag"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/mailslot"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/messenger"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/netbios"
@@ -153,6 +155,27 @@ func wireIPX(nb *netbios.Service, sm *smb.Service, comps map[string]component.Co
 		direct := sm.NewDirectIPX(r)
 		_ = r.RegisterSocket(smb.DirectSMBSocket, direct)
 	}
+	// The IPX Diagnostic Responder (IPXPING reachability, socket 0x0456) rides the
+	// same mini-router but needs neither NetBIOS nor SMB — it answers any station
+	// probing the segment. Wire it whenever the responder component was built and an
+	// IPX port exists: hand it the router as its reply egress and the router's node
+	// for the self-exclusion check, then register it on the diagnostic socket.
+	if rd := ipxDiagResponder(comps); rd != nil {
+		rd.SetSender(r)
+		rd.SetNode(r.Node())
+		_ = r.RegisterSocket(diagproto.Socket, rd)
+	}
+}
+
+// ipxDiagResponder returns the built IPX Diagnostic Responder, or nil when none was
+// built (the ipxdiag build tag absent).
+func ipxDiagResponder(comps map[string]component.Component) *ipxdiag.Responder {
+	if c, ok := comps[ipxdiag.Name]; ok {
+		if rd, ok := c.(*ipxdiag.Responder); ok {
+			return rd
+		}
+	}
+	return nil
 }
 
 // wireMailslot stands up the NetBIOS connectionless-datagram path (§3-quater) when
