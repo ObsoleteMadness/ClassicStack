@@ -72,6 +72,18 @@ func crossWireTransports(comps map[string]component.Component) {
 	// path). So the IPX mini-router is wired whenever an IPX port exists AND at least
 	// one of those consumers was built, independent of NetBIOS.
 	wireIPX(nb, sm, comps)
+
+	// Browse-list provider (§3-ter, M8a compose wiring): when both SMB and the browser
+	// were built, install the browser as SMB's BrowseProvider so the IPC$ \PIPE\LANMAN
+	// NetServerEnum2 RAP call answers from the live browse list. This is independent of
+	// NetBIOS — SMB serves NetServerEnum2 over ANY transport, including direct-TCP :445.
+	// smb.BrowseServer mirrors browser.ServerEntry, so the bridge is a field-for-field
+	// copy and neither package imports the other.
+	if sm != nil {
+		if br := browserService(comps); br != nil {
+			sm.SetBrowseProvider(smbBrowseBridge{br: br})
+		}
+	}
 }
 
 // wireNetBEUI builds the NetBEUI mini-router (when any NetBEUI port was built),
@@ -237,3 +249,27 @@ func (b smbCircuitBridge) Close()                         { b.c.Close() }
 
 // compile-time assertion: the bridge satisfies the NetBIOS upper-layer seam.
 var _ netbios.SessionConsumer = smbSessionBridge{}
+
+// smbBrowseBridge adapts the browser service to SMB's BrowseProvider seam (§3-ter):
+// SMB's IPC$ NetServerEnum2 reads the browse list through Available + ServerEntries,
+// and smb.BrowseServer mirrors browser.ServerEntry field-for-field, so this is a
+// pure copy with no package coupling (neither imports the other). Compose owns the
+// shim, exactly like smbSessionBridge.
+type smbBrowseBridge struct{ br *browser.Service }
+
+// Available reports whether the browser can serve a list (false → a potential
+// browser, which SMB answers with ERROR_REQ_NOT_ACCEP).
+func (b smbBrowseBridge) Available() bool { return b.br.Available() }
+
+// ServerEntries copies the browser's browse list into SMB's BrowseServer rows.
+func (b smbBrowseBridge) ServerEntries() []smb.BrowseServer {
+	in := b.br.ServerEntries()
+	out := make([]smb.BrowseServer, len(in))
+	for i, e := range in {
+		out[i] = smb.BrowseServer{Name: e.Name, Type: e.Type, Comment: e.Comment}
+	}
+	return out
+}
+
+// compile-time assertion: the bridge satisfies SMB's browse-list seam.
+var _ smb.BrowseProvider = smbBrowseBridge{}

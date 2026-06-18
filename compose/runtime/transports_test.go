@@ -146,6 +146,29 @@ func TestCrossWireTransports_DirectIPXWithoutNetBIOS(t *testing.T) {
 	}
 }
 
+// TestSMBBrowseBridge_Forwards proves the browser→SMB BrowseProvider adapter copies
+// the browse list field-for-field and forwards Available, so SMB's IPC$ NetServerEnum2
+// answers from the live browser. A freshly built browser is a potential browser
+// (Available false) and lists only itself — both observable through the bridge.
+func TestSMBBrowseBridge_Forwards(t *testing.T) {
+	br := browser.New(nil, nil, "CLASSICSTACK", "WORKGROUP")
+	b := smbBrowseBridge{br: br}
+
+	if b.Available() != br.Available() {
+		t.Errorf("bridge Available()=%v, browser Available()=%v", b.Available(), br.Available())
+	}
+	got := b.ServerEntries()
+	want := br.ServerEntries()
+	if len(got) != len(want) {
+		t.Fatalf("bridge ServerEntries len=%d, browser len=%d", len(got), len(want))
+	}
+	for i := range got {
+		if got[i].Name != want[i].Name || got[i].Type != want[i].Type || got[i].Comment != want[i].Comment {
+			t.Errorf("entry %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
 // TestCrossWireTransports_NoNetBIOS is a no-op when the NetBIOS service is absent:
 // the transports have nothing to carry, so a NetBEUI port is left unattached rather
 // than wired to a phantom router.
