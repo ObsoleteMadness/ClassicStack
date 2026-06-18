@@ -51,21 +51,27 @@ import (
 // graceful-degradation contract the seams already document.
 func crossWireTransports(comps map[string]component.Component) {
 	nb := netbiosService(comps)
-	if nb == nil {
-		return // no NetBIOS layer → the transports have nothing to carry
+	sm := smbService(comps)
+
+	// The NetBEUI family and the connectionless-datagram (mailslot) path are
+	// NetBIOS-only: with no NetBIOS service there is nothing to carry them.
+	if nb != nil {
+		wireNetBEUI(nb, comps)
+		wireMailslot(nb, comps)
+		// Install SMB as the upper-layer session consumer: every circuit the NBF/NBIPX
+		// engines bring up routes its reassembled SMB messages here. Done once so a
+		// late-built SMB still reaches the engines (SetSessionConsumer is read live).
+		if sm != nil {
+			nb.SetSessionConsumer(smbSessionBridge{adapter: smb.ConsumerAdapter{Service: sm}})
+		}
 	}
 
-	wireNetBEUI(nb, comps)
-	wireIPX(nb, comps)
-	wireMailslot(nb, comps)
-
-	// Install SMB as the upper-layer session consumer for BOTH families: every
-	// circuit the NBF/NBIPX engines bring up routes its reassembled SMB messages
-	// here. Done once after both engines are built so a late-built SMB still reaches
-	// them (SetSessionConsumer is read live by the engines).
-	if sm := smbService(comps); sm != nil {
-		nb.SetSessionConsumer(smbSessionBridge{adapter: smb.ConsumerAdapter{Service: sm}})
-	}
+	// The IPX family carries TWO independent transports off one mini-router: NB-IPX
+	// session traffic (socket 0x0455, needs NetBIOS) and SMB direct-hosted-over-IPX
+	// (socket 0x0550, needs only SMB — NetBIOS-less, the "NWLink direct hosting"
+	// path). So the IPX mini-router is wired whenever an IPX port exists AND at least
+	// one of those consumers was built, independent of NetBIOS.
+	wireIPX(nb, sm, comps)
 }
 
 // wireNetBEUI builds the NetBEUI mini-router (when any NetBEUI port was built),
@@ -100,17 +106,25 @@ func wireNetBEUI(nb *netbios.Service, comps map[string]component.Component) {
 	}
 }
 
-// wireIPX builds the IPX mini-router (when any IPX port was built), attaches every
-// IPX port instance, and registers the NBIPX session engine on the NB-IPX session
-// socket 0x0455. A build with no IPX port does nothing.
-func wireIPX(nb *netbios.Service, comps map[string]component.Component) {
+// wireIPX builds the IPX mini-router (when any IPX port was built AND at least one
+// IPX consumer exists), attaches every IPX port instance, and registers the two
+// independent IPX session transports on their sockets:
+//
+//   - NB-IPX (NetBIOS-over-IPX / NWLink) session traffic on socket 0x0455, when the
+//     NetBIOS service is present (nb != nil).
+//   - SMB direct-hosted-over-IPX (NWLink direct hosting, NetBIOS-LESS) on socket
+//     0x0550, when the SMB service is present (sm != nil) — this path needs no
+//     NetBIOS layer, so it is wired even in a NetBIOS-free build.
+//
+// With no IPX port, or with neither consumer, it does nothing (no router is built).
+func wireIPX(nb *netbios.Service, sm *smb.Service, comps map[string]component.Component) {
 	var ports []ipxrouter.Port
 	for _, c := range comps {
 		if p, ok := c.(ipxrouter.Port); ok {
 			ports = append(ports, p)
 		}
 	}
-	if len(ports) == 0 {
+	if len(ports) == 0 || (nb == nil && sm == nil) {
 		return
 	}
 
@@ -119,8 +133,14 @@ func wireIPX(nb *netbios.Service, comps map[string]component.Component) {
 		r.AddPort(p)
 	}
 
-	eng := nb.NewIPXEngine(r)
-	_ = r.RegisterSocket(netbios.NBIPXSessionSocket, eng)
+	if nb != nil {
+		eng := nb.NewIPXEngine(r)
+		_ = r.RegisterSocket(netbios.NBIPXSessionSocket, eng)
+	}
+	if sm != nil {
+		direct := sm.NewDirectIPX(r)
+		_ = r.RegisterSocket(smb.DirectSMBSocket, direct)
+	}
 }
 
 // wireMailslot stands up the NetBIOS connectionless-datagram path (§3-quater) when

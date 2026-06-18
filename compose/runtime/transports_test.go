@@ -5,7 +5,9 @@ import (
 	"testing"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
+	portipx "github.com/ObsoleteMadness/ClassicStack/core/port/ipx"
 	portnetbeui "github.com/ObsoleteMadness/ClassicStack/core/port/netbeui"
+	ipxproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx"
 	nbf "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbeui"
 	nbproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbios"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/browser"
@@ -102,6 +104,45 @@ func TestCrossWireTransports_NetBEUIToSMB(t *testing.T) {
 	defer br.Stop(context.Background())
 	if len(port.broadcast) == before {
 		t.Fatal("browser HostAnnounce did not reach the wire — mailslot/datagram path not wired")
+	}
+}
+
+// recordingIPXPort is a test ipxrouter.Port: it captures the inbound delivery
+// callback the cross-wire installs (proving AddPort ran) and records sent datagrams.
+type recordingIPXPort struct {
+	cb   portipx.DeliveryCallback
+	sent []*ipxproto.Datagram
+}
+
+func (p *recordingIPXPort) Name() string                { return "test-ipx" }
+func (p *recordingIPXPort) Start(context.Context) error { return nil }
+func (p *recordingIPXPort) Stop(context.Context) error  { return nil }
+func (p *recordingIPXPort) SetDeliveryCallback(cb portipx.DeliveryCallback) {
+	p.cb = cb
+}
+func (p *recordingIPXPort) Send(_ [6]byte, d *ipxproto.Datagram) error {
+	p.sent = append(p.sent, d)
+	return nil
+}
+
+// TestCrossWireTransports_DirectIPXWithoutNetBIOS proves SMB direct-hosted-over-IPX
+// (NWLink direct hosting, socket 0x0550) is wired with NO NetBIOS service present:
+// the IPX mini-router is built off the SMB consumer alone, and the IPX port is
+// attached (delivery callback installed) so direct-IPX SMB reaches the command core
+// in a NetBIOS-free build.
+func TestCrossWireTransports_DirectIPXWithoutNetBIOS(t *testing.T) {
+	sm := smb.New(nil)
+	port := &recordingIPXPort{}
+
+	comps := map[string]component.Component{
+		smb.Name: sm,
+		"IPX":    port,
+	}
+
+	crossWireTransports(comps)
+
+	if port.cb == nil {
+		t.Fatal("direct-IPX without NetBIOS did not attach the IPX port (no delivery callback) — the mini-router was not built off the SMB consumer")
 	}
 }
 
