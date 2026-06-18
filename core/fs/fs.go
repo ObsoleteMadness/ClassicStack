@@ -215,6 +215,20 @@ func ParamsFor(fsType string) []Param {
 	return fsFactories[strings.ToLower(fsType)].params
 }
 
+// Types returns the registered fs_type names, sorted for deterministic order. The
+// control plane's ListFSTypes surfaces this so a UI can populate an fs-type dropdown
+// and then fetch each type's ParamsFor schema to render its per-share form.
+func Types() []string {
+	fsFactoryMu.RLock()
+	out := make([]string, 0, len(fsFactories))
+	for t := range fsFactories {
+		out = append(out, t)
+	}
+	fsFactoryMu.RUnlock()
+	sort.Strings(out)
+	return out
+}
+
 // secretKeys returns the set of option keys an fs_type marks fs.Param.Secret
 // (lower-cased for case-insensitive matching), or nil if the type declares none.
 func secretKeys(fsType string) map[string]bool {

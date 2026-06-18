@@ -12,6 +12,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/control"
+	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 )
 
 // State labels published on the telemetry bus via StateChanged (§3/§11). They are the To/From
@@ -522,5 +523,7 @@ func (s *Supervisor) Status() []control.Unit {
 // ListInterfaces is a placeholder until interface enumeration adapters land (Phase 2).
 func (s *Supervisor) ListInterfaces() ([]control.InterfaceInfo, error) { return nil, nil }
 
-// ListFSTypes is a placeholder until FS factories register (Phase 2).
-func (s *Supervisor) ListFSTypes() []string { return nil }
+// ListFSTypes returns the registered FileSystem backend types (afp/smb shares pick
+// one). It reads the fs factory registry, so a UI can populate an fs-type dropdown
+// and then fetch each type's param schema via the plane's ParamsFor.
+func (s *Supervisor) ListFSTypes() []string { return fs.Types() }

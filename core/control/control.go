@@ -6,6 +6,7 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
+	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 )
 
 var (
@@ -27,6 +28,11 @@ type Plane interface {
 	Status() []Unit
 	ListInterfaces() ([]InterfaceInfo, error)
 	ListFSTypes() []string
+	// ParamsFor returns the config-param schema for one fs_type, so a UI can render
+	// that backend's per-share form (which keys, which are required, which are Secret
+	// → a password field). Unknown/param-less types yield an empty slice. It is the
+	// schema half of ListFSTypes (which returns only the names).
+	ParamsFor(fsType string) []ParamInfo
 	Diagnostics() Diagnostics
 
 	// User administration (the web UI's user CRUD). Users live in the auth store,
@@ -83,6 +89,18 @@ type Unit struct {
 }
 
 type InterfaceInfo struct{ Name, Addr string }
+
+// ParamInfo is the management view of one fs_type config param (the JSON-friendly
+// mirror of fs.Param): the option key, whether it is required, whether it is a Secret
+// (the UI renders a password field and the server masks it on a Config round-trip),
+// and a short doc string. A UI renders a per-share form from the slice ParamsFor
+// returns for the chosen fs_type.
+type ParamInfo struct {
+	Key      string `json:"key"`
+	Required bool   `json:"required"`
+	Secret   bool   `json:"secret"`
+	Doc      string `json:"doc"`
+}
 
 // Supervisor is the lifecycle/model surface a Plane drives.
 type Supervisor interface {
@@ -238,6 +256,19 @@ func (p *plane) Status() []Unit                           { return p.sup.Status(
 func (p *plane) ListInterfaces() ([]InterfaceInfo, error) { return p.sup.ListInterfaces() }
 func (p *plane) ListFSTypes() []string                    { return p.sup.ListFSTypes() }
 func (p *plane) Diagnostics() Diagnostics                 { return p.diag }
+
+// ParamsFor returns the config-param schema for one fs_type as JSON-friendly
+// ParamInfo rows, read straight from the fs factory registry (a pure lookup needing
+// no supervisor state). The UI renders the chosen backend's per-share form from it,
+// marking Secret keys as password fields.
+func (p *plane) ParamsFor(fsType string) []ParamInfo {
+	params := fs.ParamsFor(fsType)
+	out := make([]ParamInfo, len(params))
+	for i, pm := range params {
+		out[i] = ParamInfo{Key: pm.Key, Required: pm.Required, Secret: pm.Secret, Doc: pm.Doc}
+	}
+	return out
+}
 
 // userAdmin returns the supervisor's user-management surface if it exposes one,
 // else nil (no user store wired / not in this build).

@@ -186,6 +186,15 @@ func (s *Server) handleConn(conn net.Conn) {
 			}
 		case "list_fs_types":
 			res = s.plane.ListFSTypes()
+		case "params_for":
+			var args struct {
+				FSType string `json:"fs_type"`
+			}
+			if err := json.Unmarshal(req.Params, &args); err == nil {
+				res = s.plane.ParamsFor(args.FSType)
+			} else {
+				methodErr = err
+			}
 		case "subscribe":
 			var args struct{ Topics []string }
 			if err := json.Unmarshal(req.Params, &args); err == nil {
@@ -405,6 +414,15 @@ func (c *AdapterClient) Restart(ctx context.Context, name string) error {
 func (c *AdapterClient) ListFSTypes() ([]string, error) {
 	var out []string
 	err := c.call("list_fs_types", nil, &out)
+	return out, err
+}
+
+// ParamsFor returns the config-param schema for one fs_type (the per-share form).
+func (c *AdapterClient) ParamsFor(fsType string) ([]control.ParamInfo, error) {
+	var out []control.ParamInfo
+	err := c.call("params_for", struct {
+		FSType string `json:"fs_type"`
+	}{FSType: fsType}, &out)
 	return out, err
 }
 

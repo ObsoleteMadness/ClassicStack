@@ -29,6 +29,7 @@ type Client interface {
 	Stop(ctx context.Context, name string) error
 	Restart(ctx context.Context, name string) error
 	ListFSTypes() ([]string, error)
+	ParamsFor(fsType string) ([]control.ParamInfo, error)
 	ListInterfaces() ([]control.InterfaceInfo, error)
 	ListZones(ctx context.Context) ([]string, error)
 
@@ -102,6 +103,11 @@ func (a *Adapter) Restart(ctx context.Context, name string) error {
 
 // ListFSTypes returns the registered filesystem types.
 func (a *Adapter) ListFSTypes() ([]string, error) { return a.plane.ListFSTypes(), nil }
+
+// ParamsFor returns the config-param schema for one fs_type (the UI's per-share form).
+func (a *Adapter) ParamsFor(fsType string) ([]control.ParamInfo, error) {
+	return a.plane.ParamsFor(fsType), nil
+}
 
 // Subscribe returns the live telemetry channel for the requested topics.
 func (a *Adapter) Subscribe(topics ...string) (<-chan bus.Event, func(), error) {

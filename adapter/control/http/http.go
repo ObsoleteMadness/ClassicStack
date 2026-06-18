@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -71,6 +72,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/restart", s.handleRestart)
 	mux.HandleFunc("/save", s.handleSave)
 	mux.HandleFunc("/list_fs_types", s.handleListFSTypes)
+	mux.HandleFunc("/params_for", s.handleParamsFor)
 	mux.HandleFunc("/list_interfaces", s.handleListInterfaces)
 	mux.HandleFunc("/list_zones", s.handleListZones)
 	mux.HandleFunc("/reconfigure", s.handleReconfigure)
@@ -187,6 +189,16 @@ func (s *Server) handleListFSTypes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res := s.plane.ListFSTypes()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
+}
+
+func (s *Server) handleParamsFor(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	res := s.plane.ParamsFor(r.URL.Query().Get("fs_type"))
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(res)
 }
@@ -530,6 +542,15 @@ func (c *AdapterClient) ListFSTypes() ([]string, error) {
 	var out []string
 	err = json.NewDecoder(res.Body).Decode(&out)
 	return out, err
+}
+
+// ParamsFor returns the config-param schema for one fs_type (GET /params_for).
+func (c *AdapterClient) ParamsFor(fsType string) ([]control.ParamInfo, error) {
+	var out []control.ParamInfo
+	if err := c.getJSON("/params_for?fs_type="+url.QueryEscape(fsType), &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // Config fetches a snapshot of the live config model.
