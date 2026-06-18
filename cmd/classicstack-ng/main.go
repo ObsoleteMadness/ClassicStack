@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -10,12 +11,14 @@ import (
 	"time"
 
 	configtoml "github.com/ObsoleteMadness/ClassicStack/adapter/config/toml"
+	controlhttp "github.com/ObsoleteMadness/ClassicStack/adapter/control/http"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/pcap"
 	adapterserial "github.com/ObsoleteMadness/ClassicStack/adapter/serial"
 	storefile "github.com/ObsoleteMadness/ClassicStack/adapter/store/file"
 	"github.com/ObsoleteMadness/ClassicStack/compose/registry"
 	"github.com/ObsoleteMadness/ClassicStack/compose/runtime"
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
+	"github.com/ObsoleteMadness/ClassicStack/core/control"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 
 	// Blank-import components to trigger registry self-registration via init()
@@ -32,6 +35,9 @@ import (
 )
 
 func main() {
+	httpAddr := flag.String("http", "", "serve the web-admin control API on this address (e.g. :8080); empty = disabled")
+	flag.Parse()
+
 	fmt.Println("Starting ClassicStack-NG...")
 
 	// 1. Config model: load server.toml (file Store + TOML Codec). A missing file
@@ -39,7 +45,9 @@ func main() {
 	//    so the ng harness still boots with no config present. The Store/Codec are
 	//    chosen HERE at the cmd edge; compose/runtime stays adapter-agnostic.
 	const configPath = "server.toml"
-	m, err := runtime.Load(storefile.New(configPath), configtoml.New())
+	store := storefile.New(configPath)
+	codec := configtoml.New()
+	m, err := runtime.Load(store, codec)
 	if err != nil {
 		fmt.Printf("Failed to load %s: %v\n", configPath, err)
 		os.Exit(1)
@@ -86,13 +94,33 @@ func main() {
 	}
 	fmt.Println("-------------------------")
 
-	// 6. Run until interrupted.
+	// 6. Web-admin control API (opt-in via -http): bind a control.Plane over the
+	//    runtime's supervisor + the same Store/Codec the config loaded through, and
+	//    expose it through the new-ring HTTP control adapter (JSON API + SSE). The
+	//    Plane is the single contract every front-end shares (§14); the SPA (M8-spa)
+	//    layers over this same surface. Disabled when -http is empty.
+	var httpServer *controlhttp.Server
+	if *httpAddr != "" {
+		plane := control.New(rt.Supervisor(), codec, store, telemetry)
+		httpServer = controlhttp.NewServer(plane, *httpAddr)
+		if err := httpServer.Start(); err != nil {
+			fmt.Printf("Failed to start web-admin on %s: %v\n", *httpAddr, err)
+			os.Exit(1)
+		}
+		fmt.Printf("Web-admin control API listening on %s\n", httpServer.Addr())
+	}
+
+	// 7. Run until interrupted.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	fmt.Println("ClassicStack-NG is running. Press Ctrl+C to stop...")
 	<-sigCh
 
-	// 7. Graceful shutdown.
+	// 8. Graceful shutdown: stop the web-admin first (so no control call races the
+	//    teardown), then the supervisor tree in reverse dependency order.
+	if httpServer != nil {
+		httpServer.Stop()
+	}
 	fmt.Println("\nStopping supervisor tree...")
 	stopCtx, cancelStop := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelStop()
