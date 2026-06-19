@@ -1,11 +1,12 @@
-// Command csgetzones queries the AppleTalk zone list over LToUDP — the ClassicStack
-// equivalent of netatalk's getzones. It asks a router for the network's active zones
-// and prints them, one per line.
+// Command csgetzones queries the AppleTalk zone list — the ClassicStack equivalent of
+// netatalk's getzones. It asks a router for the network's active zones and prints
+// them, one per line.
 //
 // Like csecho (aecho) and csnbp (nbplkup), this is a T1 "protocol-reuse proof": it
 // drives the SAME core constants the server's ZIP responder uses — core/service/zip —
-// over the adapter/link/framing LLAP framer and the adapter/link/ltoudp multicast
-// link. No server, no router; just the wire stack composed into a client.
+// over the adapter/link framers/links (cmd/internal/atlink picks the segment
+// transport). No server, no router; just the wire stack composed into a client. The
+// transport defaults to LToUDP, with -transport tashtalk or pcap selecting the others.
 //
 // ZIP GetZoneList (Inside Macintosh: Networking, ch. 8) is an ATP-carried request:
 // DDP type 3 (ATP) to socket 6 (ZIP). The client sends an ATP TReq whose user bytes
@@ -23,8 +24,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/ObsoleteMadness/ClassicStack/adapter/link/framing"
-	"github.com/ObsoleteMadness/ClassicStack/adapter/link/ltoudp"
+	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/atlink"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/ddp"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/zip"
@@ -43,7 +43,6 @@ func main() {
 
 func run() error {
 	var (
-		iface   = flag.String("iface", "", "local IPv4 interface address to send on (default: every multicast-capable interface)")
 		network = flag.Uint("net", 0, "AppleTalk network number (0 = local segment)")
 		srcNode = flag.Uint("src", 0x01, "our LocalTalk source node (1..254)")
 		dstNode = flag.Uint("dst", broadcastNode, "router node to query (0xFF = broadcast to any router)")
@@ -51,6 +50,7 @@ func run() error {
 		local   = flag.Bool("local", false, "GetLocalZones: only zones on our own network")
 		myZone  = flag.Bool("my", false, "GetMyZone: just the responding router's own zone")
 	)
+	at := atlink.Flags(flag.CommandLine)
 	flag.Parse()
 
 	if *srcNode < 1 || *srcNode > 254 {
@@ -65,17 +65,13 @@ func run() error {
 		fn = zip.ATPGetLocalZoneList
 	}
 
-	fl, err := ltoudp.Open(ltoudp.DefaultConfig(*iface))
+	// Open the selected AppleTalk transport (LToUDP by default; -transport tashtalk or
+	// pcap selects the others), framed as a DDP DatagramLink.
+	dl, err := at.Open(uint16(*network), uint8(*srcNode))
 	if err != nil {
-		return fmt.Errorf("open LToUDP: %w", err)
+		return err
 	}
-	defer fl.Close()
-
-	framer := &framing.LocalTalk{Addr: framing.NewStaticAddr(uint16(*network), uint8(*srcNode))}
-	dl, err := framer.Framing(fl)
-	if err != nil {
-		return fmt.Errorf("frame LToUDP: %w", err)
-	}
+	defer dl.Close()
 
 	total := 0
 	startIndex := 1 // ZIP indexes the zone list 1-relative

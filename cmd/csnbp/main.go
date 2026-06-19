@@ -1,12 +1,13 @@
-// Command csnbp is a standalone AppleTalk Name Binding Protocol (NBP) lookup client
-// over LToUDP — the ClassicStack equivalent of netatalk's nbplkup. It resolves an NBP
-// entity name (object:type@zone) to the network addresses registered under it, acting
-// as an nslookup for Classic Mac networks.
+// Command csnbp is a standalone AppleTalk Name Binding Protocol (NBP) lookup client —
+// the ClassicStack equivalent of netatalk's nbplkup. It resolves an NBP entity name
+// (object:type@zone) to the network addresses registered under it, acting as an
+// nslookup for Classic Mac networks.
 //
 // Like csecho (the AEP echo client / aecho equivalent), this is a T1 "protocol-reuse
 // proof": it drives the SAME core codec the server uses — core/protocol/nbp — over the
-// adapter/link/framing LLAP framer and the adapter/link/ltoudp multicast link. No
-// server, no router; just the wire stack composed into a client.
+// adapter/link framers/links (cmd/internal/atlink picks the segment transport). No
+// server, no router; just the wire stack composed into a client. The transport
+// defaults to LToUDP, with -transport tashtalk or pcap selecting the others.
 //
 // NBP (Inside AppleTalk, 2nd ed., ch. 7): DDP type 2 on socket 2. csnbp emits a
 // Broadcast Request (BrRq) carrying the name pattern and its OWN reply address; every
@@ -24,8 +25,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ObsoleteMadness/ClassicStack/adapter/link/framing"
-	"github.com/ObsoleteMadness/ClassicStack/adapter/link/ltoudp"
+	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/atlink"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/ddp"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/nbp"
@@ -43,11 +43,11 @@ func main() {
 
 func run() error {
 	var (
-		iface   = flag.String("iface", "", "local IPv4 interface address to send on (default: every multicast-capable interface)")
 		network = flag.Uint("net", 0, "AppleTalk network number (0 = local segment)")
 		srcNode = flag.Uint("src", 0x01, "our LocalTalk source node (1..254)")
 		timeout = flag.Duration("timeout", 2*time.Second, "how long to collect replies")
 	)
+	at := atlink.Flags(flag.CommandLine)
 	flag.Usage = usage
 	flag.Parse()
 
@@ -64,19 +64,14 @@ func run() error {
 		return err
 	}
 
-	// Open the SAME LToUDP link + LLAP framer the LocalTalk port uses, asserting our
-	// claimed network/node (a probe client may assert one without a node-claim handshake).
-	fl, err := ltoudp.Open(ltoudp.DefaultConfig(*iface))
+	// Open the selected AppleTalk transport (LToUDP by default; -transport tashtalk or
+	// pcap selects the others), asserting our claimed network/node (a probe client may
+	// assert one without a node-claim handshake).
+	dl, err := at.Open(uint16(*network), uint8(*srcNode))
 	if err != nil {
-		return fmt.Errorf("open LToUDP: %w", err)
+		return err
 	}
-	defer fl.Close()
-
-	framer := &framing.LocalTalk{Addr: framing.NewStaticAddr(uint16(*network), uint8(*srcNode))}
-	dl, err := framer.Framing(fl)
-	if err != nil {
-		return fmt.Errorf("frame LToUDP: %w", err)
-	}
+	defer dl.Close()
 
 	nbpID := byte(rand.Intn(256))
 	req := lookupRequest(nbpID, uint16(*network), uint8(*srcNode), obj, typ, zone)
