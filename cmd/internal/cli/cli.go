@@ -22,11 +22,14 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	gort "runtime"
+	"strings"
 	"syscall"
 	"time"
 
 	configtoml "github.com/ObsoleteMadness/ClassicStack/adapter/config/toml"
+	configuci "github.com/ObsoleteMadness/ClassicStack/adapter/config/uci"
 	controlhttp "github.com/ObsoleteMadness/ClassicStack/adapter/control/http"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/pcap"
 	adapterserial "github.com/ObsoleteMadness/ClassicStack/adapter/serial"
@@ -34,6 +37,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/compose/registry"
 	"github.com/ObsoleteMadness/ClassicStack/compose/runtime"
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
+	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/control"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 
@@ -88,7 +92,7 @@ func Main(v Version) {
 // nil error after printing.
 func Run(ctx context.Context, args []string, v Version) error {
 	fs := flag.NewFlagSet("classicstack", flag.ContinueOnError)
-	configPath := fs.String("config", DefaultConfigPath, "path to the TOML config file")
+	configPath := fs.String("config", DefaultConfigPath, "path to the config file (TOML, or UCI for an /etc/config path or *.uci file)")
 	httpAddr := fs.String("http", "", "serve the web-admin control API on this address (e.g. :8080); empty = disabled")
 	showVersion := fs.Bool("version", false, "print version information and exit")
 	if err := fs.Parse(args); err != nil {
@@ -99,10 +103,13 @@ func Run(ctx context.Context, args []string, v Version) error {
 		return nil
 	}
 
-	// Config model: file Store + TOML Codec chosen at this (compose) edge. A missing
-	// file yields the default model, so the stack still boots with no config present.
+	// Config model: file Store + a Codec chosen by the config path at this (compose)
+	// edge — TOML by default, UCI when the path is an OpenWRT config (under /etc/config
+	// or a *.uci file), so the SAME binary reads server.toml on a desktop and
+	// /etc/config/classicstack on a router. A missing file yields the default model, so
+	// the stack still boots with no config present.
 	store := storefile.New(*configPath)
-	codec := configtoml.New()
+	codec := pickCodec(*configPath)
 	m, err := runtime.Load(store, codec)
 	if err != nil {
 		return fmt.Errorf("load %s: %w", *configPath, err)
@@ -145,6 +152,24 @@ func Run(ctx context.Context, args []string, v Version) error {
 	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return rt.Stop(stopCtx)
+}
+
+// pickCodec selects the config Codec from the config path: the OpenWRT UCI codec when
+// the path is an OpenWRT config (a file under an /etc/config directory, or any *.uci
+// file), else the TOML codec. This lets one binary read server.toml on a desktop and
+// /etc/config/classicstack on a router with no separate build — the OpenWRT init
+// script just points -config at the UCI file. The check is purely on the path string
+// (the file need not exist yet — a missing file still boots the default model).
+func pickCodec(configPath string) config.Codec {
+	lower := strings.ToLower(filepath.ToSlash(configPath))
+	switch {
+	case strings.HasSuffix(lower, ".uci"),
+		strings.HasSuffix(lower, ".config"),     // the repo's openwrt/files/classicstack.config
+		strings.Contains(lower, "/etc/config/"): // the installed UCI path on a router
+		return configuci.New()
+	default:
+		return configtoml.New()
+	}
 }
 
 // pcapOpener is the runtime's LinkOpener: open a raw Ethernet FrameLink for a port's
