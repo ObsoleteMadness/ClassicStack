@@ -111,6 +111,50 @@ const api = {
     });
     if (!r.ok) throw new Error(await errText(r));
   },
+  // addInstance/removeInstance are the create/delete half of repeated-section config
+  // (AFP volumes, SMB shares): owner is the consuming component ("AFP"/"SMB"), key the
+  // schema key ("AFPVolumes"/"SMBShares").
+  async addInstance(owner, key, section) {
+    const r = await fetch("add_instance", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ owner, key, section }),
+    });
+    if (!r.ok) throw new Error(await errText(r));
+  },
+  async removeInstance(owner, key, name) {
+    const r = await fetch("remove_instance", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ owner, key, name }),
+    });
+    if (!r.ok) throw new Error(await errText(r));
+  },
+  async serialPorts() {
+    const r = await fetch("list_serial_ports");
+    return r.ok ? r.json() : [];
+  },
+  async browsePath(dir) {
+    const r = await fetch("browse_path?dir=" + encodeURIComponent(dir || ""));
+    if (!r.ok) throw new Error(await errText(r));
+    return r.json();
+  },
+  async extMap(path) {
+    const r = await fetch("extmap?path=" + encodeURIComponent(path));
+    if (!r.ok) throw new Error(await errText(r));
+    return r.json();
+  },
+  async saveExtMap(path, content) {
+    const r = await fetch("extmap", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, content }),
+    });
+    if (!r.ok) throw new Error(await errText(r));
+    return r.json();
+  },
+  // downloadConfig triggers a server.toml download via a transient link.
+  downloadConfig() {
+    const a = el("a", { href: "config_download", download: "server.toml" });
+    document.body.append(a); a.click(); a.remove();
+  },
 };
 
 // errText extracts a {"error":…} body or falls back to the HTTP status line.
@@ -464,6 +508,10 @@ function sectionForm(section) {
   }
   return {
     node: el("div", {}, nodes),
+    // _fields / _nodes are exposed so instanceForm can reuse per-field rendering while
+    // substituting its own widgets (a path picker, an fs_type dropdown) for some keys.
+    _fields: inputs,
+    _nodes: nodes,
     collect() {
       const out = {};
       for (const [k, { input, orig }] of Object.entries(inputs)) {
@@ -508,56 +556,366 @@ class CsConfig extends HTMLElement {
         status.textContent = "Saved. Backup revision: " + revision;
       } catch (e) { status.textContent = e.message; }
     });
-    const download = button("Download backup", "", () => this.download());
+    // Download the faithful on-disk server.toml (server-rendered through the codec),
+    // not the JSON model shape — the operator wants a real backup file.
+    const download = button("Download server.toml", "", () => api.downloadConfig());
 
-    const sections = this.editableSections().map(([name, key, sec]) => {
-      const form = sectionForm(sec);
-      const sstat = el("div", { class: "err" });
-      const apply = button("Apply (live)", "", async () => {
-        sstat.textContent = ""; sstat.className = "err";
-        try {
-          await api.reconfigure(key, form.collect());
-          sstat.className = "ok-msg"; sstat.textContent = "Applied.";
-        } catch (e) { sstat.textContent = e.message; }
-      });
-      return el("details", { class: "panel" }, [
-        el("summary", {}, [name]),
-        form.node,
-        el("div", { class: "row" }, [apply]),
-        sstat,
-      ]);
-    });
+    const singletons = this.editableSections().map(([name, key, sec]) =>
+      this.sectionPanel(name, key, sec));
 
     this.replaceChildren(
       el("div", { class: "banner" }, ["Saving rewrites server.toml and drops any comments in the file. Apply changes a section live without persisting; Save writes them all to disk."]),
       el("div", { class: "row", style: "margin-bottom:14px" }, [save, download]),
       status,
-      ...sections,
+      // Repeated-section editors (AFP volumes / SMB shares) with Add/Delete + a path picker.
+      ...this.listEditors(),
+      // Extension-map grid editor (a file, not a model section).
+      this.extMapPanel(),
+      ...singletons,
     );
   }
-  // editableSections flattens the model into [displayName, reconfigureKey, section]
-  // tuples: well-known singletons, registered Sections, and each repeated instance.
-  editableSections() {
-    const m = this.model, out = [];
-    for (const k of ["Identity", "Logging", "Router", "Bridge"]) {
-      if (m[k] && typeof m[k] === "object") out.push([k, k, m[k]]);
-    }
-    for (const [k, sec] of Object.entries(m.Sections || {})) out.push([k, k, sec]);
-    for (const [k, list] of Object.entries(m.Lists || {})) {
-      (list || []).forEach((inst) => {
-        const nm = inst.Name || inst.name || k;
-        out.push([`${k} · ${nm}`, k, inst]);
-      });
+
+  // sectionPanel renders one singleton section as a collapsible form with Apply (live).
+  sectionPanel(name, key, sec) {
+    const form = sectionForm(sec);
+    const sstat = el("div", { class: "err" });
+    const apply = button("Apply (live)", "", async () => {
+      sstat.textContent = ""; sstat.className = "err";
+      try {
+        await api.reconfigure(key, form.collect());
+        sstat.className = "ok-msg"; sstat.textContent = "Applied.";
+      } catch (e) { sstat.textContent = e.message; }
+    });
+    return el("details", { class: "panel" }, [
+      el("summary", {}, [name]),
+      form.node,
+      el("div", { class: "row" }, [apply]),
+      sstat,
+    ]);
+  }
+
+  // listEditors builds one panel per repeated-section key (AFPVolumes/SMBShares): a row
+  // per instance with Edit/Delete and an Add form. The owner component (AFP/SMB) drives
+  // the live reconcile. Keys map to their owner by convention.
+  listEditors() {
+    const ownerFor = { AFPVolumes: "AFP", SMBShares: "SMB" };
+    const out = [];
+    for (const [key, list] of Object.entries(this.model.Lists || {})) {
+      const owner = ownerFor[key] || key;
+      out.push(new CsInstanceEditor(key, owner, list || [], () => this.activate()));
     }
     return out;
   }
-  download() {
-    const blob = new Blob([JSON.stringify(this.model, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = el("a", { href: url, download: "classicstack-config.json" });
-    document.body.append(a); a.click(); a.remove();
-    URL.revokeObjectURL(url);
+
+  // extMapPanel is a collapsible 3-column (Extension/Creator/Type) grid editor over an
+  // extension-map file. The file path is taken from the first AFP volume that names an
+  // ExtMapPath; the operator can point it elsewhere.
+  extMapPanel() {
+    const ed = new CsExtMap();
+    // Seed the path from an AFP volume's ExtMapPath, if any.
+    for (const inst of (this.model.Lists && this.model.Lists.AFPVolumes) || []) {
+      if (inst.ExtMapPath || inst.extmap_path) { ed.path = inst.ExtMapPath || inst.extmap_path; break; }
+    }
+    return ed;
   }
+  // editableSections returns the SINGLETON sections as [displayName, reconfigureKey,
+  // section] tuples: the well-known typed fields + the registered Sections map. Repeated
+  // instances (Lists) are handled separately by listEditors (they need Add/Delete).
+  editableSections() {
+    const m = this.model, out = [];
+    for (const k of ["Identity", "Logging", "Router", "Bridge", "Capture"]) {
+      if (m[k] && typeof m[k] === "object") out.push([k, k, m[k]]);
+    }
+    for (const [k, sec] of Object.entries(m.Sections || {})) out.push([k, k, sec]);
+    return out;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// <cs-instance-editor> — the AFP-volume / SMB-share table editor: a row per
+// instance with Edit (opens the section form modal) and Delete, plus an Add
+// form. It drives /add_instance, /remove_instance, /reconfigure; the owning
+// service reconciles its live set. The name/path fields carry a Browse picker.
+// ---------------------------------------------------------------------------
+class CsInstanceEditor extends HTMLElement {
+  constructor(key, owner, list, onChange) {
+    super();
+    this.key = key; this.owner = owner; this.list = list; this.onChange = onChange;
+  }
+  connectedCallback() { this.render(); }
+  async add(section) {
+    await api.addInstance(this.owner, this.key, section);
+    this.onChange();
+  }
+  async remove(name) {
+    if (!confirm(`Remove ${this.key} "${name}"?`)) return;
+    try { await api.removeInstance(this.owner, this.key, name); this.onChange(); }
+    catch (e) { alert(e.message); }
+  }
+  render() {
+    const title = this.key === "AFPVolumes" ? "AFP Volumes"
+      : this.key === "SMBShares" ? "SMB Shares" : this.key;
+    const rows = this.list.map((inst) => {
+      const name = instName(inst);
+      const path = inst.Path || inst.path || "";
+      const ro = inst.ReadOnly || inst.read_only;
+      const fst = inst.FSType || inst.fs_type || "";
+      return el("tr", {}, [
+        el("td", {}, [name]),
+        el("td", { class: "muted" }, [path]),
+        el("td", { class: "muted" }, [fst]),
+        el("td", {}, [ro ? "ro" : "rw"]),
+        el("td", {}, [el("div", { class: "row" }, [
+          button("Edit", "", () => openInstanceModal(this.key, this.owner, inst, this.onChange)),
+          button("Delete", "danger", () => this.remove(name)),
+        ])]),
+      ]);
+    });
+    const table = el("table", {}, [
+      el("thead", {}, [el("tr", {}, [th("Name"), th("Path"), th("FS"), th("Mode"), th("")])]),
+      el("tbody", {}, rows.length ? rows : [el("tr", {}, [el("td", { class: "muted", colspan: "5" }, ["No entries."])])]),
+    ]);
+    this.replaceChildren(el("details", { class: "panel", open: "" }, [
+      el("summary", {}, [title]),
+      table,
+      el("div", { class: "row" }, [
+        button("Add " + (this.key === "AFPVolumes" ? "volume" : this.key === "SMBShares" ? "share" : "entry"), "primary",
+          () => openInstanceModal(this.key, this.owner, this.blankInstance(), this.onChange)),
+      ]),
+    ]));
+  }
+  // blankInstance seeds a new instance from an existing one's shape (so the form has the
+  // right fields, keyed by the Go FIELD names the JSON uses — VName/FSType/Path, not the
+  // toml names), with empty values. Falls back to the known volume/share field set when
+  // the list is empty.
+  blankInstance() {
+    if (this.list.length) {
+      const tmpl = this.list[0], out = {};
+      for (const [k, v] of Object.entries(tmpl)) {
+        out[k] = typeof v === "boolean" ? false : Array.isArray(v) ? [] : typeof v === "number" ? 0 : "";
+      }
+      return out;
+    }
+    const nameKey = this.key === "SMBShares" ? "SName" : "VName";
+    const base = { [nameKey]: "", FSType: "local_fs", Path: "", ReadOnly: false, Options: [] };
+    if (this.key === "SMBShares") base.Description = "";
+    if (this.key === "AFPVolumes") base.ExtMapPath = "";
+    return base;
+  }
+}
+
+// instName returns a repeated instance's name, trying the Go field names the JSON uses
+// (VName for AFP volumes, SName for SMB shares) and the generic Name/name fallbacks.
+function instName(inst) {
+  return inst.VName || inst.SName || inst.Name || inst.name || "";
+}
+
+// openInstanceModal edits one repeated-section instance (a volume/share). isNew is
+// inferred from whether the instance currently exists in the list; a create goes through
+// /add_instance, an edit through /reconfigure. The path field gets a Browse picker and
+// fs_type a dropdown from /list_fs_types.
+async function openInstanceModal(key, owner, inst, onChange) {
+  const isNew = !instName(inst);
+  const overlay = el("div", { class: "modal-overlay" });
+  const body = el("div", { class: "modal-body" }, [el("p", { class: "muted" }, ["loading…"])]);
+  const status = el("div", { class: "err" });
+  const close = () => overlay.remove();
+  const saveBtn = button(isNew ? "Create" : "Save", "primary", () => {});
+  overlay.append(el("div", { class: "modal" }, [
+    el("div", { class: "modal-head" }, [el("h2", {}, [(isNew ? "Add to " : "Edit ") + key]), button("✕", "modal-close", close)]),
+    body, status,
+    el("div", { class: "modal-foot" }, [button("Cancel", "", close), saveBtn]),
+  ]));
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  document.body.append(overlay);
+
+  const fsTypes = await api.fsTypes().catch(() => []);
+  const form = instanceForm(inst, fsTypes);
+  body.replaceChildren(form.node);
+
+  saveBtn.addEventListener("click", async () => {
+    status.textContent = ""; status.className = "err";
+    const section = form.collect();
+    try {
+      if (isNew) await api.addInstance(owner, key, section);
+      else await api.reconfigure(key, section);
+      status.className = "ok-msg"; status.textContent = "Saved.";
+      setTimeout(() => { close(); onChange(); }, 500);
+    } catch (e) { status.textContent = e.message; }
+  });
+}
+
+// instanceForm renders a volume/share form: a Browse-able path field, an fs_type
+// dropdown, and the remaining fields via the generic reflection. Returns {node, collect}.
+function instanceForm(inst, fsTypes) {
+  const base = sectionForm(inst);
+  // Decorate: replace the plain path input with one carrying a Browse button, and
+  // swap fs_type for a dropdown. We rebuild the node from inst to control field order.
+  const nodes = [];
+  const fields = {};
+
+  const pathKey = "Path" in inst ? "Path" : "path" in inst ? "path" : null;
+  const fsKey = "FSType" in inst ? "FSType" : "fs_type" in inst ? "fs_type" : null;
+
+  for (const [k, v] of Object.entries(inst)) {
+    if (k === pathKey) {
+      const inp = el("input", { type: "text", value: v || "" });
+      fields[k] = { input: inp, orig: v };
+      nodes.push(el("label", {}, [k]), pathPicker(inp));
+    } else if (k === fsKey && fsTypes.length) {
+      const sel = el("select", {}, fsTypes.map((t) =>
+        el("option", t === v ? { value: t, selected: "" } : { value: t }, [t])));
+      fields[k] = { input: sel, orig: v };
+      nodes.push(el("label", {}, [k]), sel);
+    } else {
+      // fall back to the generic single-field rendering
+      const one = sectionForm({ [k]: v });
+      fields[k] = one._fields[k];
+      nodes.push(...one._nodes);
+    }
+  }
+  return {
+    node: el("div", {}, nodes),
+    collect() {
+      const out = {};
+      for (const [k, { input, orig }] of Object.entries(fields)) {
+        if (typeof orig === "boolean") out[k] = input.checked;
+        else if (typeof orig === "number") out[k] = Number(input.value);
+        else if (Array.isArray(orig)) out[k] = input.value.split("\n").map((s) => s.trim()).filter(Boolean);
+        else if (input.dataset && input.dataset.kind === "json") { try { out[k] = JSON.parse(input.value); } catch (_) { out[k] = orig; } }
+        else out[k] = input.value;
+      }
+      return out;
+    },
+  };
+}
+
+// pathPicker wraps a text input with a Browse… button that opens a directory browser
+// modal (over /browse_path) and writes the chosen directory back into the input.
+function pathPicker(input) {
+  const browse = button("Browse…", "", () => openPathBrowser(input.value, (p) => { input.value = p; }));
+  return el("div", { class: "row" }, [input, browse]);
+}
+
+// openPathBrowser is a modal directory navigator over /browse_path: it lists the
+// subdirectories of the current dir, lets the operator descend (or go up via ‹parent›),
+// and Select chooses the current directory.
+async function openPathBrowser(startDir, onPick) {
+  const overlay = el("div", { class: "modal-overlay" });
+  const listBox = el("div", {});
+  const here = el("div", { class: "muted", style: "margin-bottom:8px;word-break:break-all" });
+  const close = () => overlay.remove();
+  let cur = startDir || "";
+
+  async function go(dir) {
+    try {
+      const res = await api.browsePath(dir);
+      cur = res.path;
+      here.textContent = cur;
+      const items = [el("button", { class: "" }, ["‹ parent"])];
+      items[0].addEventListener("click", () => go(res.parent));
+      for (const e of res.entries) {
+        const b = el("button", {}, ["📁 " + e.name]);
+        b.addEventListener("click", () => go(cur.replace(/[\\/]+$/, "") + "/" + e.name));
+        items.push(b);
+      }
+      listBox.replaceChildren(el("div", { class: "row", style: "flex-wrap:wrap;gap:6px" }, items));
+    } catch (err) {
+      listBox.replaceChildren(el("p", { class: "err" }, [err.message]));
+    }
+  }
+
+  overlay.append(el("div", { class: "modal" }, [
+    el("div", { class: "modal-head" }, [el("h2", {}, ["Choose a directory"]), button("✕", "modal-close", close)]),
+    el("div", { class: "modal-body" }, [here, listBox]),
+    el("div", { class: "modal-foot" }, [
+      button("Cancel", "", close),
+      button("Select this folder", "primary", () => { onPick(cur); close(); }),
+    ]),
+  ]));
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  document.body.append(overlay);
+  go(cur);
+}
+
+// ---------------------------------------------------------------------------
+// <cs-extmap> — the AFP extension-map editor: a 3-column grid (Extension /
+// Creator / Type) loaded from /extmap and serialised back to the Netatalk
+// `.ext "TYPE" "CRTR"` format on save. Add/delete rows; the path is editable.
+// ---------------------------------------------------------------------------
+class CsExtMap extends HTMLElement {
+  path = "";
+  rows = []; // {ext, creator, type}
+  connectedCallback() { this.render(); }
+  async load() {
+    if (!this.path) { this.rows = []; this.render(); return; }
+    try {
+      const { content } = await api.extMap(this.path);
+      this.rows = parseExtMap(content || "");
+    } catch (e) { this.rows = []; }
+    this.render();
+  }
+  render() {
+    const pathIn = el("input", { type: "text", value: this.path, placeholder: "path to extmap file (e.g. extmap.conf)" });
+    const status = el("div", { class: "err" });
+
+    const body = el("tbody", {}, this.rows.map((r, i) => el("tr", {}, [
+      el("td", {}, [extCell(r, "ext", 0)]),
+      el("td", {}, [extCell(r, "creator", 4)]),
+      el("td", {}, [extCell(r, "type", 4)]),
+      el("td", {}, [button("✕", "danger", () => { this.rows.splice(i, 1); this.render(); })]),
+    ])));
+
+    const grid = el("table", {}, [
+      el("thead", {}, [el("tr", {}, [th("Extension"), th("Creator"), th("Type"), th("")])]),
+      body,
+    ]);
+
+    this.replaceChildren(el("details", { class: "panel" }, [
+      el("summary", {}, ["Extension map (type/creator)"]),
+      el("p", { class: "field-hint" }, ["Defaults a file's classic Mac type/creator from its extension when none is stored (e.g. .txt → TEXT/ttxt)."]),
+      el("label", {}, ["File path"]),
+      el("div", { class: "row" }, [pathIn, button("Load", "", () => { this.path = pathIn.value.trim(); this.load(); })]),
+      grid,
+      el("div", { class: "row" }, [
+        button("Add row", "", () => { this.rows.push({ ext: "", creator: "", type: "" }); this.render(); }),
+        button("Save extension map", "primary", async () => {
+          status.textContent = ""; status.className = "err";
+          this.path = pathIn.value.trim();
+          if (!this.path) { status.textContent = "Set a file path first."; return; }
+          try {
+            const { backup } = await api.saveExtMap(this.path, serializeExtMap(this.rows));
+            status.className = "ok-msg";
+            status.textContent = "Saved." + (backup ? " Backup: " + backup : "");
+          } catch (e) { status.textContent = e.message; }
+        }),
+      ]),
+      status,
+    ]));
+  }
+}
+// extCell builds a fixed-width text cell bound to row[field]; maxLen caps OSType width.
+function extCell(row, field, maxLen) {
+  const inp = el("input", { type: "text", value: row[field] || "" });
+  if (maxLen) inp.maxLength = maxLen;
+  inp.addEventListener("input", () => { row[field] = inp.value; });
+  return inp;
+}
+// parseExtMap reads Netatalk `.ext "TYPE" "CRTR"` lines into {ext,creator,type} rows.
+function parseExtMap(text) {
+  const rows = [];
+  for (const line of text.split("\n")) {
+    const m = line.trim().match(/^(\S+)\s+"([^"]*)"\s+"([^"]*)"/);
+    if (m) rows.push({ ext: m[1].replace(/^\./, ""), type: m[2], creator: m[3] });
+  }
+  return rows;
+}
+// serializeExtMap writes rows back to the Netatalk format (extension, type, creator).
+function serializeExtMap(rows) {
+  return rows
+    .filter((r) => r.ext && r.type && r.creator)
+    .map((r) => `.${r.ext} "${r.type}" "${r.creator}"`)
+    .join("\n") + "\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -572,6 +930,7 @@ class CsDiagnostics extends HTMLElement {
       el("div", { class: "tools" }, [
         button("List Zones", "", () => this.run("Zones", api.zones())),
         button("List Interfaces", "", () => this.run("Interfaces", api.interfaces())),
+        button("List Serial Ports", "", () => this.run("Serial ports", api.serialPorts())),
         button("Component Status", "", () => this.run("Status", api.status())),
       ]),
       this.out,
@@ -773,6 +1132,8 @@ customElements.define("cs-app", CsApp);
 customElements.define("cs-setup", CsSetup);
 customElements.define("cs-dashboard", CsDashboard);
 customElements.define("cs-config", CsConfig);
+customElements.define("cs-instance-editor", CsInstanceEditor);
+customElements.define("cs-extmap", CsExtMap);
 customElements.define("cs-diagnostics", CsDiagnostics);
 customElements.define("cs-users", CsUsers);
 customElements.define("cs-logs", CsLogs);
