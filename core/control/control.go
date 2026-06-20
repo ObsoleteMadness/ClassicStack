@@ -28,6 +28,11 @@ type Plane interface {
 	AddInstance(ctx context.Context, owner string, section config.NamedSection) error
 	RemoveInstance(ctx context.Context, owner, key, instanceName string) error
 	Save(ctx context.Context) (revision string, err error)
+	// MarshalConfig serialises the live (masked) model through the configured codec —
+	// the on-disk form (TOML/UCI) — so a front-end can offer a faithful "download
+	// server.toml" backup rather than the JSON shape Config() returns. Secrets are
+	// masked, exactly as Config(). ErrUnavailable when no codec is wired.
+	MarshalConfig() ([]byte, error)
 
 	Start(ctx context.Context, name string) error
 	Stop(ctx context.Context, name string) error
@@ -154,6 +159,18 @@ func New(sup Supervisor, codec config.Codec, store config.Store, telemetry bus.B
 		telemetry: telemetry,
 		diag:      unavailableDiagnostics{},
 	}
+}
+
+// MarshalConfig serialises the masked live model through the codec (the on-disk form).
+func (p *plane) MarshalConfig() ([]byte, error) {
+	if p.codec == nil {
+		return nil, ErrUnavailable
+	}
+	m := p.sup.Model()
+	if m == nil {
+		m = config.NewModel()
+	}
+	return p.codec.Marshal(m.MaskSecrets())
 }
 
 func (p *plane) Config() (*config.Model, error) {

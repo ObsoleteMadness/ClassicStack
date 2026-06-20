@@ -126,7 +126,7 @@ func Run(ctx context.Context, args []string, v Version) error {
 	// inert-but-routed. When [Capture] names a pcap file for an interface, the opener is
 	// wrapped so that interface's frames are tee'd to the file (link.Capture decorator).
 	opener := captureOpener(pcapOpener, &m.Capture)
-	rt, err := runtime.Build(runtime.Options{Model: m, Telemetry: telemetry, Opener: opener, Serial: serialOpener})
+	rt, err := runtime.Build(runtime.Options{Model: m, Telemetry: telemetry, Opener: opener, Serial: serialOpener, InterfaceEnumerator: interfaceEnumerator})
 	if err != nil {
 		return fmt.Errorf("build runtime: %w", err)
 	}
@@ -202,4 +202,30 @@ var pcapOpener registry.LinkOpener = func(iface string) (link.FrameLink, error) 
 // baud 0 means the adapter default. Called per Start.
 var serialOpener registry.SerialOpener = func(device string, baud uint) (io.ReadWriteCloser, error) {
 	return adapterserial.Open(adapterserial.Config{Device: device, Baud: baud})
+}
+
+// interfaceEnumerator lists the host NICs for the control plane's ListInterfaces (the
+// UI's NIC picker), mapping the pcap device list to control.InterfaceInfo. Under the
+// pcap tag it enumerates real devices; the stub returns an error, which surfaces as an
+// empty list. Injected into the runtime so the supervisor stays pcap-free.
+func interfaceEnumerator() ([]control.InterfaceInfo, error) {
+	devs, err := pcap.ListDevices()
+	if err != nil {
+		// No pcap backend in this build (the stub) or no permission: an empty NIC list
+		// is the right degradation for the UI dropdown, not a propagated error.
+		return nil, nil
+	}
+	out := make([]control.InterfaceInfo, 0, len(devs))
+	for _, d := range devs {
+		addr := ""
+		if len(d.Addresses) > 0 {
+			addr = d.Addresses[0]
+		}
+		name := d.Name
+		if d.Description != "" {
+			name = d.Name + " (" + d.Description + ")"
+		}
+		out = append(out, control.InterfaceInfo{Name: name, Addr: addr})
+	}
+	return out, nil
 }

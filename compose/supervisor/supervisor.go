@@ -48,12 +48,13 @@ type node struct {
 // Whole-stack lifecycle is StartAll/StopAll; the per-name Start/Stop/Restart/Reconfigure are the
 // control-plane surface (control.Supervisor), driven by the UI.
 type Supervisor struct {
-	mu        sync.Mutex
-	model     *config.Model
-	telemetry bus.Bus
-	nodes     map[string]*node
-	order     []string       // insertion order, the tie-breaker in topo sort
-	users     auth.UserStore // wired user store; nil = no user administration available
+	mu         sync.Mutex
+	model      *config.Model
+	telemetry  bus.Bus
+	nodes      map[string]*node
+	order      []string                                // insertion order, the tie-breaker in topo sort
+	users      auth.UserStore                          // wired user store; nil = no user administration available
+	enumIfaces func() ([]control.InterfaceInfo, error) // injected host-NIC enumerator (cmd edge); nil = none
 
 	statsMu   sync.Mutex
 	statsStop chan struct{} // closed to stop the periodic stats flush; nil when not running
@@ -569,8 +570,27 @@ func (s *Supervisor) Status() []control.Unit {
 	return out
 }
 
-// ListInterfaces is a placeholder until interface enumeration adapters land (Phase 2).
-func (s *Supervisor) ListInterfaces() ([]control.InterfaceInfo, error) { return nil, nil }
+// SetInterfaceEnumerator installs the host-NIC enumeration source. The cmd edge injects
+// it (adapter/link/pcap.ListDevices), so the supervisor — and core/control through it —
+// stays free of the pcap/cgo dependency, mirroring how the LinkOpener is injected. A nil
+// enumerator (the default, or a build with no pcap backend) leaves ListInterfaces empty.
+func (s *Supervisor) SetInterfaceEnumerator(fn func() ([]control.InterfaceInfo, error)) {
+	s.mu.Lock()
+	s.enumIfaces = fn
+	s.mu.Unlock()
+}
+
+// ListInterfaces returns the host network interfaces from the injected enumerator, or an
+// empty list when none is wired (a headless / no-pcap build).
+func (s *Supervisor) ListInterfaces() ([]control.InterfaceInfo, error) {
+	s.mu.Lock()
+	fn := s.enumIfaces
+	s.mu.Unlock()
+	if fn == nil {
+		return nil, nil
+	}
+	return fn()
+}
 
 // ListFSTypes returns the registered FileSystem backend types (afp/smb shares pick
 // one). It reads the fs factory registry, so a UI can populate an fs-type dropdown

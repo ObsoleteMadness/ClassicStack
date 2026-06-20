@@ -28,6 +28,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
+	"github.com/ObsoleteMadness/ClassicStack/core/control"
 	"github.com/ObsoleteMadness/ClassicStack/core/router"
 )
 
@@ -111,6 +112,10 @@ type Options struct {
 	// threaded into every BuildContext, so the kind→opener dispatch (M11.c) can pick
 	// NIC vs serial from the resolved interface. nil → serial ports come up inert.
 	Serial registry.SerialOpener
+	// InterfaceEnumerator lists the host's NICs for the control plane's ListInterfaces
+	// (the UI's NIC picker). Injected at the cmd edge (adapter/link/pcap.ListDevices) so
+	// the runtime/supervisor pull in no pcap/cgo dependency. nil → ListInterfaces empty.
+	InterfaceEnumerator func() ([]control.InterfaceInfo, error)
 	// source enumerates/builds components. nil → the global compose/registry. Set
 	// only by tests (kept unexported so the production API is the registry path).
 	source componentSource
@@ -161,6 +166,7 @@ func Build(opts Options) (*Runtime, error) {
 		src = registrySource{}
 	}
 	sup := supervisor.New(opts.Model, opts.Telemetry)
+	sup.SetInterfaceEnumerator(opts.InterfaceEnumerator)
 
 	// Build the shared AppleTalk router FIRST so it can be threaded into every
 	// dependent factory's BuildContext: ports bind to it as their inbound target,

@@ -9,11 +9,16 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/adapter/control/inproc"
+	"github.com/ObsoleteMadness/ClassicStack/adapter/extmap"
+	"github.com/ObsoleteMadness/ClassicStack/adapter/serial"
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/control"
@@ -78,6 +83,10 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/reconfigure", s.handleReconfigure)
 	mux.HandleFunc("/add_instance", s.handleAddInstance)
 	mux.HandleFunc("/remove_instance", s.handleRemoveInstance)
+	mux.HandleFunc("/extmap", s.handleExtMap)
+	mux.HandleFunc("/config_download", s.handleConfigDownload)
+	mux.HandleFunc("/list_serial_ports", s.handleListSerialPorts)
+	mux.HandleFunc("/browse_path", s.handleBrowsePath)
 	mux.HandleFunc("/users", s.handleUsers)
 	mux.HandleFunc("/set_user", s.handleSetUser)
 	mux.HandleFunc("/set_user_disabled", s.handleSetUserDisabled)
@@ -304,6 +313,138 @@ func (s *Server) handleRemoveInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// handleExtMap reads (GET ?path=…) or writes (POST {path, content}) an AFP extension-
+// map file. A path is server-local, so this lives on the HTTP server, not the
+// transport-agnostic control surface. POST validates the content (it must parse as a
+// Netatalk extension map) and writes a numbered backup of any prior file.
+func (s *Server) handleExtMap(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		path := r.URL.Query().Get("path")
+		if path == "" {
+			writeJSONError(w, http.StatusBadRequest, "missing path")
+			return
+		}
+		data, err := extmap.Read(path)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}{Path: path, Content: string(data)})
+	case http.MethodPost:
+		var body struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if body.Path == "" {
+			writeJSONError(w, http.StatusBadRequest, "missing path")
+			return
+		}
+		backup, err := extmap.Save(body.Path, []byte(body.Content))
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error()) // validation / write error
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			Saved  bool   `json:"saved"`
+			Backup string `json:"backup"`
+		}{Saved: true, Backup: backup})
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleConfigDownload serves the live (masked) model serialised through the codec —
+// the on-disk TOML/UCI form — as a downloadable attachment, the faithful "backup
+// server.toml" the JSON Config() shape cannot provide.
+func (s *Server) handleConfigDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	data, err := s.plane.MarshalConfig()
+	if err != nil {
+		http.Error(w, err.Error(), statusForErr(err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/toml")
+	w.Header().Set("Content-Disposition", `attachment; filename="server.toml"`)
+	_, _ = w.Write(data)
+}
+
+// handleListSerialPorts returns the host serial ports (the TashTalk dropdown). A
+// server-local enumeration, so it lives on the HTTP server, not the shared control
+// surface. Errors degrade to an empty list (no serial ports / no permission).
+func (s *Server) handleListSerialPorts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ports, err := serial.ListPorts()
+	if err != nil {
+		ports = nil // best-effort: an enumeration failure is an empty dropdown
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(ports)
+}
+
+// handleBrowsePath lists the DIRECTORIES under dir so the operator can pick a volume /
+// share path without typing. The path is cleaned and resolved; only directories are
+// returned (files are not pickable share roots). An empty dir starts at the server's
+// working directory. SECURITY: this exposes the server's directory tree to an
+// authenticated admin — acceptable under the honest-security posture (the admin already
+// edits paths), but it is gated by the auth gate like every data route, returns only
+// directory names, and never reads file contents.
+func (s *Server) handleBrowsePath(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	dir := r.URL.Query().Get("dir")
+	if dir == "" {
+		if wd, err := os.Getwd(); err == nil {
+			dir = wd
+		} else {
+			dir = "."
+		}
+	}
+	dir = filepath.Clean(dir)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	type entry struct {
+		Name string `json:"name"`
+		Dir  bool   `json:"dir"`
+	}
+	out := make([]entry, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			out = append(out, entry{Name: e.Name(), Dir: true})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+
+	parent := filepath.Dir(dir)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(struct {
+		Path    string  `json:"path"`
+		Parent  string  `json:"parent"`
+		Entries []entry `json:"entries"`
+	}{Path: dir, Parent: parent, Entries: out})
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -605,6 +746,40 @@ func (c *AdapterClient) RemoveInstance(ctx context.Context, owner, key, instance
 		Key   string `json:"key"`
 		Name  string `json:"name"`
 	}{Owner: owner, Key: key, Name: instanceName})
+}
+
+// ExtMap reads the AFP extension-map file at path (HTTP-server-side surface, not on the
+// shared Client interface). Returns the file content (empty for a missing file).
+func (c *AdapterClient) ExtMap(path string) (string, error) {
+	var out struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	if err := c.getJSON("/extmap?path="+url.QueryEscape(path), &out); err != nil {
+		return "", err
+	}
+	return out.Content, nil
+}
+
+// SaveExtMap validates and writes the extension-map file, returning the backup path.
+func (c *AdapterClient) SaveExtMap(path, content string) (string, error) {
+	b, _ := json.Marshal(struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}{Path: path, Content: content})
+	res, err := c.client.Post(c.baseURL+"/extmap", "application/json", bytesReader(b))
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return "", errForStatus(res.StatusCode, res.Status)
+	}
+	var out struct {
+		Backup string `json:"backup"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&out)
+	return out.Backup, nil
 }
 
 // Start starts component.
