@@ -13,6 +13,10 @@ func init() {
 	// configured share as a named section. Kept here (not in an smb-package init)
 	// so the section exists exactly when the SMB service is built.
 	smb.RegisterShares()
+	// Register the SMB server-level singleton section (transport bindings) so the
+	// codec round-trips it and the transport cross-wire can read which transports the
+	// operator wants bound.
+	smb.RegisterServer()
 
 	Register(smb.Name, func(ctx *BuildContext) (component.Component, error) {
 		m := ctx.Model

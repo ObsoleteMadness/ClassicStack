@@ -23,6 +23,7 @@ type Model struct {
 	Logging   LoggingSection
 	Router    RouterSection
 	Bridge    InterfaceSection
+	Capture   CaptureSection // per-interface wire-capture (pcap) paths + snaplen; cross-cutting singleton
 	// Interfaces is the named interface namespace (§M11): NIC / serial / bridge
 	// entries a port references by name. A bridge is just one entry here, which
 	// generalises the single Bridge field — Bridge remains the DEFAULT interface a
@@ -49,6 +50,7 @@ func (m *Model) Clone() *Model {
 		Logging:   m.Logging,
 		Router:    m.Router.Clone(),
 		Bridge:    m.Bridge.Clone(),
+		Capture:   m.Capture.Clone(),
 		Sections:  make(map[string]Section, len(m.Sections)),
 		Lists:     make(map[string][]Section, len(m.Lists)),
 	}
@@ -430,6 +432,14 @@ type InterfaceSection struct {
 	Name string // namespace key the interface is referenced by ("eth0", "br-lan", "ttyUSB-attic"); "" = unset
 	Kind string // "" / "nic" / "serial" / "bridge" (see IfaceKind*); "" == nic
 	Addr string // nic: optional pinned address
+	// Backend selects the LINK IMPLEMENTATION used to open a kind=nic interface:
+	// "pcap" (libpcap/Npcap raw capture — the default and only backend wired today),
+	// "tap" (an L2 TAP virtual device), or "tun" (an L3 TUN device). It is meaningful
+	// only for nic interfaces; serial/bridge ignore it. Empty defaults to pcap (the
+	// historical behaviour). The cmd-edge opener dispatches on it; an unimplemented
+	// backend falls back to inert-but-routed, the same graceful degradation as a nil
+	// opener (see IfaceBackend*).
+	Backend string `toml:"backend"`
 
 	// Serial-kind parameters.
 	Device string // serial: OS device path ("COM3", "/dev/ttyUSB0")
@@ -437,6 +447,23 @@ type InterfaceSection struct {
 
 	// Bridge-kind parameters.
 	Members []string // bridge: the member interface names it aggregates
+}
+
+// NIC link-backend identifiers (InterfaceSection.Backend, kind=nic). pcap is the only
+// backend wired today; tap/tun are accepted in config and resolved by the cmd-edge
+// opener when their adapters land, falling back to inert until then.
+const (
+	IfaceBackendPcap = "pcap" // libpcap / Npcap raw capture (default)
+	IfaceBackendTap  = "tap"  // L2 TAP virtual device
+	IfaceBackendTun  = "tun"  // L3 TUN device
+)
+
+// EffectiveBackend returns the nic link backend, defaulting an empty Backend to pcap.
+func (s InterfaceSection) EffectiveBackend() string {
+	if s.Backend == "" {
+		return IfaceBackendPcap
+	}
+	return s.Backend
 }
 
 // EffectiveKind returns the interface's kind, defaulting an empty Kind to nic (the

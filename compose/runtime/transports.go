@@ -30,16 +30,21 @@ package runtime
 // identical but distinct interfaces, so neither package imports the other).
 
 import (
+	"github.com/ObsoleteMadness/ClassicStack/adapter/smbtcp"
 	mailslotwire "github.com/ObsoleteMadness/ClassicStack/core/protocol/mailslot"
 	ipxrouter "github.com/ObsoleteMadness/ClassicStack/core/router/ipx"
 	netbeuirouter "github.com/ObsoleteMadness/ClassicStack/core/router/netbeui"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
+	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	diagproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx/diag"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/browser"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/ipxdiag"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/ipxgw"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/macip"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/mailslot"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/messenger"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/nbp"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/netbios"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/smb"
 )
@@ -51,14 +56,25 @@ import (
 // nothing (the transports have nothing to feed); with NetBIOS but no SMB the session
 // engines run but drop session data after reassembly (no consumer), exactly the
 // graceful-degradation contract the seams already document.
-func crossWireTransports(comps map[string]component.Component) {
+func crossWireTransports(comps map[string]component.Component, m *config.Model) {
 	nb := netbiosService(comps)
 	sm := smbService(comps)
 
+	// Explicit transport bindings (§smb-transport-families / netbios-transport-bindings):
+	// the operator's SMB/NetBIOS config names which transport families to bind. An empty
+	// list binds every built transport (Binds returns true), so an unset section keeps
+	// the historical implicit behaviour. A family is wired only when the relevant service
+	// AND its config both allow it.
+	smbSec := smb.ServerSectionFromModel(m)
+	nbSec := netbios.SectionFromModel(m)
+
 	// The NetBEUI family and the connectionless-datagram (mailslot) path are
-	// NetBIOS-only: with no NetBIOS service there is nothing to carry them.
+	// NetBIOS-only: with no NetBIOS service there is nothing to carry them. NetBEUI is
+	// gated by the NetBIOS transport binding (NBF rides NetBEUI).
 	if nb != nil {
-		wireNetBEUI(nb, comps)
+		if nbSec.Binds(netbios.TransportNetBEUI) {
+			wireNetBEUI(nb, comps)
+		}
 		wireMailslot(nb, comps)
 		// Install SMB as the upper-layer session consumer: every circuit the NBF/NBIPX
 		// engines bring up routes its reassembled SMB messages here. Done once so a
@@ -71,9 +87,15 @@ func crossWireTransports(comps map[string]component.Component) {
 	// The IPX family carries TWO independent transports off one mini-router: NB-IPX
 	// session traffic (socket 0x0455, needs NetBIOS) and SMB direct-hosted-over-IPX
 	// (socket 0x0550, needs only SMB — NetBIOS-less, the "NWLink direct hosting"
-	// path). So the IPX mini-router is wired whenever an IPX port exists AND at least
-	// one of those consumers was built, independent of NetBIOS.
-	wireIPX(nb, sm, comps)
+	// path). Each leg is gated by the consumer's own transport binding: the NB-IPX leg
+	// by the NetBIOS ipx binding, the direct-hosted leg by the SMB ipx binding.
+	wireIPX(nb, sm, comps, nbSec.Binds(netbios.TransportIPX), smbSec.Binds(smb.TransportIPX))
+
+	// The TCP family (direct-hosted SMB over :445; NBT over :139) is a supervised
+	// adapter listener built inert in the registry; wire its SMB consumer + address
+	// here when SMB is present and the tcp binding is on. Direct-TCP needs only SMB
+	// (NetBIOS-less); NBT (gated by the SMB nbt binding) shares the same framing.
+	wireSMBTCP(sm, smbSec, comps)
 
 	// Browse-list provider (§3-ter, M8a compose wiring): when both SMB and the browser
 	// were built, install the browser as SMB's BrowseProvider so the IPC$ \PIPE\LANMAN
@@ -85,6 +107,31 @@ func crossWireTransports(comps map[string]component.Component) {
 		if br := browserService(comps); br != nil {
 			sm.SetBrowseProvider(smbBrowseBridge{br: br})
 		}
+	}
+
+	// MacIP gateway: inject the NBP name-information service so it can register its
+	// IPGATEWAY name (Macs discover the gateway via an NBP lookup). The registry builds
+	// MacIP before it can reach the NBP component, so the registration is wired here —
+	// the DDP-service analogue of installing SMB as the NetBIOS session consumer. The
+	// IP-side egress adapter, when one exists, is injected the same way; until then
+	// MacIP runs AppleTalk-only (assignment + discovery work, IP data does not).
+	wireMacIP(comps)
+}
+
+// wireMacIP injects the NBP service into the AppleTalk gateway services (MacIP's
+// IPGATEWAY name, IPXGW's "IPX Gateway" names) when NBP was built. The IPX mini-router
+// is handed to IPXGW separately in wireIPX (which owns that router). A no-op for a
+// gateway that was not built.
+func wireMacIP(comps map[string]component.Component) {
+	names := nbpService(comps)
+	if names == nil {
+		return
+	}
+	if mi := macipService(comps); mi != nil {
+		mi.SetNBP(names)
+	}
+	if gw := ipxgwService(comps); gw != nil {
+		gw.SetNBP(names)
 	}
 }
 
@@ -131,7 +178,19 @@ func wireNetBEUI(nb *netbios.Service, comps map[string]component.Component) {
 //     NetBIOS layer, so it is wired even in a NetBIOS-free build.
 //
 // With no IPX port, or with neither consumer, it does nothing (no router is built).
-func wireIPX(nb *netbios.Service, sm *smb.Service, comps map[string]component.Component) {
+// nbIPXBound / smbIPXBound gate the two IPX legs by the operator's transport bindings:
+// the NB-IPX session leg by NetBIOS's ipx binding, the direct-hosted-SMB leg by SMB's
+// ipx binding. A leg whose service is present but whose binding is off is not wired.
+func wireIPX(nb *netbios.Service, sm *smb.Service, comps map[string]component.Component, nbIPXBound, smbIPXBound bool) {
+	// Resolve the effective consumers after applying bindings: a service whose ipx
+	// binding is off contributes nothing to the IPX mini-router.
+	if nb != nil && !nbIPXBound {
+		nb = nil
+	}
+	if sm != nil && !smbIPXBound {
+		sm = nil
+	}
+
 	var ports []ipxrouter.Port
 	for _, c := range comps {
 		if p, ok := c.(ipxrouter.Port); ok {
@@ -155,6 +214,13 @@ func wireIPX(nb *netbios.Service, sm *smb.Service, comps map[string]component.Co
 		direct := sm.NewDirectIPX(r)
 		_ = r.RegisterSocket(smb.DirectSMBSocket, direct)
 	}
+	// The IPX gateway (MacIPX) forwards encapsulated IPX from MacIPX clients onto this
+	// same mini-router (and routes native IPX replies back over DDP). It is an AppleTalk
+	// DDP service, so its component lives under the router cross-wire; here we just hand
+	// it the mini-router. Without an IPX port it stays log-only (no router to forward to).
+	if gw := ipxgwService(comps); gw != nil {
+		gw.SetIPXRouter(r)
+	}
 	// The IPX Diagnostic Responder (IPXPING reachability, socket 0x0456) rides the
 	// same mini-router but needs neither NetBIOS nor SMB — it answers any station
 	// probing the segment. Wire it whenever the responder component was built and an
@@ -165,6 +231,46 @@ func wireIPX(nb *netbios.Service, sm *smb.Service, comps map[string]component.Co
 		rd.SetNode(r.Node())
 		_ = r.RegisterSocket(diagproto.Socket, rd)
 	}
+}
+
+// wireSMBTCP injects the SMB session consumer and listen address into the built
+// SMB-over-TCP transport when SMB is present and the tcp binding is on. The transport
+// is registered inert (no consumer); this is the analogue of installing SMB as the
+// NetBIOS session consumer, for the direct-TCP path. NBT (:139) shares the same
+// transport and framing; when only the nbt binding is on, the :139 address is used.
+// With no SMB service, or with both tcp+nbt bindings off, the transport stays inert.
+func wireSMBTCP(sm *smb.Service, smbSec *smb.ServerSection, comps map[string]component.Component) {
+	if sm == nil {
+		return
+	}
+	c, ok := comps[smbtcp.Name]
+	if !ok {
+		return // transport not built (smb tag without the adapter, or a minimal build)
+	}
+	tr, ok := c.(*smbtcp.Transport)
+	if !ok {
+		return
+	}
+
+	tcpOn := smbSec.Binds(smb.TransportTCP)
+	nbtOn := smbSec.Binds(smb.TransportNBT)
+	if !tcpOn && !nbtOn {
+		return // neither TCP transport requested
+	}
+	// Bind ONLY an explicitly configured address — never an implicit :445/:139, which
+	// Windows' native lanmanserver already owns and Unix guards as privileged. Prefer
+	// the direct-TCP address; use the NBT address when only nbt is bound. An empty
+	// address (the default) leaves the transport inert, so a config that lists the tcp
+	// binding but sets no tcp_addr does not collide with the OS SMB server.
+	addr := smbSec.DirectTCPAddr()
+	if addr == "" && nbtOn {
+		addr = smbSec.NBTListenAddr()
+	}
+	if addr == "" {
+		return // transport requested but no address configured — stay inert
+	}
+	tr.SetConsumer(smb.ConsumerAdapter{Service: sm})
+	tr.SetAddr(addr)
 }
 
 // ipxDiagResponder returns the built IPX Diagnostic Responder, or nil when none was
@@ -243,6 +349,36 @@ func netbiosService(comps map[string]component.Component) *netbios.Service {
 func smbService(comps map[string]component.Component) *smb.Service {
 	if c, ok := comps[smb.Name]; ok {
 		if s, ok := c.(*smb.Service); ok {
+			return s
+		}
+	}
+	return nil
+}
+
+// macipService returns the built MacIP gateway, or nil when none was built.
+func macipService(comps map[string]component.Component) *macip.Service {
+	if c, ok := comps[macip.Name]; ok {
+		if s, ok := c.(*macip.Service); ok {
+			return s
+		}
+	}
+	return nil
+}
+
+// nbpService returns the built NBP name-information service, or nil when none was built.
+func nbpService(comps map[string]component.Component) *nbp.Service {
+	if c, ok := comps[nbp.Name]; ok {
+		if s, ok := c.(*nbp.Service); ok {
+			return s
+		}
+	}
+	return nil
+}
+
+// ipxgwService returns the built IPX gateway, or nil when none was built.
+func ipxgwService(comps map[string]component.Component) *ipxgw.Service {
+	if c, ok := comps[ipxgw.Name]; ok {
+		if s, ok := c.(*ipxgw.Service); ok {
 			return s
 		}
 	}

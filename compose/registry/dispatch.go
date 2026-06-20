@@ -13,12 +13,20 @@ import (
 // interface and opens it through this. A nil ctx.Opener yields a nil opener, the
 // caller's signal to build the inert-but-routed form. iface is the resolved interface
 // NAME (the pcap opener takes a name).
-func nicLinkOpener(ctx *BuildContext, iface string) func() (link.FrameLink, error) {
+func nicLinkOpener(ctx *BuildContext, iface config.InterfaceSection) func() (link.FrameLink, error) {
 	if ctx.Opener == nil {
 		return nil
 	}
+	// Dispatch on the nic link backend (pcap/tap/tun). Only pcap is wired today; an
+	// unimplemented backend yields a nil opener (the inert-but-routed form), the same
+	// graceful degradation as a missing pcap backend, rather than a hard failure. When
+	// tap/tun adapters land they slot in here keyed off EffectiveBackend.
+	if iface.EffectiveBackend() != config.IfaceBackendPcap {
+		return nil
+	}
 	open := ctx.Opener
-	return func() (link.FrameLink, error) { return open(iface) }
+	name := iface.Name
+	return func() (link.FrameLink, error) { return open(name) }
 }
 
 // serialLinkOpener binds a serial interface (device path + baud) to a per-Start

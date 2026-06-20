@@ -32,8 +32,10 @@ import (
 	configuci "github.com/ObsoleteMadness/ClassicStack/adapter/config/uci"
 	controlhttp "github.com/ObsoleteMadness/ClassicStack/adapter/control/http"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/pcap"
+	adaptermetrics "github.com/ObsoleteMadness/ClassicStack/adapter/metrics"
 	adapterserial "github.com/ObsoleteMadness/ClassicStack/adapter/serial"
 	storefile "github.com/ObsoleteMadness/ClassicStack/adapter/store/file"
+	"github.com/ObsoleteMadness/ClassicStack/compose/diag"
 	"github.com/ObsoleteMadness/ClassicStack/compose/registry"
 	"github.com/ObsoleteMadness/ClassicStack/compose/runtime"
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
@@ -121,8 +123,10 @@ func Run(ctx context.Context, args []string, v Version) error {
 	// Build the supervised runtime. The pcap opener + serial opener are injected here
 	// so compose/runtime pulls in no cgo/libpcap; under the pcap tag they open real
 	// device links, otherwise their stubs return ErrUnavailable and ports come up
-	// inert-but-routed.
-	rt, err := runtime.Build(runtime.Options{Model: m, Telemetry: telemetry, Opener: pcapOpener, Serial: serialOpener})
+	// inert-but-routed. When [Capture] names a pcap file for an interface, the opener is
+	// wrapped so that interface's frames are tee'd to the file (link.Capture decorator).
+	opener := captureOpener(pcapOpener, &m.Capture)
+	rt, err := runtime.Build(runtime.Options{Model: m, Telemetry: telemetry, Opener: opener, Serial: serialOpener})
 	if err != nil {
 		return fmt.Errorf("build runtime: %w", err)
 	}
@@ -131,11 +135,22 @@ func Run(ctx context.Context, args []string, v Version) error {
 		return fmt.Errorf("start runtime: %w", err)
 	}
 
+	// Optional telemetry export sink: mirrors component stats into expvar for an
+	// external scrape (Prometheus / a Windows PerfMon HTTP collector). A no-op unless
+	// built with the `perfcounters` tag; it is just one more bus subscriber, so it
+	// neither perturbs the producers nor the HTTP/ubus front-ends.
+	metricsSink := adaptermetrics.New(telemetry)
+	metricsSink.Start()
+
 	// Web-admin control API (opt-in via -http): a control.Plane over the supervisor +
 	// the same Store/Codec, exposed through the new-ring HTTP control adapter.
 	var httpServer *controlhttp.Server
 	if *httpAddr != "" {
 		plane := control.New(rt.Supervisor(), codec, store, telemetry)
+		// Wire the real diagnostics probe surface (zone/routing-table reads) now that the
+		// router exists; replaces the core's "unavailable" default. A no-router build
+		// passes nil, which keeps the probes reporting ErrUnavailable.
+		plane.SetDiagnostics(diag.New(rt.Router()))
 		httpServer = controlhttp.NewServer(plane, *httpAddr)
 		if err := httpServer.Start(); err != nil {
 			_ = rt.Stop(context.Background())
@@ -146,6 +161,7 @@ func Run(ctx context.Context, args []string, v Version) error {
 
 	<-ctx.Done()
 
+	metricsSink.Stop()
 	if httpServer != nil {
 		httpServer.Stop()
 	}

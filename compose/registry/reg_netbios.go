@@ -9,6 +9,10 @@ import (
 )
 
 func init() {
+	// Register the NetBIOS singleton section (transport bindings + scope) so the codec
+	// round-trips it and the transport cross-wire can read which transports to bind.
+	netbios.RegisterSection()
+
 	Register(netbios.Name, func(ctx *BuildContext) (component.Component, error) {
 		m := ctx.Model
 		logger := log.New(netbios.Name, log.NewStderrSink(log.NewLevelVar(log.Info)))

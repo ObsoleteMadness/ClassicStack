@@ -84,6 +84,7 @@ type Service struct {
 	rtr router.ServiceRouter
 
 	mu        sync.Mutex
+	enabled   bool // configured-enabled flag (component.Enableable); set by the factory
 	running   bool
 	ipxRouter *routeripx.Router
 	clients   map[uint32]clientEntry  // keyed by (ddpNet<<8 | ddpNode)
@@ -155,6 +156,46 @@ func (s *Service) SetIPXRouter(r *routeripx.Router) {
 
 // Name returns the component name.
 func (s *Service) Name() string { return Name }
+
+// SetNBP installs the NBP name-information service after construction (the registry
+// builds IPXGW before it can reach the NBP component). Must be called before Start; a
+// nil service skips the "IPX Gateway" NBP registrations. Idempotent.
+func (s *Service) SetNBP(names *nbp.Service) {
+	s.mu.Lock()
+	s.nbp = names
+	s.mu.Unlock()
+}
+
+// SetEnabled records the configured-enabled flag (component.Enableable), set by the
+// compose factory from the section.
+func (s *Service) SetEnabled(enabled bool) {
+	s.mu.Lock()
+	s.enabled = enabled
+	s.mu.Unlock()
+}
+
+// Enabled reports the configured-enabled flag. A service built with no section defaults
+// to disabled.
+func (s *Service) Enabled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.enabled
+}
+
+// Kind labels IPXGW a gateway service for the dashboard (component.Describable).
+func (s *Service) Kind() string { return "gateway" }
+
+// Props surfaces the announced IPX network and whether an IPX mini-router is wired
+// (so an operator can see if IPX data forwarding is live vs log-only).
+func (s *Service) Props() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ipx := "log-only"
+	if s.ipxRouter != nil {
+		ipx = "wired"
+	}
+	return map[string]string{"ipx_network": formatIPXNetwork(s.cfg.IPXNetwork), "ipx_router": ipx}
+}
 
 // Socket reports the DDP socket the router dispatches to this service.
 func (s *Service) Socket() uint8 { return Socket }
@@ -486,5 +527,7 @@ var (
 	_ router.Service        = (*Service)(nil)
 	_ component.Component   = (*Service)(nil)
 	_ component.Statful     = (*Service)(nil)
+	_ component.Describable = (*Service)(nil)
+	_ component.Enableable  = (*Service)(nil)
 	_ routeripx.NodeHandler = (*Service)(nil)
 )

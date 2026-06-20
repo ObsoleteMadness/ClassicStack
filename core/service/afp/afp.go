@@ -465,6 +465,7 @@ func (s *Service) ReconcileVolumes(desired []VolumeSpec) error {
 		if err != nil {
 			return err
 		}
+		v.SetExtensionMap(spec.ExtMap) // default type/creator for files with no Finder info
 		out = append(out, v)
 	}
 	s.volumes = out

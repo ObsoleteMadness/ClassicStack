@@ -93,6 +93,7 @@ type Service struct {
 	pool *ipPool
 
 	mu      sync.Mutex
+	enabled bool // configured-enabled flag (component.Enableable); set by the factory
 	running bool
 	ch      chan item
 	stop    chan struct{}
@@ -131,8 +132,65 @@ func New(rtr router.ServiceRouter, names *nbp.Service, egress IPEgress, cfg Conf
 // Name returns the component name.
 func (s *Service) Name() string { return Name }
 
+// SetNBP installs the NBP name-information service used for the IPGATEWAY registration,
+// after construction. The compose cross-wire calls it once NBP is resolved (the
+// registry builds MacIP before it can reach the NBP component). Must be called before
+// Start; a nil service skips the registration. Idempotent.
+func (s *Service) SetNBP(names *nbp.Service) {
+	s.mu.Lock()
+	s.nbp = names
+	s.mu.Unlock()
+}
+
+// SetEgress installs the IP-side network seam after construction (the adapter that
+// moves IP packets to/from the physical network). Must be called before Start; a nil
+// egress leaves the service in AppleTalk-only mode (config/assignment work; IP data has
+// nowhere to go). Idempotent.
+func (s *Service) SetEgress(egress IPEgress) {
+	s.mu.Lock()
+	s.egress = egress
+	s.mu.Unlock()
+}
+
 // Socket returns the MacIP socket so the router dispatches MacIP datagrams here.
 func (s *Service) Socket() uint8 { return Socket }
+
+// SetEnabled records the configured-enabled flag (component.Enableable). The compose
+// factory sets it from the section; the dashboard shows Disabled rather than omitting
+// the gateway, and the supervisor can skip starting a disabled unit.
+func (s *Service) SetEnabled(enabled bool) {
+	s.mu.Lock()
+	s.enabled = enabled
+	s.mu.Unlock()
+}
+
+// Enabled reports the configured-enabled flag (component.Enableable). A service built
+// with no section defaults to disabled.
+func (s *Service) Enabled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.enabled
+}
+
+// Kind labels MacIP a gateway service for the dashboard (component.Describable).
+func (s *Service) Kind() string { return "gateway" }
+
+// Props surfaces the MacIP mode for the dashboard: whether NAT is enabled and whether
+// an IP egress is wired (so an operator can see if data transport is live vs
+// AppleTalk-only).
+func (s *Service) Props() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mode := "bridge"
+	if s.cfg.NATEnabled {
+		mode = "nat"
+	}
+	egress := "none (AppleTalk-only)"
+	if s.egress != nil {
+		egress = "wired"
+	}
+	return map[string]string{"mode": mode, "egress": egress}
+}
 
 // Start registers the NBP name, wires the egress inbound callback, and launches
 // the worker goroutines. Idempotent (§3).
@@ -434,7 +492,9 @@ func appendUint(dst []byte, v byte) []byte {
 
 // compile-time assertions.
 var (
-	_ router.Service      = (*Service)(nil)
-	_ component.Component = (*Service)(nil)
-	_ component.Statful   = (*Service)(nil)
+	_ router.Service        = (*Service)(nil)
+	_ component.Component   = (*Service)(nil)
+	_ component.Statful     = (*Service)(nil)
+	_ component.Describable = (*Service)(nil)
+	_ component.Enableable  = (*Service)(nil)
 )

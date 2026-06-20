@@ -17,9 +17,29 @@ type Component interface {
 // --- Optional capabilities. A component implements only those that apply; callers
 // --- discover them via type assertion. NEVER widen Component to include these.
 
-type Enableable interface{ Enabled() bool }           // configured-enabled (≠ running)
-type Bindable interface{ Binding() string }           // "eth0", ":548", "ipx:0550"
-type Statful interface{ Stats() Stats }               // point-in-time snapshot (§5)
+type Enableable interface{ Enabled() bool } // configured-enabled (≠ running)
+type Bindable interface{ Binding() string } // "eth0", ":548", "ipx:0550"
+type Statful interface{ Stats() Stats }     // point-in-time snapshot (§5)
+
+// StatsEmitter is the PUSH half of the stats contract (§5): a component that can report
+// a meaningful change immediately (a session opened, a lease assigned) accepts a sink
+// and calls it with a fresh snapshot when it wants, rather than waiting for the next
+// poll. The supervisor supplies the sink (a closure that wraps the snapshot in a
+// bus.StatSample and publishes it). Optional and complementary to Statful: a component
+// that only implements Statful is covered by the supervisor's periodic flush, which is
+// what keeps gauges (leases, sessions) fresh while idle; one that also implements
+// StatsEmitter additionally pushes on change for low-latency updates. A nil sink clears.
+type StatsEmitter interface{ SetStatsSink(func(Stats)) }
+
+// Describable lets a component surface dashboard metadata beyond its lifecycle: a
+// Kind label (e.g. "service", "port", "router") and free-form Props a UI renders as
+// key/value detail (bound transports, zones, share/volume counts). Optional, like the
+// other capabilities — the supervisor type-asserts it in Status() and leaves Kind ""
+// / Props nil for components that do not implement it.
+type Describable interface {
+	Kind() string
+	Props() map[string]string
+}
 type Bridged interface{ SetBridgeMode(string) error } // §2
 type Metered interface {
 	SetTrafficObserver(func(rxBytes, txBytes int))

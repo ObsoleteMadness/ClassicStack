@@ -54,6 +54,10 @@ type Supervisor struct {
 	nodes     map[string]*node
 	order     []string       // insertion order, the tie-breaker in topo sort
 	users     auth.UserStore // wired user store; nil = no user administration available
+
+	statsMu   sync.Mutex
+	statsStop chan struct{} // closed to stop the periodic stats flush; nil when not running
+	statsWG   sync.WaitGroup
 }
 
 // compile-time assertions: Supervisor satisfies the control plane's lifecycle
@@ -421,9 +425,50 @@ func (s *Supervisor) Reconfigure(ctx context.Context, name string, section confi
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if section != nil {
-		s.model.Set(section)
+		s.setSectionLocked(section)
 	}
 	return s.reconfigureLocked(ctx, name, section)
+}
+
+// setSectionLocked installs a section into the model on the right map: a repeated
+// (NamedSection) instance goes to Model.Lists via AddInstance (replacing the same
+// InstanceName), a singleton to Model.Sections via Set. Caller holds mu. Without the
+// NamedSection branch a reconfigure of one volume/share would mis-write it as a
+// singleton and never reach the owning service's instance set.
+func (s *Supervisor) setSectionLocked(section config.Section) {
+	if ns, ok := section.(config.NamedSection); ok {
+		s.model.AddInstance(ns)
+		return
+	}
+	s.model.Set(section)
+}
+
+// AddInstance stages a new (or replacement) repeated-section instance — an AFP volume,
+// an SMB share — into the model under its schema key, then reconfigures the owning
+// service component so it reconciles its live instance set from the model (no restart
+// when the owner is Configurable; §11b). owner is the component that consumes the list
+// (e.g. "AFP" for "AFPVolumes"). The UI supplies it; the supervisor stays free of
+// section-key→owner knowledge.
+func (s *Supervisor) AddInstance(ctx context.Context, owner string, section config.NamedSection) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.model.AddInstance(section)
+	// Notify the owner with nil so a Configurable owner re-resolves the whole set from
+	// the model (the volume/share reconcile path), matching the dependent-cascade
+	// convention in reconfigureLocked.
+	return s.reconfigureLocked(ctx, owner, nil)
+}
+
+// RemoveInstance drops the named repeated-section instance under key from the model,
+// then reconfigures the owning component so it removes the live volume/share. A no-op
+// (nil) if the instance was not present.
+func (s *Supervisor) RemoveInstance(ctx context.Context, owner, key, instanceName string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.model.RemoveInstance(key, instanceName) {
+		return nil
+	}
+	return s.reconfigureLocked(ctx, owner, nil)
 }
 
 // reconfigureLocked is the addressed reconfigure for one component plus the dependent cascade.
@@ -514,6 +559,10 @@ func (s *Supervisor) Status() []control.Unit {
 		}
 		if b, ok := n.c.(component.Bindable); ok {
 			u.Binding = b.Binding()
+		}
+		if d, ok := n.c.(component.Describable); ok {
+			u.Kind = d.Kind()
+			u.Props = d.Props()
 		}
 		out = append(out, u)
 	}

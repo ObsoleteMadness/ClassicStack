@@ -234,6 +234,33 @@ func (s *Server) handleConn(conn net.Conn) {
 			} else {
 				methodErr = err
 			}
+		case "add_instance":
+			var args struct {
+				Owner   string
+				Key     string
+				Section json.RawMessage
+			}
+			if err := json.Unmarshal(req.Params, &args); err != nil {
+				methodErr = err
+			} else if schema, ok := config.SchemaFor(args.Key); !ok {
+				methodErr = fmt.Errorf("unknown section key: %s", args.Key)
+			} else {
+				sec := schema.New()
+				if err := json.Unmarshal(args.Section, sec); err != nil {
+					methodErr = err
+				} else if ns, ok := sec.(config.NamedSection); !ok {
+					methodErr = fmt.Errorf("section is not a named instance: %s", args.Key)
+				} else {
+					methodErr = s.plane.AddInstance(ctx, args.Owner, ns)
+				}
+			}
+		case "remove_instance":
+			var args struct{ Owner, Key, Name string }
+			if err := json.Unmarshal(req.Params, &args); err != nil {
+				methodErr = err
+			} else {
+				methodErr = s.plane.RemoveInstance(ctx, args.Owner, args.Key, args.Name)
+			}
 		case "config":
 			m, err := s.plane.Config()
 			if err != nil {
@@ -390,6 +417,27 @@ func (c *AdapterClient) Reconfigure(ctx context.Context, name string, section co
 		Section json.RawMessage `json:"section"`
 	}{Name: name, Section: secBytes}
 	return c.call("reconfigure", args, nil)
+}
+
+// AddInstance adds a repeated-section instance (an AFP volume / SMB share).
+func (c *AdapterClient) AddInstance(ctx context.Context, owner string, section config.NamedSection) error {
+	_ = ctx
+	secBytes, _ := json.Marshal(section)
+	return c.call("add_instance", struct {
+		Owner   string          `json:"owner"`
+		Key     string          `json:"key"`
+		Section json.RawMessage `json:"section"`
+	}{Owner: owner, Key: section.Key(), Section: secBytes}, nil)
+}
+
+// RemoveInstance drops a named repeated-section instance.
+func (c *AdapterClient) RemoveInstance(ctx context.Context, owner, key, instanceName string) error {
+	_ = ctx
+	return c.call("remove_instance", struct {
+		Owner string `json:"owner"`
+		Key   string `json:"key"`
+		Name  string `json:"name"`
+	}{Owner: owner, Key: key, Name: instanceName}, nil)
 }
 
 // Start starts a component.

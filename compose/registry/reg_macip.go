@@ -3,32 +3,40 @@
 package registry
 
 import (
-	"context"
-
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/macip"
 )
 
-// macipPlaceholder is an inert stand-in the registry returns for the MacIP
-// service. The real macip.Service (M5) needs its AppleTalk router, NBP service,
-// and IP-side egress injected — dependencies the registry factory does not have
-// in hand. Wiring the real service into the supervisor is the compose cutover
-// (M8/M10); until then the registry advertises the name with this no-op so the
-// stack still boots. Mirrors how M4 left the router's DDP services unattached.
-type macipPlaceholder struct{ running bool }
-
-func (p *macipPlaceholder) Name() string                { return macip.Name }
-func (p *macipPlaceholder) Start(context.Context) error { p.running = true; return nil }
-func (p *macipPlaceholder) Stop(context.Context) error  { p.running = false; return nil }
-
 func init() {
+	// Register the MacIP singleton section (IP-side identity + gateway mode) so the
+	// codec round-trips it and the factory can read the operator's config.
+	macip.RegisterSection()
+
+	// Build the REAL MacIP gateway (no longer a placeholder): it rides the shared
+	// AppleTalk router (ctx.Router) for its ATP/DDP socket-72 protocol, and is built
+	// with a nil NBP + nil IP egress here — the compose transport cross-wire injects
+	// the NBP service (for the IPGATEWAY registration) once it is resolved (wireMacIP),
+	// and an IP-egress adapter when one is configured. With egress nil the gateway runs
+	// in AppleTalk-only mode: address assignment + config replies work and the gateway
+	// is NBP-discoverable, but IP DATA has nowhere to go until an egress lands. A
+	// disabled or absent section builds nothing.
 	Register(macip.Name, func(ctx *BuildContext) (component.Component, error) {
-		// Still a placeholder: the real macip.Service needs its NBP service and
-		// IP-side egress injected too (seams not yet in the BuildContext) — having
-		// the router alone is not enough. Building it for real is a follow-on once
-		// those seams land; until then the name boots with this no-op.
-		return &macipPlaceholder{}, nil
+		sec := macip.SectionFromModel(ctx.Model)
+		cfg := macip.Config{}
+		enabled := false
+		if sec != nil {
+			cfg = sec.ToConfig()
+			enabled = sec.Enabled
+		}
+		logger := log.New(macip.Name, log.NewStderrSink(log.NewLevelVar(log.Info)))
+		// Always build a valid component (the conformance contract); routerFor supplies
+		// an on-demand router when ctx.Router is nil (a standalone Build / the harness).
+		// The Enabled flag rides on the service (component.Enableable) so a disabled
+		// section shows "Disabled" on the dashboard rather than being absent, and the
+		// supervisor's enable-aware start can skip it.
+		svc := macip.New(routerFor(ctx), nil, nil, cfg, logger)
+		svc.SetEnabled(enabled)
+		return svc, nil
 	})
 }
-
-var _ component.Component = (*macipPlaceholder)(nil)

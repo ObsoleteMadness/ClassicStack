@@ -24,6 +24,8 @@ type Client interface {
 	Config() (*config.Model, error)
 	Status() ([]control.Unit, error)
 	Reconfigure(ctx context.Context, name string, section config.Section) error
+	AddInstance(ctx context.Context, owner string, section config.NamedSection) error
+	RemoveInstance(ctx context.Context, owner, key, instanceName string) error
 	Save(ctx context.Context) (revision string, err error)
 	Start(ctx context.Context, name string) error
 	Stop(ctx context.Context, name string) error
@@ -88,6 +90,17 @@ func (a *Adapter) RemoveUser(name string) error { return a.plane.RemoveUser(name
 // Reconfigure applies a new section to a named component.
 func (a *Adapter) Reconfigure(ctx context.Context, name string, section config.Section) error {
 	return a.plane.Reconfigure(ctx, name, section)
+}
+
+// AddInstance stages a new repeated-section instance (an AFP volume / SMB share) and
+// reconciles the owning service.
+func (a *Adapter) AddInstance(ctx context.Context, owner string, section config.NamedSection) error {
+	return a.plane.AddInstance(ctx, owner, section)
+}
+
+// RemoveInstance drops a named repeated-section instance and reconciles the owner.
+func (a *Adapter) RemoveInstance(ctx context.Context, owner, key, instanceName string) error {
+	return a.plane.RemoveInstance(ctx, owner, key, instanceName)
 }
 
 // Start starts a named component.

@@ -19,6 +19,14 @@ var (
 type Plane interface {
 	Config() (*config.Model, error)
 	Reconfigure(ctx context.Context, name string, section config.Section) error
+	// AddInstance stages a new/replacement repeated-section instance (an AFP volume, an
+	// SMB share) under its schema key and reconciles the owning service so it serves it
+	// live. RemoveInstance drops the named instance and reconciles the owner. owner is
+	// the component that consumes the list ("AFP" for "AFPVolumes", "SMB" for "SMBShares").
+	// These are the create/delete half of repeated-section config; an in-place edit of an
+	// existing instance rides Reconfigure.
+	AddInstance(ctx context.Context, owner string, section config.NamedSection) error
+	RemoveInstance(ctx context.Context, owner, key, instanceName string) error
 	Save(ctx context.Context) (revision string, err error)
 
 	Start(ctx context.Context, name string) error
@@ -34,6 +42,11 @@ type Plane interface {
 	// schema half of ListFSTypes (which returns only the names).
 	ParamsFor(fsType string) []ParamInfo
 	Diagnostics() Diagnostics
+	// SetDiagnostics installs a real diagnostics probe surface (replacing the default
+	// "unavailable" one). The cmd/compose edge wires it after the runtime is built, when
+	// the router (the probe's data source) exists — core ships only the unavailable
+	// default, keeping core/control free of router knowledge. A nil impl is ignored.
+	SetDiagnostics(d Diagnostics)
 
 	// User administration (the web UI's user CRUD). Users live in the auth store,
 	// not the config model, so these are a surface of their own rather than config
@@ -106,6 +119,8 @@ type ParamInfo struct {
 type Supervisor interface {
 	Model() *config.Model
 	Reconfigure(ctx context.Context, name string, section config.Section) error
+	AddInstance(ctx context.Context, owner string, section config.NamedSection) error
+	RemoveInstance(ctx context.Context, owner, key, instanceName string) error
 	Start(ctx context.Context, name string) error
 	Stop(ctx context.Context, name string) error
 	Restart(ctx context.Context, name string) error
@@ -186,6 +201,26 @@ func (p *plane) unmaskAgainstLive(name string, section config.Section) config.Se
 	return sm.Unmask(prev)
 }
 
+// AddInstance unmasks the inbound instance against any same-named live instance (so a
+// re-added share keeps an unchanged stored secret) and delegates to the supervisor,
+// which stages it and reconciles the owner.
+func (p *plane) AddInstance(ctx context.Context, owner string, section config.NamedSection) error {
+	unmasked := p.unmaskAgainstLive(section.Key(), section)
+	ns, ok := unmasked.(config.NamedSection)
+	if !ok {
+		// SecretMasker.Unmask must return the same concrete type; defensively keep the
+		// original named section if a masker ever returns a non-named clone.
+		ns = section
+	}
+	return p.sup.AddInstance(ctx, owner, ns)
+}
+
+// RemoveInstance deletes the named instance and reconciles the owner. No secret
+// handling: a delete carries no values.
+func (p *plane) RemoveInstance(ctx context.Context, owner, key, instanceName string) error {
+	return p.sup.RemoveInstance(ctx, owner, key, instanceName)
+}
+
 func (p *plane) Save(ctx context.Context) (revision string, err error) {
 	_ = ctx
 	return p.persist()
@@ -256,6 +291,14 @@ func (p *plane) Status() []Unit                           { return p.sup.Status(
 func (p *plane) ListInterfaces() ([]InterfaceInfo, error) { return p.sup.ListInterfaces() }
 func (p *plane) ListFSTypes() []string                    { return p.sup.ListFSTypes() }
 func (p *plane) Diagnostics() Diagnostics                 { return p.diag }
+
+// SetDiagnostics installs a real diagnostics impl (nil is ignored, keeping the
+// unavailable default).
+func (p *plane) SetDiagnostics(d Diagnostics) {
+	if d != nil {
+		p.diag = d
+	}
+}
 
 // ParamsFor returns the config-param schema for one fs_type as JSON-friendly
 // ParamInfo rows, read straight from the fs factory registry (a pure lookup needing

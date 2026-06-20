@@ -38,7 +38,7 @@ func init() {
 		// nil per-Start opener → the inert-but-routed form, the same graceful
 		// degradation as before: the port satisfies the lifecycle and is attached to
 		// the router, but moves no frames until a backend exists.
-		opener := nicLinkOpener(ctx, ctx.Model.EffectiveInterfaceFor(sec).Name)
+		opener := nicLinkOpener(ctx, ctx.Model.EffectiveInterfaceFor(sec))
 		if opener == nil {
 			return ethertalk.NewInstance(sec, nil, nil, ctx.Router, logger)
 		}

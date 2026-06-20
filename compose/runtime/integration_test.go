@@ -116,7 +116,7 @@ func TestIntegration_NetBEUICallOverInmemLink(t *testing.T) {
 
 	// The real cross-wire: builds the NetBEUI mini-router, attaches the port, and
 	// registers the NBF engine for CLASSICSTACK.
-	crossWireTransports(comps)
+	crossWireTransports(comps, nil)
 
 	ctx := context.Background()
 	if err := comp.Start(ctx); err != nil {
@@ -223,7 +223,7 @@ func TestIntegration_DirectIPXNegotiateOverInmemLink(t *testing.T) {
 		smb.Name:     sm,
 		portipx.Name: comp,
 	}
-	crossWireTransports(comps)
+	crossWireTransports(comps, nil)
 
 	ctx := context.Background()
 	if err := comp.Start(ctx); err != nil {

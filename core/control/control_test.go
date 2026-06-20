@@ -32,6 +32,24 @@ func (s *fakeSupervisor) Reconfigure(_ context.Context, name string, section con
 	return nil
 }
 
+func (s *fakeSupervisor) AddInstance(_ context.Context, owner string, section config.NamedSection) error {
+	s.lastName = owner
+	s.lastSetKey = section.Key()
+	if s.model != nil {
+		s.model.AddInstance(section)
+	}
+	return nil
+}
+
+func (s *fakeSupervisor) RemoveInstance(_ context.Context, owner, key, instanceName string) error {
+	s.lastName = owner
+	s.lastSetKey = key
+	if s.model != nil {
+		s.model.RemoveInstance(key, instanceName)
+	}
+	return nil
+}
+
 func (s *fakeSupervisor) Start(context.Context, string) error   { return nil }
 func (s *fakeSupervisor) Stop(context.Context, string) error    { return nil }
 func (s *fakeSupervisor) Restart(context.Context, string) error { return nil }

@@ -52,6 +52,23 @@ var stubNames = map[string]bool{
 var hardDeps = map[string][]string{
 	"AFP": {"Router"},
 	"SMB": {"NetBEUI"},
+	// The SMB-over-TCP listener drives the SMB service's session consumer, so SMB must
+	// be running before it accepts connections (and stop after it). Name matches
+	// smbtcp.Name; the edge drops if SMB-TCP was not built.
+	"SMB-TCP": {"SMB"},
+	// The core DDP router services ride the shared router: they must start after it (so
+	// their socket registration + table access has a live router) and stop before it.
+	// Names match the registry/component names (rtmp.RespondingName etc.); only edges
+	// whose both ends are built take effect, so a no-router build drops these silently.
+	"RTMP": {"Router"},
+	"ZIP":  {"Router"},
+	"NBP":  {"Router"},
+	"AEP":  {"Router"},
+	// MacIP is a DDP service (socket 72) and registers its IPGATEWAY name via NBP, so
+	// it starts after both the router and NBP and stops before them.
+	"MacIP": {"Router", "NBP"},
+	// IPXGW (MacIPX, socket 78) registers its "IPX Gateway" names via NBP — same edges.
+	"IPXGW": {"Router", "NBP"},
 }
 
 // componentSource enumerates and builds the components a Runtime assembles. The
@@ -218,7 +235,7 @@ func Build(opts Options) (*Runtime, error) {
 	// these mini-routers have no lifecycle of their own (the ports own start/stop),
 	// so they are built here rather than supervised. A build without the NetBIOS
 	// service is a no-op.
-	crossWireTransports(comps)
+	crossWireTransports(comps, opts.Model)
 
 	// Second pass: register with the supervisor under filtered edges (only edges
 	// whose dependency is also built).
@@ -325,6 +342,10 @@ func (r *Runtime) Start(ctx context.Context) error {
 			}
 		}
 	}
+	// Begin the telemetry stats flush once the stack is up: it polls every Statful
+	// component and wires push sinks, feeding the compose/stats rate collector and the
+	// control plane's SSE stream (§5). A nil bus makes this a no-op.
+	r.sup.StartStatsFlush(supervisor.DefaultStatsInterval)
 	return nil
 }
 
@@ -332,6 +353,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 // whole stack down in reverse dependency order. Detach is best-effort — a member
 // already withdrawn (e.g. by an individual Stop) must not block shutdown.
 func (r *Runtime) Stop(ctx context.Context) error {
+	r.sup.StopStatsFlush()
 	if r.rtr != nil {
 		for _, p := range r.members {
 			_ = r.rtr.Detach(p)
@@ -346,6 +368,10 @@ func (r *Runtime) Supervisor() *supervisor.Supervisor { return r.sup }
 
 // Model returns the shared config model (the control plane reads/edits it).
 func (r *Runtime) Model() *config.Model { return r.model }
+
+// Router returns the shared AppleTalk router (nil when none was built). The cmd edge
+// uses it to wire the real diagnostics probe surface (zone/routing-table reads).
+func (r *Runtime) Router() *router.RouterImpl { return r.rtr }
 
 // Built returns the names of the components actually constructed, in build order
 // (diagnostics / startup logging).

@@ -3,6 +3,8 @@
 package registry
 
 import (
+	"os"
+
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
@@ -18,14 +20,50 @@ func init() {
 	Register(afp.Name, func(ctx *BuildContext) (component.Component, error) {
 		m := ctx.Model
 		logger := log.New(afp.Name, log.NewStderrSink(log.NewLevelVar(log.Info)))
+		// extMapCache memoises parsed extension maps by file path so several volumes
+		// sharing one extmap file (the common case) read+parse it once per resolve. A
+		// bad/missing file logs and yields no map (defaulting simply does not apply) —
+		// capture-style best-effort, never failing the volume build.
+		extMapFor := func(path string) *afp.ExtensionMap {
+			if path == "" {
+				return nil
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				logger.Log(log.Warn, "AFP extension map unreadable; type/creator defaulting disabled for volumes using it",
+					log.Str("path", path), log.Str("error", err.Error()))
+				return nil
+			}
+			em, err := afp.ParseExtensionMap(data)
+			if err != nil {
+				logger.Log(log.Warn, "AFP extension map invalid; type/creator defaulting disabled",
+					log.Str("path", path), log.Str("error", err.Error()))
+				return nil
+			}
+			return em
+		}
 		// volSpecsFromModel maps the configured volume sections to VolumeSpecs with
-		// id 1..N in registration order. Shared by the initial build and the
-		// hot-apply resolver so both see one definition of "the desired set".
+		// id 1..N in registration order, attaching each volume's parsed extension map
+		// (read from its ExtMapPath at this compose edge — core does no config file
+		// I/O). Shared by the initial build and the hot-apply resolver so both see one
+		// definition of "the desired set".
 		volSpecsFromModel := func(m *config.Model) []afp.VolumeSpec {
 			specs := afp.SpecsFromModel(m)
+			secs := afp.VolumesFromModel(m)
+			cache := map[string]*afp.ExtensionMap{}
 			out := make([]afp.VolumeSpec, 0, len(specs))
 			for i, spec := range specs {
-				out = append(out, afp.VolumeSpec{ID: uint16(i + 1), Name: spec.Name, Share: spec})
+				vs := afp.VolumeSpec{ID: uint16(i + 1), Name: spec.Name, Share: spec}
+				if i < len(secs) {
+					p := secs[i].ExtMapPath
+					em, ok := cache[p]
+					if !ok {
+						em = extMapFor(p)
+						cache[p] = em
+					}
+					vs.ExtMap = em
+				}
+				out = append(out, vs)
 			}
 			return out
 		}

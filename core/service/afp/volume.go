@@ -29,7 +29,13 @@ type Volume struct {
 
 	dtOnce sync.Once
 	dt     *desktopDB // lazily-built Desktop database (icons + APPL mappings)
+
+	extMap *ExtensionMap // default type/creator by extension; nil = none
 }
+
+// SetExtensionMap installs the extension→type/creator map this volume consults to
+// default Finder info for files that have none stored. A nil map disables defaulting.
+func (v *Volume) SetExtensionMap(m *ExtensionMap) { v.extMap = m }
 
 // VolumeSpec names a share and the seam components to build it from. It mirrors
 // fs.ShareSpec plus the AFP-facing volume id/name; the service turns each spec
@@ -38,6 +44,10 @@ type VolumeSpec struct {
 	ID    uint16
 	Name  string
 	Share fs.ShareSpec
+	// ExtMap is the optional extension→type/creator default map the volume consults for
+	// files with no stored Finder info. Built by the compose/cmd edge (which reads the
+	// configured ExtMapPath file); nil = no defaulting.
+	ExtMap *ExtensionMap
 }
 
 // NewVolume builds one Volume from a spec with no FS-mutation bus (the bus-less
@@ -210,10 +220,17 @@ func (v *Volume) ForkLen(path string, fork fs.ForkType) (int64, error) {
 // zero bytes — the AFP convention for "no Finder info yet".
 func (v *Volume) FinderInfo(path string) (info [32]byte, ok bool) {
 	fi, present, err := v.FS().ReadFinderInfo(path)
-	if err != nil || !present {
-		return [32]byte{}, false
+	if err == nil && present {
+		return fi, true
 	}
-	return fi, true
+	// No stored Finder info: fall back to the extension map's default type/creator
+	// (e.g. a `.txt` → TEXT/ttxt) so a file copied in without classic metadata still
+	// opens with the right application on the Mac. A path with no extension or no
+	// matching entry stays "no Finder info" (32 zero bytes), the prior behaviour.
+	if mp, hit := v.extMap.Lookup(path); hit {
+		return mp.FinderInfo(), true
+	}
+	return [32]byte{}, false
 }
 
 // ShortName returns the volume's 8.3-style short name for a path's final

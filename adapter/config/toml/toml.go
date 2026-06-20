@@ -33,6 +33,7 @@ type wellKnown struct {
 	Logging   config.LoggingSection   `toml:"logging"`
 	Router    config.RouterSection    `toml:"router"`
 	Bridge    config.InterfaceSection `toml:"bridge"`
+	Capture   config.CaptureSection   `toml:"capture"`
 	// Interfaces is the [[interface]] array-of-tables: the named interface
 	// namespace (§M11). Marshal builds it separately (sorted) so this field is read
 	// only on Unmarshal.
@@ -53,6 +54,11 @@ func (c *Codec) Marshal(m *config.Model) ([]byte, error) {
 	// no empty credential block (and first-run detection stays unambiguous).
 	if m.AdminAuth.Configured() {
 		top["adminauth"] = m.AdminAuth
+	}
+	// Only emit [capture] when something is configured, so a default server.toml stays
+	// free of an empty block.
+	if m.Capture.Any() || m.Capture.Snaplen != 0 {
+		top["capture"] = m.Capture
 	}
 	// The named interface namespace (§M11) renders as an array-of-tables under
 	// [[interface]], one table per entry, sorted by name for deterministic output.
@@ -96,6 +102,7 @@ func (c *Codec) Unmarshal(data []byte, m *config.Model) error {
 	m.Logging = wk.Logging
 	m.Router = wk.Router
 	m.Bridge = normalizeIface(wk.Bridge)
+	m.Capture = wk.Capture
 	for _, iface := range wk.Interfaces {
 		m.SetInterface(normalizeIface(iface))
 	}

@@ -9,11 +9,18 @@
 <body>
   <header>
     <h1>ClassicStack</h1>
+    <nav id="tabs" class="hidden">
+      <button class="tab active" data-tab="dashboard">Dashboard</button>
+      <button class="tab" data-tab="config">Configuration</button>
+      <button class="tab" data-tab="diagnostics">Diagnostics</button>
+      <button class="tab" data-tab="users">Users</button>
+      <button class="tab" data-tab="logs">Logs</button>
+    </nav>
     <span id="conn" class="badge">…</span>
   </header>
 
-  <!-- The app is a set of native custom elements; cs-app swaps the active view
-       (setup / dashboard) based on the server's first-run gate. No framework. -->
+  <!-- cs-app is the root custom element. It probes the first-run gate and either
+       shows the setup form or mounts the tabbed admin shell. No framework. -->
   <cs-app></cs-app>
 
   <script src="app.js" type="module"></script>

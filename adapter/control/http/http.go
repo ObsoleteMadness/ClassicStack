@@ -76,6 +76,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/list_interfaces", s.handleListInterfaces)
 	mux.HandleFunc("/list_zones", s.handleListZones)
 	mux.HandleFunc("/reconfigure", s.handleReconfigure)
+	mux.HandleFunc("/add_instance", s.handleAddInstance)
+	mux.HandleFunc("/remove_instance", s.handleRemoveInstance)
 	mux.HandleFunc("/users", s.handleUsers)
 	mux.HandleFunc("/set_user", s.handleSetUser)
 	mux.HandleFunc("/set_user_disabled", s.handleSetUserDisabled)
@@ -233,6 +235,71 @@ func (s *Server) handleReconfigure(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.plane.Reconfigure(r.Context(), body.Name, typedSec); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleAddInstance stages a new repeated-section instance (an AFP volume / SMB share)
+// and reconciles the owning service. The body is {owner, key, section}: owner is the
+// component that consumes the list ("AFP"/"SMB"), key is the schema key the section is
+// registered under ("AFPVolumes"/"SMBShares"), section is the instance. The section is
+// unmarshalled through the schema registry (like handleReconfigure) and must be a
+// NamedSection.
+func (s *Server) handleAddInstance(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Owner   string          `json:"owner"`
+		Key     string          `json:"key"`
+		Section json.RawMessage `json:"section"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	schema, ok := config.SchemaFor(body.Key)
+	if !ok {
+		http.Error(w, "unknown section key: "+body.Key, http.StatusBadRequest)
+		return
+	}
+	sec := schema.New()
+	if err := json.Unmarshal(body.Section, sec); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	ns, ok := sec.(config.NamedSection)
+	if !ok {
+		http.Error(w, "section is not a repeated (named) instance: "+body.Key, http.StatusBadRequest)
+		return
+	}
+	if err := s.plane.AddInstance(r.Context(), body.Owner, ns); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleRemoveInstance drops a named instance and reconciles the owner. Body is
+// {owner, key, name}.
+func (s *Server) handleRemoveInstance(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Owner string `json:"owner"`
+		Key   string `json:"key"`
+		Name  string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.plane.RemoveInstance(r.Context(), body.Owner, body.Key, body.Name); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -518,6 +585,26 @@ func (c *AdapterClient) Reconfigure(ctx context.Context, name string, section co
 		Section json.RawMessage `json:"section"`
 	}{Name: name, Section: secBytes}
 	return c.post("/reconfigure", body)
+}
+
+// AddInstance adds a repeated-section instance (an AFP volume / SMB share).
+func (c *AdapterClient) AddInstance(ctx context.Context, owner string, section config.NamedSection) error {
+	secBytes, _ := json.Marshal(section)
+	body := struct {
+		Owner   string          `json:"owner"`
+		Key     string          `json:"key"`
+		Section json.RawMessage `json:"section"`
+	}{Owner: owner, Key: section.Key(), Section: secBytes}
+	return c.post("/add_instance", body)
+}
+
+// RemoveInstance drops a named repeated-section instance.
+func (c *AdapterClient) RemoveInstance(ctx context.Context, owner, key, instanceName string) error {
+	return c.post("/remove_instance", struct {
+		Owner string `json:"owner"`
+		Key   string `json:"key"`
+		Name  string `json:"name"`
+	}{Owner: owner, Key: key, Name: instanceName})
 }
 
 // Start starts component.

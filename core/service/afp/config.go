@@ -48,6 +48,12 @@ type VolumeSection struct {
 	AllowedUsers []string `toml:"allowed_users"`
 	// Options carries backend-specific params as "key=value" entries → ShareSpec.Extra.
 	Options []string `toml:"options"`
+	// ExtMapPath names a Netatalk-style extension→type/creator map file the volume
+	// consults to DEFAULT Finder type/creator for files with no stored classic
+	// metadata. Empty = no defaulting (a file without stored Finder info reads as 32
+	// zero bytes). The file is read at the cmd/compose edge (core does no file I/O for
+	// config) and parsed via afp.ParseExtensionMap.
+	ExtMapPath string `toml:"extmap_path"`
 }
 
 // compile-time assertions: *VolumeSection is a NamedSection and a SecretMasker.
@@ -161,6 +167,23 @@ func SpecsFromModel(m *config.Model) []fs.ShareSpec {
 	for _, sec := range list {
 		if vs, ok := sec.(*VolumeSection); ok {
 			out = append(out, vs.Spec())
+		}
+	}
+	return out
+}
+
+// VolumesFromModel returns the configured AFP volume SECTIONS (not specs), in
+// registration order, so a caller that needs section-level fields the fs.ShareSpec
+// does not carry — chiefly ExtMapPath — can read them. Returns nil when none.
+func VolumesFromModel(m *config.Model) []*VolumeSection {
+	if m == nil {
+		return nil
+	}
+	list := m.List(VolumesKey)
+	out := make([]*VolumeSection, 0, len(list))
+	for _, sec := range list {
+		if vs, ok := sec.(*VolumeSection); ok {
+			out = append(out, vs)
 		}
 	}
 	return out
