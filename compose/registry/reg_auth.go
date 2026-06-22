@@ -23,15 +23,18 @@ func init() {
 	// Register the Auth config section so codecs round-trip it. Kept here (not in
 	// an auth-package init) so the section exists exactly when a file service does.
 	authsection.Register()
+	// Install the user-store constructor into the always-compiled registry hook, so
+	// BuildUserStore returns a real store exactly in builds that have a file service
+	// (afp||smb||all) and (nil,nil) otherwise.
+	userStoreBuilder = buildUserStore
 }
 
-// BuildUserStore constructs the configured user store from the model's Auth
+// buildUserStore constructs the configured user store from the model's Auth
 // section. Only the built-in "local" file-backed store ships today; an unknown
-// backend falls back to local (the compose root logs the substitution, mirroring
-// the registry's "requested but not built" handling). The returned store is an
-// auth.UserStore — a full management surface (the web UI's user CRUD) and the
-// Authenticator the AFP/SMB login paths consult.
-func BuildUserStore(m *config.Model) (auth.UserStore, error) {
+// backend falls back to local (mirroring the registry's "requested but not built"
+// handling). The returned store is an auth.UserStore — a full management surface (the
+// web UI's user CRUD) and the Authenticator the AFP/SMB login paths consult.
+func buildUserStore(m *config.Model) (auth.UserStore, error) {
 	sec := authsection.SectionFromModel(m)
 	switch sec.EffectiveBackend() {
 	case authsection.BackendLocal:

@@ -5,6 +5,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/ObsoleteMadness/ClassicStack/core/auth"
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
@@ -12,6 +13,25 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/port"
 	"github.com/ObsoleteMadness/ClassicStack/core/router"
 )
+
+// userStoreBuilder is the build-tagged user-store constructor (reg_auth.go, built
+// under afp||smb||all) assigned at init. It is a hook so this ALWAYS-compiled file can
+// expose BuildUserStore regardless of build tags: a build with no file service leaves
+// it nil and BuildUserStore returns (nil, nil) — "no user administration in this
+// build", the same graceful degradation the supervisor's nil-store path expects.
+var userStoreBuilder func(*config.Model) (auth.UserStore, error)
+
+// BuildUserStore constructs the configured user store, or (nil, nil) when no file
+// service was built (the hook is unset). The compose root calls it once and hands the
+// store to the supervisor (SetUserStore, for the web UI's user CRUD) and to each file
+// service (SetAuthenticator). Always compiled so the runtime can wire users without a
+// build-tag dependency on the file services.
+func BuildUserStore(m *config.Model) (auth.UserStore, error) {
+	if userStoreBuilder == nil {
+		return nil, nil
+	}
+	return userStoreBuilder(m)
+}
 
 // LinkOpener opens a raw L2 FrameLink for a NIC by name. It is the seam by which a
 // port factory obtains a real device link WITHOUT core/ or this registry importing

@@ -30,6 +30,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/control"
 	"github.com/ObsoleteMadness/ClassicStack/core/router"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/macip"
 )
 
 // stubNames are registry entries that are test/skeleton scaffolding, never part of
@@ -93,6 +94,24 @@ func (registrySource) Build(name string, ctx *registry.BuildContext) (component.
 	return registry.Build(name, ctx)
 }
 
+// MacIPEgress is the IP-side egress an opener returns: the macip.IPEgress seam plus
+// its own lifecycle. The supervisor does not own it (it is not a Component); the
+// runtime starts it during cross-wiring and the MacIP service drives it.
+type MacIPEgress interface {
+	macip.IPEgress
+	// Start brings the IP link up (capture + ARP). Called once after wiring.
+	Start()
+	// Close tears the egress down (frees the libpcap handle + forwarding state).
+	Close() error
+}
+
+// MacIPEgressOpener builds the IP-side egress for the MacIP gateway. params is the
+// section-derived IP-side config; ownsIP is the service's lease predicate (used for
+// proxy ARP / inbound filtering). It returns nil egress (and a nil error) when no
+// interface is configured, or an error when an interface is named but the link cannot
+// open — the caller logs it and leaves MacIP AppleTalk-only.
+type MacIPEgressOpener func(params macip.EgressParams, ownsIP func(macip.IPv4) bool) (MacIPEgress, error)
+
 // Options configures a Runtime build.
 type Options struct {
 	// Model is the starting config model. Required. Load() fills one from a
@@ -116,6 +135,12 @@ type Options struct {
 	// (the UI's NIC picker). Injected at the cmd edge (adapter/link/pcap.ListDevices) so
 	// the runtime/supervisor pull in no pcap/cgo dependency. nil → ListInterfaces empty.
 	InterfaceEnumerator func() ([]control.InterfaceInfo, error)
+	// MacIPEgress builds the IP-side egress adapter for the MacIP gateway from its
+	// section params + the service's lease predicate. Injected at the cmd edge
+	// (adapter/macipgw, which needs pcap/cgo) and called during cross-wiring when the
+	// MacIP section names an interface. nil (or a build error) leaves MacIP
+	// AppleTalk-only. Kept out of compose/runtime so this package stays cgo-free.
+	MacIPEgress MacIPEgressOpener
 	// source enumerates/builds components. nil → the global compose/registry. Set
 	// only by tests (kept unexported so the production API is the registry path).
 	source componentSource
@@ -126,12 +151,14 @@ type Options struct {
 // control plane binds to. The entry points call Start/Stop and, for the control
 // plane, reach Supervisor()/Model().
 type Runtime struct {
-	sup       *supervisor.Supervisor
-	model     *config.Model
-	telemetry bus.Bus
-	rtr       *router.RouterImpl  // the shared router (nil if none built); cross-wire target
-	members   []router.RoutedPort // ports declared in [Router].members, attached after the router starts (§3d)
-	built     []string            // names actually constructed (diagnostics)
+	sup         *supervisor.Supervisor
+	model       *config.Model
+	telemetry   bus.Bus
+	rtr         *router.RouterImpl             // the shared router (nil if none built); cross-wire target
+	members     []router.RoutedPort            // ports declared in [Router].members, attached after the router starts (§3d)
+	built       []string                       // names actually constructed (diagnostics)
+	macipEgress MacIPEgress                    // IP-side MacIP egress (nil if none); started/closed with the runtime
+	comps       map[string]component.Component // built components by name, for compose-edge lookups (diagnostics wiring)
 }
 
 // Load builds a config.Model from a Store + Codec. A missing store file yields the
@@ -241,7 +268,21 @@ func Build(opts Options) (*Runtime, error) {
 	// these mini-routers have no lifecycle of their own (the ports own start/stop),
 	// so they are built here rather than supervised. A build without the NetBIOS
 	// service is a no-op.
-	crossWireTransports(comps, opts.Model)
+	macipEgress := crossWireTransports(comps, opts.Model, opts.MacIPEgress)
+
+	// Wire the user store (§4): build the configured store once and hand it to the
+	// supervisor (the web UI's user CRUD surface) AND to every built file service as
+	// its login Authenticator. BuildUserStore returns (nil,nil) in a build with no
+	// file service, in which case user administration is unavailable and the services
+	// stay guest-only — the historical default. A build error (e.g. an unwritable
+	// store path) is surfaced so a misconfigured deployment fails loudly rather than
+	// silently dropping authentication.
+	if store, err := registry.BuildUserStore(opts.Model); err != nil {
+		return nil, fmt.Errorf("runtime: build user store: %w", err)
+	} else if store != nil {
+		sup.SetUserStore(store)
+		wireAuthenticator(comps, store)
+	}
 
 	// Second pass: register with the supervisor under filtered edges (only edges
 	// whose dependency is also built).
@@ -251,12 +292,14 @@ func Build(opts Options) (*Runtime, error) {
 	}
 
 	return &Runtime{
-		sup:       sup,
-		model:     opts.Model,
-		telemetry: opts.Telemetry,
-		rtr:       rtr,
-		members:   members,
-		built:     order,
+		sup:         sup,
+		model:       opts.Model,
+		telemetry:   opts.Telemetry,
+		rtr:         rtr,
+		members:     members,
+		built:       order,
+		macipEgress: macipEgress,
+		comps:       comps,
 	}, nil
 }
 
@@ -341,6 +384,12 @@ func (r *Runtime) Start(ctx context.Context) error {
 	if err := r.sup.StartAll(ctx); err != nil {
 		return err
 	}
+	// Bring the MacIP IP-side egress up once the stack is running (the MacIP service's
+	// Start has wired the egress inbound callback). Not a supervised component — the
+	// runtime owns its lifecycle. A nil egress (AppleTalk-only) is a no-op.
+	if r.macipEgress != nil {
+		r.macipEgress.Start()
+	}
 	if r.rtr != nil {
 		for _, p := range r.members {
 			if err := r.rtr.Attach(p); err != nil {
@@ -360,6 +409,9 @@ func (r *Runtime) Start(ctx context.Context) error {
 // already withdrawn (e.g. by an individual Stop) must not block shutdown.
 func (r *Runtime) Stop(ctx context.Context) error {
 	r.sup.StopStatsFlush()
+	if r.macipEgress != nil {
+		_ = r.macipEgress.Close()
+	}
 	if r.rtr != nil {
 		for _, p := range r.members {
 			_ = r.rtr.Detach(p)
@@ -382,3 +434,13 @@ func (r *Runtime) Router() *router.RouterImpl { return r.rtr }
 // Built returns the names of the components actually constructed, in build order
 // (diagnostics / startup logging).
 func (r *Runtime) Built() []string { return append([]string(nil), r.built...) }
+
+// Component returns the built component under name, or nil when it was not built. The
+// compose edge uses it to attach optional collaborators to the diagnostics surface
+// (the NBP name table, the MacIP lease table) without re-running the build.
+func (r *Runtime) Component(name string) component.Component {
+	if r.comps == nil {
+		return nil
+	}
+	return r.comps[name]
+}

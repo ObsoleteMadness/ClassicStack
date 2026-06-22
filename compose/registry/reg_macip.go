@@ -15,12 +15,13 @@ func init() {
 
 	// Build the REAL MacIP gateway (no longer a placeholder): it rides the shared
 	// AppleTalk router (ctx.Router) for its ATP/DDP socket-72 protocol, and is built
-	// with a nil NBP + nil IP egress here — the compose transport cross-wire injects
-	// the NBP service (for the IPGATEWAY registration) once it is resolved (wireMacIP),
-	// and an IP-egress adapter when one is configured. With egress nil the gateway runs
-	// in AppleTalk-only mode: address assignment + config replies work and the gateway
-	// is NBP-discoverable, but IP DATA has nowhere to go until an egress lands. A
-	// disabled or absent section builds nothing.
+	// with a nil NBP + nil IP egress here — the compose transport cross-wire (wireMacIP)
+	// injects the NBP service (for the IPGATEWAY registration) once resolved, and the
+	// IP-side egress adapter (adapter/macipgw: proxy-ARP / NAT / DHCP-relay over a pcap
+	// link) when the section names an interface and the cmd edge supplied an opener. With
+	// egress nil the gateway runs AppleTalk-only: address assignment + config replies work
+	// and the gateway is NBP-discoverable, but IP DATA has nowhere to go. A disabled or
+	// absent section builds nothing.
 	Register(macip.Name, func(ctx *BuildContext) (component.Component, error) {
 		sec := macip.SectionFromModel(ctx.Model)
 		cfg := macip.Config{}

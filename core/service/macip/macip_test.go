@@ -98,6 +98,23 @@ func (e *fakeEgress) sentCount() int {
 	return len(e.out)
 }
 
+// assigningEgress is a fakeEgress that also implements AddressAssigner (the DHCP-relay
+// shape): it returns a fixed config for any node so we can drive the async-assign path.
+type assigningEgress struct {
+	fakeEgress
+	assignIP IPv4
+	ns       IPv4
+	calls    int
+	mu2      sync.Mutex
+}
+
+func (e *assigningEgress) AssignIP(_ uint16, _ uint8, _ IPv4) (AssignedConfig, bool) {
+	e.mu2.Lock()
+	e.calls++
+	e.mu2.Unlock()
+	return AssignedConfig{IP: e.assignIP, Nameserver: e.ns}, true
+}
+
 func testConfig() Config {
 	return Config{
 		GatewayIP:  IPv4{192, 168, 100, 1},
@@ -230,5 +247,47 @@ func TestInboundIPRoutedToClient(t *testing.T) {
 	out := routes[0]
 	if out.DestNetwork != 10 || out.DestNode != 5 || out.DDPType != ddpTypeMacIP {
 		t.Errorf("routed DDP = %d.%d type=%d, want 10.5 type=22", out.DestNetwork, out.DestNode, out.DDPType)
+	}
+}
+
+// TestATPConfigAssignViaEgress: when the egress implements AddressAssigner (DHCP
+// relay), an ATP TReq is answered with the egress-supplied address and config
+// (not a static-pool address), the lease is recorded, and OwnsIP reports it.
+func TestATPConfigAssignViaEgress(t *testing.T) {
+	fr := newFakeRouter()
+	eg := &assigningEgress{assignIP: IPv4{10, 0, 0, 77}, ns: IPv4{10, 0, 0, 1}}
+	svc := New(fr, nil, eg, testConfig(), nil)
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Stop(context.Background())
+
+	data := []byte{atpFuncTReq, 0x00, 0xAB, 0xCD, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, macIPFuncAssign}
+	svc.Inbound(ddp.Datagram{
+		SrcNetwork: 10, SrcNode: 5, SrcSocket: Socket,
+		DestSocket: Socket, DDPType: ddpTypeATP, Data: data,
+	}, nil)
+
+	got := fr.waitReplies(1)
+	if len(got) != 1 {
+		t.Fatalf("got %d replies, want 1", len(got))
+	}
+	r := got[0]
+	if r.data[2] != 0xAB || r.data[3] != 0xCD {
+		t.Errorf("TResp tid wrong: %x", r.data[:4])
+	}
+	// The egress-assigned IP and nameserver must be reflected, not the static defaults.
+	if ip := r.data[12:16]; ip[0] != 10 || ip[1] != 0 || ip[2] != 0 || ip[3] != 77 {
+		t.Errorf("assigned IP = %v, want 10.0.0.77 (from egress)", ip)
+	}
+	if ns := r.data[16:20]; ns[0] != 10 || ns[1] != 0 || ns[2] != 0 || ns[3] != 1 {
+		t.Errorf("nameserver = %v, want 10.0.0.1 (from egress)", ns)
+	}
+	// The external lease must be recorded so OwnsIP / inbound routing find it.
+	if !svc.OwnsIP(IPv4{10, 0, 0, 77}) {
+		t.Error("OwnsIP(10.0.0.77) = false, want true after egress assignment")
+	}
+	if eg.calls != 1 {
+		t.Errorf("AssignIP calls = %d, want 1", eg.calls)
 	}
 }

@@ -4,11 +4,57 @@ import (
 	"testing"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/afp"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/ipxgw"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/macip"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/netbios"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/smb"
 )
+
+// TestAFPServerSectionRoundTrip proves the AFP server-level identity (name/zone) and
+// transport bindings survive a TOML round-trip through the schema registry.
+func TestAFPServerSectionRoundTrip(t *testing.T) {
+	afp.RegisterServer()
+
+	m := config.NewModel()
+	m.Set(&afp.ServerSection{
+		AKey: afp.ServerKey, ServerName: "Attic Mac", Zone: "Eng",
+		Transports: []string{afp.TransportDDP}, TCPAddr: ":548",
+	})
+
+	c := New()
+	data, err := c.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	got := config.NewModel()
+	if err := c.Unmarshal(data, got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	sec := afp.ServerSectionFromModel(got)
+	if sec.EffectiveServerName("") != "Attic Mac" || sec.Zone != "Eng" {
+		t.Errorf("identity wrong: name=%q zone=%q", sec.EffectiveServerName(""), sec.Zone)
+	}
+	if !sec.Binds(afp.TransportDDP) {
+		t.Errorf("expected ddp bound, got %v", sec.Transports)
+	}
+	if sec.Binds(afp.TransportTCP) {
+		t.Errorf("tcp should NOT be bound when the list omits it: %v", sec.Transports)
+	}
+	if sec.DSITCPAddr() != ":548" {
+		t.Errorf("tcp_addr: got %q want :548", sec.DSITCPAddr())
+	}
+}
+
+// TestAFPServerNameFallback proves an empty ServerName falls back to the supplied
+// Identity hostname (the "one name everywhere" path).
+func TestAFPServerNameFallback(t *testing.T) {
+	sec := &afp.ServerSection{AKey: afp.ServerKey}
+	if got := sec.EffectiveServerName("studio"); got != "studio" {
+		t.Errorf("fallback to identity hostname: got %q want studio", got)
+	}
+}
 
 // TestSMBServerSectionRoundTrip proves the SMB server-level transport bindings survive
 // a TOML round-trip through the schema registry: the transports the operator sets are

@@ -16,6 +16,10 @@ func init() {
 	// configured volume as a named section. Kept here (not in an afp-package init)
 	// so the section exists exactly when the AFP service is built.
 	afp.RegisterVolumes()
+	// Register the AFP server-level singleton section (advertised name/zone + the
+	// classic/modern transport bindings) so the codec round-trips it and the service
+	// can read the operator's identity + binding choices.
+	afp.RegisterServer()
 
 	Register(afp.Name, func(ctx *BuildContext) (component.Component, error) {
 		m := ctx.Model
@@ -68,10 +72,20 @@ func init() {
 			return out
 		}
 		svc := afp.New(logger)
+		// Server-level identity + bindings (§4): the AFP server section carries the
+		// advertised Chooser name and zone and which transport stacks to bind. An empty
+		// ServerName falls back to the shared Identity.Hostname (then the service's own
+		// default); an empty Transports list binds all built transports (back-compat).
+		srv := afp.ServerSectionFromModel(m)
+		svc.SetServerName(srv.EffectiveServerName(m.Identity.Hostname))
+		svc.SetZone(srv.Zone)
+		svc.SetTransports(srv.Transports)
 		// Bind the shared AppleTalk router so the AFP/ASP service replies and the
 		// runtime root can RegisterService it on its DDP socket. nil (a standalone
-		// build with no router) leaves it unrouted, the historical default.
-		if ctx.Router != nil {
+		// build with no router) leaves it unrouted, the historical default. The classic
+		// DDP stack is active only when the AFP port instance is a router member AND the
+		// ddp transport binding is on; the router membership is the operator's join.
+		if ctx.Router != nil && srv.Binds(afp.TransportDDP) {
 			svc.SetRouter(ctx.Router)
 		}
 		// §10d: build each volume over the shared FS-mutation bus for its host path,

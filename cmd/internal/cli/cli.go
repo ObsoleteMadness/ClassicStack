@@ -35,7 +35,6 @@ import (
 	adaptermetrics "github.com/ObsoleteMadness/ClassicStack/adapter/metrics"
 	adapterserial "github.com/ObsoleteMadness/ClassicStack/adapter/serial"
 	storefile "github.com/ObsoleteMadness/ClassicStack/adapter/store/file"
-	"github.com/ObsoleteMadness/ClassicStack/compose/diag"
 	"github.com/ObsoleteMadness/ClassicStack/compose/registry"
 	"github.com/ObsoleteMadness/ClassicStack/compose/runtime"
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
@@ -126,7 +125,7 @@ func Run(ctx context.Context, args []string, v Version) error {
 	// inert-but-routed. When [Capture] names a pcap file for an interface, the opener is
 	// wrapped so that interface's frames are tee'd to the file (link.Capture decorator).
 	opener := captureOpener(pcapOpener, &m.Capture)
-	rt, err := runtime.Build(runtime.Options{Model: m, Telemetry: telemetry, Opener: opener, Serial: serialOpener, InterfaceEnumerator: interfaceEnumerator})
+	rt, err := runtime.Build(runtime.Options{Model: m, Telemetry: telemetry, Opener: opener, Serial: serialOpener, InterfaceEnumerator: interfaceEnumerator, MacIPEgress: macipEgressOpener})
 	if err != nil {
 		return fmt.Errorf("build runtime: %w", err)
 	}
@@ -150,7 +149,7 @@ func Run(ctx context.Context, args []string, v Version) error {
 		// Wire the real diagnostics probe surface (zone/routing-table reads) now that the
 		// router exists; replaces the core's "unavailable" default. A no-router build
 		// passes nil, which keeps the probes reporting ErrUnavailable.
-		plane.SetDiagnostics(diag.New(rt.Router()))
+		plane.SetDiagnostics(buildDiagnostics(rt))
 		httpServer = controlhttp.NewServer(plane, *httpAddr)
 		if err := httpServer.Start(); err != nil {
 			_ = rt.Stop(context.Background())

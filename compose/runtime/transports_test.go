@@ -69,7 +69,7 @@ func TestCrossWireTransports_NetBEUIToSMB(t *testing.T) {
 		browser.Name: br,
 	}
 
-	crossWireTransports(comps, nil)
+	crossWireTransports(comps, nil, nil)
 
 	// AddPort must have installed the inbound delivery callback on the port.
 	if port.cb == nil {
@@ -139,7 +139,7 @@ func TestCrossWireTransports_DirectIPXWithoutNetBIOS(t *testing.T) {
 		"IPX":    port,
 	}
 
-	crossWireTransports(comps, nil)
+	crossWireTransports(comps, nil, nil)
 
 	if port.cb == nil {
 		t.Fatal("direct-IPX without NetBIOS did not attach the IPX port (no delivery callback) — the mini-router was not built off the SMB consumer")
@@ -176,7 +176,7 @@ func TestCrossWireTransports_NoNetBIOS(t *testing.T) {
 	port := &recordingNetBEUIPort{}
 	comps := map[string]component.Component{"NetBEUI": port}
 
-	crossWireTransports(comps, nil)
+	crossWireTransports(comps, nil, nil)
 
 	if port.cb != nil {
 		t.Fatal("cross-wire attached a NetBEUI port with no NetBIOS service to feed")

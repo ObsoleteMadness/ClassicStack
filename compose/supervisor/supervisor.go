@@ -592,6 +592,68 @@ func (s *Supervisor) ListInterfaces() ([]control.InterfaceInfo, error) {
 	return fn()
 }
 
+// SetInterface adds or replaces a named entry in the interface namespace
+// (Model.Interfaces) under the lock, then reconciles every port that references the
+// changed interface so the change goes live (a port re-resolves EffectiveInterface on
+// rebuild). An entry with no Name is rejected as a no-op (the namespace is keyed by
+// name). Ports that do not reference the interface are left untouched.
+func (s *Supervisor) SetInterface(ctx context.Context, iface config.InterfaceSection) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if iface.Name == "" {
+		return nil
+	}
+	s.model.SetInterface(iface)
+	return s.reconcileInterfaceRefsLocked(ctx, iface.Name)
+}
+
+// RemoveInterface drops the named interface-namespace entry under the lock and
+// reconciles referencing ports (which then resolve the name to a bare nic, the
+// back-compat fallback in EffectiveInterface). A no-op when the entry was absent.
+func (s *Supervisor) RemoveInterface(ctx context.Context, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.model.Interfaces == nil {
+		return nil
+	}
+	if _, ok := s.model.Interfaces[name]; !ok {
+		return nil
+	}
+	delete(s.model.Interfaces, name)
+	return s.reconcileInterfaceRefsLocked(ctx, name)
+}
+
+// reconcileInterfaceRefsLocked reconfigures every built component whose section
+// resolves its effective interface to the named entry (or, for the default Bridge
+// inheritance, matches the bridge name), so an interface edit propagates to the ports
+// using it without a whole-stack restart. Caller holds mu. Best-effort: a component
+// with no model section, or one that is not interface-bound, is skipped. The first
+// reconfigure error is returned (later ports are not attempted), matching the addressed
+// reconfigure semantics.
+func (s *Supervisor) reconcileInterfaceRefsLocked(ctx context.Context, name string) error {
+	for _, compName := range s.order {
+		sec, ok := s.model.Get(compName)
+		if !ok {
+			continue
+		}
+		ip, ok := sec.(config.InterfaceProvider)
+		if !ok {
+			continue
+		}
+		// A port references the changed interface either explicitly (its override names
+		// it) or implicitly via the default Bridge inheritance when the changed name is
+		// the bridge's. Match either so a bridge edit reaches its inheritors.
+		ref := ip.Interface().Name
+		if ref != name && !(ref == "" && s.model.Bridge.Name == name) {
+			continue
+		}
+		if err := s.reconfigureLocked(ctx, compName, sec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ListFSTypes returns the registered FileSystem backend types (afp/smb shares pick
 // one). It reads the fs factory registry, so a UI can populate an fs-type dropdown
 // and then fetch each type's param schema via the plane's ParamsFor.

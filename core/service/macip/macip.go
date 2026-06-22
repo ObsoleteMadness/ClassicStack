@@ -70,6 +70,28 @@ type IPEgress interface {
 	SetInbound(func(packet []byte))
 }
 
+// AddressAssigner is an OPTIONAL capability of an IPEgress: an egress that sources
+// client addresses from the IP network itself (DHCP relay) implements it so the core
+// delegates address assignment to it instead of the static pool. AssignIP may block
+// (a DHCP round-trip), so the core calls it from a per-request goroutine. ok=false
+// means assignment failed and the core must not reply (the Mac retries). The returned
+// AssignedConfig carries the lease plus any DHCP-supplied config; zero-valued fields fall
+// back to the service Config. The egress is responsible for any proxy-ARP / gratuitous
+// announcement for the assigned IP and for registering inbound routing for it (the core
+// records the lease via RegisterExternalLease before replying).
+type AddressAssigner interface {
+	AssignIP(atNetwork uint16, atNode uint8, requested IPv4) (AssignedConfig, bool)
+}
+
+// AssignedConfig is the result of an egress-driven (DHCP) address assignment. Any
+// zero-valued IPv4 field is replaced by the service Config default before the TResp.
+type AssignedConfig struct {
+	IP         IPv4 // the address to hand the client (required; zero ⇒ failure)
+	Nameserver IPv4 // DNS server (zero ⇒ Config.Nameserver)
+	Broadcast  IPv4 // broadcast address (zero ⇒ Config.Broadcast)
+	SubnetMask IPv4 // subnet mask (zero ⇒ Config.SubnetMask)
+}
+
 // Config carries the gateway's IP-side identity, advertised to MacIP clients.
 type Config struct {
 	GatewayIP  IPv4 // gateway IP advertised to clients (pool index 0)
@@ -283,6 +305,14 @@ func (s *Service) Stats() component.Stats {
 // Leases returns a point-in-time copy of all current leases (diagnostics).
 func (s *Service) Leases() []LeaseInfo { return s.pool.leases() }
 
+// OwnsIP reports whether an IPv4 is currently leased to a MacIP client (static or
+// external). The IP-side egress uses it to decide proxy-ARP / inbound filtering
+// without owning a copy of the lease table.
+func (s *Service) OwnsIP(ip IPv4) bool {
+	_, _, ok := s.pool.lookupByIP(ip)
+	return ok
+}
+
 // RegisterExternalLease records an adapter-assigned (e.g. DHCP-relayed) lease so
 // inbound IP for it routes to the right Mac client. The IP-side egress calls
 // this when it obtains an address outside the static pool.
@@ -349,9 +379,25 @@ func (s *Service) handleATPConfig(d ddp.Datagram, rx router.RoutedPort) {
 	// Server-check (func=3) reuses an existing lease where one exists.
 	if function == macIPFuncServer {
 		if ip, ok := s.pool.lookupIPByAT(atNet, atNode); ok {
-			s.sendATPConfigResp(d, rx, tid, ip)
+			s.sendATPConfigResp(d, rx, tid, AssignedConfig{IP: ip})
 			return
 		}
+	}
+
+	// When the egress sources addresses from the IP network (DHCP relay), delegate
+	// assignment to it off the inbound loop — a DHCP round-trip can block — and reply
+	// once it resolves. Otherwise use the static pool synchronously.
+	if as := s.assigner(); as != nil {
+		s.mu.Lock()
+		if !s.running {
+			s.mu.Unlock()
+			return
+		}
+		s.wg.Add(1)
+		stop := s.stop
+		s.mu.Unlock()
+		go s.assignViaEgress(as, d, rx, tid, requestedIP, atNet, atNode, stop)
+		return
 	}
 
 	assignedIP, ok := s.pool.assign(requestedIP, atNet, atNode)
@@ -360,11 +406,63 @@ func (s *Service) handleATPConfig(d ddp.Datagram, rx router.RoutedPort) {
 	} else {
 		s.bump(&s.assigns)
 	}
-	s.sendATPConfigResp(d, rx, tid, assignedIP)
+	s.sendATPConfigResp(d, rx, tid, AssignedConfig{IP: assignedIP})
 }
 
-// sendATPConfigResp builds and sends an ATP TResp with the IP configuration.
-func (s *Service) sendATPConfigResp(d ddp.Datagram, rx router.RoutedPort, tid uint16, assignedIP IPv4) {
+// assigner returns the egress as an AddressAssigner when it implements the optional
+// capability (DHCP-relay egress), else nil (static-pool assignment).
+func (s *Service) assigner() AddressAssigner {
+	s.mu.Lock()
+	e := s.egress
+	s.mu.Unlock()
+	if as, ok := e.(AddressAssigner); ok {
+		return as
+	}
+	return nil
+}
+
+// assignViaEgress runs an egress-driven (DHCP) assignment and replies when it
+// resolves. Aborts silently if the service stops first or the egress fails (the Mac
+// retries). The resolved lease is recorded so inbound IP for it routes back here.
+func (s *Service) assignViaEgress(as AddressAssigner, d ddp.Datagram, rx router.RoutedPort, tid uint16, requested IPv4, atNet uint16, atNode uint8, stop chan struct{}) {
+	defer s.wg.Done()
+	type result struct {
+		cfg AssignedConfig
+		ok  bool
+	}
+	done := make(chan result, 1)
+	go func() {
+		cfg, ok := as.AssignIP(atNet, atNode, requested)
+		done <- result{cfg, ok}
+	}()
+	select {
+	case <-stop:
+		return
+	case r := <-done:
+		if !r.ok || r.cfg.IP.IsZero() {
+			return // no reply; the Mac retries
+		}
+		s.pool.RegisterExternal(r.cfg.IP, atNet, atNode)
+		s.bump(&s.assigns)
+		s.sendATPConfigResp(d, rx, tid, r.cfg)
+	}
+}
+
+// sendATPConfigResp builds and sends an ATP TResp with the IP configuration. Zero-valued
+// fields in cfg fall back to the service Config defaults.
+func (s *Service) sendATPConfigResp(d ddp.Datagram, rx router.RoutedPort, tid uint16, cfg AssignedConfig) {
+	ns := cfg.Nameserver
+	if ns.IsZero() {
+		ns = s.cfg.Nameserver
+	}
+	bc := cfg.Broadcast
+	if bc.IsZero() {
+		bc = s.cfg.Broadcast
+	}
+	mask := cfg.SubnetMask
+	if mask.IsZero() {
+		mask = s.cfg.SubnetMask
+	}
 	resp := make([]byte, 4+configDataLen)
 	resp[0] = atpFuncTResp | atpEOM
 	resp[1] = 0 // seq 0
@@ -377,11 +475,11 @@ func (s *Service) sendATPConfigResp(d ddp.Datagram, rx router.RoutedPort, tid ui
 	resp[9] = byte(macIPFuncAssign >> 16)
 	resp[10] = byte(macIPFuncAssign >> 8)
 	resp[11] = byte(macIPFuncAssign)
-	copy(resp[12:16], assignedIP[:])
-	copy(resp[16:20], s.cfg.Nameserver[:])
-	copy(resp[20:24], s.cfg.Broadcast[:])
+	copy(resp[12:16], cfg.IP[:])
+	copy(resp[16:20], ns[:])
+	copy(resp[20:24], bc[:])
 	// resp[24:28] = pad2
-	copy(resp[28:32], s.cfg.SubnetMask[:])
+	copy(resp[28:32], mask[:])
 	s.rtr.Reply(d, rx, ddpTypeATP, resp)
 }
 

@@ -58,6 +58,18 @@ func (s *fakeSupervisor) ListInterfaces() ([]InterfaceInfo, error) {
 	return []InterfaceInfo{{Name: "eth0", Addr: "10.0.0.1"}}, nil
 }
 func (s *fakeSupervisor) ListFSTypes() []string { return []string{"memfs"} }
+func (s *fakeSupervisor) SetInterface(_ context.Context, iface config.InterfaceSection) error {
+	if s.model != nil {
+		s.model.SetInterface(iface)
+	}
+	return nil
+}
+func (s *fakeSupervisor) RemoveInterface(_ context.Context, name string) error {
+	if s.model != nil && s.model.Interfaces != nil {
+		delete(s.model.Interfaces, name)
+	}
+	return nil
+}
 func (s *fakeSupervisor) SetAdminAuth(a config.AdminAuth) {
 	if s.model != nil {
 		s.model.AdminAuth = a

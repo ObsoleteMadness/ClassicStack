@@ -284,12 +284,40 @@ func (s *Server) handleConn(conn net.Conn) {
 			} else {
 				res = ifaces
 			}
+		case "set_interface":
+			var iface config.InterfaceSection
+			if err := json.Unmarshal(req.Params, &iface); err != nil {
+				methodErr = err
+			} else {
+				methodErr = s.plane.SetInterface(ctx, iface)
+			}
+		case "remove_interface":
+			var args struct{ Name string }
+			if err := json.Unmarshal(req.Params, &args); err != nil {
+				methodErr = err
+			} else {
+				methodErr = s.plane.RemoveInterface(ctx, args.Name)
+			}
 		case "list_zones":
 			zones, err := s.plane.Diagnostics().ListZones(ctx)
 			if err != nil {
 				methodErr = err
 			} else {
 				res = zones
+			}
+		case "registered_names":
+			names, err := s.plane.Diagnostics().RegisteredNames(ctx)
+			if err != nil {
+				methodErr = err
+			} else {
+				res = names
+			}
+		case "macip_leases":
+			leases, err := s.plane.Diagnostics().MacIPLeases(ctx)
+			if err != nil {
+				methodErr = err
+			} else {
+				res = leases
 			}
 		case "users":
 			users, err := s.plane.Users()
@@ -500,11 +528,41 @@ func (c *AdapterClient) ListInterfaces() ([]control.InterfaceInfo, error) {
 	return out, err
 }
 
+// SetInterface adds/replaces a named interface-namespace entry.
+func (c *AdapterClient) SetInterface(ctx context.Context, iface config.InterfaceSection) error {
+	_ = ctx
+	return c.call("set_interface", iface, nil)
+}
+
+// RemoveInterface drops a named interface-namespace entry.
+func (c *AdapterClient) RemoveInterface(ctx context.Context, name string) error {
+	_ = ctx
+	return c.call("remove_interface", struct {
+		Name string `json:"name"`
+	}{Name: name}, nil)
+}
+
 // ListZones runs the Diagnostics zone probe (control.ErrUnavailable when unsupported).
 func (c *AdapterClient) ListZones(ctx context.Context) ([]string, error) {
 	_ = ctx
 	var out []string
 	err := c.call("list_zones", nil, &out)
+	return out, err
+}
+
+// RegisteredNames runs the NBP name-table probe (control.ErrUnavailable when no NBP).
+func (c *AdapterClient) RegisteredNames(ctx context.Context) ([]control.NBPName, error) {
+	_ = ctx
+	var out []control.NBPName
+	err := c.call("registered_names", nil, &out)
+	return out, err
+}
+
+// MacIPLeases runs the MacIP lease probe (control.ErrUnavailable when no MacIP gateway).
+func (c *AdapterClient) MacIPLeases(ctx context.Context) ([]control.MacIPLease, error) {
+	_ = ctx
+	var out []control.MacIPLease
+	err := c.call("macip_leases", nil, &out)
 	return out, err
 }
 

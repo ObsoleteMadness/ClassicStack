@@ -10,6 +10,7 @@ package runport
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -274,6 +275,29 @@ func (p *Port) Binding() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.sec.Iface
+}
+
+// Kind labels this component a transport port for the dashboard. Capability: Describable.
+func (p *Port) Kind() string { return "port" }
+
+// Props surfaces the port's AppleTalk seed (network range + zone) for the dashboard, so
+// an operator sees what a transport seeds without opening its config. Capability:
+// Describable. A non-seed port (SeedNetwork 0) reports "non-seed".
+func (p *Port) Props() map[string]string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	props := map[string]string{}
+	if p.sec.SeedNetwork == 0 {
+		props["seed"] = "non-seed (learns from peer)"
+	} else if p.sec.SeedNetworkEnd == 0 || p.sec.SeedNetworkEnd == p.sec.SeedNetwork {
+		props["seed network"] = strconv.Itoa(int(p.sec.SeedNetwork))
+	} else {
+		props["seed network"] = strconv.Itoa(int(p.sec.SeedNetwork)) + "–" + strconv.Itoa(int(p.sec.SeedNetworkEnd))
+	}
+	if p.sec.SeedZone != "" {
+		props["zone"] = p.sec.SeedZone
+	}
+	return props
 }
 
 // Stats returns a point-in-time snapshot. Capability: Statful (§5).

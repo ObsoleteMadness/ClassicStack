@@ -10,8 +10,11 @@
 //   POST /save                         persist the live model → {revision}
 //   GET  /list_fs_types                fs-type names
 //   GET  /params_for?fs_type=…         per-type param schema (secret → password field)
-//   GET  /list_interfaces              enumerable NICs
+//   GET  /list_interfaces              enumerable host NICs (picker)
+//   POST /set_interface|/remove_interface   interface NAMESPACE CRUD (Model.Interfaces)
 //   GET  /list_zones                   AppleTalk zone probe (diagnostics)
+//   GET  /registered_names             NBP name table (NBP stat drill-down)
+//   GET  /macip_leases                 MacIP lease table (MacIP stat drill-down)
 //   GET  /users                        stored identities
 //   POST /set_user|/set_user_disabled|/remove_user
 //   GET  /subscribe?topics=stats,state,log   Server-Sent Events telemetry
@@ -83,6 +86,37 @@ const api = {
     if (r.status === 501) throw new Error("not available in this build");
     if (!r.ok) throw new Error(await errText(r));
     return r.json();
+  },
+  // registeredNames / macipLeases are the drill-down probes behind the NBP "registered
+  // names" and MacIP "active leases" dashboard stats. 501 = service not in this build.
+  async registeredNames() {
+    const r = await fetch("registered_names");
+    if (r.status === 501) throw new Error("NBP not available in this build");
+    if (!r.ok) throw new Error(await errText(r));
+    return r.json();
+  },
+  async macipLeases() {
+    const r = await fetch("macip_leases");
+    if (r.status === 501) throw new Error("MacIP gateway not available in this build");
+    if (!r.ok) throw new Error(await errText(r));
+    return r.json();
+  },
+  // setInterface / removeInterface edit the interface NAMESPACE (Model.Interfaces): the
+  // named NIC/serial/bridge entries a port binds to (distinct from interfaces(), which
+  // enumerates the host's physical NICs for a picker).
+  async setInterface(iface) {
+    const r = await fetch("set_interface", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(iface),
+    });
+    if (!r.ok) throw new Error(await errText(r));
+  },
+  async removeInterface(name) {
+    const r = await fetch("remove_interface", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!r.ok) throw new Error(await errText(r));
   },
   async users() {
     const r = await fetch("users");
@@ -288,6 +322,39 @@ class CsSetup extends HTMLElement {
   }
 }
 
+// DASHBOARD_GROUPS are the functional buckets the dashboard sorts components into, so
+// related services sit together (the user's "group services where it makes sense").
+// `members` lists the component names that belong to a group; `match` is a fallback
+// predicate (by name) for instance-named components (transport ports). Order here is
+// the on-screen order; anything unmatched falls into "other".
+const DASHBOARD_GROUPS = [
+  { id: "appletalk", label: "AppleTalk router", desc: "Routing, zones, name binding, gateways",
+    members: ["Router", "RTMP", "ZIP", "NBP", "AEP", "MacIP", "IPXGW", "IPXDiag"] },
+  { id: "fileservices", label: "File & print services", desc: "AFP, SMB, NetBIOS, browsing",
+    members: ["AFP", "SMB", "SMB-TCP", "NetBIOS", "Browser", "Messenger"] },
+  { id: "transports", label: "Transports", desc: "Link-layer ports (zone / network seed)",
+    members: ["EtherTalk", "LToUDP", "TashTalk", "IPX", "NetBEUI"],
+    match: (u) => (u.Kind === "port") },
+  { id: "other", label: "Other", desc: "" },
+];
+
+// groupUnits buckets units by DASHBOARD_GROUPS (explicit membership first, then the
+// group's match predicate), with everything else falling into "other".
+function groupUnits(units) {
+  const out = {};
+  const memberGroup = new Map();
+  for (const g of DASHBOARD_GROUPS) for (const m of g.members || []) memberGroup.set(m, g.id);
+  for (const u of units) {
+    let id = memberGroup.get(u.Name);
+    if (!id) {
+      const g = DASHBOARD_GROUPS.find((g) => g.match && g.match(u));
+      id = g ? g.id : "other";
+    }
+    (out[id] ||= []).push(u);
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Dashboard: a card per component with lifecycle controls, a live-stats line,
 // and a cog that opens the per-component config modal.
@@ -324,19 +391,53 @@ class CsDashboard extends HTMLElement {
     }
   }
   render() {
-    const cards = this.units.map((u) => this.card(u));
-    this.replaceChildren(
+    // Nest components that hard-depend on exactly one built parent UNDER that parent
+    // (e.g. SMB-TCP → SMB), so a transport child renders inside its service's card
+    // rather than as a peer. A component with no (built) parent is a top-level card.
+    const byName = new Map(this.units.map((u) => [u.Name, u]));
+    const childrenOf = new Map();
+    const isChild = new Set();
+    for (const u of this.units) {
+      const parents = (u.DependsOn || []).filter((d) => byName.has(d));
+      if (parents.length === 1) {
+        const p = parents[0];
+        if (!childrenOf.has(p)) childrenOf.set(p, []);
+        childrenOf.get(p).push(u);
+        isChild.add(u.Name);
+      }
+    }
+    // Top-level units (not nested under a parent) are sorted into functional GROUPS so
+    // related services sit together (File services; AppleTalk router; Transports) rather
+    // than one flat grid. A unit nested as a child renders inside its parent's card and
+    // is skipped here.
+    const tops = this.units.filter((u) => !isChild.has(u.Name));
+    const groups = groupUnits(tops);
+
+    const sections = [
       el("div", { class: "row spread" }, [
         el("h2", {}, ["Components"]),
         button("Refresh", "", () => this.activate()),
       ]),
-      cards.length
-        ? el("div", { class: "grid" }, cards)
-        : el("div", { class: "panel muted" }, ["No components built (empty config)."]),
-    );
+    ];
+    let any = false;
+    for (const g of DASHBOARD_GROUPS) {
+      const list = groups[g.id];
+      if (!list || !list.length) continue;
+      any = true;
+      sections.push(el("div", { class: "group-head" }, [
+        el("h3", {}, [g.label]),
+        g.desc ? el("span", { class: "group-desc" }, [g.desc]) : "",
+      ]));
+      sections.push(el("div", { class: "grid" },
+        list.map((u) => this.card(u, childrenOf.get(u.Name) || []))));
+    }
+    if (!any) {
+      sections.push(el("div", { class: "panel muted" }, ["No components built (empty config)."]));
+    }
+    this.replaceChildren(...sections);
     this.renderMetrics();
   }
-  card(u) {
+  card(u, children = []) {
     const pending = this.pending.has(u.Name);
     const indicator = pending
       ? el("span", { class: "spinner" })
@@ -362,11 +463,45 @@ class CsDashboard extends HTMLElement {
         ]
       : [button("Start", "primary", () => this.act("start", u.Name), pending)]);
 
+    // Drill-down: a service with a clickable gauge (NBP registered names, MacIP active
+    // leases) gets a link that opens a detail modal over the matching probe.
+    const drill = drillDownFor(u.Name);
+
+    const kids = children.length
+      ? [el("div", { class: "card-children" }, [
+          el("div", { class: "card-children-label" }, ["Transports"]),
+          ...children.map((c) => this.childRow(c)),
+        ])]
+      : [];
+
     return el("div", { class: "card" }, [
       el("h3", {}, [indicator, el("span", { class: "card-title" }, [u.Name]), cog]),
       ...detail,
       metric,
+      ...(drill ? [drill] : []),
       actions,
+      ...kids,
+    ]);
+  }
+  // childRow renders a nested dependent (e.g. SMB-TCP under SMB) as a compact line with
+  // its own state dot, binding, and lifecycle controls.
+  childRow(u) {
+    const pending = this.pending.has(u.Name);
+    const indicator = pending
+      ? el("span", { class: "spinner" })
+      : el("span", { class: "dot " + (u.Running ? "run" : "stop") });
+    const cog = button("⚙", "cog", () => openConfigModal(u.Name), false);
+    cog.title = "Configure " + u.Name;
+    const actions = u.Running
+      ? [button("Stop", "", () => this.act("stop", u.Name), pending),
+         button("Restart", "", () => this.act("restart", u.Name), pending)]
+      : [button("Start", "primary", () => this.act("start", u.Name), pending)];
+    const bind = u.Binding ? el("span", { class: "muted" }, [" " + u.Binding]) : "";
+    return el("div", { class: "child-row" }, [
+      indicator,
+      el("span", { class: "child-name" }, [u.Name]),
+      bind,
+      el("div", { class: "row" }, [...actions, cog]),
     ]);
   }
   renderMetrics() {
@@ -374,6 +509,69 @@ class CsDashboard extends HTMLElement {
       el.textContent = metricLine(telemetry.stats[el.dataset.metricFor]);
     }
   }
+}
+
+// drillDownFor returns a clickable "view detail" link for a component whose dashboard
+// stat has a backing probe — NBP's registered-name table and MacIP's lease table — or
+// null for components with no drill-down. The link opens a modal listing the live rows.
+function drillDownFor(name) {
+  if (name === "NBP") {
+    return el("div", { class: "kv drill" }, [
+      linkButton("▸ Registered names", () => openProbeModal("Registered NBP names",
+        () => api.registeredNames(), nbpNameColumns)),
+    ]);
+  }
+  if (name === "MacIP") {
+    return el("div", { class: "kv drill" }, [
+      linkButton("▸ Active leases", () => openProbeModal("MacIP active leases",
+        () => api.macipLeases(), macipLeaseColumns)),
+    ]);
+  }
+  return null;
+}
+
+// nbpNameColumns / macipLeaseColumns describe the table columns for the probe modals.
+const nbpNameColumns = [
+  { label: "Object", get: (r) => r.object },
+  { label: "Type", get: (r) => r.type },
+  { label: "Zone", get: (r) => r.zone || "*" },
+  { label: "Socket", get: (r) => r.socket },
+];
+const macipLeaseColumns = [
+  { label: "IP", get: (r) => r.ip },
+  { label: "AppleTalk", get: (r) => `${r.at_network}.${r.at_node}` },
+  { label: "Source", get: (r) => r.source },
+];
+
+// openProbeModal opens a read-only modal that loads rows from a probe fn and renders
+// them as a table per the column spec. An empty result shows a friendly note; an
+// ErrUnavailable (501) shows the "not in this build" message the api wrapper threw.
+async function openProbeModal(title, load, columns) {
+  const overlay = el("div", { class: "modal-overlay" });
+  const body = el("div", { class: "modal-body" }, [el("p", { class: "muted" }, ["loading…"])]);
+  const close = () => overlay.remove();
+  overlay.append(el("div", { class: "modal" }, [
+    el("div", { class: "modal-head" }, [el("h2", {}, [title]), button("✕", "modal-close", close)]),
+    body,
+    el("div", { class: "modal-foot" }, [button("Refresh", "", () => run()), button("Close", "primary", close)]),
+  ]));
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  document.body.append(overlay);
+
+  async function run() {
+    body.replaceChildren(el("p", { class: "muted" }, ["loading…"]));
+    let rows;
+    try { rows = await load(); }
+    catch (e) { body.replaceChildren(el("p", { class: "err" }, [e.message])); return; }
+    if (!rows || !rows.length) {
+      body.replaceChildren(el("p", { class: "muted" }, ["No entries."]));
+      return;
+    }
+    const head = el("tr", {}, columns.map((c) => th(c.label)));
+    const trs = rows.map((r) => el("tr", {}, columns.map((c) => el("td", {}, [String(c.get(r) ?? "")]))));
+    body.replaceChildren(el("table", {}, [el("thead", {}, [head]), el("tbody", {}, trs)]));
+  }
+  run();
 }
 
 // metricLine renders a compact one-liner from a component's stats sample: rx/tx frame
@@ -440,13 +638,13 @@ async function openConfigModal(name) {
     return;
   }
 
-  const form = sectionForm(section);
-  body.replaceChildren(form.node);
+  const editor = sectionEditor(key, section, model);
+  body.replaceChildren(editor.node);
   applyBtn.addEventListener("click", async () => {
     status.textContent = "";
     status.className = "err";
     try {
-      await api.reconfigure(key, form.collect());
+      await editor.apply();
       status.className = "ok-msg";
       status.textContent = "Applied. Restarting component…";
       setTimeout(close, 700);
@@ -475,34 +673,142 @@ function findSection(model, name) {
   return [null, null];
 }
 
+// sectionEditor is the SINGLE source of truth for editing one config section, shared
+// by BOTH the dashboard cog modal (openConfigModal) and the Configuration page
+// (CsConfig.sectionPanel) so the two render identical fields/widgets and apply the same
+// way. It builds the model-aware form (formOptionsFor) and an apply() that POSTs
+// /reconfigure for the section's key. Callers wrap node/apply in their own chrome (a
+// modal vs. a collapsible panel) but never re-implement the form.
+function sectionEditor(key, section, model) {
+  const form = sectionForm(section, formOptionsFor(key, model));
+  return {
+    node: form.node,
+    key,
+    apply: () => api.reconfigure(key, form.collect()),
+    collect: () => form.collect(),
+  };
+}
+
+// FIELD_META maps a section field's JSON key (the Go field name, or its toml name
+// where the codec uses that) to a human label + one-line description, so the forms
+// read as proper labelled fields rather than raw struct names. Unknown keys fall back
+// to a humanised version of the key (camelCase → "Camel Case"). Keep this the single
+// place field copy lives, shared by every form (the modal and the config page).
+const FIELD_META = {
+  // Identity / server
+  hostname: { label: "Host name", desc: "Server name on the network (NetBIOS/SMB use it; ≤15 chars when NetBIOS is on)." },
+  Hostname: { label: "Host name", desc: "Server name on the network (NetBIOS/SMB use it; ≤15 chars when NetBIOS is on)." },
+  workgroup: { label: "Workgroup", desc: "SMB/NetBIOS workgroup (domain) name." },
+  Workgroup: { label: "Workgroup", desc: "SMB/NetBIOS workgroup (domain) name." },
+  description: { label: "Description", desc: "Free-text server comment shown to clients." },
+  Description: { label: "Description", desc: "Free-text server comment shown to clients." },
+  // Logging
+  Level: { label: "Log level", desc: "debug · info · warn · error." },
+  level: { label: "Log level", desc: "debug · info · warn · error." },
+  // Router
+  DefaultZone: { label: "Default zone", desc: "The AppleTalk zone the router advertises when a port seeds none." },
+  Members: { label: "Members", desc: "The components that participate." },
+  // AFP server
+  ServerName: { label: "Server name", desc: "AppleTalk/Chooser name. Empty falls back to the host name." },
+  Zone: { label: "Zone", desc: "AppleTalk zone this service advertises into. Empty = the router's default zone." },
+  Transports: { label: "Transports", desc: "Which transport stacks to bind. Empty = bind all built transports." },
+  TCPAddr: { label: "TCP listen address", desc: "Explicit host:port for the TCP transport (never an implicit privileged port)." },
+  NBTAddr: { label: "NBT listen address", desc: "Explicit host:port for NetBIOS-over-TCP (:139). Empty = not bound." },
+  ScopeID: { label: "NetBIOS scope", desc: "NetBIOS scope identifier (rarely used; empty = default scope)." },
+  // Port / transport instance
+  Name: { label: "Instance name", desc: "Unique name for this instance (referenced by the router's Members list)." },
+  Iface: { label: "Interface", desc: "The named interface this transport binds to. Empty inherits the bridge." },
+  IsEnabled: { label: "Enabled", desc: "Whether this instance is configured on (≠ currently running)." },
+  MAC: { label: "Station MAC", desc: "Ethernet source address for EtherTalk. Empty = use the NIC's own MAC." },
+  SeedNetwork: { label: "Seed network start", desc: "First AppleTalk network number this port asserts. 0 = non-seed (learn from a peer router)." },
+  SeedNetworkEnd: { label: "Seed network end", desc: "Last network number of the seed range. 0 = a single number (== start)." },
+  SeedZone: { label: "Seed zone", desc: "Default zone name this port seeds. Empty = non-seed / inherit." },
+  // Interface namespace
+  Kind: { label: "Kind", desc: "nic · serial · bridge." },
+  Addr: { label: "Address", desc: "Optional pinned address for a NIC interface." },
+  Backend: { label: "Link backend", desc: "pcap (default) · tap · tun. Only meaningful for a NIC." },
+  Device: { label: "Device", desc: "Serial device path (COM3 / /dev/ttyUSB0)." },
+  Baud: { label: "Baud rate", desc: "Serial line speed. 0 = adapter default." },
+  // AFP volume / SMB share
+  VName: { label: "Volume name", desc: "Display name shown to AFP clients." },
+  SName: { label: "Share name", desc: "Display name shown to SMB clients." },
+  Path: { label: "Path", desc: "Host directory backing this share." },
+  FSType: { label: "Filesystem type", desc: "Storage backend (local_fs, memfs, …)." },
+  ReadOnly: { label: "Read-only", desc: "Export the whole share read-only." },
+  Options: { label: "Options", desc: "Backend-specific key=value parameters." },
+  AllowedUsers: { label: "Allowed users", desc: "Access allow-list. Empty = guest/world." },
+  ExtMapPath: { label: "Extension map file", desc: "Netatalk-style type/creator map for files with no stored Finder info." },
+  // MacIP / capture
+  Mode: { label: "Mode", desc: "Gateway mode (bridge / nat)." },
+  Snaplen: { label: "Snap length", desc: "Bytes captured per packet (0 = full frame)." },
+};
+
+// fieldMeta returns the label + description for a field key, humanising unknown keys.
+function fieldMeta(key) {
+  if (FIELD_META[key]) return FIELD_META[key];
+  // Humanise: split camelCase / snake_case into Title-cased words.
+  const label = String(key)
+    .replace(/_/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/^./, (c) => c.toUpperCase());
+  return { label, desc: "" };
+}
+
+// fieldRow stacks a label, input, and optional hint into a field group.
+function fieldRow(label, input, hint) {
+  const kids = [label, input];
+  if (hint) kids.push(hint);
+  return el("div", { class: "field-group" }, kids);
+}
+
 // sectionForm builds an editable form from a section object by reflecting its
 // JSON fields. Each scalar becomes an input typed from its value; the form
 // collects edits back into an object of the same shape for /reconfigure.
-function sectionForm(section) {
+//
+// opts.overrides maps a field key to a widget factory (value, section) → {node,
+// collect} that REPLACES the generic rendering for that field — used for the
+// model-aware widgets: Router members as a port checkbox list, an interface dropdown,
+// transport-binding checkboxes. opts.hide is a Set of field keys to omit entirely (a
+// bridge interface has no serial Baud/Device, so they are hidden for that section).
+function sectionForm(section, opts = {}) {
+  const overrides = opts.overrides || {};
+  const hide = opts.hide || new Set();
   const inputs = {};
+  const custom = {}; // key → {node, collect} from an override
   const nodes = [];
   for (const [k, v] of Object.entries(section)) {
-    const label = el("label", {}, [k]);
+    if (hide.has(k)) continue;
+    if (overrides[k]) {
+      const w = overrides[k](v, section);
+      custom[k] = w;
+      nodes.push(...(Array.isArray(w.nodes) ? w.nodes : [w.node]));
+      continue;
+    }
+    const meta = fieldMeta(k);
+    const label = el("label", {}, [meta.label]);
+    const hint = meta.desc ? el("p", { class: "field-hint" }, [meta.desc]) : null;
     let input;
     if (typeof v === "boolean") {
       input = el("input", { type: "checkbox" });
       if (v) input.checked = true;
-      nodes.push(el("label", { class: "inline" }, [input, k]));
+      const row = [el("label", { class: "inline" }, [input, meta.label])];
+      if (hint) row.push(hint);
+      nodes.push(el("div", { class: "field-group" }, row));
     } else if (typeof v === "number") {
       input = el("input", { type: "number", value: String(v) });
-      nodes.push(label, input);
+      nodes.push(fieldRow(label, input, hint));
     } else if (Array.isArray(v)) {
       input = el("textarea", {}, [v.join("\n")]);
       input.dataset.kind = "list";
-      nodes.push(label, input, el("p", { class: "field-hint" }, ["one entry per line"]));
+      nodes.push(fieldRow(label, input, hint || el("p", { class: "field-hint" }, ["one entry per line"])));
     } else if (v !== null && typeof v === "object") {
       // Nested object (e.g. an Options map): edit as JSON.
       input = el("textarea", {}, [JSON.stringify(v, null, 2)]);
       input.dataset.kind = "json";
-      nodes.push(label, input);
+      nodes.push(fieldRow(label, input, hint));
     } else {
       input = el("input", { type: "text", value: v == null ? "" : String(v) });
-      nodes.push(label, input);
+      nodes.push(fieldRow(label, input, hint));
     }
     inputs[k] = { input, orig: v };
   }
@@ -514,6 +820,9 @@ function sectionForm(section) {
     _nodes: nodes,
     collect() {
       const out = {};
+      // Hidden fields are preserved verbatim from the original section so a bridge's
+      // unused serial keys (Baud/Device) round-trip unchanged rather than being dropped.
+      for (const k of hide) if (k in section) out[k] = section[k];
       for (const [k, { input, orig }] of Object.entries(inputs)) {
         if (typeof orig === "boolean") out[k] = input.checked;
         else if (typeof orig === "number") out[k] = Number(input.value);
@@ -523,9 +832,128 @@ function sectionForm(section) {
           try { out[k] = JSON.parse(input.value); } catch (_) { out[k] = orig; }
         } else out[k] = input.value;
       }
+      for (const [k, w] of Object.entries(custom)) out[k] = w.collect();
       return out;
     },
   };
+}
+
+// ---- model-aware form widgets -------------------------------------------------------
+
+// checkboxList renders a labelled checkbox group bound to a list value (the selected
+// subset of `choices`). collect() returns the checked tokens in `choices` order. Used
+// for transport bindings (an empty result means "bind all" by the section's own rule,
+// so the hint says so).
+function checkboxList(label, choices, selected, hint) {
+  const set = new Set(selected || []);
+  const boxes = choices.map((c) => {
+    const cb = el("input", { type: "checkbox", value: c });
+    if (set.has(c)) cb.checked = true;
+    return { c, cb };
+  });
+  const node = el("div", { class: "field-group" }, [
+    el("label", {}, [label]),
+    ...boxes.map(({ c, cb }) => el("label", { class: "inline" }, [cb, c])),
+    ...(hint ? [el("p", { class: "field-hint" }, [hint])] : []),
+  ]);
+  return {
+    node,
+    collect: () => boxes.filter((b) => b.cb.checked).map((b) => b.c),
+  };
+}
+
+// dropdown renders a labelled <select> over `choices` (each {value,label}) bound to a
+// single string value. An empty option is prepended so "inherit / none" is selectable.
+function dropdown(label, choices, value, hint) {
+  const sel = el("select", {}, [
+    el("option", value ? { value: "" } : { value: "", selected: "" }, ["(none / inherit)"]),
+    ...choices.map((c) => {
+      const v = typeof c === "string" ? c : c.value;
+      const t = typeof c === "string" ? c : c.label;
+      return el("option", v === value ? { value: v, selected: "" } : { value: v }, [t]);
+    }),
+  ]);
+  const node = el("div", { class: "field-group" }, [
+    el("label", {}, [label]), sel,
+    ...(hint ? [el("p", { class: "field-hint" }, [hint])] : []),
+  ]);
+  return { node, collect: () => sel.value };
+}
+
+// portInstanceNames returns the names of the configured port instances in the model —
+// the candidates for [Router].Members. Ports live in Model.Lists keyed by a transport
+// schema (EtherTalk/TashTalk/LToUDP/IPX/NetBEUI); each instance's name is its join key.
+function portInstanceNames(model) {
+  const names = [];
+  for (const [, list] of Object.entries(model.Lists || {})) {
+    for (const inst of list || []) {
+      const n = instName(inst);
+      // Heuristic: a port instance carries an interface/transport shape, not a path —
+      // exclude AFP volumes / SMB shares (which have a Path/FSType).
+      if (n && !("Path" in inst) && !("path" in inst) && !("FSType" in inst) && !("fs_type" in inst)) {
+        names.push(n);
+      }
+    }
+  }
+  return names;
+}
+
+// interfaceChoices returns the selectable interface names: the declared namespace
+// entries (Model.Interfaces) plus the default Bridge, for a port/bridge interface
+// dropdown. Host NICs are offered too via the live enumerator where relevant.
+function interfaceChoices(model) {
+  const names = new Set();
+  for (const k of Object.keys(model.Interfaces || {})) names.add(k);
+  if (model.Bridge && model.Bridge.Name) names.add(model.Bridge.Name);
+  return [...names];
+}
+
+// APPLETALK_TRANSPORTS are the transport schema keys whose port instances seed the
+// AppleTalk internet (zone + network range): the forms for these surface the seed
+// fields and an interface picker. IPX/NetBEUI are transports too but carry no AppleTalk
+// seed, so they only get the interface picker.
+const APPLETALK_TRANSPORTS = ["EtherTalk", "LToUDP", "TashTalk"];
+const NON_AT_TRANSPORTS = ["IPX", "NetBEUI"];
+
+// formOptionsFor returns the sectionForm opts (overrides + hidden fields) for a given
+// section/reconfigure key, making the generic form model-aware: Router gets a member
+// checkbox list; SMB/NetBIOS/AFP get transport-binding checkboxes; Bridge gets a member
+// multi-select with serial fields hidden; an AppleTalk transport port gets an interface
+// dropdown plus its zone/network seed fields surfaced.
+function formOptionsFor(name, model) {
+  const opts = { overrides: {}, hide: new Set() };
+  if (name === "Router") {
+    opts.overrides.Members = (v) => checkboxList("Members — ports that join this router",
+      portInstanceNames(model), v, "Checked ports forward/participate in RTMP+ZIP; unchecked ports run standalone on their own segment.");
+  } else if (name === "SMB") {
+    opts.overrides.Transports = (v) => checkboxList("Transports",
+      ["netbeui", "ipx", "nbt", "tcp"], v, "Empty = bind all built transports. tcp/nbt also need an address below.");
+  } else if (name === "NetBIOS") {
+    opts.overrides.Transports = (v) => checkboxList("Transports",
+      ["netbeui", "ipx", "nbt"], v, "Empty = bind all built transports.");
+  } else if (name === "AFP") {
+    opts.overrides.Transports = (v) => checkboxList("Transports",
+      ["ddp", "tcp"], v, "ddp = classic (needs router membership); tcp = AFP-over-TCP (DSI). Empty = all.");
+  } else if (name === "Bridge") {
+    // A bridge aggregates member interfaces; it has no serial line speed or device.
+    opts.hide.add("Baud").add("Device").add("Kind");
+    opts.overrides.Members = (v) => checkboxList("Member interfaces",
+      interfaceChoices(model).filter((n) => n !== model.Bridge?.Name), v,
+      "The NICs this bridge aggregates.");
+  } else if (APPLETALK_TRANSPORTS.includes(name) || NON_AT_TRANSPORTS.includes(name)) {
+    // A transport port binds ONE interface from the namespace (plus the implicit
+    // bridge inheritance), so Iface is a single-select dropdown rather than free text.
+    opts.overrides.Iface = (v) => dropdown("Interface — the named interface this port binds to",
+      interfaceChoices(model), v, "Empty inherits the shared bridge interface.");
+    if (NON_AT_TRANSPORTS.includes(name)) {
+      // IPX / NetBEUI carry no AppleTalk seed; hide the AppleTalk-only fields.
+      opts.hide.add("SeedNetwork").add("SeedNetworkEnd").add("SeedZone").add("MAC");
+    } else if (name !== "EtherTalk") {
+      // Only EtherTalk uses a station MAC; LToUDP/TashTalk have none.
+      opts.hide.add("MAC");
+    }
+  }
+  return opts;
 }
 
 // ---------------------------------------------------------------------------
@@ -537,11 +965,17 @@ class CsConfig extends HTMLElement {
     this.render(el("p", { class: "muted" }, ["loading…"]));
     try {
       this.model = await api.config();
+      // Status tells us which components were actually built, so the share/volume
+      // editors and binding panels show even when their lists are still empty.
+      this.units = await api.status().catch(() => []);
     } catch (e) {
       this.render(el("p", { class: "err" }, [e.message]));
       return;
     }
     this.renderModel();
+  }
+  hasComponent(name) {
+    return (this.units || []).some((u) => u.Name === name);
   }
   render(child) {
     this.replaceChildren(el("div", { class: "panel" }, [el("h2", {}, ["Configuration"]), child]));
@@ -569,6 +1003,8 @@ class CsConfig extends HTMLElement {
       status,
       // Repeated-section editors (AFP volumes / SMB shares) with Add/Delete + a path picker.
       ...this.listEditors(),
+      // Interface namespace editor (NIC / serial / bridge entries ports bind to).
+      new CsInterfaces(this.model, () => this.activate()),
       // Extension-map grid editor (a file, not a model section).
       this.extMapPanel(),
       ...singletons,
@@ -576,19 +1012,21 @@ class CsConfig extends HTMLElement {
   }
 
   // sectionPanel renders one singleton section as a collapsible form with Apply (live).
+  // It reuses the SAME sectionEditor as the dashboard cog modal, so the fields, widgets,
+  // and apply behaviour are identical between the two surfaces.
   sectionPanel(name, key, sec) {
-    const form = sectionForm(sec);
+    const editor = sectionEditor(key, sec, this.model);
     const sstat = el("div", { class: "err" });
     const apply = button("Apply (live)", "", async () => {
       sstat.textContent = ""; sstat.className = "err";
       try {
-        await api.reconfigure(key, form.collect());
+        await editor.apply();
         sstat.className = "ok-msg"; sstat.textContent = "Applied.";
       } catch (e) { sstat.textContent = e.message; }
     });
     return el("details", { class: "panel" }, [
       el("summary", {}, [name]),
-      form.node,
+      editor.node,
       el("div", { class: "row" }, [apply]),
       sstat,
     ]);
@@ -596,13 +1034,26 @@ class CsConfig extends HTMLElement {
 
   // listEditors builds one panel per repeated-section key (AFPVolumes/SMBShares): a row
   // per instance with Edit/Delete and an Add form. The owner component (AFP/SMB) drives
-  // the live reconcile. Keys map to their owner by convention.
+  // the live reconcile. The well-known editors are shown whenever their owner component
+  // was built (even with no instances yet, so "Add volume/share" is always reachable);
+  // any other repeated key present in the model is shown too.
   listEditors() {
-    const ownerFor = { AFPVolumes: "AFP", SMBShares: "SMB" };
+    const known = [
+      { key: "AFPVolumes", owner: "AFP" },
+      { key: "SMBShares", owner: "SMB" },
+    ];
+    const lists = this.model.Lists || {};
+    const shown = new Set();
     const out = [];
-    for (const [key, list] of Object.entries(this.model.Lists || {})) {
-      const owner = ownerFor[key] || key;
-      out.push(new CsInstanceEditor(key, owner, list || [], () => this.activate()));
+    for (const { key, owner } of known) {
+      if (this.hasComponent(owner) || lists[key]) {
+        out.push(new CsInstanceEditor(key, owner, lists[key] || [], () => this.activate()));
+        shown.add(key);
+      }
+    }
+    for (const [key, list] of Object.entries(lists)) {
+      if (shown.has(key)) continue;
+      out.push(new CsInstanceEditor(key, key, list || [], () => this.activate()));
     }
     return out;
   }
@@ -621,12 +1072,27 @@ class CsConfig extends HTMLElement {
   // editableSections returns the SINGLETON sections as [displayName, reconfigureKey,
   // section] tuples: the well-known typed fields + the registered Sections map. Repeated
   // instances (Lists) are handled separately by listEditors (they need Add/Delete).
+  //
+  // Server-level singletons (AFP/SMB/NetBIOS) are SYNTHESISED with their defaults when
+  // their owner component exists but the model carries no section yet — so an operator
+  // can set the AFP name/zone or SMB/NetBIOS bindings on a fresh install without first
+  // hand-editing server.toml. The synthesised default reconfigures live like a stored one.
   editableSections() {
     const m = this.model, out = [];
     for (const k of ["Identity", "Logging", "Router", "Bridge", "Capture"]) {
       if (m[k] && typeof m[k] === "object") out.push([k, k, m[k]]);
     }
-    for (const [k, sec] of Object.entries(m.Sections || {})) out.push([k, k, sec]);
+    const sections = { ...(m.Sections || {}) };
+    // Synthesise server singletons for built components missing a section.
+    const serverDefaults = {
+      AFP: { ServerName: "", Zone: "", Transports: [], TCPAddr: "" },
+      SMB: { Transports: [], TCPAddr: "", NBTAddr: "" },
+      NetBIOS: { Transports: [], ScopeID: "" },
+    };
+    for (const [key, def] of Object.entries(serverDefaults)) {
+      if (!sections[key] && this.hasComponent(key)) sections[key] = def;
+    }
+    for (const [k, sec] of Object.entries(sections)) out.push([k, k, sec]);
     return out;
   }
 }
@@ -759,14 +1225,20 @@ function instanceForm(inst, fsTypes) {
 
   for (const [k, v] of Object.entries(inst)) {
     if (k === pathKey) {
+      const meta = fieldMeta(k);
       const inp = el("input", { type: "text", value: v || "" });
       fields[k] = { input: inp, orig: v };
-      nodes.push(el("label", {}, [k]), pathPicker(inp));
+      const kids = [el("label", {}, [meta.label]), pathPicker(inp)];
+      if (meta.desc) kids.push(el("p", { class: "field-hint" }, [meta.desc]));
+      nodes.push(el("div", { class: "field-group" }, kids));
     } else if (k === fsKey && fsTypes.length) {
+      const meta = fieldMeta(k);
       const sel = el("select", {}, fsTypes.map((t) =>
         el("option", t === v ? { value: t, selected: "" } : { value: t }, [t])));
       fields[k] = { input: sel, orig: v };
-      nodes.push(el("label", {}, [k]), sel);
+      const kids = [el("label", {}, [meta.label]), sel];
+      if (meta.desc) kids.push(el("p", { class: "field-hint" }, [meta.desc]));
+      nodes.push(el("div", { class: "field-group" }, kids));
     } else {
       // fall back to the generic single-field rendering
       const one = sectionForm({ [k]: v });
@@ -836,6 +1308,132 @@ async function openPathBrowser(startDir, onPick) {
   overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
   document.body.append(overlay);
   go(cur);
+}
+
+// ---------------------------------------------------------------------------
+// <cs-interfaces> — the interface-namespace editor (Model.Interfaces): a row per
+// named NIC/serial/bridge entry with Edit/Delete and an Add form, over
+// /set_interface and /remove_interface. Kind-aware: a bridge picks member
+// interfaces (no baud); a serial picks a device + baud; a nic picks an address +
+// backend (pcap/tap/tun). The NIC device dropdown is populated from /list_interfaces.
+// ---------------------------------------------------------------------------
+class CsInterfaces extends HTMLElement {
+  constructor(model, onChange) {
+    super();
+    this.model = model;
+    this.onChange = onChange;
+    this.ifaces = model.Interfaces || {};
+  }
+  connectedCallback() { this.render(); }
+  async remove(name) {
+    if (!confirm(`Remove interface "${name}"?`)) return;
+    try { await api.removeInterface(name); this.onChange(); }
+    catch (e) { alert(e.message); }
+  }
+  render() {
+    const entries = Object.entries(this.ifaces);
+    const rows = entries.map(([name, iface]) => el("tr", {}, [
+      el("td", {}, [name]),
+      el("td", { class: "muted" }, [iface.Kind || "nic"]),
+      el("td", { class: "muted" }, [ifaceSummary(iface)]),
+      el("td", {}, [el("div", { class: "row" }, [
+        button("Edit", "", () => openInterfaceModal({ Name: name, ...iface }, this.model, this.onChange)),
+        button("Delete", "danger", () => this.remove(name)),
+      ])]),
+    ]));
+    const table = el("table", {}, [
+      el("thead", {}, [el("tr", {}, [th("Name"), th("Kind"), th("Detail"), th("")])]),
+      el("tbody", {}, rows.length ? rows : [el("tr", {}, [el("td", { class: "muted", colspan: "4" }, ["No interfaces declared. Ports fall back to a bare NIC by name."])])]),
+    ]);
+    this.replaceChildren(el("details", { class: "panel" }, [
+      el("summary", {}, ["Interfaces"]),
+      el("p", { class: "field-hint" }, ["Named NIC / serial / bridge entries a transport binds to. A bridge aggregates NICs and has no baud rate."]),
+      table,
+      el("div", { class: "row" }, [
+        button("Add interface", "primary", () => openInterfaceModal(blankInterface(), this.model, this.onChange)),
+      ]),
+    ]));
+  }
+}
+
+// ifaceSummary renders a one-line detail for an interface row by kind.
+function ifaceSummary(iface) {
+  const kind = iface.Kind || "nic";
+  if (kind === "bridge") return "members: " + ((iface.Members || []).join(", ") || "—");
+  if (kind === "serial") return `${iface.Device || "—"} @ ${iface.Baud || "default"}`;
+  return [iface.Addr, iface.Backend].filter(Boolean).join(" · ") || "pcap";
+}
+
+// blankInterface seeds a new nic-kind entry.
+function blankInterface() {
+  return { Name: "", Kind: "nic", Addr: "", Backend: "pcap", Device: "", Baud: 0, Members: [] };
+}
+
+// openInterfaceModal edits one interface-namespace entry with kind-aware fields. The
+// Kind selector swaps the field set live: nic → address + backend (+ device dropdown
+// from /list_interfaces); serial → device + baud; bridge → member checkboxes (NO baud).
+async function openInterfaceModal(iface, model, onChange) {
+  const overlay = el("div", { class: "modal-overlay" });
+  const body = el("div", { class: "modal-body" });
+  const status = el("div", { class: "err" });
+  const close = () => overlay.remove();
+  const saveBtn = button("Save", "primary", () => {});
+  overlay.append(el("div", { class: "modal" }, [
+    el("div", { class: "modal-head" }, [el("h2", {}, ["Interface"]), button("✕", "modal-close", close)]),
+    body, status,
+    el("div", { class: "modal-foot" }, [button("Cancel", "", close), saveBtn]),
+  ]));
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  document.body.append(overlay);
+
+  const hostNics = await api.interfaces().catch(() => []);
+  const cur = { ...iface };
+  const nameIn = el("input", { type: "text", value: cur.Name || "", placeholder: "e.g. eth0, br-lan, ttyUSB-attic" });
+  const kindSel = el("select", {}, ["nic", "serial", "bridge"].map((k) =>
+    el("option", k === (cur.Kind || "nic") ? { value: k, selected: "" } : { value: k }, [k])));
+  const fields = el("div", {});
+
+  let collectKind = () => ({});
+  function renderFields() {
+    const kind = kindSel.value;
+    if (kind === "nic") {
+      const nicNames = hostNics.map((n) => n.Name);
+      const dev = dropdown("Device (host NIC)", nicNames, cur.Name || "", "Pick a detected NIC, or type the name above.");
+      const addr = el("input", { type: "text", value: cur.Addr || "", placeholder: "optional pinned address" });
+      const backend = dropdown("Link backend", ["pcap", "tap", "tun"], cur.Backend || "pcap", "pcap is the default and only backend wired today.");
+      fields.replaceChildren(dev.node, el("label", {}, ["Address"]), addr, backend.node);
+      collectKind = () => ({ Kind: "nic", Addr: addr.value, Backend: backend.collect(), Device: "", Baud: 0, Members: [] });
+    } else if (kind === "serial") {
+      const device = el("input", { type: "text", value: cur.Device || "", placeholder: "COM3 / /dev/ttyUSB0" });
+      const baud = el("input", { type: "number", value: String(cur.Baud || 0) });
+      fields.replaceChildren(el("label", {}, ["Device"]), device, el("label", {}, ["Baud (0 = default)"]), baud);
+      collectKind = () => ({ Kind: "serial", Device: device.value, Baud: Number(baud.value), Addr: "", Backend: "", Members: [] });
+    } else { // bridge — member NICs, NO baud
+      const choices = [...new Set([...hostNics.map((n) => n.Name), ...Object.keys(model.Interfaces || {})])]
+        .filter((n) => n && n !== cur.Name);
+      const members = checkboxList("Member interfaces", choices, cur.Members || [], "The NICs this bridge aggregates. A bridge has no baud rate.");
+      fields.replaceChildren(members.node);
+      collectKind = () => ({ Kind: "bridge", Members: members.collect(), Addr: "", Backend: "", Device: "", Baud: 0 });
+    }
+  }
+  kindSel.addEventListener("change", renderFields);
+  body.replaceChildren(
+    el("label", {}, ["Name"]), nameIn,
+    el("label", {}, ["Kind"]), kindSel,
+    fields,
+  );
+  renderFields();
+
+  saveBtn.addEventListener("click", async () => {
+    status.textContent = ""; status.className = "err";
+    const name = nameIn.value.trim();
+    if (!name) { status.textContent = "Name is required."; return; }
+    try {
+      await api.setInterface({ Name: name, ...collectKind() });
+      status.className = "ok-msg"; status.textContent = "Saved.";
+      setTimeout(() => { close(); onChange(); }, 400);
+    } catch (e) { status.textContent = e.message; }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1127,12 +1725,19 @@ function button(label, cls, onClick, disabled = false) {
   if (onClick) b.addEventListener("click", onClick);
   return b;
 }
+// linkButton is a button styled as an inline link (the drill-down affordance).
+function linkButton(label, onClick) {
+  const b = el("button", { class: "link" }, [label]);
+  b.addEventListener("click", onClick);
+  return b;
+}
 
 customElements.define("cs-app", CsApp);
 customElements.define("cs-setup", CsSetup);
 customElements.define("cs-dashboard", CsDashboard);
 customElements.define("cs-config", CsConfig);
 customElements.define("cs-instance-editor", CsInstanceEditor);
+customElements.define("cs-interfaces", CsInterfaces);
 customElements.define("cs-extmap", CsExtMap);
 customElements.define("cs-diagnostics", CsDiagnostics);
 customElements.define("cs-users", CsUsers);

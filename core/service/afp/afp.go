@@ -46,6 +46,8 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
@@ -101,13 +103,15 @@ type Service struct {
 	sessions      *sessionTable
 	pendingWrites *pendingWriteTable
 
-	mu       sync.Mutex
-	rtr      router.ServiceRouter
-	auth     Authenticator
-	resolver func() ([]VolumeSpec, error) // re-resolves the desired volume set from the model; set at wire time for hot-apply
-	busFor   func(fs.ShareSpec) bus.Bus   // resolves the shared FS-mutation bus for a share's host path (§10d); nil = isolated
-	reactor  *share.Reactor               // §10d coordination consumer; subscribes to same-path buses on Start
-	running  bool
+	mu         sync.Mutex
+	rtr        router.ServiceRouter
+	auth       Authenticator
+	zone       string                       // advertised AppleTalk zone (NBP registration); "" = router default
+	transports []string                     // bound transport tokens (ddp/tcp); empty = bind-all (back-compat)
+	resolver   func() ([]VolumeSpec, error) // re-resolves the desired volume set from the model; set at wire time for hot-apply
+	busFor     func(fs.ShareSpec) bus.Bus   // resolves the shared FS-mutation bus for a share's host path (§10d); nil = isolated
+	reactor    *share.Reactor               // §10d coordination consumer; subscribes to same-path buses on Start
+	running    bool
 }
 
 // Authenticator validates a (username, cleartext password) credential. It is the
@@ -204,6 +208,58 @@ func (s *Service) SetServerInfo(info ServerInfo) {
 	s.mu.Lock()
 	s.info = info
 	s.mu.Unlock()
+}
+
+// SetServerName overrides only the advertised server name, leaving the rest of the
+// ServerInfo (machine type, version/UAM lists, flags) at their defaults. The compose
+// wiring calls it from the AFP server section. An empty name keeps the default.
+func (s *Service) SetServerName(name string) {
+	s.mu.Lock()
+	s.info.ServerName = name
+	s.mu.Unlock()
+}
+
+// SetZone records the AppleTalk zone the service advertises into (NBP registration).
+// Empty means the router's default zone. Surfaced via Describable for the dashboard.
+func (s *Service) SetZone(zone string) {
+	s.mu.Lock()
+	s.zone = zone
+	s.mu.Unlock()
+}
+
+// SetTransports records the bound transport tokens (afp.TransportDDP/TransportTCP) for
+// dashboard display. An empty list means bind-all (the back-compat default). It does
+// NOT itself gate binding — the classic DDP stack is joined via the router membership
+// and the modern DSI/TCP transport (when it lands) reads the same section — this is the
+// Describable surface so the operator sees which stacks are active.
+func (s *Service) SetTransports(transports []string) {
+	s.mu.Lock()
+	s.transports = append([]string(nil), transports...)
+	s.mu.Unlock()
+}
+
+// Kind labels the AFP component for the dashboard (component.Describable).
+func (s *Service) Kind() string { return "service" }
+
+// Props surfaces dashboard detail (component.Describable): the advertised zone, the
+// bound transports, and the live volume count, so the operator sees AFP's identity and
+// binding without opening the config modal.
+func (s *Service) Props() map[string]string {
+	s.mu.Lock()
+	zone := s.zone
+	transports := s.transports
+	nvols := len(s.volumes)
+	s.mu.Unlock()
+	props := map[string]string{"volumes": strconv.Itoa(nvols)}
+	if zone != "" {
+		props["zone"] = zone
+	}
+	if len(transports) > 0 {
+		props["transports"] = strings.Join(transports, ",")
+	} else {
+		props["transports"] = "ddp,tcp (all)"
+	}
+	return props
 }
 
 // Name returns the component name.

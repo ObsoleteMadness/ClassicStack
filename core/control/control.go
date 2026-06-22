@@ -40,6 +40,15 @@ type Plane interface {
 
 	Status() []Unit
 	ListInterfaces() ([]InterfaceInfo, error)
+	// SetInterface adds or replaces a named entry in the interface NAMESPACE
+	// (Model.Interfaces) — a NIC, serial, or bridge interface a port references by
+	// name (§M11). This is distinct from ListInterfaces (which enumerates the HOST's
+	// physical NICs for a picker): the namespace is operator-declared config. The
+	// change is staged into the model; it goes live for a port the next time that
+	// port is (re)built (Reconfigure/Restart/Save), since EffectiveInterface
+	// re-resolves the namespace on every build. RemoveInterface drops the named entry.
+	SetInterface(ctx context.Context, iface config.InterfaceSection) error
+	RemoveInterface(ctx context.Context, name string) error
 	ListFSTypes() []string
 	// ParamsFor returns the config-param schema for one fs_type, so a UI can render
 	// that backend's per-share form (which keys, which are required, which are Secret
@@ -131,6 +140,11 @@ type Supervisor interface {
 	Restart(ctx context.Context, name string) error
 	Status() []Unit
 	ListInterfaces() ([]InterfaceInfo, error)
+	// SetInterface / RemoveInterface mutate the interface namespace (Model.Interfaces)
+	// under the supervisor lock and reconcile the ports that reference the changed
+	// interface so the change goes live.
+	SetInterface(ctx context.Context, iface config.InterfaceSection) error
+	RemoveInterface(ctx context.Context, name string) error
 	ListFSTypes() []string
 	// SetAdminAuth stamps the web-admin credential (§4-ter) into the model under the
 	// supervisor's lock. The plane calls it from SetAdmin, then persists via Save.
@@ -140,6 +154,35 @@ type Supervisor interface {
 // Diagnostics is the optional read-only probe surface.
 type Diagnostics interface {
 	ListZones(ctx context.Context) ([]string, error)
+	// RegisteredNames returns the NBP name table (the names the server has bound on
+	// the AppleTalk internet), the drill-down behind NBP's "registered names" stat.
+	// ErrUnavailable when no NBP service is wired.
+	RegisteredNames(ctx context.Context) ([]NBPName, error)
+	// MacIPLeases returns the MacIP gateway's active IP↔AppleTalk leases, the
+	// drill-down behind MacIP's "active leases" stat. ErrUnavailable when no MacIP
+	// gateway is wired.
+	MacIPLeases(ctx context.Context) ([]MacIPLease, error)
+}
+
+// NBPName is the management view of one entry in the NBP name table: the AppleTalk
+// NVE tuple (object:type@zone) and the DDP socket it is registered on. The byte
+// fields are decoded to display strings at the diagnostics impl (MacRoman → UTF-8),
+// so a front-end renders them directly.
+type NBPName struct {
+	Object string `json:"object"`
+	Type   string `json:"type"`
+	Zone   string `json:"zone"`
+	Socket uint8  `json:"socket"`
+}
+
+// MacIPLease is the management view of one MacIP gateway lease: the assigned IPv4
+// (dotted-quad string), the AppleTalk network/node it maps to, and the lease source
+// ("static" from the pool, or "external" from a DHCP-relay / egress assignment).
+type MacIPLease struct {
+	IP        string `json:"ip"`
+	ATNetwork uint16 `json:"at_network"`
+	ATNode    uint8  `json:"at_node"`
+	Source    string `json:"source"`
 }
 
 type plane struct {
@@ -306,8 +349,20 @@ func (p *plane) Restart(ctx context.Context, name string) error { return p.sup.R
 
 func (p *plane) Status() []Unit                           { return p.sup.Status() }
 func (p *plane) ListInterfaces() ([]InterfaceInfo, error) { return p.sup.ListInterfaces() }
-func (p *plane) ListFSTypes() []string                    { return p.sup.ListFSTypes() }
-func (p *plane) Diagnostics() Diagnostics                 { return p.diag }
+
+// SetInterface stages a named interface-namespace entry and reconciles referencing
+// ports (forwarded to the supervisor, which holds the model lock).
+func (p *plane) SetInterface(ctx context.Context, iface config.InterfaceSection) error {
+	return p.sup.SetInterface(ctx, iface)
+}
+
+// RemoveInterface drops a named interface-namespace entry and reconciles referencing
+// ports.
+func (p *plane) RemoveInterface(ctx context.Context, name string) error {
+	return p.sup.RemoveInterface(ctx, name)
+}
+func (p *plane) ListFSTypes() []string    { return p.sup.ListFSTypes() }
+func (p *plane) Diagnostics() Diagnostics { return p.diag }
 
 // SetDiagnostics installs a real diagnostics impl (nil is ignored, keeping the
 // unavailable default).
@@ -377,5 +432,13 @@ func (p *plane) Subscribe(topics ...string) (<-chan bus.Event, func()) {
 type unavailableDiagnostics struct{}
 
 func (unavailableDiagnostics) ListZones(context.Context) ([]string, error) {
+	return nil, ErrUnavailable
+}
+
+func (unavailableDiagnostics) RegisteredNames(context.Context) ([]NBPName, error) {
+	return nil, ErrUnavailable
+}
+
+func (unavailableDiagnostics) MacIPLeases(context.Context) ([]MacIPLease, error) {
 	return nil, ErrUnavailable
 }

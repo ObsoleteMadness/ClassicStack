@@ -35,9 +35,11 @@ import (
 	ipxrouter "github.com/ObsoleteMadness/ClassicStack/core/router/ipx"
 	netbeuirouter "github.com/ObsoleteMadness/ClassicStack/core/router/netbeui"
 
+	"github.com/ObsoleteMadness/ClassicStack/core/auth"
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	diagproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx/diag"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/afp"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/browser"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/ipxdiag"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/ipxgw"
@@ -56,7 +58,7 @@ import (
 // nothing (the transports have nothing to feed); with NetBIOS but no SMB the session
 // engines run but drop session data after reassembly (no consumer), exactly the
 // graceful-degradation contract the seams already document.
-func crossWireTransports(comps map[string]component.Component, m *config.Model) {
+func crossWireTransports(comps map[string]component.Component, m *config.Model, egressOpener MacIPEgressOpener) MacIPEgress {
 	nb := netbiosService(comps)
 	sm := smbService(comps)
 
@@ -115,24 +117,73 @@ func crossWireTransports(comps map[string]component.Component, m *config.Model) 
 	// the DDP-service analogue of installing SMB as the NetBIOS session consumer. The
 	// IP-side egress adapter, when one exists, is injected the same way; until then
 	// MacIP runs AppleTalk-only (assignment + discovery work, IP data does not).
-	wireMacIP(comps)
+	return wireMacIP(comps, m, egressOpener)
 }
 
 // wireMacIP injects the NBP service into the AppleTalk gateway services (MacIP's
-// IPGATEWAY name, IPXGW's "IPX Gateway" names) when NBP was built. The IPX mini-router
-// is handed to IPXGW separately in wireIPX (which owns that router). A no-op for a
-// gateway that was not built.
-func wireMacIP(comps map[string]component.Component) {
+// IPGATEWAY name, IPXGW's "IPX Gateway" names) when NBP was built, and — when the
+// MacIP section names an interface and an egress opener was supplied — builds the
+// IP-side egress adapter and injects it via SetEgress, returning it so the runtime
+// can manage its lifecycle. The IPX mini-router is handed to IPXGW separately in
+// wireIPX (which owns that router). Returns nil egress when none was built.
+func wireMacIP(comps map[string]component.Component, m *config.Model, egressOpener MacIPEgressOpener) MacIPEgress {
 	names := nbpService(comps)
-	if names == nil {
-		return
+	mi := macipService(comps)
+	if names != nil {
+		if mi != nil {
+			mi.SetNBP(names)
+		}
+		if gw := ipxgwService(comps); gw != nil {
+			gw.SetNBP(names)
+		}
 	}
-	if mi := macipService(comps); mi != nil {
-		mi.SetNBP(names)
+
+	// Build + inject the IP-side egress when the section configures an interface and the
+	// cmd edge supplied an opener (the pcap/cgo dependency lives there). A nil opener,
+	// no MacIP service, no section, or an empty Interface keeps MacIP AppleTalk-only. An
+	// open error is logged via the opener; here we just leave egress unwired.
+	if mi == nil || egressOpener == nil {
+		return nil
 	}
-	if gw := ipxgwService(comps); gw != nil {
-		gw.SetNBP(names)
+	sec := macip.SectionFromModel(m)
+	if sec == nil || !sec.Enabled {
+		return nil
 	}
+	params := sec.EgressParams()
+	if params.Interface == "" {
+		return nil
+	}
+	eg, err := egressOpener(params, mi.OwnsIP)
+	if err != nil || eg == nil {
+		return nil
+	}
+	mi.SetEgress(eg)
+	return eg
+}
+
+// wireAuthenticator installs the shared user store as the login Authenticator on every
+// built file service (AFP, SMB). The store is an auth.UserStore, whose method set is a
+// superset of each service's local Authenticator interface (just Authenticate), so the
+// interface value is assignable directly — no per-package import of core/auth here. A
+// service not built is simply absent from comps and skipped. With a nil store the caller
+// does not invoke this (services stay guest-only).
+func wireAuthenticator(comps map[string]component.Component, store auth.Authenticator) {
+	if af := afpService(comps); af != nil {
+		af.SetAuthenticator(store)
+	}
+	if sm := smbService(comps); sm != nil {
+		sm.SetAuthenticator(store)
+	}
+}
+
+// afpService returns the built AFP service, or nil when none was built.
+func afpService(comps map[string]component.Component) *afp.Service {
+	if c, ok := comps[afp.Name]; ok {
+		if s, ok := c.(*afp.Service); ok {
+			return s
+		}
+	}
+	return nil
 }
 
 // wireNetBEUI builds the NetBEUI mini-router (when any NetBEUI port was built),

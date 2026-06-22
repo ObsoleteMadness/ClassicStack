@@ -79,7 +79,11 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/list_fs_types", s.handleListFSTypes)
 	mux.HandleFunc("/params_for", s.handleParamsFor)
 	mux.HandleFunc("/list_interfaces", s.handleListInterfaces)
+	mux.HandleFunc("/set_interface", s.handleSetInterface)
+	mux.HandleFunc("/remove_interface", s.handleRemoveInterface)
 	mux.HandleFunc("/list_zones", s.handleListZones)
+	mux.HandleFunc("/registered_names", s.handleRegisteredNames)
+	mux.HandleFunc("/macip_leases", s.handleMacIPLeases)
 	mux.HandleFunc("/reconfigure", s.handleReconfigure)
 	mux.HandleFunc("/add_instance", s.handleAddInstance)
 	mux.HandleFunc("/remove_instance", s.handleRemoveInstance)
@@ -491,12 +495,82 @@ func (s *Server) handleListInterfaces(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(res)
 }
 
+// handleSetInterface adds or replaces a named interface-namespace entry (Model.Interfaces).
+func (s *Server) handleSetInterface(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var iface config.InterfaceSection
+	if err := json.NewDecoder(r.Body).Decode(&iface); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.plane.SetInterface(r.Context(), iface); err != nil {
+		http.Error(w, err.Error(), statusForErr(err))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleRemoveInterface drops a named interface-namespace entry.
+func (s *Server) handleRemoveInterface(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.plane.RemoveInterface(r.Context(), body.Name); err != nil {
+		http.Error(w, err.Error(), statusForErr(err))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 func (s *Server) handleListZones(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	res, err := s.plane.Diagnostics().ListZones(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), statusForErr(err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
+}
+
+// handleRegisteredNames returns the NBP name table (the drill-down behind NBP's
+// "registered names" stat). 501 when no NBP service is wired (ErrUnavailable).
+func (s *Server) handleRegisteredNames(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	res, err := s.plane.Diagnostics().RegisteredNames(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), statusForErr(err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
+}
+
+// handleMacIPLeases returns the MacIP gateway lease table (the drill-down behind
+// MacIP's "active leases" stat). 501 when no MacIP gateway is wired (ErrUnavailable).
+func (s *Server) handleMacIPLeases(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	res, err := s.plane.Diagnostics().MacIPLeases(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), statusForErr(err))
 		return
@@ -893,11 +967,41 @@ func (c *AdapterClient) ListInterfaces() ([]control.InterfaceInfo, error) {
 	return out, err
 }
 
+// SetInterface adds/replaces a named interface-namespace entry.
+func (c *AdapterClient) SetInterface(ctx context.Context, iface config.InterfaceSection) error {
+	_ = ctx
+	return c.post("/set_interface", iface)
+}
+
+// RemoveInterface drops a named interface-namespace entry.
+func (c *AdapterClient) RemoveInterface(ctx context.Context, name string) error {
+	_ = ctx
+	return c.post("/remove_interface", struct {
+		Name string `json:"name"`
+	}{Name: name})
+}
+
 // ListZones runs the Diagnostics zone probe (control.ErrUnavailable when unsupported).
 func (c *AdapterClient) ListZones(ctx context.Context) ([]string, error) {
 	_ = ctx
 	var out []string
 	err := c.getJSON("/list_zones", &out)
+	return out, err
+}
+
+// RegisteredNames runs the NBP name-table probe (control.ErrUnavailable when no NBP).
+func (c *AdapterClient) RegisteredNames(ctx context.Context) ([]control.NBPName, error) {
+	_ = ctx
+	var out []control.NBPName
+	err := c.getJSON("/registered_names", &out)
+	return out, err
+}
+
+// MacIPLeases runs the MacIP lease probe (control.ErrUnavailable when no MacIP gateway).
+func (c *AdapterClient) MacIPLeases(ctx context.Context) ([]control.MacIPLease, error) {
+	_ = ctx
+	var out []control.MacIPLease
+	err := c.getJSON("/macip_leases", &out)
 	return out, err
 }
 
