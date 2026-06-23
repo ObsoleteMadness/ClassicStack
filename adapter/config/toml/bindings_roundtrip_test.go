@@ -5,11 +5,46 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/afp"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/etherdfs"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/ipxgw"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/macip"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/netbios"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/smb"
 )
+
+// TestEtherDFSSectionsRoundTrip proves the EtherDFS singleton server section (the
+// NIC binding + advertised name) and a repeated drive section survive a TOML
+// round-trip through the schema registry.
+func TestEtherDFSSectionsRoundTrip(t *testing.T) {
+	etherdfs.RegisterServer()
+	etherdfs.RegisterDrives()
+
+	m := config.NewModel()
+	m.Set(&etherdfs.ServerSection{SKey: etherdfs.ServerKey, IsEnabled: true, Interface: "eth0", ServerName: "ATTIC"})
+	m.AddInstance(&etherdfs.DriveSection{DName: "E", FSType: "local_fs", Path: "/srv/dos", NameEngine: "short"})
+
+	c := New()
+	data, err := c.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	got := config.NewModel()
+	if err := c.Unmarshal(data, got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	srv := etherdfs.ServerSectionFromModel(got)
+	if !srv.IsEnabled || srv.Interface != "eth0" || srv.ServerName != "ATTIC" {
+		t.Errorf("server section wrong: %+v", srv)
+	}
+	specs := etherdfs.SpecsFromModel(got)
+	if len(specs) != 1 || specs[0].Name != "E" || specs[0].Share.Path != "/srv/dos" {
+		t.Errorf("drive specs wrong: %+v", specs)
+	}
+	if specs[0].Share.NameEngine != "short" {
+		t.Errorf("name_engine not round-tripped: %q", specs[0].Share.NameEngine)
+	}
+}
 
 // TestAFPServerSectionRoundTrip proves the AFP server-level identity (name/zone) and
 // transport bindings survive a TOML round-trip through the schema registry.

@@ -113,7 +113,7 @@ func (s *Service) handleOpenAndX(sess *smbSession, h protocol.Header, req []byte
 	w := make([]byte, 30)
 	w[0] = protocol.CommandNoAndXCommand
 	bp.PutLE16(w[4:6], fid)
-	bp.PutLE16(w[6:8], dosAttrs(info))
+	bp.PutLE16(w[6:8], sh.AttrsFor(store, info))
 	bp.PutLE32(w[8:12], 0) // LastWriteTime (UTIME) — 0 / unknown
 	bp.PutLE32(w[12:16], uint32(info.Size()))
 	bp.PutLE16(w[16:18], granted)
@@ -155,7 +155,7 @@ func (s *Service) handleOpen(sess *smbSession, h protocol.Header, req []byte) []
 
 	w := make([]byte, 14)
 	bp.PutLE16(w[0:2], fid)
-	bp.PutLE16(w[2:4], dosAttrs(info))
+	bp.PutLE16(w[2:4], sh.AttrsFor(store, info))
 	bp.PutLE32(w[4:8], 0) // LastModified UTIME
 	bp.PutLE32(w[8:12], uint32(info.Size()))
 	bp.PutLE16(w[12:14], accessMode&0x07)

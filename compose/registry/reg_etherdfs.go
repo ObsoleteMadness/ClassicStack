@@ -1,0 +1,73 @@
+//go:build etherdfs || all
+
+package registry
+
+import (
+	"github.com/ObsoleteMadness/ClassicStack/core/component"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
+	etherport "github.com/ObsoleteMadness/ClassicStack/core/port/etherdfs"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/etherdfs"
+)
+
+func init() {
+	// Register the EtherDFS drive repeated-section schema and the singleton server
+	// section so codecs round-trip them. Kept here (not in an etherdfs-package init)
+	// so the sections exist exactly when the EtherDFS service is built.
+	etherdfs.RegisterDrives()
+	etherdfs.RegisterServer()
+
+	// EtherDFS is BOTH the wire endpoint and the file server: a single component
+	// whose port half (the EtherType-0xEDF5 raw-Ethernet link) the service embeds, so
+	// it is registered as one service factory — there is no separate port component
+	// and no transport cross-wire (EtherDFS framing is single-purpose). The factory
+	// builds the port from the [EtherDFS] section's NIC binding, then the service over
+	// it.
+	Register(etherdfs.Name, func(ctx *BuildContext) (component.Component, error) {
+		m := ctx.Model
+		logger := log.New(etherdfs.Name, log.NewStderrSink(log.NewLevelVar(log.Info)))
+
+		// Resolve the wire binding from the singleton server section and project it
+		// onto a port.Section the NIC opener / EtherDFS port consume.
+		srv := etherdfs.ServerSectionFromModel(m)
+		sec := srv.PortSection()
+
+		// Build the EtherDFS port: a NIC-bound raw-Ethernet link opened per Start via
+		// the injected opener (nil → inert-but-configured). A disabled section yields a
+		// nil port → the service is nil → (nil, nil) so the supervisor skips it, exactly
+		// as a disabled transport does.
+		open := nicLinkOpener(ctx, m.EffectiveInterfaceFor(sec))
+		p, err := etherport.NewInstanceFromOpener(sec, open, sectionMACFor(sec), logger)
+		if err != nil {
+			return nil, err
+		}
+		svc := etherdfs.New(p, logger)
+		if svc == nil {
+			return nil, nil
+		}
+
+		// Server identity is the shared Identity.Hostname (§4-bis), unless the section
+		// overrides it: EtherDFS advertises this name in AL_INSTALLCHK replies.
+		name := srv.ServerName
+		if name == "" {
+			name = m.Identity.Hostname
+		}
+		svc.SetServerName(name)
+
+		// §10d: build each drive over the shared FS-mutation bus for its host path, so a
+		// same-host-path AFP volume / SMB share sees this drive's mutations (and
+		// vice-versa). Set BEFORE the drives are built so the initial set gets it too.
+		svc.SetBusResolver(fsBus.busFor)
+		// Hot-apply resolver: a Reconfigure of a drive section reconciles the live drive
+		// set against the model.
+		svc.SetDriveResolver(func() ([]etherdfs.DriveSpec, error) {
+			return etherdfs.SpecsFromModel(m), nil
+		})
+		// Populate the initial drive set through the reconcile path so it is built over
+		// the shared bus. A bad spec fails the build loudly here; an empty model yields a
+		// service with no drives (the zero-config default).
+		if err := svc.ReconcileDrives(etherdfs.SpecsFromModel(m)); err != nil {
+			return nil, err
+		}
+		return svc, nil
+	})
+}

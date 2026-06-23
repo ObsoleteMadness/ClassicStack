@@ -38,6 +38,11 @@ type VolumeSection struct {
 	NameEngine string `toml:"name_engine"`
 	// Metastore selects the CNID/shortname store kind ("mem" default, "sqlite" tagged).
 	Metastore string `toml:"metastore"`
+	// DOSAttrBackend selects how DOS attributes that the host cannot represent are
+	// persisted: auto|metastore|sidecar|native|xattr (empty = auto). AFP does not
+	// serve DOS attributes itself, but a same-host-path SMB/EtherDFS share does, so
+	// the volume config carries it for consistency. See fs.ShareSpec.DOSAttrBackend.
+	DOSAttrBackend string `toml:"dos_attr_backend"`
 	// Path is the backend location (the host directory for local_fs, the image file
 	// for hfs-image, …). Maps to the typed fs.ShareSpec.Path.
 	Path string `toml:"path"`
@@ -125,15 +130,16 @@ func (s *VolumeSection) Validate() error {
 // copied verbatim.
 func (s *VolumeSection) Spec() fs.ShareSpec {
 	spec := fs.ShareSpec{
-		Name:          s.VName,
-		FSType:        s.FSType,
-		ForkBackend:   s.ForkBackend,
-		FilenameCodec: s.FilenameCodec,
-		NameEngine:    s.NameEngine,
-		Metastore:     s.Metastore,
-		Path:          s.Path,
-		ReadOnly:      s.ReadOnly,
-		AllowedUsers:  append([]string(nil), s.AllowedUsers...),
+		Name:           s.VName,
+		FSType:         s.FSType,
+		ForkBackend:    s.ForkBackend,
+		FilenameCodec:  s.FilenameCodec,
+		NameEngine:     s.NameEngine,
+		Metastore:      s.Metastore,
+		DOSAttrBackend: s.DOSAttrBackend,
+		Path:           s.Path,
+		ReadOnly:       s.ReadOnly,
+		AllowedUsers:   append([]string(nil), s.AllowedUsers...),
 	}
 	if len(s.Options) > 0 {
 		extra := make(map[string]any, len(s.Options))

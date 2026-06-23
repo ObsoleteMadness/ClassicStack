@@ -160,12 +160,22 @@ read_only = false
 # One [[smbshares]] table per exported share. Mirrors [[afpvolumes]] with an
 # extra `description` (the NetShareEnum remark). An SMB share and an AFP volume
 # on the SAME host path share a mutation bus so each sees the other's changes.
+#
+# dos_attr_backend selects how DOS attributes (read-only/hidden/system/archive)
+# the host filesystem cannot represent are persisted — relevant for SMB and
+# EtherDFS, which serve those bits. Values: auto (default; Windows-native
+# passthrough, else a Samba-compatible user.DOSATTRIB xattr where supported, else
+# a .dosattr sidecar, always cached in the metastore), metastore, sidecar, native,
+# xattr. The xattr/native backends are gated by build/GOOS; an unavailable one
+# degrades to sidecar/metastore. The on-disk value is byte-compatible with Samba,
+# so a share Samba also serves sees the same bits. See spec/16-storage-seam.md.
 [[smbshares]]
 name = "public"
 description = "Public share"
 fs_type = "local_fs"
 path = "/srv/smb/public"
 read_only = false
+# dos_attr_backend = "auto"
 
 
 # --- NCP volumes (Novell NetWare 3.x, build tag `ncp`) -----------------------
@@ -186,6 +196,37 @@ name = "SYS"
 fs_type = "local_fs"
 path = "/srv/ncp/sys"
 read_only = false
+
+
+# --- EtherDFS (The Ethernet DOS File System) ---------------------------------
+# A DOS client (the EtherDFS TSR) maps a remote directory to a drive letter over
+# raw Ethernet frames (EtherType 0xEDF5) — no IP/TCP/NetBIOS. EtherDFS is BOTH the
+# wire endpoint and the file server, so its singleton [etherdfs] section carries
+# the NIC binding, and [[etherdfsdrives]] maps drive letters to backends.
+# There is NO authentication: any client that can reach the server's MAC may use
+# any drive (gated only by read_only / allowed_users). See spec/18-etherdfs.md.
+[etherdfs]
+enabled = true
+iface = "eth0"            # the NIC to bind (empty = the shared bridge interface)
+# mac = "00:11:22:aa:bb:cc"   # optional station MAC override (empty = the NIC's own)
+# server_name = ""        # advertised in install checks (empty = [identity].hostname)
+
+# One drive per [[etherdfsdrives]] entry. Fields mirror the other file services:
+#   name           DOS drive letter (A–Z; the DOS client maps it as that letter)
+#   path             host directory
+#   fs_type          filesystem backend: local_fs (default), memfs, …
+#   name_engine      short → 8.3 names for DOS (recommended), passthrough otherwise
+#   dos_attr_backend how RO/HID/SYS/ARCH attributes are persisted (see [[smbshares]]
+#                    above): auto|metastore|sidecar|native|xattr (empty = auto)
+#   read_only        true makes the whole drive read-only
+#   allowed_users    access allow-list (empty = guest/world)
+[[etherdfsdrives]]
+name = "E"
+fs_type = "local_fs"
+path = "/srv/dosfiles"
+name_engine = "short"
+read_only = false
+# dos_attr_backend = "auto"
 
 
 # --- Web-admin credential (§4-ter) -------------------------------------------

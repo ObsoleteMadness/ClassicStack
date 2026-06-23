@@ -21,23 +21,28 @@ const (
 	trans2FindFirst2     = 0x0001
 	trans2FindNext2      = 0x0002
 	trans2QueryPathInfo  = 0x0005
+	trans2SetPathInfo    = 0x0006 // TRANS2_SET_PATH_INFORMATION
 	trans2QueryFileInfo  = 0x0007
+	trans2SetFileInfo    = 0x0008 // TRANS2_SET_FILE_INFORMATION
 	infoFileBothDirInfo  = 0x0104 // SMB_FIND_FILE_BOTH_DIRECTORY_INFO
 	infoQueryFileBasic   = 0x0101 // SMB_QUERY_FILE_BASIC_INFO
 	infoQueryFileStd     = 0x0102 // SMB_QUERY_FILE_STANDARD_INFO
 	infoQueryFileEA      = 0x0103 // SMB_QUERY_FILE_EA_INFO
 	infoQueryFileAllInfo = 0x0107 // SMB_QUERY_FILE_ALL_INFO
+	infoSetFileBasic     = 0x0101 // SMB_SET_FILE_BASIC_INFO (FileBasicInformation)
 
 	findCloseAfterRequest = 0x0001 // SMB_FIND_CLOSE_AFTER_REQUEST
 	findCloseAtEOS        = 0x0002 // SMB_FIND_CLOSE_AT_EOS
 )
 
-// trans2Request is the parsed TRANS2 sub-request: the subcommand and its
-// parameter block (the data block is unused by the FS subcommands the engine
-// serves, so it is not surfaced).
+// trans2Request is the parsed TRANS2 sub-request: the subcommand plus its
+// parameter and data blocks. The SET_*_INFORMATION subcommands carry the
+// information level + target in the params and the FileBasicInfo payload in the
+// data block, so both are surfaced.
 type trans2Request struct {
 	sub    uint16
 	params []byte
+	data   []byte
 }
 
 // parseTransaction2 decodes the SMB_COM_TRANSACTION2 wrapper ([MS-CIFS]
@@ -59,7 +64,15 @@ func parseTransaction2(req []byte) (trans2Request, bool) {
 	if paramCount < 0 || paramOffset < protocol.HeaderLen || paramOffset+paramCount > len(req) {
 		return trans2Request{}, false
 	}
-	return trans2Request{sub: sub, params: req[paramOffset : paramOffset+paramCount]}, true
+	t2 := trans2Request{sub: sub, params: req[paramOffset : paramOffset+paramCount]}
+	// The data block (DataCount/DataOffset, words[22:24]/[24:26]) carries the
+	// SET_*_INFORMATION payload; surface it when present and in-bounds.
+	dataCount := int(bp.LE16(words[22:24]))
+	dataOffset := int(bp.LE16(words[24:26]))
+	if dataCount > 0 && dataOffset >= protocol.HeaderLen && dataOffset+dataCount <= len(req) {
+		t2.data = req[dataOffset : dataOffset+dataCount]
+	}
+	return t2, true
 }
 
 // handleTransaction2 answers SMB_COM_TRANSACTION2 by dispatching its subcommand.
@@ -81,9 +94,71 @@ func (s *Service) handleTransaction2(sess *smbSession, h protocol.Header, req []
 		return s.queryPathInfo(sh, h, t2.params)
 	case trans2QueryFileInfo:
 		return s.queryFileInfo(sess, h, t2.params)
+	case trans2SetPathInfo:
+		return s.setPathInfo(sh, h, t2.params, t2.data)
+	case trans2SetFileInfo:
+		return s.setFileInfo(sess, h, t2.params, t2.data)
 	default:
 		return errResponse(h, statusNotSupported)
 	}
+}
+
+// setPathInfo serves TRANS2_SET_PATH_INFORMATION. Params ([MS-CIFS] §2.2.6.7.1):
+// InformationLevel(2) Reserved(4) FileName(SMB_STRING). The data block holds the
+// FileBasicInfo whose attribute word (offset 32) is persisted through the share's
+// DOS-attribute store, so a client setting Hidden/System/ReadOnly/Archive sticks
+// even on a host filesystem that cannot represent those bits. A zero attribute
+// word means "no change" ([MS-FSCC] FileBasicInformation), so it is ignored.
+func (s *Service) setPathInfo(sh *Share, h protocol.Header, params, data []byte) []byte {
+	if len(params) < 6 {
+		return errResponse(h, statusUnsuccessful)
+	}
+	level := bp.LE16(params[0:2])
+	store, st := resolvePath(sh, params[6:], h.Flags2)
+	if st != statusSuccess {
+		return errResponse(h, st)
+	}
+	return s.applySetBasicInfo(sh, h, store, level, data)
+}
+
+// setFileInfo serves TRANS2_SET_FILE_INFORMATION. Params ([MS-CIFS] §2.2.6.9.1):
+// FID(2) InformationLevel(2) Reserved(2). The target is the open handle's store
+// path; the data block is the same FileBasicInfo as setPathInfo.
+func (s *Service) setFileInfo(sess *smbSession, h protocol.Header, params, data []byte) []byte {
+	if len(params) < 4 {
+		return errResponse(h, statusUnsuccessful)
+	}
+	fid := bp.LE16(params[0:2])
+	level := bp.LE16(params[2:4])
+	hnd, ok := sess.fileByFID(fid)
+	if !ok {
+		return errResponse(h, statusInvalidHandle)
+	}
+	return s.applySetBasicInfo(hnd.share, h, hnd.path, level, data)
+}
+
+// applySetBasicInfo persists the attribute word from a FileBasicInfo data block
+// (the level must be a basic-info level) through the share's DOS-attribute store.
+// The FileBasicInfo layout ([MS-FSCC] §2.4.7): Creation/LastAccess/LastWrite/
+// Change FILETIME (4×8 bytes) then FileAttributes(4) at offset 32. The timestamps
+// are accepted-and-ignored (the host mtime is authoritative); only the attribute
+// word is persisted. A reply is an empty TRANS2 info response (success).
+func (s *Service) applySetBasicInfo(sh *Share, h protocol.Header, store string, level uint16, data []byte) []byte {
+	if level != infoSetFileBasic {
+		// Other set-info levels (allocation, disposition, rename) are not modelled;
+		// answer success so a client's housekeeping set does not fail the operation.
+		return buildTrans2InfoResponse(h, nil)
+	}
+	if len(data) >= 36 {
+		attrs := uint16(bp.LE32(data[32:36]) & 0xFFFF)
+		// A zero attribute word means "do not change attributes" (FileBasicInformation).
+		if attrs != 0 {
+			if err := sh.SetAttrs(store, attrs); err != nil {
+				return errResponse(h, statusUnsuccessful)
+			}
+		}
+	}
+	return buildTrans2InfoResponse(h, nil)
 }
 
 // findFirst2 serves TRANS2_FIND_FIRST2. Params ([MS-CIFS] §2.2.6.2.1):
@@ -220,7 +295,7 @@ func (s *Service) listDir(sh *Share, dirStore, pattern string) ([]findRow, uint3
 		if sn, err := sh.FS().ShortName(full); err == nil && sn != "" {
 			short = sn
 		}
-		rows = append(rows, findRow{name: name, shortName: short, info: info})
+		rows = append(rows, findRow{name: name, shortName: short, store: full, info: info})
 	}
 	return rows, statusSuccess
 }
@@ -240,7 +315,7 @@ func (s *Service) queryPathInfo(sh *Share, h protocol.Header, params []byte) []b
 	if err != nil {
 		return errResponse(h, statusObjectNameNotFound)
 	}
-	data, ok := packQueryInfo(infoLevel, info)
+	data, ok := packQueryInfo(infoLevel, info, sh.AttrsFor(store, info))
 	if !ok {
 		return errResponse(h, statusNotSupported)
 	}
@@ -263,7 +338,7 @@ func (s *Service) queryFileInfo(sess *smbSession, h protocol.Header, params []by
 	if err != nil {
 		return errResponse(h, statusObjectNameNotFound)
 	}
-	data, ok := packQueryInfo(infoLevel, info)
+	data, ok := packQueryInfo(infoLevel, info, hnd.share.AttrsFor(hnd.path, info))
 	if !ok {
 		return errResponse(h, statusNotSupported)
 	}
@@ -284,8 +359,10 @@ func (s *Service) handleFindClose2(sess *smbSession, h protocol.Header, req []by
 // --- packing ---
 
 // packQueryInfo serializes a FileInfo into the requested QUERY_*_INFO level, or
-// (nil,false) for an unsupported level ([MS-CIFS] §2.2.8.3).
-func packQueryInfo(level uint16, info stdfs.FileInfo) ([]byte, bool) {
+// (nil,false) for an unsupported level ([MS-CIFS] §2.2.8.3). attrs is the DOS
+// attribute word the caller computed store-aware (Share.AttrsFor), so persisted
+// Hidden/System bits the host cannot represent are reported.
+func packQueryInfo(level uint16, info stdfs.FileInfo, attrs uint16) ([]byte, bool) {
 	switch level {
 	case infoQueryFileBasic:
 		buf := make([]byte, 40)
@@ -294,7 +371,7 @@ func packQueryInfo(level uint16, info stdfs.FileInfo) ([]byte, bool) {
 		bp.PutLE64(buf[8:16], ft)  // LastAccessTime
 		bp.PutLE64(buf[16:24], ft) // LastWriteTime
 		bp.PutLE64(buf[24:32], ft) // ChangeTime
-		bp.PutLE32(buf[32:36], uint32(dosAttrs(info)))
+		bp.PutLE32(buf[32:36], uint32(attrs))
 		return buf, true
 	case infoQueryFileStd:
 		buf := make([]byte, 24)
@@ -309,9 +386,9 @@ func packQueryInfo(level uint16, info stdfs.FileInfo) ([]byte, bool) {
 	case infoQueryFileEA:
 		return make([]byte, 4), true // EaSize = 0
 	case infoQueryFileAllInfo:
-		basic, _ := packQueryInfo(infoQueryFileBasic, info)
-		std, _ := packQueryInfo(infoQueryFileStd, info)
-		ea, _ := packQueryInfo(infoQueryFileEA, info)
+		basic, _ := packQueryInfo(infoQueryFileBasic, info, attrs)
+		std, _ := packQueryInfo(infoQueryFileStd, info, attrs)
+		ea, _ := packQueryInfo(infoQueryFileEA, info, attrs)
 		out := make([]byte, 0, len(basic)+len(std)+len(ea))
 		out = append(out, basic...)
 		out = append(out, std...)
@@ -356,7 +433,7 @@ func packFindBothDir(sh *Share, rows []findRow, maxEntries int, flags2 uint16) (
 		size := fileSize(row.info)
 		bp.PutLE64(rec[40:48], size)
 		bp.PutLE64(rec[48:56], allocSize(size, row.info.IsDir()))
-		bp.PutLE32(rec[56:60], uint32(dosAttrs(row.info)))
+		bp.PutLE32(rec[56:60], uint32(sh.AttrsFor(row.store, row.info)))
 		bp.PutLE32(rec[60:64], uint32(len(nameWire)))
 		rec[68] = byte(len(shortWire))
 		copy(rec[70:94], shortWire)

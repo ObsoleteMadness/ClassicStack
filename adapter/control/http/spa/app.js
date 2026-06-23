@@ -934,6 +934,11 @@ function formOptionsFor(name, model) {
   } else if (name === "AFP") {
     opts.overrides.Transports = (v) => checkboxList("Transports",
       ["ddp", "tcp"], v, "ddp = classic (needs router membership); tcp = AFP-over-TCP (DSI). Empty = all.");
+  } else if (name === "EtherDFS") {
+    // EtherDFS binds ONE NIC for its raw-Ethernet (EtherType 0xEDF5) link, so its
+    // Interface is a single-select dropdown like a transport port's.
+    opts.overrides.Interface = (v) => dropdown("Interface — the NIC this EtherDFS server binds to",
+      interfaceChoices(model), v, "Empty inherits the shared bridge interface.");
   } else if (name === "Bridge") {
     // A bridge aggregates member interfaces; it has no serial line speed or device.
     opts.hide.add("Baud").add("Device").add("Kind");
@@ -1041,6 +1046,7 @@ class CsConfig extends HTMLElement {
     const known = [
       { key: "AFPVolumes", owner: "AFP" },
       { key: "SMBShares", owner: "SMB" },
+      { key: "EtherDFSDrives", owner: "EtherDFS" },
     ];
     const lists = this.model.Lists || {};
     const shown = new Set();
@@ -1088,6 +1094,10 @@ class CsConfig extends HTMLElement {
       AFP: { ServerName: "", Zone: "", Transports: [], TCPAddr: "" },
       SMB: { Transports: [], TCPAddr: "", NBTAddr: "" },
       NetBIOS: { Transports: [], ScopeID: "" },
+      // EtherDFS is BOTH the wire endpoint and the file server, so its singleton
+      // section carries the NIC binding (Interface/MAC/IsEnabled) plus the name
+      // advertised in install checks.
+      EtherDFS: { IsEnabled: false, Interface: "", MAC: "", ServerName: "" },
     };
     for (const [key, def] of Object.entries(serverDefaults)) {
       if (!sections[key] && this.hasComponent(key)) sections[key] = def;
@@ -1120,7 +1130,8 @@ class CsInstanceEditor extends HTMLElement {
   }
   render() {
     const title = this.key === "AFPVolumes" ? "AFP Volumes"
-      : this.key === "SMBShares" ? "SMB Shares" : this.key;
+      : this.key === "SMBShares" ? "SMB Shares"
+      : this.key === "EtherDFSDrives" ? "EtherDFS Drives" : this.key;
     const rows = this.list.map((inst) => {
       const name = instName(inst);
       const path = inst.Path || inst.path || "";
@@ -1145,7 +1156,7 @@ class CsInstanceEditor extends HTMLElement {
       el("summary", {}, [title]),
       table,
       el("div", { class: "row" }, [
-        button("Add " + (this.key === "AFPVolumes" ? "volume" : this.key === "SMBShares" ? "share" : "entry"), "primary",
+        button("Add " + (this.key === "AFPVolumes" ? "volume" : this.key === "SMBShares" ? "share" : this.key === "EtherDFSDrives" ? "drive" : "entry"), "primary",
           () => openInstanceModal(this.key, this.owner, this.blankInstance(), this.onChange)),
       ]),
     ]));
@@ -1162,10 +1173,12 @@ class CsInstanceEditor extends HTMLElement {
       }
       return out;
     }
-    const nameKey = this.key === "SMBShares" ? "SName" : "VName";
+    const nameKey = this.key === "SMBShares" ? "SName" : this.key === "EtherDFSDrives" ? "DName" : "VName";
     const base = { [nameKey]: "", FSType: "local_fs", Path: "", ReadOnly: false, Options: [] };
     if (this.key === "SMBShares") base.Description = "";
     if (this.key === "AFPVolumes") base.ExtMapPath = "";
+    // EtherDFS drives default to the "short" name engine so DOS sees 8.3 names.
+    if (this.key === "EtherDFSDrives") base.NameEngine = "short";
     return base;
   }
 }

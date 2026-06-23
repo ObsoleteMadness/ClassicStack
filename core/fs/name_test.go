@@ -45,6 +45,34 @@ func TestDerivedNameEngine_Medium31Limit(t *testing.T) {
 	}
 }
 
+func TestDerivedNameEngine_CaseInsensitiveLookup(t *testing.T) {
+	e := NewDerivedNameEngine(nil)
+	// First sight establishes the binding with the ORIGINAL case.
+	first := e.Bind("d", "ReadMe.TXT", ShortName)
+	// A differently-cased request for the SAME name resolves to the SAME derived
+	// name (case-insensitive lookup, Windows-FS semantics) — not a collision.
+	again := e.Bind("d", "README.txt", ShortName)
+	if again != first {
+		t.Fatalf("case-insensitive lookup produced different short names: %q vs %q", first, again)
+	}
+	// The directory's casing must not matter either.
+	if d := e.Bind("D", "ReadMe.TXT", ShortName); d != first {
+		t.Fatalf("dir casing changed the binding: %q vs %q", d, first)
+	}
+}
+
+func TestDerivedNameEngine_MediumPreservesCase(t *testing.T) {
+	e := NewDerivedNameEngine(nil)
+	med := e.Bind("d", "MyMixedCaseName", MediumName)
+	if med != "MyMixedCaseName" {
+		t.Fatalf("medium name lost its stored case: %q", med)
+	}
+	// Looked up case-insensitively, it still reverses to the stored-case long name.
+	if l, ok := e.ToLong("d", "MYMIXEDCASENAME", MediumName); !ok || l != "MyMixedCaseName" {
+		t.Fatalf("case-insensitive medium reverse: %q ok=%v", l, ok)
+	}
+}
+
 func TestDerivedNameEngine_DifferentKindsIndependent(t *testing.T) {
 	e := NewDerivedNameEngine(nil)
 	s := e.Bind("d", "MyDocument.txt", ShortName)

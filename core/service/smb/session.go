@@ -96,6 +96,7 @@ type searchHandle struct {
 type findRow struct {
 	name      string
 	shortName string
+	store     string // full store path, for the DOS-attribute store lookup
 	info      stdfs.FileInfo
 }
 

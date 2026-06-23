@@ -246,6 +246,26 @@ func (v *Volume) ShortName(path string) string {
 	return base
 }
 
+// MediumName returns the volume's classic-AFP "long" name for a path's final
+// element: the 31-character medium name derived through the share's NameEngine,
+// case-insensitive for lookup but stored in its original case (Windows-FS
+// semantics). The AFP wire long name is capped at 31 bytes, so an over-long host
+// name is mapped deterministically (with a "-N" collision suffix) rather than
+// truncated raw — and reverses to the same host name across requests. The engine
+// returns a store path; the leaf is taken for the wire.
+func (v *Volume) MediumName(path string) string {
+	if path == "" {
+		return "" // the volume root carries no name element of its own
+	}
+	n, err := v.FS().MediumName(path)
+	if err != nil || n == "" {
+		_, base := splitStore(path)
+		return base
+	}
+	_, base := splitStore(n)
+	return base
+}
+
 // renamePath moves a path inside the volume and rebinds the CNID subtree so node
 // ids survive the move. The FS carries the metadata container with the data fork
 // (core/fs §9), so the only step AFP adds is the CNID rebind.

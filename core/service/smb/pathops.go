@@ -209,7 +209,7 @@ func (s *Service) handleQueryInformation(sess *smbSession, h protocol.Header, re
 		return errResponse(h, statusObjectNameNotFound)
 	}
 	w := make([]byte, 20)
-	bp.PutLE16(w[0:2], dosAttrs(info))
+	bp.PutLE16(w[0:2], sh.AttrsFor(store, info))
 	bp.PutLE32(w[2:6], 0) // DOS LastWriteTime — 0 / unknown
 	if !info.IsDir() {
 		bp.PutLE32(w[6:10], uint32(info.Size()))

@@ -10,6 +10,14 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/port"
 )
 
+// conformanceStagers holds per-component model stagers for components that are NOT
+// configured via a plain port.Section (e.g. EtherDFS, which uses its own singleton
+// [EtherDFS] server section). A build-tagged init() in conformance_<svc>_test.go
+// registers an entry, so a build that excludes the service neither imports its
+// package nor enables it here. A name with no entry is staged only with the generic
+// port.Section the harness already sets.
+var conformanceStagers = map[string]func(*config.Model){}
+
 // TestComponentConformance implements E1: Component Conformance Harness.
 // It verifies that all registered components honour lifecycle contract rules.
 func TestComponentConformance(t *testing.T) {
@@ -36,6 +44,13 @@ func TestComponentConformance(t *testing.T) {
 				Iface:     "eth0",
 				IsEnabled: true,
 			})
+			// A component configured via its own singleton section (not a port.Section)
+			// stages it here so its factory builds the enabled form. Registered by
+			// build-tagged init() in conformance_<svc>_test.go so a build without that
+			// service neither references its package nor enables it.
+			if stage := conformanceStagers[name]; stage != nil {
+				stage(m)
+			}
 
 			// 2. Build component
 			c, ok, err := Build(name, &BuildContext{Model: m})

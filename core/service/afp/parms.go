@@ -92,7 +92,7 @@ func (v *Volume) packFileParams(out []byte, store string, info stdfs.FileInfo, b
 		out = append(out, fi[:]...)
 	}
 	if bitmap&fdBitmapLongName != 0 {
-		out, names = v.appendName(out, names, fixedSize, longNameFor(store), pathType)
+		out, names = v.appendName(out, names, fixedSize, v.MediumName(store), pathType)
 	}
 	if bitmap&fdBitmapShortName != 0 {
 		out, names = v.appendName(out, names, fixedSize, v.ShortName(store), pathType)
@@ -139,7 +139,7 @@ func (v *Volume) packDirParams(out []byte, store string, info stdfs.FileInfo, bi
 		out = append(out, fi[:]...)
 	}
 	if bitmap&fdBitmapLongName != 0 {
-		out, names = v.appendName(out, names, fixedSize, longNameFor(store), pathType)
+		out, names = v.appendName(out, names, fixedSize, v.MediumName(store), pathType)
 	}
 	if bitmap&fdBitmapShortName != 0 {
 		out, names = v.appendName(out, names, fixedSize, v.ShortName(store), pathType)
@@ -198,15 +198,6 @@ func (v *Volume) offspringCount(store string) uint16 {
 		}
 	}
 	return count
-}
-
-// longNameFor returns the long (display) name for a store path: its final
-// element. The root directory ("") has no name element of its own; the empty
-// string is encoded as a zero-length name, which is what AFP expects for the
-// volume root entry.
-func longNameFor(store string) string {
-	_, base := splitStore(store)
-	return base
 }
 
 // fileParamsFixedSize returns the byte length of the fixed-field area of a file

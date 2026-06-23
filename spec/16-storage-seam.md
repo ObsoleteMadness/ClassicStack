@@ -169,3 +169,67 @@ store works. `core/metastore.CNIDStore` is the AFP CNID registry re-expressed
 over this seam — its key layout (`c/p/<cnid>`, `c/i/<path>`, `c/seq`) is the same
 regardless of which store kind backs it, so a `mem`-snapshotted volume and a
 `sqlite` volume preserve CNIDs identically across restarts.
+
+The metastore is the **definitive per-share metadata store**: every typed facade
+(CNID, short/medium name binding, DOS attributes) rides the one `Store` a share
+opens, so the `sqlite` kind is the single durable home for all of them and `mem`
+is the embedded/TinyGo fallback. The facades and their key prefixes:
+
+| facade | keys | purpose |
+|--------|------|---------|
+| `CNIDStore` | `c/p/`, `c/i/`, `c/seq` | AFP catalog node IDs |
+| `derivedNameEngine` | `n/f/<kind>/`, `n/r/<kind>/` | 8.3 short / 31-char medium name bindings |
+| `DOSAttrStore` | `d/a/` | DOS attributes (RO/HID/SYS/ARCH + create-time) |
+
+### 3a. Name casing (`core/fs/name.go`)
+
+The `short` and `medium` name engines are **case-insensitive for lookup but
+preserve the stored case** — Windows-FS semantics, identical on Windows, macOS,
+and Linux (the engine never consults the host's own case rules). Both the forward
+(`long → derived`) and reverse (`derived → long`) keys are upper-cased, so:
+
+- A request for `Report.txt` and one for `REPORT.TXT` resolve to the **same**
+  binding (the first-stored case is kept as the value); they do not produce two
+  bindings.
+- Two genuinely different long names that fold to the same key **collide** and the
+  second gets a fresh `~N` (8.3) / `-N` (medium) suffix.
+- A `medium` (31-char) name round-trips in its **original** case (`MyMixedCase`
+  stays mixed), but is found case-insensitively.
+
+8.3 short names are upper-cased on the wire (FAT convention); the 31-char medium
+name (classic AFP "long" name; NetWare and DOS-redirector long names) keeps case.
+AFP serves its wire long name through `Volume.MediumName`, NCP its 8.3 field
+through `Volume.appendFileName`, SMB its short name through the share
+`ShortName`, and EtherDFS reverses a wire 8.3 name to the host name through
+`NameEngine.ToLong` — one generator, four services.
+
+### 3b. DOS attributes (`core/fs/dosattr.go`, `core/metastore/dosattr.go`)
+
+DOS/FAT file attributes (read-only, hidden, system, archive) and the DOS
+create-time have no home on a POSIX host (and even on Windows are unavailable to
+the OS 8.3-name service on non-system drives), so a share persists them through a
+`DOSAttrStore` selected per share by `dos_attr_backend`:
+
+| backend | storage | availability |
+|---------|---------|--------------|
+| `metastore` | the share's `Store` (`d/a/<path>`) | always; definitive + cache |
+| `sidecar` | a `.dosattr/<name>` companion holding the XATTR_DOSINFO blob | every filesystem |
+| `xattr` | the host file's `user.DOSATTRIB` extended attribute | `xattr` tag, linux/darwin |
+| `native` | the Windows host file attributes (`Get/SetFileAttributes`) | `windows` GOOS |
+| `auto` (default) | native → xattr → sidecar, whichever the host supports, always caching in the metastore | — |
+
+The on-disk value is the **Samba `XATTR_DOSINFO` version-3 record**
+(`metastore.EncodeDOSInfo`/`DecodeDOSInfo`): version(2) + valid_flags(4) +
+attrib(4) + ext_attrib(4) + reserved(4) + create_time(8, NTTIME). Because the
+metastore, sidecar, and xattr backends share this one wire format, a value written
+by any of them is readable by the others **and by Samba** — a ClassicStack SMB
+share over a directory Samba also serves sees the same hidden/system bits.
+
+A backend needing a real host path resolves it through the optional
+`fs.HostPather` (implemented by `local_fs`); a synthetic backend (`memfs`,
+`zipfs`) that is not a `HostPather` falls back to the metastore, which needs no
+host path. The built share exposes its store through the optional `fs.DOSAttred`
+interface (`DOSAttrs() DOSAttrStore`); a file service type-asserts the `ForkFS` to
+reach it, OR-ing the stored RO/HID/SYS/ARCH bits onto the structural
+Directory/Archive bits it derives from the entry. SMB persists them via
+`TRANS2_SET_PATH/FILE_INFORMATION`; EtherDFS via `AL_SETATTR`.

@@ -145,3 +145,42 @@ A volume whose backend does **not** advertise `Capabilities().CatSearch` (or doe
 
 **Where:** `core/service/ncp/handlers.go` (`loginEncrypted`, `getLoginKey`, `grantLogin`); the login posture in [17-ncp.md](17-ncp.md).
 
+## EtherDFS
+
+### AL_SETATTR / FAT attributes on a non-FAT backend — observation-based
+
+**No spec:** ClassicStack ships no formal document for EtherDFS; the protocol is implemented from the EtherDFS protocol description (`spec/etherdfs.txt`) and the reference servers (attributed in [18-etherdfs.md](18-etherdfs.md)).
+
+**Observed:** the reference EtherDFS server warns that it is "HIGHLY recommended to run ethersrv over a FAT filesystem. Other file systems might work, too, but FAT attributes will be unavailable." The DOS redirector sets/reads the FAT attribute byte (`1=RO 2=HID 4=SYS 32=ARCH`), but a POSIX/host backend behind ClassicStack's shared `core/fs` seam does not model HID/SYS/ARCH, and the seam exposes no attribute-mutation call.
+
+**What we do:** `AL_GETATTR` synthesises the attribute byte from FileInfo (`DIR` for directories, `ARCH` for files, `RO` from the drive's read-only flag or the host file's write permission). `AL_SETATTR` is accepted as a no-op when the target exists (and rejected file-not-found when it does not), rather than failing — matching the reference server's best-effort behaviour on non-FAT hosts. A future slice could persist FAT attributes in the share metastore.
+
+**Where:** `core/service/etherdfs/dispatch.go` (`handleGetAttr`, `handleSetAttr`, `fatAttr`); the posture in [18-etherdfs.md](18-etherdfs.md).
+
+### No authentication (accept-any-client) — by design
+
+**Observed:** EtherDFS has no login, session, or credential exchange of any kind — a client is identified only by its source MAC, and the original ethersrv serves any client on the segment.
+
+**What we do:** consistent with the compatibility-server posture, EtherDFS serves any client that can reach the server's MAC; access is gated only by a drive's `read_only` flag and `allowed_users` allow-list (which, with no user store wired, means world-accessible). This is the intentional weakness that lets vintage DOS clients connect, mirroring the SMB guest-session and NCP keyed-login entries above.
+
+**Where:** `core/service/etherdfs/etherdfs.go` (package doc, security posture); `core/service/etherdfs/dispatch.go`.
+
+## Storage seam — DOS attributes & name casing
+
+### DOS attribute storage = Samba XATTR_DOSINFO — observation-based interop
+
+**No spec:** there is no published wire spec for how a non-DOS host stores the FAT attribute bits (RO/HID/SYS/ARCH) and DOS create-time that a POSIX/NTFS-non-system-drive filesystem cannot natively represent. The format here is taken from Samba's open source (the canonical reference, attributed in [16-storage-seam.md](16-storage-seam.md)).
+
+**Observed:** Samba stores DOS attributes in the `user.DOSATTRIB` extended attribute as a versioned record (`librpc/idl/xattr.idl` `xattr_DOSAttrib`; `source3/lib/xattr_tdb.c` for the tdb fallback). The version-3 "info_compat" arm carries `valid_flags`, `attrib`, `ext_attrib`, and `create_time` (NTTIME). On a filesystem without user xattrs Samba falls back to a tdb database keyed by path.
+
+**What we do:** ClassicStack persists DOS attributes through a per-share `DOSAttrStore` whose value is byte-compatible with Samba's version-3 `XATTR_DOSINFO` record (`core/metastore.EncodeDOSInfo`/`DecodeDOSInfo`), so a share over a directory Samba also serves reads/writes the same `user.DOSATTRIB` xattr. Where xattrs are unavailable the per-share metastore (sqlite/mem) is our tdb equivalent, and a `.dosattr/<name>` sidecar carrying the identical blob is the all-filesystems fallback; on Windows the bits map straight to the host file attributes. The reader accepts version 1–4 and ignores fields it does not model; a corrupt blob falls back to host-derived attributes rather than mis-decoding.
+
+**Where:** `core/metastore/dosinfo.go` (codec); `core/metastore/dosattr.go`, `core/fs/dosattr.go` (backends + selection); `core/fs/dosattr_xattr.go` (`user.DOSATTRIB`), `core/fs/dosattr_native_windows.go` (Windows passthrough).
+
+### Filename casing — case-insensitive lookup, preserved store
+
+**Observed:** DOS/Windows clients (SMB, EtherDFS) and the NetWare/AFP redirectors treat filenames case-insensitively, but Windows preserves the stored case of a long name. A POSIX host is case-sensitive; macOS is typically case-insensitive-preserving; Windows non-system drives often have the OS 8.3-name service disabled, so the host cannot be relied on to generate or reverse short names.
+
+**What we do:** the `short`/`medium` name engines fold case for both the forward and reverse metastore keys (so `Report.txt` and `REPORT.TXT` share one binding, and two genuinely distinct names that fold equal collide and get a `~N`/`-N` suffix) while storing the original-case long name as the value (so medium names round-trip in their stored case). One generator runs identically on Windows, macOS, and Linux — the engine never consults the host's case rules — so a volume served from any host presents the same names.
+
+**Where:** `core/fs/name.go` (`fwdKey`/`revKey` case-folding, `deriveMedium`/`derive83`).

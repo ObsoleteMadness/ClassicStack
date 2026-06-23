@@ -74,6 +74,19 @@ type Coded interface {
 	Codec() FilenameCodec
 }
 
+// HostPather is implemented by a FileSystem backed by a real host directory tree
+// (local_fs): it maps a '/'-separated, share-relative store path to its absolute
+// host path. The DOS-attribute / shortname interop backends (Windows-native
+// passthrough, Samba user.DOSATTRIB xattr) need the host path to reach the file
+// with an OS syscall; a backend whose FileSystem does NOT implement HostPather
+// (memfs, zipfs, a synthetic store) cannot use those interop backends and falls
+// back to the metastore/sidecar, which need no host path. ok is false when the
+// path cannot be resolved (e.g. it escapes the root). The share stack forwards
+// this through to the base FileSystem.
+type HostPather interface {
+	HostPath(storePath string) (hostPath string, ok bool)
+}
+
 type NameKind uint8
 
 const (
@@ -146,6 +159,15 @@ type ShareSpec struct {
 	FilenameCodec string
 	NameEngine    string
 	Metastore     string
+	// DOSAttrBackend selects how DOS file attributes (RO/HID/SYS/ARCH + create-time)
+	// that the host filesystem cannot represent are persisted: "auto" (default —
+	// native passthrough on Windows, Samba user.DOSATTRIB xattr where the host
+	// supports it, else a sidecar, always cached in the metastore), "metastore"
+	// (definitive store only, host-independent), "sidecar" (works on every
+	// filesystem), "native" (Windows host attributes), or "xattr" (Samba-compatible
+	// user.DOSATTRIB). Empty == auto. Backends needing host syscalls are gated by
+	// build/GOOS; an unavailable backend degrades to sidecar/metastore.
+	DOSAttrBackend string
 	// Path is the near-universal backend location: the host directory for
 	// local_fs, the image file for hfs-image/fat-image, the archive for zipfs.
 	// Synthetic backends (memfs, macgarden) leave it empty.
@@ -347,8 +369,12 @@ func BuildShare(spec ShareSpec, b bus.Bus) (ForkFS, error) {
 	if err != nil {
 		return nil, err
 	}
+	// DOS-attribute store: the per-share backend (auto/native/xattr/sidecar/metastore)
+	// over the same metastore, so all four file services persist DOS attributes the
+	// host filesystem cannot represent through one swappable seam.
+	dosAttrs := buildDOSAttrStore(spec.DOSAttrBackend, base, store)
 
-	return &shareFS{FileSystem: base, ForkEngine: forkEngine, codec: codec, names: nameEngine}, nil
+	return &shareFS{FileSystem: base, ForkEngine: forkEngine, codec: codec, names: nameEngine, dosAttrs: dosAttrs}, nil
 }
 
 func withDefaults(spec ShareSpec) ShareSpec {
@@ -443,8 +469,9 @@ func isEmptyParam(v any) bool {
 type shareFS struct {
 	FileSystem
 	ForkEngine
-	codec FilenameCodec
-	names NameEngine
+	codec    FilenameCodec
+	names    NameEngine
+	dosAttrs DOSAttrStore
 }
 
 // Rename moves a path and carries its metadata container in one call: the data
@@ -480,6 +507,31 @@ func (s *shareFS) MediumName(path string) (string, error) {
 
 // Codec exposes the share codec for adapter wiring/tests.
 func (s *shareFS) Codec() FilenameCodec { return s.codec }
+
+// DOSAttrs exposes the share's DOS-attribute store (fs.DOSAttred), so a file
+// service (SMB/EtherDFS/NCP/AFP) persists and serves DOS attributes the host
+// filesystem cannot represent without reaching past the share stack.
+func (s *shareFS) DOSAttrs() DOSAttrStore { return s.dosAttrs }
+
+// Names exposes the share's NameEngine (fs.Named), so a file service can map
+// between a host (long) name and its derived 8.3 short / 31-char medium name — and
+// reverse a derived name a client sent back to the stored host name. This is the
+// shortname interface EtherDFS uses for 8.3↔host mapping and AFP/NCP use for
+// medium names.
+func (s *shareFS) Names() NameEngine { return s.names }
+
+// HostPath forwards fs.HostPather to the base FileSystem when it is host-backed
+// (local_fs), so the DOS-attribute / shortname interop backends can resolve a real
+// host path through the assembled share stack. A base that is not a HostPather
+// leaves shareFS without a usable host path (ok=false), so those backends decline
+// and the metastore/sidecar fallback is used instead.
+func (s *shareFS) HostPath(storePath string) (string, bool) {
+	hp, ok := s.FileSystem.(HostPather)
+	if !ok {
+		return "", false
+	}
+	return hp.HostPath(storePath)
+}
 
 // CatSearch forwards the optional catalog-search capability to the base
 // FileSystem when it implements CatSearcher, so the wrapping of the share stack

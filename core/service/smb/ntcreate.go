@@ -127,7 +127,7 @@ func (s *Service) ntCreateDir(sess *smbSession, h protocol.Header, sh *Share, st
 		info = fresh
 	}
 	fid := sess.allocFID(&fileHandle{share: sh, path: store, isDir: true})
-	return buildNtCreateResponse(h, fid, action, info, true, desiredAccess)
+	return buildNtCreateResponse(h, fid, action, info, true, sh.AttrsFor(store, info), desiredAccess)
 }
 
 // ntCreateFile opens or creates a regular-file handle, applying the truncate
@@ -179,7 +179,7 @@ func (s *Service) ntCreateFile(sess *smbSession, h protocol.Header, sh *Share, s
 		return errResponse(h, statusUnsuccessful)
 	}
 	fid := sess.allocFID(&fileHandle{share: sh, file: f, path: store, writable: writable})
-	return buildNtCreateResponse(h, fid, action, fresh, false, desiredAccess)
+	return buildNtCreateResponse(h, fid, action, fresh, false, sh.AttrsFor(store, fresh), desiredAccess)
 }
 
 // ntWantsWrite reports whether an NT DesiredAccess mask requests any write right
@@ -202,7 +202,7 @@ func ntWantsWrite(desiredAccess uint32) bool {
 // terminator, oplock level (none), FID, create action, the four NT timestamps, ext
 // attributes, allocation + end-of-file sizes, file type, device state, and the
 // directory flag ([MS-CIFS] §2.2.4.64.2).
-func buildNtCreateResponse(h protocol.Header, fid uint16, action uint32, info stdfs.FileInfo, isDir bool, _ uint32) []byte {
+func buildNtCreateResponse(h protocol.Header, fid uint16, action uint32, info stdfs.FileInfo, isDir bool, attrs uint16, _ uint32) []byte {
 	w := make([]byte, 68) // WCT=34 → 68 param bytes
 	w[0] = protocol.CommandNoAndXCommand
 	// w[1] AndXReserved, w[2:4] AndXOffset — left 0 (no chained command).
@@ -216,7 +216,7 @@ func buildNtCreateResponse(h protocol.Header, fid uint16, action uint32, info st
 	bp.PutLE64(w[27:35], ft) // LastWriteTime
 	bp.PutLE64(w[35:43], ft) // ChangeTime
 
-	bp.PutLE32(w[43:47], uint32(dosAttrs(info))) // ExtFileAttributes
+	bp.PutLE32(w[43:47], uint32(attrs)) // ExtFileAttributes
 	size := uint64(info.Size())
 	bp.PutLE64(w[47:55], allocSize(size, isDir)) // AllocationSize
 	bp.PutLE64(w[55:63], size)                   // EndOfFile

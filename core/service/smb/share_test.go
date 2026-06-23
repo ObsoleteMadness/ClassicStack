@@ -2,7 +2,9 @@ package smb
 
 import (
 	"errors"
+	stdfs "io/fs"
 	"testing"
+	"time"
 	"unicode/utf16"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
@@ -57,6 +59,33 @@ func utf16Wire(s string) []byte {
 	}
 	return b
 }
+
+func TestShare_DOSAttrsPersist(t *testing.T) {
+	sh := newTestShare(t)
+	// A memfs share has no host path, so the DOS-attr store is metastore-backed —
+	// exactly the case where Hidden/System cannot live on the host and must be
+	// persisted. Set them via the SET-info path, read them back via the query path.
+	if err := sh.SetAttrs("docs/secret.txt", attrHidden|attrSystem|attrReadOnly); err != nil {
+		t.Fatalf("SetAttrs: %v", err)
+	}
+	// AttrsFor needs a FileInfo for the structural bits; a nil-dir memFileInfo is
+	// fine — we only assert the persisted bits are OR-ed in.
+	got := sh.AttrsFor("docs/secret.txt", stubInfo{})
+	if got&attrHidden == 0 || got&attrSystem == 0 || got&attrReadOnly == 0 {
+		t.Errorf("persisted DOS attrs not reported: %#x", got)
+	}
+}
+
+// stubInfo is a minimal stdfs.FileInfo (a regular file) for AttrsFor's structural
+// derivation in the attribute-persistence test.
+type stubInfo struct{}
+
+func (stubInfo) Name() string           { return "secret.txt" }
+func (stubInfo) Size() int64            { return 0 }
+func (stubInfo) Mode() stdfs.FileMode   { return 0o644 }
+func (stubInfo) ModTime() (t time.Time) { return }
+func (stubInfo) IsDir() bool            { return false }
+func (stubInfo) Sys() any               { return nil }
 
 func TestShare_ResolvePath_BackslashToStore(t *testing.T) {
 	sh := newTestShare(t)

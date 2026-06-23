@@ -85,6 +85,18 @@ func (l *localFS) host(p string) (string, error) {
 	return full, nil
 }
 
+// HostPath implements fs.HostPather: it exposes the absolute host path for a
+// store path so the DOS-attribute / shortname interop backends (Windows-native,
+// Samba xattr) can reach the real file. ok is false when the path escapes the
+// root (the caller then declines the host-native backend).
+func (l *localFS) HostPath(storePath string) (string, bool) {
+	h, err := l.host(storePath)
+	if err != nil {
+		return "", false
+	}
+	return h, true
+}
+
 func (l *localFS) ReadDir(path string) ([]fs.DirEntry, error) {
 	h, err := l.host(path)
 	if err != nil {

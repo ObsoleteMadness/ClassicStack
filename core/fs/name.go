@@ -28,15 +28,27 @@ func NewDerivedNameEngine(store metastore.Store) NameEngine {
 // metastore key layout, prefixed so multiple name kinds share one store without
 // colliding:
 //
-//	"n/f/<kind>/<dir>/<long>"    -> derived   (forward: long  -> derived)
-//	"n/r/<kind>/<dir>/<derived>" -> long      (reverse: derived -> long)
+//	"n/f/<kind>/<dir>/<LONG>"    -> derived   (forward: long  -> derived)
+//	"n/r/<kind>/<dir>/<DERIVED>" -> long      (reverse: derived -> long)
+//
+// Both keys are CASE-FOLDED (upper-cased), so name resolution is case-insensitive
+// the way a DOS/Windows filesystem is: "Report.txt" and "REPORT.TXT" hash to the
+// same forward slot and therefore COLLIDE — the second long name to arrive gets a
+// fresh ~N / -N suffix rather than silently aliasing the first. The VALUE stored
+// is the original-case long name, so medium names round-trip in their stored case
+// (Windows-FS semantics: preserved case, insensitive lookup). This is identical on
+// Windows, macOS, and Linux — the engine never consults the host's case rules.
 func fwdKey(kind NameKind, dir, long string) []byte {
-	return []byte("n/f/" + kindTag(kind) + "/" + dir + "/" + long)
+	return []byte("n/f/" + kindTag(kind) + "/" + foldDir(dir) + "/" + strings.ToUpper(long))
 }
 
 func revKey(kind NameKind, dir, derived string) []byte {
-	return []byte("n/r/" + kindTag(kind) + "/" + dir + "/" + strings.ToUpper(derived))
+	return []byte("n/r/" + kindTag(kind) + "/" + foldDir(dir) + "/" + strings.ToUpper(derived))
 }
+
+// foldDir case-folds a directory path for the key, so a parent directory whose
+// own casing varies between requests still scopes its children to one namespace.
+func foldDir(dir string) string { return strings.ToUpper(dir) }
 
 func kindTag(kind NameKind) string {
 	if kind == MediumName {
