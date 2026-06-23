@@ -134,3 +134,14 @@ A volume whose backend does **not** advertise `Capabilities().CatSearch` (or doe
 **What we do:** `core/service/ipxdiag` registers a `SocketHandler` on socket 0x0456 of the IPX mini-router that answers any request not naming our own node with the minimal response — a single IPX-component record (`diag.SimpleResponse`). `cmd/csipxping` is the client: it sends a directed (or broadcast) request and reports the round-trip time of each reply. The decoder treats component bodies as opaque (the last component absorbs the remainder), enough for reachability without modelling every NetWare component layout.
 
 **Where:** `core/protocol/ipx/diag/diag.go` (codec); `core/service/ipxdiag/ipxdiag.go` (responder); `cmd/csipxping/main.go` (client).
+
+### NCP keyed (encrypted) login accept-as-guest — observation-based
+
+**No spec:** ClassicStack ships no formal document for Novell NCP/bindery; the NetWare 3.x login is implemented from the openly documented protocol and the mars_nwe / ncpfs references (attributed in [17-ncp.md](17-ncp.md)).
+
+**Observed:** NetWare clients (NETx/VLM) prefer the keyed (encrypted) login (function 0x17 subfunction 0x18): they fetch an 8-byte challenge (0x17/0x17), then send a hash shuffled from the challenge and the user's NetWare-hashed password. The server cannot reverse that shuffle to a cleartext password, and ClassicStack stores credentials as PBKDF2-SHA256 (core/auth), not as the NetWare hash, so it cannot recompute the expected response.
+
+**What we do:** consistent with the compatibility-server posture (modern at rest, faithful to the weak client dialect on the wire) and mirroring the SMB "hashed-credential accept-as-guest" entry, a keyed login is accepted as a guest-equivalent login bound to the supplied object name (no credential check). A cleartext login (0x17/0x14) IS validated against the wired user store. A future slice that stores the NetWare-hashed credential alongside the PBKDF2 hash can validate the keyed shuffle exactly.
+
+**Where:** `core/service/ncp/handlers.go` (`loginEncrypted`, `getLoginKey`, `grantLogin`); the login posture in [17-ncp.md](17-ncp.md).
+

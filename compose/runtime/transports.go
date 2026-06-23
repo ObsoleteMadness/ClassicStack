@@ -39,6 +39,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	diagproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx/diag"
+	ncpproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ncp"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/afp"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/browser"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/ipxdiag"
@@ -47,6 +48,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/service/mailslot"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/messenger"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/nbp"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/ncp"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/netbios"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/smb"
 )
@@ -174,6 +176,19 @@ func wireAuthenticator(comps map[string]component.Component, store auth.Authenti
 	if sm := smbService(comps); sm != nil {
 		sm.SetAuthenticator(store)
 	}
+	if nc := ncpService(comps); nc != nil {
+		nc.SetAuthenticator(store)
+	}
+}
+
+// ncpService returns the built NCP service, or nil when none was built.
+func ncpService(comps map[string]component.Component) *ncp.Service {
+	if c, ok := comps[ncp.Name]; ok {
+		if s, ok := c.(*ncp.Service); ok {
+			return s
+		}
+	}
+	return nil
 }
 
 // afpService returns the built AFP service, or nil when none was built.
@@ -241,6 +256,9 @@ func wireIPX(nb *netbios.Service, sm *smb.Service, comps map[string]component.Co
 	if sm != nil && !smbIPXBound {
 		sm = nil
 	}
+	// NCP is its own file service (not a sub-transport of SMB/NetBIOS), so it has no
+	// transport-binding gate: it is wired whenever it was built and an IPX port exists.
+	nc := ncpService(comps)
 
 	var ports []ipxrouter.Port
 	for _, c := range comps {
@@ -248,7 +266,7 @@ func wireIPX(nb *netbios.Service, sm *smb.Service, comps map[string]component.Co
 			ports = append(ports, p)
 		}
 	}
-	if len(ports) == 0 || (nb == nil && sm == nil) {
+	if len(ports) == 0 || (nb == nil && sm == nil && nc == nil) {
 		return
 	}
 
@@ -264,6 +282,20 @@ func wireIPX(nb *netbios.Service, sm *smb.Service, comps map[string]component.Co
 	if sm != nil {
 		direct := sm.NewDirectIPX(r)
 		_ = r.RegisterSocket(smb.DirectSMBSocket, direct)
+	}
+	// NCP file service over IPX (socket 0x0451) plus its SAP advertiser (socket
+	// 0x0452): the NCP transport drives the command engine; the SAP advertiser makes
+	// the server discoverable to NETx/VLM. Both ride this mini-router — the SAP
+	// advertiser takes the router as egress and the router's network/node as the
+	// advertised IPX identity, mirroring the IPX diagnostic responder's wiring.
+	if nc != nil {
+		t := nc.NewOverIPX(r)
+		_ = r.RegisterSocket(ncpproto.NCPSocket, t)
+		sap := nc.NewSAP(r)
+		sap.SetIdentity(r.Network(), r.Node())
+		t.SetSAP(sap)
+		sap.Start()
+		_ = r.RegisterSocket(ncpproto.SAPSocket, sap)
 	}
 	// The IPX gateway (MacIPX) forwards encapsulated IPX from MacIPX clients onto this
 	// same mini-router (and routes native IPX replies back over DDP). It is an AppleTalk

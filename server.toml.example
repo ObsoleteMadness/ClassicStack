@@ -15,7 +15,7 @@
 #   - the interface namespace: repeated [[interface]] array-of-tables
 #   - transports:              repeated [[ethertalk]] [[ltoudp]] [[tashtalk]]
 #                                       [[ipx]] [[netbeui]] (lower-case, array-of-tables)
-#   - file-service shares:     repeated [[afpvolumes]] / [[smbshares]]
+#   - file-service shares:     repeated [[afpvolumes]] / [[smbshares]] / [[ncpvolumes]]
 #
 # Repeated sections use TOML array-of-tables ([[name]]) so a transport can have
 # several named instances (e.g. two TashTalk dongles). The table key is the
@@ -165,6 +165,26 @@ name = "public"
 description = "Public share"
 fs_type = "local_fs"
 path = "/srv/smb/public"
+read_only = false
+
+
+# --- NCP volumes (Novell NetWare 3.x, build tag `ncp`) -----------------------
+# One [[ncpvolumes]] table per exported NetWare volume. The NCP file service rides
+# IPX (socket 0x0451) and advertises itself via SAP (socket 0x0452) so NETx/VLM
+# clients discover it — it needs an enabled [[ipx]] port above. Mirrors
+# [[afpvolumes]]/[[smbshares]]; an NCP volume on the SAME host path as an AFP/SMB
+# share shares a mutation bus so each sees the other's changes. The advertised
+# server name comes from [identity].hostname (upper-cased to a NetWare name);
+# bindery login validates against the same user store AFP/SMB use (guest if none).
+#   name           NetWare volume name (upper-case, e.g. SYS; client maps SYS:)
+#   path           host directory
+#   fs_type        filesystem backend: local_fs (default), memfs, …
+#   read_only      true makes the whole volume read-only
+#   allowed_users  access allow-list (empty = guest/world)
+[[ncpvolumes]]
+name = "SYS"
+fs_type = "local_fs"
+path = "/srv/ncp/sys"
 read_only = false
 
 

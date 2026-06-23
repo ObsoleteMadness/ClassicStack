@@ -74,6 +74,7 @@ cmd/classicstack/main.go  →  internal/app (run-core)  →  Ports  →  Router 
 | `service/atp/` | AppleTalk Transaction Protocol — reliable messaging |
 | `service/dsi/` | Data Stream Interface — AFP transport over TCP |
 | `service/macip/` | IP-over-AppleTalk gateway with NAT and DHCP relay |
+| `core/service/ncp/` | Novell NetWare Core Protocol file server (NetWare 3.x bindery emulation) over IPX + SAP advertising (`-tags ncp`); reuses the AFP/SMB storage + auth seams. See `spec/17-ncp.md` |
 | `service/webui/` | Management web UI (`-tags webui`): HTTPS adapter over `pkg/control` — JSON API, SSE stats stream, embedded SPA |
 | `pkg/control/` | Transport-agnostic management API (status, config stage/apply/save, service start/stop/restart, diagnostics); the single contract every UI front-end shares |
 | `pkg/status/` | In-process service-status registry read by the dashboard |
@@ -103,4 +104,4 @@ Copy `server.toml.example` to `server.toml`. Format is TOML (parsed via `knadh/k
 
 ### Protocol Specifications
 
-The `spec/` directory contains 14 markdown documents describing the internal protocol design. Start with `spec/00-overview.md` for DDP socket assignments and service interface contracts before modifying router or service code.
+The `spec/` directory contains markdown documents describing the internal protocol design (e.g. `spec/17-ncp.md` for the Novell NCP file service). Start with `spec/00-overview.md` for DDP socket assignments and service interface contracts before modifying router or service code.

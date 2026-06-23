@@ -1,4 +1,4 @@
-//go:build afp || smb || fswatch || all
+//go:build afp || smb || ncp || etherdfs || fswatch || all
 
 package registry
 
