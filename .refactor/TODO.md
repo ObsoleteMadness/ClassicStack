@@ -541,10 +541,14 @@ Fill **Owner** when claimed. **Deps** must be ✅ before starting (✋ = can par
 >   The first **real** backend — `core/fs/local.go` `local_fs` — reads `spec.Path` as a host
 >   directory root, maps '/'-joined share-relative paths onto `os` with traversal protection
 >   (`ErrPathEscape`), and registers a required `path` Param. `memfs` stays for tests.
-> - **Deferred:** real `DiskUsage` (platform statfs/GetDiskFreeSpaceEx) on `local_fs` returns 0/0
->   (unknown) for now — the OS adapter refines it later. Other backends (hfs-image, zipfs, ftp,
->   macgarden) keep their declared schemas but real factories land as needed; only `memfs` + the new
->   `local_fs` are wired today.
+> - **Landed since:** real per-OS `DiskUsage` on `local_fs` (statfs / GetDiskFreeSpaceEx, build-tagged,
+>   0/0 fallback on unsupported targets); per-protocol byte caps applied at the AFP/SMB/NCP consumers.
+>   Real FS backends now wired: `memfs` (tests), `local_fs`, `macgarden` (read-only HTTP scraper,
+>   `-tags macgarden`), and `zipfs` (read-write archive-backed volume, `-tags zipfs`, in
+>   `adapter/zipfs`). zipfs pins appledouble forks + mem metastore so it exercises the whole §9 seam
+>   with no host dir and no sqlite — the canonical "VFS structure works standalone" check.
+> - **Deferred:** real factories for `hfs-image`, `fat-image`, `ftp`, `s3`, `webdav` (declared
+>   schemas only); land as needed.
 
 > **M7 notes (in progress — slices landed):** the in-core file-services command engines (AFP, SMB,
 > NetBIOS NBF + NBIPX session transports) are now **functionally complete** — all AFP commands, the
