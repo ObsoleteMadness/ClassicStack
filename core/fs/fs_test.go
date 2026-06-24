@@ -68,6 +68,67 @@ func TestBuildShare_ValidAndInvalidCombinations(t *testing.T) {
 	}
 }
 
+// closingMemFS is a memfs that also implements the optional FSCloser, recording how
+// many times Close was called — used to prove the share stack forwards teardown.
+type closingMemFS struct {
+	FileSystem
+	closes int
+}
+
+func (c *closingMemFS) Close() error {
+	c.closes++
+	return nil
+}
+
+// TestFSCloserSeam proves: (1) CloseFS no-ops on a backend that does not implement
+// FSCloser, (2) it forwards to one that does, and (3) closing the assembled share
+// stack (shareFS) reaches the base backend's Close.
+func TestFSCloserSeam(t *testing.T) {
+	// A plain backend (no Close) is a silent no-op, not an error.
+	if err := CloseFS(newMemFS(ShareSpec{})); err != nil {
+		t.Fatalf("CloseFS on non-closer = %v, want nil", err)
+	}
+
+	// A closing backend is reached directly…
+	base := &closingMemFS{FileSystem: newMemFS(ShareSpec{})}
+	if err := CloseFS(base); err != nil {
+		t.Fatalf("CloseFS on closer = %v", err)
+	}
+	if base.closes != 1 {
+		t.Fatalf("direct CloseFS: closes = %d, want 1", base.closes)
+	}
+
+	// …and through the assembled share stack: register a factory returning the closer,
+	// build a share, and confirm shareFS.Close forwards to the base.
+	RegisterFS("closing-test-fs", func(spec ShareSpec, _ bus.Bus, _ metastore.Store) (FileSystem, error) {
+		return &closingMemFS{FileSystem: newMemFS(spec)}, nil
+	})
+	built, err := BuildShare(ShareSpec{FSType: "closing-test-fs"}, nil)
+	if err != nil {
+		t.Fatalf("BuildShare: %v", err)
+	}
+	// The built ForkFS exposes Close via shareFS (it always satisfies FSCloser).
+	closer, ok := built.(FSCloser)
+	if !ok {
+		t.Fatal("built share does not satisfy FSCloser")
+	}
+	if err := closer.Close(); err != nil {
+		t.Fatalf("shareFS.Close = %v", err)
+	}
+	// Reach into the base to confirm the call propagated.
+	sf, ok := built.(*shareFS)
+	if !ok {
+		t.Fatalf("built share is %T, want *shareFS", built)
+	}
+	cm, ok := sf.FileSystem.(*closingMemFS)
+	if !ok {
+		t.Fatalf("base is %T, want *closingMemFS", sf.FileSystem)
+	}
+	if cm.closes != 1 {
+		t.Fatalf("shareFS.Close did not forward: base closes = %d, want 1", cm.closes)
+	}
+}
+
 func TestFilenameCodecRoundTripAndUnrepresentable(t *testing.T) {
 	c := NewIdentityFilenameCodec()
 	wire := []byte("Report")

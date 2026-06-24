@@ -87,6 +87,33 @@ type HostPather interface {
 	HostPath(storePath string) (hostPath string, ok bool)
 }
 
+// FSCloser is an OPTIONAL capability a FileSystem backend implements when it owns a
+// resource that GC cannot reclaim on its own — a long-lived OS handle, a background
+// goroutine, a network session. It is NOT part of the FileSystem interface (most
+// backends own nothing and need no teardown), so a backend opts in by defining
+// Close; the share stack forwards it (shareFS.Close → base.Close) and the file
+// services call it at DEFINITIVE teardown only — service Stop, when no session can
+// still hold the share. It is deliberately NOT called from RemoveShare/UpdateShare,
+// which keep the in-flight contract (a session holding the displaced share rides it
+// out; its FS is reclaimed by GC when the last reference drops) — closing there would
+// pull the FS out from under a live handle. Close must be idempotent and safe to call
+// on a backend with no open handles; a backend that owns nothing simply omits it.
+// macgarden (background scraper goroutine) and zipfs (per-handle archive fds, plus a
+// best-effort flush) implement it; local_fs/memfs do not.
+type FSCloser interface {
+	Close() error
+}
+
+// CloseFS closes a FileSystem if it implements the optional FSCloser, else it is a
+// no-op returning nil. The file services call this at service Stop to release a
+// backend's GC-invisible resources; a plain backend needs nothing.
+func CloseFS(f FileSystem) error {
+	if c, ok := f.(FSCloser); ok {
+		return c.Close()
+	}
+	return nil
+}
+
 type NameKind uint8
 
 const (
@@ -531,6 +558,16 @@ func (s *shareFS) HostPath(storePath string) (string, bool) {
 		return "", false
 	}
 	return hp.HostPath(storePath)
+}
+
+// Close forwards the optional FSCloser teardown to the base FileSystem, so closing the
+// assembled share stack releases a backend's GC-invisible resources (zipfs handles,
+// macgarden goroutine). A base that owns nothing (local_fs/memfs) is a no-op. The fork
+// engine / DOS-attr store assembled above the base hold no such resources, so only the
+// base is closed. shareFS always exposes Close (it satisfies FSCloser), forwarding to
+// CloseFS which itself no-ops on a non-closing base.
+func (s *shareFS) Close() error {
+	return CloseFS(s.FileSystem)
 }
 
 // CatSearch forwards the optional catalog-search capability to the base

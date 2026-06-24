@@ -1,15 +1,83 @@
 package smb
 
 import (
+	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 
+	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
+	"github.com/ObsoleteMadness/ClassicStack/core/metastore"
 	"github.com/ObsoleteMadness/ClassicStack/core/share"
 )
 
 func memSpec(name string) fs.ShareSpec {
 	return fs.ShareSpec{Name: name, FSType: "memfs", ForkBackend: "appledouble"}
+}
+
+// closeCounter is shared by the closing-backend factory below so a test can observe how
+// many times a share's FS was torn down via the fs.FSCloser seam.
+var closeCounter atomic.Int32
+
+type closingBackend struct {
+	fs.FileSystem
+}
+
+func (c *closingBackend) Close() error {
+	closeCounter.Add(1)
+	return nil
+}
+
+func init() {
+	// A backend that also implements fs.FSCloser, so service Stop teardown is
+	// observable. It embeds a freshly-built memfs share (the simplest real FileSystem)
+	// and adds only the Close hook; BuildShare wraps THIS in a shareFS, whose Close
+	// (via fs.CloseFS) reaches closingBackend.Close.
+	fs.RegisterFS("smb-closing-test-fs", func(spec fs.ShareSpec, b bus.Bus, _ metastore.Store) (fs.FileSystem, error) {
+		inner, err := fs.BuildShare(fs.ShareSpec{FSType: "memfs", Name: spec.Name, ForkBackend: "appledouble"}, b)
+		if err != nil {
+			return nil, err
+		}
+		return &closingBackend{FileSystem: inner}, nil
+	})
+}
+
+func closingSpec(name string) fs.ShareSpec {
+	return fs.ShareSpec{Name: name, FSType: "smb-closing-test-fs", ForkBackend: "appledouble"}
+}
+
+// TestStopClosesShares proves the service closes each live share's FS at Stop (the
+// fs.FSCloser teardown that releases a backend's GC-invisible resources), and that a
+// hot RemoveShare does NOT close — preserving the in-flight contract.
+func TestStopClosesShares(t *testing.T) {
+	closeCounter.Store(0)
+	s := New(nil)
+	if err := s.AddShare(closingSpec("Vault")); err != nil {
+		t.Fatalf("AddShare: %v", err)
+	}
+	if err := s.AddShare(closingSpec("Archive")); err != nil {
+		t.Fatalf("AddShare: %v", err)
+	}
+
+	// RemoveShare unpublishes but must not tear the FS down (in-flight handles ride out).
+	if err := s.RemoveShare("Archive"); err != nil {
+		t.Fatalf("RemoveShare: %v", err)
+	}
+	if got := closeCounter.Load(); got != 0 {
+		t.Fatalf("RemoveShare closed the FS (count=%d); it must defer to GC", got)
+	}
+
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	// Only the still-live share (Vault) is closed; the removed one was already dropped.
+	if got := closeCounter.Load(); got != 1 {
+		t.Fatalf("Stop close count = %d, want 1 (only the live share)", got)
+	}
 }
 
 func TestService_Manager_AddUpdateRemove(t *testing.T) {

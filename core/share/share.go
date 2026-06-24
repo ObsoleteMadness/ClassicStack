@@ -85,6 +85,14 @@ func (s *Share) Permissions() Permissions { return s.perms }
 // UpdateShare path so an allow-list change is applied without rebuilding the FS.
 func (s *Share) SetPermissions(p Permissions) { s.perms = p }
 
+// Close releases the bound filesystem's GC-invisible resources (a backend's long-lived
+// OS handle or background goroutine) via the optional fs.FSCloser seam; a backend that
+// owns nothing is a no-op. It is DEFINITIVE teardown — the file services call it at
+// service Stop, when no session can still hold the share — NOT on a hot RemoveShare /
+// UpdateShare, which keep the in-flight contract and let GC reclaim a displaced share.
+// Safe to call on any share; idempotent if the backend's Close is.
+func (s *Share) Close() error { return fs.CloseFS(s.fsys) }
+
 // Codec exposes the share's FilenameCodec so the protocol layer can thread its
 // per-request wire charset through Decode/Encode. The built ForkFS carries the
 // codec via fs.Coded; if it doesn't (shouldn't happen for a BuildShare result),

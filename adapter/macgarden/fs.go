@@ -1848,9 +1848,12 @@ func urlPathFromAbsolute(absURL string) string {
 	return u.Path
 }
 
-// compile-time assertions: the backend satisfies the core/fs FileSystem contract and
-// the optional CatSearcher capability (its raison d'être — upstream archive search).
+// compile-time assertions: the backend satisfies the core/fs FileSystem contract, the
+// optional CatSearcher capability (its raison d'être — upstream archive search), and
+// the optional FSCloser teardown seam (its Close drains the background scraper
+// goroutine; the file services call it at service Stop, which previously leaked it).
 var (
 	_ corefs.FileSystem  = (*MacGardenFileSystem)(nil)
 	_ corefs.CatSearcher = (*MacGardenFileSystem)(nil)
+	_ corefs.FSCloser    = (*MacGardenFileSystem)(nil)
 )

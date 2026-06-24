@@ -105,6 +105,10 @@ func (v *Volume) allows(user string) bool { return v.sh.Permissions().Allows(use
 // v.FS().DiskUsage(p)); the FS carries fork metadata on Rename/Remove.
 func (v *Volume) FS() fs.ForkFS { return v.sh.FS() }
 
+// Close releases the bound filesystem's GC-invisible resources (fs.FSCloser); a no-op
+// for a backend that owns none. Called at service Stop, not on RemoveShare.
+func (v *Volume) Close() error { return v.sh.Close() }
+
 // codec is the share's FilenameCodec, threaded per request with the AFP wire
 // charset (selected by the path-type byte).
 func (v *Volume) codec() fs.FilenameCodec { return v.sh.Codec() }

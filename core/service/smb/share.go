@@ -84,6 +84,10 @@ func (sh *Share) allows(user string) bool { return sh.sh.Permissions().Allows(us
 // carry fork metadata).
 func (sh *Share) FS() fs.ForkFS { return sh.sh.FS() }
 
+// Close releases the bound filesystem's GC-invisible resources (fs.FSCloser); a
+// no-op for a backend that owns none. Called at service Stop, not on RemoveShare.
+func (sh *Share) Close() error { return sh.sh.Close() }
+
 // dosAttrs returns the share's DOS-attribute store (the per-share backend
 // assembled by BuildShare), or nil when the share exposes none. SMB persists the
 // RO/HID/SYS/ARCH bits it cannot derive from the host through it.

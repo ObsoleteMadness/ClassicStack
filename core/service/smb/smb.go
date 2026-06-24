@@ -455,6 +455,11 @@ func (s *Service) Stop(ctx context.Context) error {
 	s.running = false
 	closers := append([]circuitCloser(nil), s.closers...)
 	reactor := s.reactor
+	// Snapshot the live shares so their backends can be closed after the lock drops.
+	// Stop is definitive teardown (no session can still hold a share), so closing each
+	// share's FS here releases any GC-invisible backend resource (zipfs handles,
+	// macgarden goroutine). A plain backend's Close is a no-op.
+	shares := append([]*Share(nil), s.shares...)
 	s.mu.Unlock()
 
 	if reactor != nil {
@@ -462,6 +467,9 @@ func (s *Service) Stop(ctx context.Context) error {
 	}
 	for _, c := range closers {
 		c.closeCircuits()
+	}
+	for _, sh := range shares {
+		_ = sh.Close()
 	}
 	s.logf("SMB service stopped")
 	return nil

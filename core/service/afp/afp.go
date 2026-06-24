@@ -613,13 +613,24 @@ func (s *Service) subscribeReactorLocked() {
 func (s *Service) Stop(ctx context.Context) error {
 	_ = ctx
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !s.running {
+		s.mu.Unlock()
 		return nil
 	}
 	s.running = false
-	if s.reactor != nil {
-		s.reactor.Stop()
+	reactor := s.reactor
+	// Snapshot the live volumes so their backends can be closed after the lock drops.
+	// Stop is definitive teardown (no session can still hold a volume), so closing each
+	// volume's FS here releases any GC-invisible backend resource (zipfs handles,
+	// macgarden goroutine). A plain backend's Close is a no-op.
+	volumes := append([]*Volume(nil), s.volumes...)
+	s.mu.Unlock()
+
+	if reactor != nil {
+		reactor.Stop()
+	}
+	for _, v := range volumes {
+		_ = v.Close()
 	}
 	s.logf("AFP service stopped")
 	return nil

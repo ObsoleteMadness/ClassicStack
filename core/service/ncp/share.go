@@ -67,6 +67,10 @@ func (v *Volume) allows(user string) bool { return v.sh.Permissions().Allows(use
 // FS returns the bound filesystem; the dispatch reaches files through it.
 func (v *Volume) FS() fs.ForkFS { return v.sh.FS() }
 
+// Close releases the bound filesystem's GC-invisible resources (fs.FSCloser); a no-op
+// for a backend that owns none. Called at service Stop.
+func (v *Volume) Close() error { return v.sh.Close() }
+
 // codec is the volume's FilenameCodec.
 func (v *Volume) codec() fs.FilenameCodec { return v.sh.Codec() }
 

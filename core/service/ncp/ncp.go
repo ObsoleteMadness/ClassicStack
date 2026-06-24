@@ -363,6 +363,10 @@ func (s *Service) Stop(ctx context.Context) error {
 	s.running = false
 	closers := append([]circuitCloser(nil), s.closers...)
 	reactor := s.reactor
+	// Snapshot the live volumes so their backends can be closed after the lock drops.
+	// Stop is definitive teardown, so this releases any GC-invisible backend resource
+	// (zipfs handles, macgarden goroutine). A plain backend's Close is a no-op.
+	vols := append([]*Volume(nil), s.vols...)
 	s.mu.Unlock()
 
 	if reactor != nil {
@@ -370,6 +374,9 @@ func (s *Service) Stop(ctx context.Context) error {
 	}
 	for _, c := range closers {
 		c.closeCircuits()
+	}
+	for _, v := range vols {
+		_ = v.Close()
 	}
 	s.logf("NCP service stopped")
 	return nil

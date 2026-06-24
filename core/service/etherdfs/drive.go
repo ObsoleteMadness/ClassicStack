@@ -54,6 +54,10 @@ func (d *Drive) Name() string { return d.sh.Name() }
 // fork metadata).
 func (d *Drive) FS() fs.ForkFS { return d.sh.FS() }
 
+// Close releases the bound filesystem's GC-invisible resources (fs.FSCloser); a no-op
+// for a backend that owns none. Called at service Stop.
+func (d *Drive) Close() error { return d.sh.Close() }
+
 // dosAttrs returns the drive's DOS-attribute store (the per-share backend
 // assembled by BuildShare), or nil when the share exposes none. EtherDFS persists
 // and serves the FAT RO/HID/SYS/ARCH bits through it, so attributes survive across

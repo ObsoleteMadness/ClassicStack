@@ -86,6 +86,17 @@ func (s *Service) Name() string { return Name }
 // the link).
 func (s *Service) Stop(ctx context.Context) error {
 	s.sessions.closeAll()
+	// Definitive teardown: close each drive's FS backend to release any GC-invisible
+	// resource (zipfs handles, macgarden goroutine). A plain backend's Close is a no-op.
+	s.mu.Lock()
+	drives := make([]*Drive, 0, len(s.drives))
+	for _, d := range s.drives {
+		drives = append(drives, d)
+	}
+	s.mu.Unlock()
+	for _, d := range drives {
+		_ = d.Close()
+	}
 	return s.Port.Stop(ctx)
 }
 
