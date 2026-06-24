@@ -300,15 +300,33 @@ func packVolParams(out []byte, vol *Volume, bitmap uint16) []byte {
 		out = bp.AppendBE16(out, vol.ID())
 	}
 	if bitmap&volBitmapBytesFree != 0 {
-		out = bp.AppendBE32(out, uint32(free))
+		out = bp.AppendBE32(out, sat32(free))
 	}
 	if bitmap&volBitmapBytesTotal != 0 {
-		out = bp.AppendBE32(out, uint32(total))
+		out = bp.AppendBE32(out, sat32(total))
 	}
 	if bitmap&volBitmapName != 0 {
 		out = putPString(out, []byte(vol.Name()))
 	}
 	return out
+}
+
+// afpMaxVolumeBytes is the largest free/total byte count the AFP 2.x volume
+// bitmap can carry: the BytesFree/BytesTotal fields are 32-bit byte counts, so
+// a volume tops out at 4 GiB − 1. (The 64-bit ExtBytesFree/Total fields are an
+// AFP 3.x feature this server does not implement.)
+const afpMaxVolumeBytes uint32 = 0xFFFFFFFF
+
+// sat32 SATURATES a 64-bit byte count to the 32-bit AFP volume field: a real
+// disk larger than 4 GiB is reported as exactly 4 GiB − 1 (a full, valid value)
+// rather than a uint32 cast, which would WRAP and tell the client a 6 GiB disk
+// has 2 GiB. A capped value is the honest "this protocol can't express more"
+// answer the client expects from a vintage volume.
+func sat32(v uint64) uint32 {
+	if v > uint64(afpMaxVolumeBytes) {
+		return afpMaxVolumeBytes
+	}
+	return uint32(v)
 }
 
 // afpCloseVol releases a volume handle held by the session.

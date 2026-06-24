@@ -90,6 +90,45 @@ func TestLocalFSRoundTrip(t *testing.T) {
 	}
 }
 
+// TestLocalFSDiskUsage proves the real per-OS DiskUsage reports a non-zero,
+// self-consistent total/free for the host volume backing the share root. On a
+// platform with no build-tagged statfs/GetDiskFreeSpaceEx query (the "other"
+// fallback / TinyGo) it returns 0/0 (unknown); the test skips the magnitude
+// assertions there rather than failing, since 0/0 is the documented contract.
+func TestLocalFSDiskUsage(t *testing.T) {
+	root := t.TempDir()
+	l, err := newLocalFS(ShareSpec{FSType: "local_fs", Path: root}, nil)
+	if err != nil {
+		t.Fatalf("newLocalFS: %v", err)
+	}
+	total, free, err := l.DiskUsage("")
+	if err != nil {
+		t.Fatalf("DiskUsage: %v", err)
+	}
+	if total == 0 && free == 0 {
+		t.Skip("DiskUsage unsupported on this platform (0/0 fallback) — nothing to assert")
+	}
+	if total == 0 {
+		t.Fatalf("DiskUsage total = 0 with non-zero free %d", free)
+	}
+	if free > total {
+		t.Fatalf("DiskUsage free %d exceeds total %d", free, total)
+	}
+}
+
+// TestLocalFSDiskUsageRejectsTraversal proves a per-subtree DiskUsage query is
+// resolved under the root and cannot escape the share.
+func TestLocalFSDiskUsageRejectsTraversal(t *testing.T) {
+	root := t.TempDir()
+	l, err := newLocalFS(ShareSpec{FSType: "local_fs", Path: root}, nil)
+	if err != nil {
+		t.Fatalf("newLocalFS: %v", err)
+	}
+	if _, _, err := l.DiskUsage("../escape"); !errors.Is(err, ErrPathEscape) {
+		t.Fatalf("DiskUsage(../escape) err = %v, want ErrPathEscape", err)
+	}
+}
+
 // TestLocalFSRejectsTraversal proves a '..' path cannot escape the share root.
 func TestLocalFSRejectsTraversal(t *testing.T) {
 	root := t.TempDir()

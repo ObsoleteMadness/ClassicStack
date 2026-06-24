@@ -135,3 +135,24 @@ func TestPathOps_ReadOnlyShareDeniesMutation(t *testing.T) {
 		t.Fatalf("mkdir on read-only share status = %#x, want ACCESS_DENIED", h.Status)
 	}
 }
+
+// TestClamp16 proves the legacy SMB disk-info unit fields SATURATE at the 16-bit
+// maximum rather than wrapping: a disk whose unit count exceeds 0xFFFF must report
+// a full 0xFFFF units, never a wrapped smaller value.
+func TestClamp16(t *testing.T) {
+	cases := []struct {
+		in   uint64
+		want uint16
+	}{
+		{0, 0},
+		{1, 1},
+		{0xFFFF, 0xFFFF},
+		{0x10000, 0xFFFF}, // one over → capped
+		{1 << 40, 0xFFFF}, // enormous → capped, not wrapped to 0
+	}
+	for _, tc := range cases {
+		if got := clamp16(tc.in); got != tc.want {
+			t.Errorf("clamp16(%d) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}

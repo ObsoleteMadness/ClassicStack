@@ -113,12 +113,24 @@ func (l *localFS) Stat(path string) (fs.FileInfo, error) {
 	return os.Stat(h)
 }
 
+// DiskUsage reports the total and free bytes of the host volume backing the
+// share root. The numbers are the REAL, uncapped byte counts of the underlying
+// filesystem — the per-protocol field-width caps (AFP/SMB/NCP top out at 2 GiB
+// or 4 GiB) are applied by each service when it packs the volume reply, not
+// here: core/fs does not know which protocol is asking. The per-OS query is in
+// the build-tagged diskUsage helper (statfs on unix, GetDiskFreeSpaceEx on
+// Windows); an unsupported target (e.g. TinyGo) reports 0/0 (unknown), which the
+// services treat as a single nominal unit rather than failing the mount.
+//
+// path is the share-relative path whose volume to report; "" means the share
+// root. It is resolved under the root so a per-subtree query cannot escape the
+// share.
 func (l *localFS) DiskUsage(path string) (total, free uint64, err error) {
-	// Real per-volume usage is platform-specific (statfs/GetDiskFreeSpaceEx);
-	// the OS adapter layer can refine this. Report 0/0 (unknown) for now, which
-	// AFP/SMB treat as "very large" rather than failing the mount.
-	_ = path
-	return 0, 0, nil
+	h, err := l.host(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	return diskUsage(h)
 }
 
 func (l *localFS) CreateDir(path string) error {
