@@ -1,7 +1,7 @@
 package macip
 
 import (
-	"fmt"
+	"errors"
 	"strconv"
 	"strings"
 
@@ -86,7 +86,7 @@ func (s *Section) Validate() error {
 			continue
 		}
 		if _, ok := ParseIPv4(f); !ok {
-			return fmt.Errorf("macip: invalid IPv4 address: %q", f)
+			return errors.New("macip: invalid IPv4 address: " + strconv.Quote(f))
 		}
 	}
 	return nil

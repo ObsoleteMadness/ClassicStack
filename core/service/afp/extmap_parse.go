@@ -1,9 +1,10 @@
 package afp
 
 import (
-	"fmt"
+	"errors"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -25,11 +26,11 @@ func ParseExtensionMap(data []byte) (*ExtensionMap, error) {
 		}
 		match := extMapLinePattern.FindStringSubmatch(line)
 		if len(match) != 4 {
-			return nil, fmt.Errorf("afp: invalid extension map line %d: %q", i+1, raw)
+			return nil, errors.New("afp: invalid extension map line " + strconv.Itoa(i+1) + ": " + strconv.Quote(raw))
 		}
 		mapping, err := NewExtensionMapping(match[2], match[3])
 		if err != nil {
-			return nil, fmt.Errorf("afp: invalid extension map line %d: %w", i+1, err)
+			return nil, errors.New("afp: invalid extension map line " + strconv.Itoa(i+1) + ": " + err.Error())
 		}
 		key := strings.ToLower(strings.TrimPrefix(match[1], "."))
 		entries[key] = mapping
@@ -59,7 +60,15 @@ func (m *ExtensionMap) Marshal() []byte {
 	var b strings.Builder
 	for _, ext := range exts {
 		mp := m.entries[ext]
-		fmt.Fprintf(&b, ".%s \"%s\" \"%s\"\n", ext, string(mp.FileType[:]), string(mp.Creator[:]))
+		// Netatalk line form: `.ext "TYPE" "CRTR"` — built by hand (core forbids fmt,
+		// which pulls reflect). TYPE/CRTR are exactly 4 bytes by NewExtensionMapping.
+		b.WriteByte('.')
+		b.WriteString(ext)
+		b.WriteString(` "`)
+		b.Write(mp.FileType[:])
+		b.WriteString(`" "`)
+		b.Write(mp.Creator[:])
+		b.WriteString("\"\n")
 	}
 	return []byte(b.String())
 }

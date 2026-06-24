@@ -12,7 +12,8 @@ package afp
 // extension.
 
 import (
-	"fmt"
+	"errors"
+	"strconv"
 	"strings"
 )
 
@@ -26,10 +27,10 @@ type ExtensionMapping struct {
 // rejecting any not exactly four bytes (the OSType width).
 func NewExtensionMapping(fileType, creator string) (ExtensionMapping, error) {
 	if len(fileType) != 4 {
-		return ExtensionMapping{}, fmt.Errorf("afp: type must be exactly 4 bytes, got %q", fileType)
+		return ExtensionMapping{}, errors.New("afp: type must be exactly 4 bytes, got " + strconv.Quote(fileType))
 	}
 	if len(creator) != 4 {
-		return ExtensionMapping{}, fmt.Errorf("afp: creator must be exactly 4 bytes, got %q", creator)
+		return ExtensionMapping{}, errors.New("afp: creator must be exactly 4 bytes, got " + strconv.Quote(creator))
 	}
 	var m ExtensionMapping
 	copy(m.FileType[:], fileType)

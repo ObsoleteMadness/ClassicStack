@@ -2,7 +2,13 @@
 
 package fs
 
-import "golang.org/x/sys/windows"
+import "syscall"
+
+// We use stdlib syscall (not golang.org/x/sys/windows) for the three calls and
+// the FILE_ATTRIBUTE_* constants this backend needs: x/sys/windows transitively
+// pulls encoding/binary → reflect, which the core ring forbids (§1 / archtest).
+// syscall is already a permitted core dependency (os pulls it) and carries
+// GetFileAttributes/SetFileAttributes/UTF16PtrFromString + the attribute consts.
 
 // On Windows the DOS attribute bits ARE the host's file attributes, so a share's
 // DOS-attribute store maps straight through to GetFileAttributes /
@@ -31,11 +37,11 @@ func (s *windowsDOSAttrStore) Get(path string) (DOSAttr, bool) {
 	if !ok {
 		return s.cache.Get(path)
 	}
-	p, err := windows.UTF16PtrFromString(hp)
+	p, err := syscall.UTF16PtrFromString(hp)
 	if err != nil {
 		return s.cache.Get(path)
 	}
-	raw, err := windows.GetFileAttributes(p)
+	raw, err := syscall.GetFileAttributes(p)
 	if err != nil {
 		return s.cache.Get(path)
 	}
@@ -54,23 +60,23 @@ func (s *windowsDOSAttrStore) Set(path string, attr DOSAttr) error {
 	if !ok {
 		return nil
 	}
-	p, err := windows.UTF16PtrFromString(hp)
+	p, err := syscall.UTF16PtrFromString(hp)
 	if err != nil {
 		return nil
 	}
 	// Preserve any host attribute bits we do not model (e.g. COMPRESSED) by OR-ing
 	// our storable bits onto the current set after clearing the storable ones.
-	cur, err := windows.GetFileAttributes(p)
+	cur, err := syscall.GetFileAttributes(p)
 	if err != nil {
 		cur = 0
 	}
-	const storable = windows.FILE_ATTRIBUTE_READONLY | windows.FILE_ATTRIBUTE_HIDDEN |
-		windows.FILE_ATTRIBUTE_SYSTEM | windows.FILE_ATTRIBUTE_ARCHIVE
+	const storable = syscall.FILE_ATTRIBUTE_READONLY | syscall.FILE_ATTRIBUTE_HIDDEN |
+		syscall.FILE_ATTRIBUTE_SYSTEM | syscall.FILE_ATTRIBUTE_ARCHIVE
 	next := (cur &^ storable) | toWindowsAttrs(attr.Attrs)
 	if next == 0 {
-		next = windows.FILE_ATTRIBUTE_NORMAL
+		next = syscall.FILE_ATTRIBUTE_NORMAL
 	}
-	return windows.SetFileAttributes(p, next)
+	return syscall.SetFileAttributes(p, next)
 }
 
 func (s *windowsDOSAttrStore) Delete(path string) error { return s.cache.Delete(path) }
@@ -79,16 +85,16 @@ func (s *windowsDOSAttrStore) Rename(o, n string) error { return s.cache.Rename(
 // fromWindowsAttrs maps the Windows attribute word to our storable DOS bits.
 func fromWindowsAttrs(raw uint32) uint16 {
 	var a uint16
-	if raw&windows.FILE_ATTRIBUTE_READONLY != 0 {
+	if raw&syscall.FILE_ATTRIBUTE_READONLY != 0 {
 		a |= DOSReadOnly
 	}
-	if raw&windows.FILE_ATTRIBUTE_HIDDEN != 0 {
+	if raw&syscall.FILE_ATTRIBUTE_HIDDEN != 0 {
 		a |= DOSHidden
 	}
-	if raw&windows.FILE_ATTRIBUTE_SYSTEM != 0 {
+	if raw&syscall.FILE_ATTRIBUTE_SYSTEM != 0 {
 		a |= DOSSystem
 	}
-	if raw&windows.FILE_ATTRIBUTE_ARCHIVE != 0 {
+	if raw&syscall.FILE_ATTRIBUTE_ARCHIVE != 0 {
 		a |= DOSArchive
 	}
 	return a
@@ -98,16 +104,16 @@ func fromWindowsAttrs(raw uint32) uint16 {
 func toWindowsAttrs(a uint16) uint32 {
 	var raw uint32
 	if a&DOSReadOnly != 0 {
-		raw |= windows.FILE_ATTRIBUTE_READONLY
+		raw |= syscall.FILE_ATTRIBUTE_READONLY
 	}
 	if a&DOSHidden != 0 {
-		raw |= windows.FILE_ATTRIBUTE_HIDDEN
+		raw |= syscall.FILE_ATTRIBUTE_HIDDEN
 	}
 	if a&DOSSystem != 0 {
-		raw |= windows.FILE_ATTRIBUTE_SYSTEM
+		raw |= syscall.FILE_ATTRIBUTE_SYSTEM
 	}
 	if a&DOSArchive != 0 {
-		raw |= windows.FILE_ATTRIBUTE_ARCHIVE
+		raw |= syscall.FILE_ATTRIBUTE_ARCHIVE
 	}
 	return raw
 }
