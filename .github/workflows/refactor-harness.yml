@@ -54,7 +54,7 @@ jobs:
       - name: Setup TinyGo
         uses: acifani/setup-tinygo@v2
         with:
-          tinygo-version: "0.34.0"
+          tinygo-version: "0.41.0"
 
       - name: Run TinyGo amd64 build gates
         shell: bash
