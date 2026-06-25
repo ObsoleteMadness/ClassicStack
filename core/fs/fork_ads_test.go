@@ -189,7 +189,7 @@ func TestADSForkEngine_DeleteAndMoveMetadata(t *testing.T) {
 }
 
 func TestForkEngineByName_ADSIsRealEngine(t *testing.T) {
-	eng, err := forkAdapterByName("ads", newMemFS(ShareSpec{}))
+	eng, err := forkAdapterByName("ads", ShareSpec{}, newMemFS(ShareSpec{}))
 	if err != nil {
 		t.Fatalf("forkAdapterByName(ads): %v", err)
 	}

@@ -16,7 +16,7 @@ func TestForkAdapterRegistry_BuiltinsResolve(t *testing.T) {
 		"ads", "xattr", // host-stream layouts
 		"nofork", "null", "none", // explicit no-forks + legacy aliases
 	} {
-		eng, err := forkAdapterByName(name, base)
+		eng, err := forkAdapterByName(name, ShareSpec{}, base)
 		if err != nil {
 			t.Fatalf("forkAdapterByName(%q): unexpected error %v", name, err)
 		}
@@ -26,12 +26,12 @@ func TestForkAdapterRegistry_BuiltinsResolve(t *testing.T) {
 	}
 
 	// Case-insensitive (the registry lower-cases names).
-	if _, err := forkAdapterByName("AppleDouble", base); err != nil {
+	if _, err := forkAdapterByName("AppleDouble", ShareSpec{}, base); err != nil {
 		t.Fatalf("forkAdapterByName is not case-insensitive: %v", err)
 	}
 
 	// Unknown name is a hard error, not a silent fallback.
-	if _, err := forkAdapterByName("no-such-fork", base); err == nil {
+	if _, err := forkAdapterByName("no-such-fork", ShareSpec{}, base); err == nil {
 		t.Fatal("forkAdapterByName(unknown): expected error, got nil")
 	}
 }
@@ -42,13 +42,14 @@ func TestForkAdapterRegistry_RoundTrip(t *testing.T) {
 	const name = "test-fork-roundtrip"
 	sentinel := errors.New("factory called")
 	var gotBase FileSystem
-	RegisterForkAdapter(name, func(base FileSystem) (ForkEngine, error) {
+	RegisterForkAdapter(name, func(spec ShareSpec, base FileSystem) (ForkEngine, error) {
+		_ = spec
 		gotBase = base
 		return nil, sentinel
 	})
 
 	base := newMemFS(ShareSpec{})
-	_, err := forkAdapterByName(name, base)
+	_, err := forkAdapterByName(name, ShareSpec{}, base)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("forkAdapterByName(%q) err = %v, want sentinel", name, err)
 	}

@@ -53,7 +53,8 @@ func newXattrForkEngine(base FileSystem) *xattrForkEngine {
 // layout, §1c) into the fork-adapter registry, so it is available exactly when this
 // file is linked.
 func init() {
-	RegisterForkAdapter("xattr", func(base FileSystem) (ForkEngine, error) {
+	RegisterForkAdapter("xattr", func(spec ShareSpec, base FileSystem) (ForkEngine, error) {
+		_ = spec
 		return newXattrForkEngine(base), nil
 	})
 }

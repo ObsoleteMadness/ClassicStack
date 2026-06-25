@@ -19,8 +19,10 @@ import (
 
 // ForkAdapterFactory builds a fork ForkEngine layered over a share's base FileSystem.
 // The base is fork-unaware (plain bytes + paths); the adapter is the single place that
-// knows resource forks / Finder metadata exist and where their container lives.
-type ForkAdapterFactory func(base FileSystem) (ForkEngine, error)
+// knows resource forks / Finder metadata exist and where their container lives. The
+// ShareSpec is passed so an adapter can read its own config (e.g. AppleDouble's sidecar
+// layout from spec.Extra); an adapter that needs none ignores it.
+type ForkAdapterFactory func(spec ShareSpec, base FileSystem) (ForkEngine, error)
 
 var (
 	forkAdapterMu sync.RWMutex
@@ -38,16 +40,18 @@ func RegisterForkAdapter(name string, f ForkAdapterFactory) {
 	forkAdapters[strings.ToLower(name)] = f
 }
 
-// forkAdapterByName resolves the registered fork adapter for name over base, or an
-// "unknown fork backend" error when no adapter registered under that name (so a
-// mistyped or unlinked backend fails the share build loudly). An empty name is the
-// caller's responsibility to default before calling (withDefaults sets "appledouble").
-func forkAdapterByName(name string, base FileSystem) (ForkEngine, error) {
+// forkAdapterByName resolves the registered fork adapter for spec.ForkBackend over base,
+// or an "unknown fork backend" error when no adapter registered under that name (so a
+// mistyped or unlinked backend fails the share build loudly). The whole spec is threaded
+// to the factory so an adapter can read its own config (AppleDouble's sidecar layout).
+// An empty name is the caller's responsibility to default first (withDefaults sets
+// "appledouble").
+func forkAdapterByName(name string, spec ShareSpec, base FileSystem) (ForkEngine, error) {
 	forkAdapterMu.RLock()
 	f, ok := forkAdapters[strings.ToLower(name)]
 	forkAdapterMu.RUnlock()
 	if !ok {
 		return nil, errors.New("fs: unknown fork backend")
 	}
-	return f(base)
+	return f(spec, base)
 }

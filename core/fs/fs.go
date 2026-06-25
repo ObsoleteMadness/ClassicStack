@@ -440,7 +440,7 @@ func BuildShare(spec ShareSpec, b bus.Bus) (ForkFS, error) {
 	// A fork adapter is MANDATORY: BuildShare always resolves exactly one over the
 	// fork-unaware base FS (withDefaults sets "appledouble" when unspecified; "nofork"
 	// is the explicit no-forks choice). An unknown name is a hard error.
-	forkEngine, err := forkAdapterByName(spec.ForkBackend, base)
+	forkEngine, err := forkAdapterByName(spec.ForkBackend, spec, base)
 	if err != nil {
 		return nil, err
 	}

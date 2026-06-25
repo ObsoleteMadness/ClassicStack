@@ -208,7 +208,7 @@ func TestXattrForkEngine_DeleteAndMoveMetadata(t *testing.T) {
 }
 
 func TestForkEngineByName_XattrIsRealEngine(t *testing.T) {
-	eng, err := forkAdapterByName("xattr", newMemFS(ShareSpec{}))
+	eng, err := forkAdapterByName("xattr", ShareSpec{}, newMemFS(ShareSpec{}))
 	if err != nil {
 		t.Fatalf("forkAdapterByName(xattr): %v", err)
 	}

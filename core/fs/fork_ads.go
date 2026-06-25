@@ -34,7 +34,8 @@ func newADSForkEngine(base FileSystem) *adsForkEngine {
 // init registers the "ads" fork adapter (NTFS alternate-data-stream layout, §1b) into
 // the fork-adapter registry, so it is available exactly when this file is linked.
 func init() {
-	RegisterForkAdapter("ads", func(base FileSystem) (ForkEngine, error) {
+	RegisterForkAdapter("ads", func(spec ShareSpec, base FileSystem) (ForkEngine, error) {
+		_ = spec
 		return newADSForkEngine(base), nil
 	})
 }

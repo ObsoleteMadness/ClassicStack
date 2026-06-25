@@ -10,7 +10,7 @@ import (
 func newForkTestShare(t *testing.T) (ForkFS, FileSystem) {
 	t.Helper()
 	base := newMemFS(ShareSpec{})
-	eng := newAppleDoubleForkEngine(base)
+	eng := newAppleDoubleForkEngine(base, netatalkSidecarPath)
 	return &shareFS{
 		FileSystem: base,
 		ForkEngine: eng,
