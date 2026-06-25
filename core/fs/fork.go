@@ -10,36 +10,36 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/appledouble"
 )
 
-// forkEngineByName builds the fork backend named for a share over its base
-// FileSystem. "appledouble" stores forks in "._name" sidecars; "ads" stores them
-// in NTFS alternate data streams (the SFM AFP_Resource / AFP_AfpInfo layout, M7
-// interop); "xattr" stores them in the Netatalk extended-attribute layout
-// (org.netatalk.Metadata / org.netatalk.ResourceFork, §1c). "native"/"auto" fall
-// back to AppleDouble until per-platform host-fork support lands. The null engine
-// carries no metadata.
-func forkEngineByName(name string, base FileSystem) (ForkEngine, error) {
-	switch strings.ToLower(name) {
-	case "appledouble", "auto", "native":
-		// native delegates to the AppleDouble sidecar engine until per-platform
-		// host-native fork support lands; they share the same AfpInfo +
-		// resource-fork payload, only the container differs.
-		// See spec/16-storage-seam.md.
+// init registers the fork adapters that live in core/fs's AppleDouble family. Each
+// adapter self-registers (rather than living in a switch) so the set of fork backends
+// is the set linked into the build — the same registry seam fs backends use. See
+// fork_registry.go and spec/16-storage-seam.md §9.
+//
+//   - "appledouble" stores forks in "._name" AppleDouble v2 sidecars next to each file.
+//     "auto" and "native" currently alias it (they share the AfpInfo + resource-fork
+//     payload; only the container differs). TODO(phase4): "native" becomes a real
+//     per-platform host-fork adapter, registered from the adapter/ ring under a build
+//     tag, and stops aliasing AppleDouble.
+//   - "nofork" (aliases "null", "none") carries NO metadata: it is the explicit "this
+//     share has no resource forks" adapter, so every share has exactly one adapter and
+//     a fork-less share is a deliberate choice, not a silent fallback.
+//
+// "ads" and "xattr" register themselves from fork_ads.go / fork_xattr.go.
+func init() {
+	appledouble := func(base FileSystem) (ForkEngine, error) {
 		return newAppleDoubleForkEngine(base), nil
-	case "ads":
-		// Real NTFS-stream backend: resource fork in <name>:AFP_Resource, the
-		// 32-byte FinderInfo inside a 60-byte AfpInfo record in
-		// <name>:AFP_AfpInfo, so names interop with Windows SFM/SMB (§1b).
-		return newADSForkEngine(base), nil
-	case "xattr":
-		// Real Netatalk extended-attribute backend: metadata in the 402-byte
-		// org.netatalk.Metadata EA, resource fork in org.netatalk.ResourceFork,
-		// so forks interop with a Netatalk "ea = sys" volume (§1c).
-		return newXattrForkEngine(base), nil
-	case "null", "none":
-		return NewNullForkEngine(), nil
-	default:
-		return nil, errors.New("fs: unknown fork backend")
 	}
+	RegisterForkAdapter("appledouble", appledouble)
+	RegisterForkAdapter("auto", appledouble)
+	RegisterForkAdapter("native", appledouble) // TODO(phase4): real host-fork adapter
+
+	nofork := func(base FileSystem) (ForkEngine, error) {
+		_ = base
+		return NewNoForkAdapter(), nil
+	}
+	RegisterForkAdapter("nofork", nofork)
+	RegisterForkAdapter("null", nofork)
+	RegisterForkAdapter("none", nofork)
 }
 
 // appleDoubleForkEngine stores resource forks and Finder metadata in "._name"

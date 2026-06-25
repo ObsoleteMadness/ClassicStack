@@ -31,6 +31,14 @@ func newADSForkEngine(base FileSystem) *adsForkEngine {
 	return &adsForkEngine{fs: base}
 }
 
+// init registers the "ads" fork adapter (NTFS alternate-data-stream layout, §1b) into
+// the fork-adapter registry, so it is available exactly when this file is linked.
+func init() {
+	RegisterForkAdapter("ads", func(base FileSystem) (ForkEngine, error) {
+		return newADSForkEngine(base), nil
+	})
+}
+
 // NTFS stream names SFM/SMB use for the AFP forks.
 const (
 	adsResourceStream = "AFP_Resource"

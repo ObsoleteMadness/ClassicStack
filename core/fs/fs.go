@@ -61,6 +61,12 @@ type ForkEngine interface {
 	DeleteMetadata(path string) error
 }
 
+// ForkFS is a base FileSystem paired with its mandatory fork adapter (ForkEngine).
+// BuildShare always assembles exactly one fork adapter over the fork-unaware base —
+// resolved by name through the fork-adapter registry (fork_registry.go), defaulting to
+// "appledouble" and selectable to "nofork" when a share carries no resource forks.
+// There is no FS-without-an-adapter path: a fork-less share uses the explicit "nofork"
+// adapter, never a silent fallback.
 type ForkFS interface {
 	FileSystem
 	ForkEngine
@@ -431,7 +437,10 @@ func BuildShare(spec ShareSpec, b bus.Bus) (ForkFS, error) {
 	if err != nil {
 		return nil, err
 	}
-	forkEngine, err := forkEngineByName(spec.ForkBackend, base)
+	// A fork adapter is MANDATORY: BuildShare always resolves exactly one over the
+	// fork-unaware base FS (withDefaults sets "appledouble" when unspecified; "nofork"
+	// is the explicit no-forks choice). An unknown name is a hard error.
+	forkEngine, err := forkAdapterByName(spec.ForkBackend, base)
 	if err != nil {
 		return nil, err
 	}
@@ -625,53 +634,63 @@ func (s *shareFS) CatSearch(crit CatSearchCriteria, cursor CatSearchCursor) ([]C
 	return cs.CatSearch(crit, cursor)
 }
 
-// NewNullForkEngine returns a metadata no-op fork implementation for placeholder shares.
-func NewNullForkEngine() ForkEngine { return nullForkEngine{} }
+// NewNoForkAdapter returns the "nofork" adapter: a metadata no-op fork engine that
+// carries no resource forks or Finder info. It is the EXPLICIT "this share has no
+// forks" choice in the mandatory-adapter model (registered under "nofork"/"null"/
+// "none"), so a fork-less share is deliberate rather than a silent fallback. Also used
+// for placeholder shares.
+func NewNoForkAdapter() ForkEngine { return noForkAdapter{} }
 
-type nullForkEngine struct{}
+// NewNullForkEngine is the former name of NewNoForkAdapter, kept for callers that
+// constructed the no-op engine directly. Prefer NewNoForkAdapter.
+//
+// Deprecated: use NewNoForkAdapter.
+func NewNullForkEngine() ForkEngine { return NewNoForkAdapter() }
 
-func (nullForkEngine) OpenFork(path string, fork ForkType, flag int) (File, error) {
+type noForkAdapter struct{}
+
+func (noForkAdapter) OpenFork(path string, fork ForkType, flag int) (File, error) {
 	_ = path
 	_ = fork
 	_ = flag
 	return nil, fs.ErrNotExist
 }
 
-func (nullForkEngine) ForkLen(path string, fork ForkType) (int64, error) {
+func (noForkAdapter) ForkLen(path string, fork ForkType) (int64, error) {
 	_ = path
 	_ = fork
 	return 0, nil
 }
 
-func (nullForkEngine) ReadFinderInfo(path string) (info [32]byte, ok bool, err error) {
+func (noForkAdapter) ReadFinderInfo(path string) (info [32]byte, ok bool, err error) {
 	_ = path
 	return [32]byte{}, false, nil
 }
 
-func (nullForkEngine) WriteFinderInfo(path string, info [32]byte) error {
+func (noForkAdapter) WriteFinderInfo(path string, info [32]byte) error {
 	_ = path
 	_ = info
 	return nil
 }
 
-func (nullForkEngine) ReadComment(path string) (c []byte, ok bool) {
+func (noForkAdapter) ReadComment(path string) (c []byte, ok bool) {
 	_ = path
 	return nil, false
 }
 
-func (nullForkEngine) WriteComment(path string, c []byte) error {
+func (noForkAdapter) WriteComment(path string, c []byte) error {
 	_ = path
 	_ = c
 	return nil
 }
 
-func (nullForkEngine) MoveMetadata(old, new string) error {
+func (noForkAdapter) MoveMetadata(old, new string) error {
 	_ = old
 	_ = new
 	return nil
 }
 
-func (nullForkEngine) DeleteMetadata(path string) error {
+func (noForkAdapter) DeleteMetadata(path string) error {
 	_ = path
 	return nil
 }

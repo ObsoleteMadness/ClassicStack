@@ -49,6 +49,15 @@ func newXattrForkEngine(base FileSystem) *xattrForkEngine {
 	return &xattrForkEngine{fs: base}
 }
 
+// init registers the "xattr" fork adapter (Netatalk extended-attribute "ea = sys"
+// layout, §1c) into the fork-adapter registry, so it is available exactly when this
+// file is linked.
+func init() {
+	RegisterForkAdapter("xattr", func(base FileSystem) (ForkEngine, error) {
+		return newXattrForkEngine(base), nil
+	})
+}
+
 // Netatalk EA names for the metadata header and the resource fork.
 const (
 	xattrMetadataEA = "org.netatalk.Metadata"
