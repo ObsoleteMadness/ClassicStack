@@ -40,7 +40,6 @@ func TestForkRegistry_AppleDoubleFamily(t *testing.T) {
 		ForkAppleDoubleDir:     "dir/.AppleDouble/report",
 		"appledouble":          "dir/._report", // alias of default
 		"auto":                 "dir/._report",
-		"native":               "dir/._report",
 	}
 	for name, wantSidecar := range wants {
 		base := newMemFS(ShareSpec{})

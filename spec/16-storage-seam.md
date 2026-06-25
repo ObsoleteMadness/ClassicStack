@@ -13,13 +13,22 @@ A share's resource fork and Finder metadata are stored by one **fork backend**
 share the same logical payload — a 32-byte FinderInfo, an optional comment, and
 the resource-fork bytes — and differ only in the container:
 
+Each backend self-registers into the fork-adapter registry (`fork_registry.go`,
+`RegisterForkAdapter`); a fork adapter is **mandatory** for every share (resolved by
+name in `BuildShare`, default `appledouble`), so a fork-less share uses the explicit
+`nofork` adapter, never a silent fallback.
+
 | Backend | Container | Status |
 |---|---|---|
-| `appledouble` | `._name` AppleDouble v2 sidecar next to the file | **implemented** (`core/fs/fork.go`) |
-| `native` / `auto` | host-native fork (HFS+/APFS) | delegates to `appledouble` until per-platform support lands |
+| `appledouble-default` (aliases `appledouble`, `auto`) | `._name` AppleDouble v2 sidecar beside the file (Netatalk) | **implemented** (`core/fs/fork.go`) |
+| `appledouble-osxzip` | `__MACOSX/dir/._name` sidecar (OS-X-created archives) | **implemented** — one base engine, sidecar-layout variant |
+| `appledouble-dir` | `dir/.AppleDouble/name` sidecar (Netatalk folder form) | **implemented** — sidecar-layout variant |
+| `applesingle` | TRUE AppleSingle: data + resource + FinderInfo in one container file (magic `0x00051600`); resource fork 4K-allocated, data fork last | **implemented** (`core/fs/fork_applesingle.go`) |
+| `macbinary` | MacBinary II: 128-byte header + data fork + (128-padded) resource fork in one file | **implemented** (`core/fs/fork_macbinary.go`) |
 | `ads` | NTFS alternate data stream (`name:AFP_Resource`, `name:AFP_AfpInfo`) — SFM layout | **implemented** (`core/fs/fork_ads.go`) |
 | `xattr` | Netatalk extended-attribute layout (`org.netatalk.Metadata`, `org.netatalk.ResourceFork`) | **implemented** (`core/fs/fork_xattr.go`) |
-| `null` / `none` | discards metadata (placeholder shares) | implemented |
+| `native` | real host fork: resource fork via `..namedfork/rsrc`, FinderInfo via `com.apple.FinderInfo` xattr (macOS) | **implemented**, `adapter/fork/native` under `-tags forknative`; a build without the tag links a core stub that errors with a rebuild hint |
+| `nofork` / `null` / `none` | discards metadata (explicit no-forks / placeholder shares) | implemented |
 
 ### 1a. AppleDouble v2 sidecar (`core/appledouble`)
 

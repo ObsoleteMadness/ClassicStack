@@ -12,8 +12,10 @@ import (
 func TestForkAdapterRegistry_BuiltinsResolve(t *testing.T) {
 	base := newMemFS(ShareSpec{})
 	for _, name := range []string{
-		"appledouble", "auto", "native", // AppleDouble family (native aliases it pre-phase4)
+		"appledouble", "auto", // AppleDouble default + alias
+		"appledouble-default", "appledouble-osxzip", "appledouble-dir", // per-layout variants
 		"ads", "xattr", // host-stream layouts
+		"applesingle", "macbinary", // single-container backends
 		"nofork", "null", "none", // explicit no-forks + legacy aliases
 	} {
 		eng, err := forkAdapterByName(name, ShareSpec{}, base)
@@ -23,6 +25,12 @@ func TestForkAdapterRegistry_BuiltinsResolve(t *testing.T) {
 		if eng == nil {
 			t.Fatalf("forkAdapterByName(%q): nil engine", name)
 		}
+	}
+
+	// "native" is registered but DISABLED without -tags forknative: it resolves (not
+	// "unknown") but errors with a rebuild hint, so a misconfig is actionable.
+	if _, err := forkAdapterByName("native", ShareSpec{}, base); err == nil {
+		t.Fatal("forkAdapterByName(native) without forknative: expected disabled error, got nil")
 	}
 
 	// Case-insensitive (the registry lower-cases names).

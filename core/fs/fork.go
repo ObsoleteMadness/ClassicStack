@@ -27,14 +27,15 @@ const (
 // fork_registry.go and spec/16-storage-seam.md §9.
 //
 //   - The AppleDouble family is one base engine inherited by a per-LAYOUT adapter — the
-//     layouts differ only in WHERE the sidecar lives. "appledouble" (+ "auto"/"native")
-//     alias "appledouble-default". TODO(phase4): "native" becomes a real per-platform
-//     host-fork adapter from the adapter/ ring under a build tag, and stops aliasing.
+//     layouts differ only in WHERE the sidecar lives. "appledouble" / "auto" alias
+//     "appledouble-default".
 //   - "nofork" (aliases "null", "none") carries NO metadata: the explicit "this share
 //     has no resource forks" adapter, so every share has exactly one adapter and a
 //     fork-less share is a deliberate choice, not a silent fallback.
 //
-// "ads" and "xattr" register themselves from fork_ads.go / fork_xattr.go.
+// "ads", "xattr", "applesingle", "macbinary" register themselves from their own files;
+// "native" is the host resource-fork adapter (adapter/fork/native under -tags
+// forknative, with a core stub when absent — fork_native_stub.go).
 func init() {
 	register := func(name string, sidecar func(string) string, aliases ...string) {
 		f := func(spec ShareSpec, base FileSystem) (ForkEngine, error) {
@@ -46,8 +47,8 @@ func init() {
 			RegisterForkAdapter(a, f)
 		}
 	}
-	// "appledouble" / "auto" / "native" all resolve to the default "._name" layout.
-	register(ForkAppleDoubleDefault, netatalkSidecarPath, "appledouble", "auto", "native")
+	// "appledouble" / "auto" both resolve to the default "._name" layout.
+	register(ForkAppleDoubleDefault, netatalkSidecarPath, "appledouble", "auto")
 	register(ForkAppleDoubleOSXZip, osxZipSidecarPath)
 	register(ForkAppleDoubleDir, appleDoubleDirSidecarPath)
 
