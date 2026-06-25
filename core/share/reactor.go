@@ -37,10 +37,16 @@ type Reactor struct {
 	count  uint64 // foreign events delivered to the sink (diagnostics / tests)
 }
 
-// NamedPath pairs a share's name with its configured host root, for path matching.
+// NamedPath pairs a share's name with its configured host root, for path matching. FS
+// is the share's bound filesystem (optional): when set, the reactor uses it on a foreign
+// rename/delete to follow the fork adapter's metadata containers (fs.ForkContainers) and
+// re-derive shortnames (fs.Named), so a same-host-path peer stays metadata-consistent.
+// A nil FS still matches paths and notifies — it just skips the container/shortname
+// coordination.
 type NamedPath struct {
 	Name string
 	Root string
+	FS   fs.ForkFS
 }
 
 // NewReactor builds a Reactor for the owning service. origin is the owner's Origin
@@ -81,6 +87,7 @@ func (r *Reactor) loop(ch <-chan bus.Event) {
 		}
 		for _, np := range r.roots() {
 			if underRoot(fe.HostPath, np.Root) || (fe.OldPath != "" && underRoot(fe.OldPath, np.Root)) {
+				r.coordinate(np, fe)
 				r.mu.Lock()
 				r.count++
 				r.mu.Unlock()
@@ -88,6 +95,83 @@ func (r *Reactor) loop(ch <-chan bus.Event) {
 			}
 		}
 	}
+}
+
+// coordinate keeps a same-host-path peer metadata-consistent with a foreign mutation,
+// using the share's fork adapter and name engine (when the NamedPath carries an FS). On
+// a rename it re-derives the new name's shortname so a later lookup is stable; the
+// metadata containers (fs.ForkContainers) the peer must re-stat are surfaced via
+// MetadataPathsFor for the (deferred) wire-push slice. A nil FS or an adapter without
+// the optional capabilities is a no-op. The data + container MOVE itself is the
+// originating service's adapter's job (atomic on its side); this only refreshes the
+// observing peer's derived state.
+func (r *Reactor) coordinate(np NamedPath, fe fs.Event) {
+	if np.FS == nil {
+		return
+	}
+	// Re-derive the new name's shortname on a rename so the peer's NameEngine has a
+	// fresh, consistent mapping. The stale old-name mapping is harmless (it points at a
+	// name that no longer exists; reverse lookups for the new short name are fresh).
+	if fe.Op == fs.OpRename && fe.HostPath != "" {
+		if store, ok := storeRel(fe.HostPath, np.Root); ok {
+			if named, ok := np.FS.(fs.Named); ok {
+				if ne := named.Names(); ne != nil {
+					dir, base := splitStorePath(store)
+					ne.Bind(dir, base, fs.ShortName)
+					ne.Bind(dir, base, fs.MediumName)
+				}
+			}
+		}
+	}
+}
+
+// MetadataPathsFor returns the store-relative metadata-container paths a share's fork
+// adapter keeps for the host path a foreign event touched — the sidecars a peer must
+// follow on a rename/delete. Empty when the path is outside the share, the share has no
+// FS, or the adapter keeps its metadata with the file (ads/xattr/nofork). The
+// (deferred) wire-push slice consumes this; exposed now so the seam is testable.
+func MetadataPathsFor(np NamedPath, hostPath string) []string {
+	if np.FS == nil || hostPath == "" {
+		return nil
+	}
+	fc, ok := np.FS.(fs.ForkContainers)
+	if !ok {
+		return nil
+	}
+	store, ok := storeRel(hostPath, np.Root)
+	if !ok {
+		return nil
+	}
+	return fc.MetadataPaths(store)
+}
+
+// storeRel converts a host path under root to its share-relative ('/'-separated) store
+// path. ok is false when hostPath is not under root. Comparison is case-folded to match
+// underRoot / the broker's case-insensitive host-path keys.
+func storeRel(hostPath, root string) (string, bool) {
+	if root == "" || hostPath == "" {
+		return "", false
+	}
+	h := strings.TrimRight(hostPath, `/\`)
+	r := strings.TrimRight(root, `/\`)
+	hl := strings.ToLower(h)
+	rl := strings.ToLower(r)
+	if hl == rl {
+		return "", true // the root itself
+	}
+	if !strings.HasPrefix(hl, rl+"/") && !strings.HasPrefix(hl, rl+`\`) {
+		return "", false
+	}
+	rel := h[len(r)+1:]
+	return strings.ReplaceAll(rel, `\`, "/"), true
+}
+
+// splitStorePath splits a '/'-store path into its directory and final element.
+func splitStorePath(p string) (dir, base string) {
+	if i := strings.LastIndexByte(p, '/'); i >= 0 {
+		return p[:i], p[i+1:]
+	}
+	return "", p
 }
 
 // Stop cancels every subscription, ending the reactor goroutines. Idempotent.

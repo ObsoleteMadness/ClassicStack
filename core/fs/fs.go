@@ -61,6 +61,23 @@ type ForkEngine interface {
 	DeleteMetadata(path string) error
 }
 
+// ForkContainers is an OPTIONAL capability a fork adapter implements to report the
+// store-relative paths whose rename/remove must accompany the data fork's — i.e. its
+// SEPARATE metadata containers (AppleDouble sidecars, an AppleSingle file). It is the
+// seam the §10d same-host-path coordination uses: when one service renames/removes a
+// file on a host path another service also shares, the peer consults MetadataPaths to
+// know which container files moved alongside the data (so it can re-stat them and
+// re-derive shortnames) without reaching into the other adapter's layout knowledge.
+//
+// An adapter whose metadata RIDES WITH the file — ads (NTFS streams), xattr (extended
+// attributes), nofork (none), native (host fork) — returns nil: there is no separate
+// container path to coordinate. The AppleDouble family returns its sidecar path. The
+// share stack (shareFS) forwards this through to the fork adapter; a fork adapter that
+// does not implement it is treated as "no separate containers" (nil).
+type ForkContainers interface {
+	MetadataPaths(storePath string) []string
+}
+
 // ForkFS is a base FileSystem paired with its mandatory fork adapter (ForkEngine).
 // BuildShare always assembles exactly one fork adapter over the fork-unaware base —
 // resolved by name through the fork-adapter registry (fork_registry.go), defaulting to
@@ -552,8 +569,10 @@ type shareFS struct {
 }
 
 // Rename moves a path and carries its metadata container in one call: the data
-// fork via the FileSystem, then the sidecar/ADS/xattr via the ForkEngine. Callers
-// above the FS therefore never pair Rename with MoveMetadata by hand (§9).
+// fork via the FileSystem, then the container (sidecar/ADS/xattr) via the ForkEngine,
+// which OWNS what its containers are and where they live. Callers above the FS
+// therefore never pair Rename with MoveMetadata by hand (§9). Data-fork-first so a
+// metadata failure leaves the renamed data with a stale-but-present container to retry.
 func (s *shareFS) Rename(old, new string) error {
 	if err := s.FileSystem.Rename(old, new); err != nil {
 		return err
@@ -562,12 +581,24 @@ func (s *shareFS) Rename(old, new string) error {
 }
 
 // Remove deletes a path and its metadata container in one call, metadata first so
-// a failure leaves the data fork in place to retry against (§9).
+// a failure leaves the data fork in place to retry against (§9). The ForkEngine owns
+// which container(s) to drop.
 func (s *shareFS) Remove(path string) error {
 	if err := s.ForkEngine.DeleteMetadata(path); err != nil {
 		return err
 	}
 	return s.FileSystem.Remove(path)
+}
+
+// MetadataPaths forwards the optional fs.ForkContainers capability to the fork adapter:
+// the store-relative container paths (sidecars) that accompany a data path, for §10d
+// same-host-path coordination. A fork adapter whose metadata rides with the file
+// (ads/xattr/nofork) — or that does not implement the capability — yields nil.
+func (s *shareFS) MetadataPaths(storePath string) []string {
+	if fc, ok := s.ForkEngine.(ForkContainers); ok {
+		return fc.MetadataPaths(storePath)
+	}
+	return nil
 }
 
 // ShortName and MediumName derive a per-directory short/medium name for the

@@ -173,7 +173,7 @@ func (s *Service) volumeRoots() []share.NamedPath {
 	defer s.mu.Unlock()
 	out := make([]share.NamedPath, 0, len(s.volumes))
 	for _, v := range s.volumes {
-		out = append(out, share.NamedPath{Name: v.Name(), Root: v.sh.Config().Path})
+		out = append(out, share.NamedPath{Name: v.Name(), Root: v.sh.Config().Path, FS: v.FS()})
 	}
 	return out
 }

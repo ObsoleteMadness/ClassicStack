@@ -284,6 +284,15 @@ func (e *appleDoubleForkEngine) DeleteMetadata(path string) error {
 	return err
 }
 
+// MetadataPaths reports the AppleDouble sidecar store path for a data path (the
+// fs.ForkContainers capability): the separate container the §10d coordination must
+// follow when a peer service renames/removes the same host file. Exactly one path —
+// this adapter keeps all its metadata in a single sidecar (whatever layout the variant
+// places it at).
+func (e *appleDoubleForkEngine) MetadataPaths(storePath string) []string {
+	return []string{e.sidecar(storePath)}
+}
+
 // --- resourceForkFile (File) ---
 
 func (f *resourceForkFile) ReadAt(p []byte, off int64) (int, error) {

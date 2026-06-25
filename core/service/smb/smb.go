@@ -168,7 +168,7 @@ func (s *Service) shareRoots() []share.NamedPath {
 	defer s.mu.Unlock()
 	out := make([]share.NamedPath, 0, len(s.shares))
 	for _, sh := range s.shares {
-		out = append(out, share.NamedPath{Name: sh.Name(), Root: sh.sh.Config().Path})
+		out = append(out, share.NamedPath{Name: sh.Name(), Root: sh.sh.Config().Path, FS: sh.FS()})
 	}
 	return out
 }
