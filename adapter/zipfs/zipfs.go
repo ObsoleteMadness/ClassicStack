@@ -72,9 +72,27 @@ func init() {
 	// the fork backend to appledouble and the metastore to mem so a zipfs share is
 	// self-contained (sidecars in the archive, no sqlite) regardless of the
 	// share-level defaults — see the package doc and CLAUDE.md.
-	corefs.RegisterFSWithParams(FSType, func(spec corefs.ShareSpec, b bus.Bus, _ metastore.Store) (corefs.FileSystem, error) {
-		return newZipFS(spec, b)
-	}, corefs.Param{Key: corefs.PathKey, Required: true, Doc: "path to the .zip archive served as the share root"})
+	//
+	// The Validator declares zipfs's own constraint (no longer hardcoded in core): a
+	// read-only zip cannot host native/xattr/ads forks (nothing can be written), so
+	// resource forks must come from AppleDouble sidecars baked into the archive.
+	corefs.RegisterFSWithValidator(FSType,
+		func(spec corefs.ShareSpec, b bus.Bus, _ metastore.Store) (corefs.FileSystem, error) {
+			return newZipFS(spec, b)
+		},
+		validateZipFSSpec,
+		corefs.Param{Key: corefs.PathKey, Required: true, Doc: "path to the .zip archive served as the share root"},
+	)
+}
+
+// validateZipFSSpec rejects a read-only zipfs share that does not use the appledouble
+// fork backend. A read-only archive cannot be written, so forks must be pre-baked
+// AppleDouble sidecars; a native/xattr/ads backend would have nowhere to store them.
+func validateZipFSSpec(c corefs.SpecConstraints) error {
+	if c.Spec.ReadOnly && c.ForkBackend != "appledouble" {
+		return errors.New("fs: read-only zipfs requires appledouble fork backend")
+	}
+	return nil
 }
 
 // ErrReadOnly is returned for a mutating op on a read-only zipfs share.

@@ -2,6 +2,8 @@ package fs
 
 import (
 	"errors"
+	"io/fs"
+	"os"
 	"testing"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
@@ -24,14 +26,32 @@ func TestPlaceholdersSatisfyInterfaces(t *testing.T) {
 }
 
 func TestBuildShare_ValidAndInvalidCombinations(t *testing.T) {
-	// Register test-only factories to exercise validation rules.
-	RegisterFS("hfs-image", func(spec ShareSpec, _ bus.Bus, _ metastore.Store) (FileSystem, error) {
-		_ = spec
-		return newMemFS(ShareSpec{}), nil
-	})
-	RegisterFS("zipfs", func(spec ShareSpec, _ bus.Bus, _ metastore.Store) (FileSystem, error) {
-		return newMemFS(spec), nil
-	})
+	// Register test-only factories WITH validators to exercise the per-backend
+	// constraint hook (the real hfs-image/zipfs backends declare the same rules from
+	// their own packages — this mirrors them so core stays free of the plugin names).
+	RegisterFSWithValidator("hfs-image",
+		func(spec ShareSpec, _ bus.Bus, _ metastore.Store) (FileSystem, error) {
+			_ = spec
+			return newMemFS(ShareSpec{}), nil
+		},
+		func(c SpecConstraints) error {
+			// An HFS image stores MacRoman bytes natively; a UTF-8 store charset would
+			// double-encode names on disk.
+			if c.CodecProfile.StoreCharset != "macroman" {
+				return errors.New("fs: hfs-image requires a macroman-native filename codec")
+			}
+			return nil
+		})
+	RegisterFSWithValidator("zipfs",
+		func(spec ShareSpec, _ bus.Bus, _ metastore.Store) (FileSystem, error) {
+			return newMemFS(spec), nil
+		},
+		func(c SpecConstraints) error {
+			if c.Spec.ReadOnly && c.ForkBackend != "appledouble" {
+				return errors.New("fs: read-only zipfs requires appledouble fork backend")
+			}
+			return nil
+		})
 
 	if _, err := BuildShare(ShareSpec{
 		Name:          "ok",
@@ -65,6 +85,40 @@ func TestBuildShare_ValidAndInvalidCombinations(t *testing.T) {
 	// An unknown codec name fails at validation, before any component builds.
 	if _, err := BuildShare(ShareSpec{FSType: "memfs", FilenameCodec: "no-such-codec"}, nil); err == nil {
 		t.Fatal("expected unknown codec to be rejected")
+	}
+}
+
+// TestReadOnlyMemFSEnforcesAndPreservesCapabilities proves the read-only policy is
+// now folded INTO memFS (no external wrapper): a read-only memfs rejects every
+// mutation, reports the ReadOnly capability — AND still satisfies the optional
+// CatSearcher it implements. The last assertion is the point of removing the wrapper:
+// a hand-forwarding readOnlyFS could silently drop a capability it forgot to re-expose;
+// the backend-internal policy cannot.
+func TestReadOnlyMemFSEnforcesAndPreservesCapabilities(t *testing.T) {
+	ro := newMemFS(ShareSpec{ReadOnly: true})
+
+	if !ro.Capabilities().ReadOnly {
+		t.Fatal("read-only memfs did not report ReadOnly capability")
+	}
+	if err := ro.CreateDir("d"); err != fs.ErrPermission {
+		t.Fatalf("CreateDir on RO = %v, want ErrPermission", err)
+	}
+	if _, err := ro.CreateFile("f"); err != fs.ErrPermission {
+		t.Fatalf("CreateFile on RO = %v, want ErrPermission", err)
+	}
+	if _, err := ro.OpenFile("f", os.O_RDWR); err != fs.ErrPermission {
+		t.Fatalf("OpenFile(O_RDWR) on RO = %v, want ErrPermission", err)
+	}
+	if err := ro.Remove("f"); err != fs.ErrPermission {
+		t.Fatalf("Remove on RO = %v, want ErrPermission", err)
+	}
+	if err := ro.Rename("a", "b"); err != fs.ErrPermission {
+		t.Fatalf("Rename on RO = %v, want ErrPermission", err)
+	}
+
+	// Capability passthrough: the optional CatSearcher survives the read-only policy.
+	if _, ok := ro.(CatSearcher); !ok {
+		t.Fatal("read-only memfs lost the CatSearcher capability (wrapper bug class)")
 	}
 }
 

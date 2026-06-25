@@ -231,9 +231,30 @@ const PathKey = "path"
 
 type Factory func(ShareSpec, bus.Bus, metastore.Store) (FileSystem, error)
 
+// SpecConstraints is the resolved view of the rest of a share's stack that a backend
+// validator inspects to accept or reject a combination. It carries the (already
+// defaulted) ShareSpec, the resolved filename-codec profile (StoreCharset etc.), and
+// the lower-cased fork-backend name — so a factory can express its own
+// fs_type×codec / fs_type×fork rules WITHOUT the core knowing the rule. BuildShare
+// assembles this and calls the registered Validator before constructing the backend.
+type SpecConstraints struct {
+	Spec         ShareSpec
+	CodecProfile FilenameProfile
+	ForkBackend  string // lower-cased; "" defaults already applied
+}
+
+// Validator is a backend's optional self-validation hook: it rejects an unbuildable
+// combination of its own fs_type with the chosen codec/fork (e.g. hfs-image requires a
+// macroman store charset; read-only zipfs requires appledouble forks). Returning an
+// error fails the share build loudly at config time. A backend with no such constraint
+// registers none. This inverts the dependency: the core no longer hardcodes any
+// plugin's name — each plugin declares its own rules (Open-Closed).
+type Validator func(SpecConstraints) error
+
 type registeredFS struct {
-	factory Factory
-	params  []Param
+	factory  Factory
+	params   []Param
+	validate Validator
 }
 
 var (
@@ -249,11 +270,29 @@ func RegisterFS(fsType string, f Factory) {
 }
 
 // RegisterFSWithParams registers a factory plus the config-param schema BuildShare
-// validates and ParamsFor exposes.
+// validates and ParamsFor exposes. The factory declares no cross-component constraint;
+// use RegisterFSWithValidator when the backend must reject certain codec/fork pairings.
 func RegisterFSWithParams(fsType string, f Factory, params ...Param) {
+	RegisterFSWithValidator(fsType, f, nil, params...)
+}
+
+// RegisterFSWithValidator registers a factory plus an optional Validator (its
+// self-declared fs_type×codec / fs_type×fork constraints) and the param schema. The
+// Validator keeps the core free of hardcoded plugin names: BuildShare calls it for the
+// share's fs_type instead of branching on the type string itself. A nil validator means
+// the backend imposes no cross-component constraint.
+func RegisterFSWithValidator(fsType string, f Factory, v Validator, params ...Param) {
 	fsFactoryMu.Lock()
 	defer fsFactoryMu.Unlock()
-	fsFactories[strings.ToLower(fsType)] = registeredFS{factory: f, params: params}
+	fsFactories[strings.ToLower(fsType)] = registeredFS{factory: f, params: params, validate: v}
+}
+
+// validatorFor returns the registered Validator for an fs_type, or nil when the type
+// is unknown or declares none.
+func validatorFor(fsType string) Validator {
+	fsFactoryMu.RLock()
+	defer fsFactoryMu.RUnlock()
+	return fsFactories[strings.ToLower(fsType)].validate
 }
 
 // ParamsFor returns the declared param schema for an fs_type (nil if the type is
@@ -426,33 +465,35 @@ func withDefaults(spec ShareSpec) ShareSpec {
 // validateShareSpec checks the fs_type × fork_backend × filename_codec triple is
 // a buildable combination before any component is constructed, so a bad share
 // config fails loudly at build time rather than mangling names at runtime.
+//
+// The per-fs_type rules are NOT hardcoded here: each backend declares its own
+// constraints via the Validator it registered (RegisterFSWithValidator), which this
+// calls with the resolved codec profile + fork backend. The core therefore needs no
+// knowledge of any plugin's name — a new fs_type (iso9660-image, …) carries its own
+// rules. Only genuinely cross-component rules that belong to no single backend (a
+// codec×fork incompatibility) live here.
 func validateShareSpec(spec ShareSpec) error {
-	fsType := strings.ToLower(spec.FSType)
 	codecName := strings.ToLower(spec.FilenameCodec)
 	fork := strings.ToLower(spec.ForkBackend)
 
-	// The codec name must resolve, and its declared store charset must suit the
-	// fs type's on-disk charset.
+	// The codec name must resolve; its profile is handed to the backend validator.
 	codec, err := codecByName(spec.FilenameCodec)
 	if err != nil {
 		return err
 	}
-	storeCharset := codec.Profile().StoreCharset
 
-	// An HFS image stores MacRoman bytes natively; a UTF-8 store charset would
-	// double-encode names on disk.
-	if fsType == "hfs-image" && storeCharset != "macroman" {
-		return errors.New("fs: hfs-image requires a macroman-native filename codec")
+	// Delegate the fs_type's own constraints to its registered validator (e.g.
+	// hfs-image requires a macroman store charset; read-only zipfs requires
+	// appledouble forks). A backend with no constraint registers none.
+	if v := validatorFor(spec.FSType); v != nil {
+		if err := v(SpecConstraints{Spec: spec, CodecProfile: codec.Profile(), ForkBackend: fork}); err != nil {
+			return err
+		}
 	}
-	// A read-only zip volume cannot host native/xattr/ads forks (nothing can be
-	// written), so resource forks must come from AppleDouble sidecars baked into
-	// the archive.
-	if fsType == "zipfs" && spec.ReadOnly && fork != "appledouble" {
-		return errors.New("fs: read-only zipfs requires appledouble fork backend")
-	}
-	// A native-charset codec only advertises MacRoman; pairing it with a backend
-	// that needs UTF-8/Unicode wire names (SMB) would fail every NT request, so
-	// reject the combination up front.
+
+	// Cross-component rule owned by no single backend: a native-charset codec only
+	// advertises MacRoman; pairing it with a fork backend that needs UTF-8/Unicode
+	// wire names (SMB) would fail every NT request, so reject it up front.
 	if codecName == "macroman-native" && fork == "xattr" {
 		return errors.New("fs: macroman-native codec is incompatible with the xattr fork backend")
 	}
@@ -667,48 +708,25 @@ func nameEngineByName(name string, store metastore.Store) (NameEngine, error) {
 }
 
 type memFS struct {
-	mu   sync.RWMutex
-	data map[string][]byte
-	dirs map[string]struct{}
+	mu       sync.RWMutex
+	data     map[string][]byte
+	dirs     map[string]struct{}
+	readOnly bool
 }
 
+// newMemFS builds the in-memory reference backend. Read-only is enforced INSIDE memFS
+// (the mutators reject writes, Capabilities reports ReadOnly) rather than by an external
+// wrapper — exactly how local_fs and zipfs honour spec.ReadOnly. This is deliberate: a
+// wrapper struct that re-lists every method silently drops any optional capability the
+// inner FS gains (HostPather, CatSearcher, …) unless the wrapper is hand-updated to
+// forward it. Folding the policy into the backend removes that whole class of bug — the
+// one concrete FileSystem value carries every capability it implements, read-only or not.
 func newMemFS(spec ShareSpec) FileSystem {
-	m := &memFS{
-		data: make(map[string][]byte),
-		dirs: map[string]struct{}{"": {}},
+	return &memFS{
+		data:     make(map[string][]byte),
+		dirs:     map[string]struct{}{"": {}},
+		readOnly: spec.ReadOnly,
 	}
-	if spec.ReadOnly {
-		return &readOnlyFS{inner: m}
-	}
-	return m
-}
-
-type readOnlyFS struct{ inner *memFS }
-
-func (r *readOnlyFS) ReadDir(path string) ([]fs.DirEntry, error) { return r.inner.ReadDir(path) }
-func (r *readOnlyFS) Stat(path string) (fs.FileInfo, error)      { return r.inner.Stat(path) }
-func (r *readOnlyFS) DiskUsage(path string) (uint64, uint64, error) {
-	return r.inner.DiskUsage(path)
-}
-func (r *readOnlyFS) CreateDir(path string) error          { return fs.ErrPermission }
-func (r *readOnlyFS) CreateFile(path string) (File, error) { return nil, fs.ErrPermission }
-func (r *readOnlyFS) OpenFile(path string, flag int) (File, error) {
-	return r.inner.OpenFile(path, flag)
-}
-func (r *readOnlyFS) Remove(path string) error               { return fs.ErrPermission }
-func (r *readOnlyFS) Rename(old, new string) error           { return fs.ErrPermission }
-func (r *readOnlyFS) ShortName(path string) (string, error)  { return r.inner.ShortName(path) }
-func (r *readOnlyFS) MediumName(path string) (string, error) { return r.inner.MediumName(path) }
-func (r *readOnlyFS) Capabilities() Capabilities {
-	c := r.inner.Capabilities()
-	c.ReadOnly = true
-	return c
-}
-
-// CatSearch forwards to the inner memFS so a read-only memfs volume still
-// satisfies the search capability it advertises.
-func (r *readOnlyFS) CatSearch(crit CatSearchCriteria, cursor CatSearchCursor) ([]CatSearchResult, CatSearchCursor, error) {
-	return r.inner.CatSearch(crit, cursor)
 }
 
 func (m *memFS) ReadDir(path string) ([]fs.DirEntry, error) {
@@ -773,6 +791,9 @@ func (m *memFS) DiskUsage(path string) (total, free uint64, err error) {
 }
 
 func (m *memFS) CreateDir(path string) error {
+	if m.readOnly {
+		return fs.ErrPermission
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.dirs[path] = struct{}{}
@@ -780,6 +801,9 @@ func (m *memFS) CreateDir(path string) error {
 }
 
 func (m *memFS) CreateFile(path string) (File, error) {
+	if m.readOnly {
+		return nil, fs.ErrPermission
+	}
 	m.mu.Lock()
 	m.data[path] = nil
 	m.mu.Unlock()
@@ -787,6 +811,10 @@ func (m *memFS) CreateFile(path string) (File, error) {
 }
 
 func (m *memFS) OpenFile(path string, flag int) (File, error) {
+	// A read-only volume rejects any write/create open; a pure read open is allowed.
+	if m.readOnly && flag&(os.O_WRONLY|os.O_RDWR|os.O_APPEND|os.O_TRUNC|os.O_CREATE) != 0 {
+		return nil, fs.ErrPermission
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.data[path]; !ok {
@@ -799,6 +827,9 @@ func (m *memFS) OpenFile(path string, flag int) (File, error) {
 }
 
 func (m *memFS) Remove(path string) error {
+	if m.readOnly {
+		return fs.ErrPermission
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.data, path)
@@ -807,6 +838,9 @@ func (m *memFS) Remove(path string) error {
 }
 
 func (m *memFS) Rename(old, new string) error {
+	if m.readOnly {
+		return fs.ErrPermission
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if b, ok := m.data[old]; ok {
@@ -827,7 +861,7 @@ func (m *memFS) ShortName(path string) (string, error) { return path, nil }
 func (m *memFS) MediumName(path string) (string, error) { return path, nil }
 
 func (m *memFS) Capabilities() Capabilities {
-	return Capabilities{ChildCount: true, CatSearch: true}
+	return Capabilities{ChildCount: true, CatSearch: true, ReadOnly: m.readOnly}
 }
 
 // CatSearch satisfies the optional CatSearcher capability with the default
