@@ -20,8 +20,12 @@
 // it (cleartext, and the NetWare encrypted-login challenge-response) and a
 // per-volume allow-list gates which volumes the identity may use.
 //
-// Reference: Novell NCP/SAP/bindery; mars_nwe (Martin Stover) and Linux ncpfs
-// (Volker Lendecke et al) are the canonical open-source references (CLAUDE.md #7).
+// Reference & attribution: Novell NCP/SAP/bindery. This implementation was inspired
+// by mars_nwe — the MARtin Stover NetWare Emulator, (C) 1993,1995 Martin Stover,
+// Marburg, Germany — and by Linux ncpfs (Volker Lendecke et al); both are the
+// canonical open-source NCP references (CLAUDE.md #7). The wire behaviour is a clean
+// re-implementation over the §9 storage seam, not a code port, but the design owes a
+// clear debt to Martin Stover's work.
 package ncp
 
 import (

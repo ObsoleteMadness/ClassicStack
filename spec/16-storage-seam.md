@@ -28,7 +28,16 @@ name in `BuildShare`, default `appledouble`), so a fork-less share uses the expl
 | `ads` | NTFS alternate data stream (`name:AFP_Resource`, `name:AFP_AfpInfo`) — SFM layout | **implemented** (`core/fs/fork_ads.go`) |
 | `xattr` | Netatalk extended-attribute layout (`org.netatalk.Metadata`, `org.netatalk.ResourceFork`) | **implemented** (`core/fs/fork_xattr.go`) |
 | `native` | real host fork: resource fork via `..namedfork/rsrc`, FinderInfo via `com.apple.FinderInfo` xattr (macOS) | **implemented**, `adapter/fork/native` under `-tags forknative`; a build without the tag links a core stub that errors with a rebuild hint |
+| `derez` | DeRez/`rdump` TEXT sidecar for the resource fork + `idump` sidecar for type/creator — the resource fork is checked into git as diffable text (Elliot Nunn's macresources format) | **implemented** (`core/fs/fork_derez.go` + `core/macresources`) |
 | `nofork` / `null` / `none` | discards metadata (explicit no-forks / placeholder shares) | implemented |
+
+The `derez` backend deserves a note: it serialises the binary resource fork to Rez/DeRez
+**text** (`<name>.rdump`) on write and re-serialises that text back to the binary fork on
+read, with the Finder type/creator in a companion `<name>.idump`. It exists so a developer
+working on a classic codebase (e.g. a CodeWarrior project) can keep resources diffable in
+version control. The format and the reference implementation are Elliot Nunn's
+([macresources](https://github.com/elliotnunn/macresources)); `core/macresources` is a Go
+port credited in that package.
 
 ### 1a. AppleDouble v2 sidecar (`core/appledouble`)
 

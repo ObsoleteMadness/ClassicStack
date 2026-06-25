@@ -16,6 +16,7 @@ func TestForkAdapterRegistry_BuiltinsResolve(t *testing.T) {
 		"appledouble-default", "appledouble-osxzip", "appledouble-dir", // per-layout variants
 		"ads", "xattr", // host-stream layouts
 		"applesingle", "macbinary", // single-container backends
+		"derez",                  // rdump/idump text sidecars (macresources)
 		"nofork", "null", "none", // explicit no-forks + legacy aliases
 	} {
 		eng, err := forkAdapterByName(name, ShareSpec{}, base)

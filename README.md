@@ -385,8 +385,22 @@ Print version:
 
 Warning: this project is pragmatic and evolving. Validate behavior in your environment before production use.
 
-AppleTalk routing was originally inspired by tashrouter:
-https://github.com/lampmerchant/tashrouter
+ClassicStack stands on a lot of prior open-source work. Several subsystems are clean
+re-implementations over our storage/transport seams rather than code ports, but they owe
+a clear debt to the originals, and the `derez` fork backend is a direct Go port. With
+thanks to:
+
+- **tashrouter** — the original inspiration for the AppleTalk routing core.
+  https://github.com/lampmerchant/tashrouter
+- **macresources / rdump (DeRez) format** by **Elliot Nunn** — the resource-fork text
+  format and reference implementation behind our `derez` fork backend, ported to Go.
+  https://github.com/elliotnunn/macresources
+- **EtherDFS** by **Mateusz Viste**, Copyright © 2017-2023 Mateusz Viste — the EtherType
+  0xEDF5 DOS file-system protocol our EtherDFS service re-implements.
+  https://github.com/mateuszviste
+- **mars_nwe** (the MARtin Stover NetWare Emulator), © 1993,1995 Martin Stover, Marburg,
+  Germany — the canonical open-source NetWare/NCP reference that inspired our NCP service
+  (alongside Linux ncpfs by Volker Lendecke et al).
 
 ## License
 

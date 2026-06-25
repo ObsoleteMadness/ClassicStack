@@ -19,6 +19,12 @@
 // AllowedUsers allow-list, which with no user store means world-accessible). This
 // matches the original ethersrv and is the intentional weakness that lets vintage
 // DOS clients connect.
+//
+// Attribution: the EtherDFS protocol and the reference ethersrv/ethflop servers are
+// the work of Mateusz Viste, Copyright © 2017-2023 Mateusz Viste
+// (http://etherdfs.sourceforge.net / https://github.com/mateuszviste). This is a clean
+// re-implementation of the EtherType 0xEDF5 wire protocol over the §9 storage seam, not
+// a code port, but it owes a clear debt to his work (CLAUDE.md #7).
 package etherdfs
 
 import (
