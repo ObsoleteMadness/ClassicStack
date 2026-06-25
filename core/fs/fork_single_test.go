@@ -115,14 +115,20 @@ func TestAppleSingle_ResourceForkIs4KAllocated(t *testing.T) {
 	// payload in the file.
 	rOff, _ := entryOffLen(raw, asEntryResourceFork)
 	dOff, dLen := entryOffLen(raw, asEntryDataFork)
-	if rOff == 0 || dOff == 0 {
-		t.Fatal("resource/data entries missing")
+	fOff, _ := entryOffLen(raw, asEntryFinderInfo)
+	if rOff == 0 || dOff == 0 || fOff == 0 {
+		t.Fatal("resource/data/finderinfo entries missing")
 	}
 	if dOff != rOff+asResourceChunk {
 		t.Fatalf("data fork at %d, want resource(%d)+4K=%d (4K hole not honoured)", dOff, rOff, rOff+asResourceChunk)
 	}
 	if int(dOff)+int(dLen) != len(raw) {
 		t.Fatalf("data fork not last: ends at %d, file len %d", int(dOff)+int(dLen), len(raw))
+	}
+	// FinderInfo (a frequently-read entry) sits closest to the header — its payload
+	// starts immediately after the entry descriptors, before resource and data.
+	if fOff >= rOff || fOff >= dOff {
+		t.Fatalf("FinderInfo at %d not closest to header (resource %d, data %d)", fOff, rOff, dOff)
 	}
 }
 
