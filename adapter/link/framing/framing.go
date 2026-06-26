@@ -32,21 +32,22 @@ var (
 	ErrShortFrame = errors.New("framing: ethernet frame too short for SNAP DDP")
 )
 
-// EtherTalk is a link.Framer that wraps DDP datagrams in Ethernet/SNAP and
-// unwraps them. It is the M1 framing seam: encode/decode are real, but address
-// resolution (AARP) and node-claim are NOT performed here — see the doc.go and
-// TODO(M3) notes. As a result, outbound datagrams are sent to the broadcast MAC
-// unless a static peer MAC has been supplied; inbound AARP frames are skipped.
+// EtherTalk is the PLAIN (no-AARP) link.Framer that wraps DDP datagrams in
+// Ethernet/SNAP and unwraps them. It does NO address resolution or node-claim — every
+// outbound datagram goes to the AppleTalk broadcast MAC (or a configured static peer
+// MAC) and inbound AARP frames are skipped. The AARP-aware framer is the separate
+// EtherTalkAARP (aarp.go), which claims a node and resolves peers to unicast; compose
+// uses EtherTalkAARP when a station MAC is configured and this plain framer as the
+// fallback otherwise (and tests).
 type EtherTalk struct {
 	// SrcMAC is this station's 6-byte hardware address, stamped as the Ethernet
 	// source on outbound frames. If nil, a zero MAC is used (caller should set it
 	// once the port owns an interface).
 	SrcMAC []byte
 
-	// BroadcastMAC overrides the destination MAC for outbound frames. M1 has no
-	// AARP table, so by default every datagram goes to the AppleTalk broadcast
-	// MAC (09:00:07:FF:FF:FF). TODO(M3): resolve dest network/node -> unicast MAC
-	// via AARP/AMT.
+	// BroadcastMAC overrides the destination MAC for outbound frames. The plain framer
+	// has no AARP table, so by default every datagram goes to the AppleTalk broadcast
+	// MAC (09:00:07:FF:FF:FF); EtherTalkAARP is the per-node-unicast path.
 	BroadcastMAC []byte
 }
 
@@ -84,9 +85,10 @@ type datagramLink struct {
 }
 
 // ReadDatagram reads frames until one is a valid EtherTalk DDP datagram, then
-// returns the decoded ddp.Datagram. Non-AppleTalk frames (AARP, noise) are
-// skipped — surfaced to the caller only as the underlying link's ErrTimeout/
-// ErrClosed. TODO(M3): hand AARP frames to a resolver instead of dropping.
+// returns the decoded ddp.Datagram. Non-AppleTalk frames (AARP, noise) are skipped —
+// surfaced to the caller only as the underlying link's ErrTimeout/ErrClosed. (The
+// AARP-aware EtherTalkAARP services AARP frames here instead of dropping them; this
+// plain framer is the no-AARP path.)
 func (d *datagramLink) ReadDatagram() (ddp.Datagram, error) {
 	for {
 		frame, err := d.fl.Read()
@@ -102,9 +104,9 @@ func (d *datagramLink) ReadDatagram() (ddp.Datagram, error) {
 	}
 }
 
-// WriteDatagram encodes dg as an Ethernet/SNAP DDP frame and writes it. M1 sends
-// to the (broadcast or configured) destination MAC; per-node MAC resolution is
-// TODO(M3).
+// WriteDatagram encodes dg as an Ethernet/SNAP DDP frame and writes it to the
+// (broadcast or configured) destination MAC. Per-node unicast MAC resolution is the
+// AARP-aware EtherTalkAARP framer's job; this plain framer is broadcast-only.
 func (d *datagramLink) WriteDatagram(dg ddp.Datagram) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -118,6 +120,39 @@ func (d *datagramLink) WriteDatagram(dg ddp.Datagram) error {
 
 func (d *datagramLink) Close() error { return d.fl.Close() }
 
+// snapAARP is the SNAP OUI+PID for AARP on EtherTalk (the AARP packet rides the same
+// 802.2/SNAP framing as DDP but with this PID instead of snapAppleTalk). Used by the
+// AARP framer (aarp.go) in this package.
+var snapAARP = []byte{0x00, 0x00, 0x00, 0x80, 0xF3}
+
+// appendEthSNAP builds an Ethernet 802.3 + 802.2 LLC + SNAP frame carrying payload under
+// the given SNAP OUI+PID, into dst, and returns it. It is the shared frame builder for
+// both the DDP framer (encode) and the AARP framer (aarp.go) — the only difference
+// between an EtherTalk DDP frame and an AARP frame is the 5-byte SNAP PID.
+func appendEthSNAP(dst, dstMAC, srcMAC, snapPID, payload []byte) []byte {
+	payloadLen := llcSnapLen + len(payload) // 802.2+SNAP+payload = the 802.3 length value
+	dst = append(dst, dstMAC...)
+	dst = append(dst, srcMAC...)
+	dst = append(dst, byte(payloadLen>>8), byte(payloadLen)) // 802.3 length
+	dst = append(dst, llcSNAP...)
+	dst = append(dst, snapPID...)
+	dst = append(dst, payload...)
+	return dst
+}
+
+// snapPIDOf returns the 5-byte SNAP OUI+PID of an Ethernet/SNAP frame and the offset at
+// which its SNAP payload begins, or ok=false when the frame is too short or is not an
+// 802.2 LLC SNAP frame. The AARP framer uses it to classify DDP vs AARP before decoding.
+func snapPIDOf(frame []byte) (pid []byte, payloadOff int, ok bool) {
+	if len(frame) < minDDPFrame {
+		return nil, 0, false
+	}
+	if !equal(frame[ethHdrLen:ethHdrLen+3], llcSNAP) {
+		return nil, 0, false
+	}
+	return frame[ethHdrLen+3 : ethHdrLen+8], ethHdrLen + llcSnapLen, true
+}
+
 // encode builds an Ethernet/SNAP frame carrying dg into dst[:0] and returns it.
 func encode(dst, srcMAC, dstMAC []byte, dg ddp.Datagram) ([]byte, error) {
 	// DDP long-header bytes first, so we know the 802.3 length field.
@@ -125,15 +160,7 @@ func encode(dst, srcMAC, dstMAC []byte, dg ddp.Datagram) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	payloadLen := llcSnapLen + len(ddpBytes) // 802.2+SNAP+DDP, the 802.3 length value
-
-	dst = append(dst, dstMAC...)
-	dst = append(dst, srcMAC...)
-	dst = append(dst, byte(payloadLen>>8), byte(payloadLen)) // 802.3 length
-	dst = append(dst, llcSNAP...)
-	dst = append(dst, snapAppleTalk...)
-	dst = append(dst, ddpBytes...)
-	return dst, nil
+	return appendEthSNAP(dst, dstMAC, srcMAC, snapAppleTalk, ddpBytes), nil
 }
 
 // decode parses an Ethernet/SNAP EtherTalk frame into a ddp.Datagram, returning

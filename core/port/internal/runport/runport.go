@@ -251,9 +251,9 @@ func (p *Port) NetworkMax() uint16 {
 }
 
 // SetAddress records the claimed network/node and the network range this port
-// serves. The transport package calls it once its claim logic completes (M3
-// node-claim is per-transport; on EtherTalk it is driven by AARP, deferred —
-// see the ethertalk package). Safe to call while running.
+// serves. The transport package calls it once its claim logic completes (node-claim
+// is per-transport; on EtherTalk it is driven by AARP in the AARP-aware framer, which
+// calls this through the OnClaimed hook compose wires). Safe to call while running.
 func (p *Port) SetAddress(network uint16, node uint8, netMin, netMax uint16) {
 	p.mu.Lock()
 	p.network = network

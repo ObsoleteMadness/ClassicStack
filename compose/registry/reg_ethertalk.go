@@ -43,24 +43,48 @@ func init() {
 			return ethertalk.NewInstance(sec, nil, nil, ctx.Router, logger)
 		}
 
-		// LIVE: an Ethernet/SNAP framer stamped with the configured station MAC.
-		// NewFromOpener reopens the device on every Start (a closed libpcap handle is
-		// terminal), so the port survives a UI Stop→Start. A blank/invalid MAC leaves
-		// SrcMAC nil and the framer falls back to the AppleTalk broadcast MAC
-		// (pre-AARP behaviour).
-		framer := etherTalkFramer(sec)
-		return ethertalk.NewInstanceFromOpener(sec, opener, framer, ctx.Router, logger)
+		// LIVE framer. When a station MAC is configured we use the AARP-aware framer,
+		// which claims a unique node address by probing on Start, resolves peer
+		// node→MAC via the AMT (unicast instead of broadcast), and answers/gleans AARP.
+		// Without a MAC there is no station identity to claim with, so we fall back to
+		// the plain Ethernet/SNAP DDP framer (broadcast-only, pre-AARP behaviour).
+		// NewInstanceFromOpener reopens the device on every Start (a closed libpcap
+		// handle is terminal), so the port survives a UI Stop→Start.
+		framer, claimWiring := etherTalkFramer(sec)
+		comp, err := ethertalk.NewInstanceFromOpener(sec, opener, framer, ctx.Router, logger)
+		if err != nil || comp == nil {
+			return comp, err
+		}
+		// Late-bind the claim → port.SetAddress hook now that the port exists: the AARP
+		// framer publishes the claimed node into the shared LiveAddr (src stamping) and
+		// calls OnClaimed, which we point at the port's SetAddress so the router sees the
+		// claimed address. (The framer is built before the port, so this is wired here —
+		// the same build-framer-then-bind-port shape LocalTalk uses for LiveAddr.)
+		if claimWiring != nil {
+			if p, ok := comp.(*ethertalk.Port); ok {
+				claimWiring.OnClaimed = func(network uint16, node uint8, netMin, netMax uint16) {
+					p.SetAddress(network, node, netMin, netMax)
+				}
+			}
+		}
+		return comp, nil
 	})
 }
 
-// etherTalkFramer builds the Ethernet/SNAP DDP framer from the section, stamping
-// the configured station MAC as the outbound Ethernet source when it parses; an
-// empty or malformed MAC yields a nil SrcMAC (the framer then uses a zero source
-// and the broadcast destination — the pre-AARP default).
-func etherTalkFramer(sec *port.Section) link.Framer {
-	f := &framing.EtherTalk{}
-	if mac, err := port.ParseMAC(sec.MAC); err == nil && sec.MAC != "" {
-		f.SrcMAC = mac[:]
+// etherTalkFramer builds the EtherTalk framer from the section. With a configured station
+// MAC it returns the AARP-aware framer (*EtherTalkAARP) plus a handle the caller uses to
+// wire OnClaimed once the port exists; without a MAC it returns the plain broadcast-only
+// DDP framer (and a nil handle).
+func etherTalkFramer(sec *port.Section) (link.Framer, *framing.EtherTalkAARP) {
+	mac, err := port.ParseMAC(sec.MAC)
+	if err != nil || sec.MAC == "" {
+		return &framing.EtherTalk{}, nil // no station identity → plain broadcast framer
 	}
-	return f
+	f := &framing.EtherTalkAARP{
+		SrcMAC:     mac[:],
+		Addr:       &framing.LiveAddr{},
+		SeedNetMin: sec.SeedNetwork,
+		SeedNetMax: sec.SeedNetworkEnd,
+	}
+	return f, f
 }

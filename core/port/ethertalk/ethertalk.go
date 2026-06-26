@@ -6,10 +6,13 @@
 // the composition layer, since core may not import adapters. The read loop,
 // metering, and lifecycle live in the shared runport base.
 //
-// Node-claim / address resolution on EtherTalk is driven by AARP, which is
-// deferred (TODO(M3-AARP)); the port comes up and frames DDP, and SetAddress
-// can be called once a claim completes. The framing seam already sends to the
-// AppleTalk broadcast MAC, so broadcast traffic works without AARP.
+// Node-claim and address resolution on EtherTalk are driven by AARP in the
+// AARP-aware framer (adapter/link/framing.EtherTalkAARP): on Start the framer probes
+// for a unique node address and calls this port's SetAddress when it claims one, then
+// resolves peer node→MAC via its AMT so DDP goes unicast. Until the claim lands the
+// port drops outbound DDP (the unclaimed contract); inbound broadcast + AARP are
+// serviced from the start. A port built with the plain framing.EtherTalk (no station
+// MAC configured) stays broadcast-only without AARP.
 package ethertalk
 
 import (
