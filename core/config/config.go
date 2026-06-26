@@ -81,10 +81,30 @@ func (m *Model) Clone() *Model {
 // knowledge of its own. The zero value validates with no consumer constraints — the
 // right default for an SMB-over-:445 / AFP-only server.
 type ValidateOptions struct {
-	// NetBIOSEnabled gates the NetBIOS-specific hostname rules. NetBIOS has no config
-	// section of its own (it is enabled by being built/wired), so the model cannot
-	// infer this — the plane derives it from the live component set.
-	NetBIOSEnabled bool
+	// HostnameConstraints names the active CONSUMER-GATED hostname rules — the constraint
+	// keys (e.g. HostnameConstraintNetBIOS) reported by the live components that impose
+	// them. core/config gates each consumer rule on its key WITHOUT the caller naming a
+	// service: the management plane aggregates the keys from the components implementing
+	// component.HostnameConstrainer and passes them here. The zero value (no keys)
+	// validates with only the always-on baseline — the right default for an
+	// SMB-over-:445 / AFP-only server with no NetBIOS.
+	HostnameConstraints []string
+}
+
+// Hostname-constraint keys for ValidateOptions.HostnameConstraints. A consumer that
+// imposes a hostname rule (declared via component.HostnameConstrainer) uses its key here;
+// core/config applies the matching rule. NetBIOS is the only one today (the ≤15-byte
+// NetBIOS-name limit), but the key-set is the seam for any future consumer rule.
+const HostnameConstraintNetBIOS = "netbios"
+
+// hasConstraint reports whether key is among the active hostname constraints.
+func (o ValidateOptions) hasConstraint(key string) bool {
+	for _, k := range o.HostnameConstraints {
+		if k == key {
+			return true
+		}
+	}
+	return false
 }
 
 // Validate checks the whole model before it is committed (the control-plane Apply /
@@ -94,8 +114,9 @@ type ValidateOptions struct {
 //  2. every registered section's Validate — singletons in Sections and each repeated
 //     instance in Lists, via the schema registry's Validate when one is registered
 //     (it may wrap the section's own), else the section's own Validate.
-//  3. Identity.ValidateForNetBIOS — the consumer-gated rule, only when
-//     opts.NetBIOSEnabled, with NetBIOS named as the constraint source in its error.
+//  3. Identity.ValidateForNetBIOS — the consumer-gated rule, only when the
+//     HostnameConstraintNetBIOS key is among opts.HostnameConstraints, with NetBIOS
+//     named as the constraint source in its error.
 //
 // It returns the first error encountered, so a bad section or an over-length hostname
 // under NetBIOS is rejected before it goes live, rather than mangling a name on the
@@ -119,7 +140,7 @@ func (m *Model) Validate(opts ValidateOptions) error {
 			}
 		}
 	}
-	if opts.NetBIOSEnabled {
+	if opts.hasConstraint(HostnameConstraintNetBIOS) {
 		if err := m.Identity.ValidateForNetBIOS(); err != nil {
 			return err
 		}

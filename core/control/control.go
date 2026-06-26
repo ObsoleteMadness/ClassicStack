@@ -39,6 +39,12 @@ type Plane interface {
 	Restart(ctx context.Context, name string) error
 
 	Status() []Unit
+	// HostnameConstraints returns the active consumer-gated hostname constraint keys
+	// across the live component set (e.g. "netbios" when NetBIOS is enabled). The plane
+	// forwards them to Model.Validate so the right hostname rules apply WITHOUT control
+	// naming any specific service (§4-bis). A component declares its own constraint via
+	// component.HostnameConstrainer; the supervisor aggregates them.
+	HostnameConstraints() []string
 	ListInterfaces() ([]InterfaceInfo, error)
 	// SetInterface adds or replaces a named entry in the interface NAMESPACE
 	// (Model.Interfaces) — a NIC, serial, or bridge interface a port references by
@@ -139,6 +145,10 @@ type Supervisor interface {
 	Stop(ctx context.Context, name string) error
 	Restart(ctx context.Context, name string) error
 	Status() []Unit
+	// HostnameConstraints aggregates the active consumer-gated hostname constraint keys
+	// across the live component set (see the Plane doc above). The plane forwards them to
+	// Model.Validate so control names no specific service.
+	HostnameConstraints() []string
 	ListInterfaces() ([]InterfaceInfo, error)
 	// SetInterface / RemoveInterface mutate the interface namespace (Model.Interfaces)
 	// under the supervisor lock and reconcile the ports that reference the changed
@@ -151,38 +161,15 @@ type Supervisor interface {
 	SetAdminAuth(a config.AdminAuth)
 }
 
-// Diagnostics is the optional read-only probe surface.
+// Diagnostics is the optional read-only probe surface on the neutral management plane.
+// It carries ONLY protocol-neutral probes: ListZones returns the AppleTalk router's zone
+// list as plain strings. The PROTOCOL-SPECIFIC drill-downs (NBP names, MacIP leases) do
+// NOT live here — they would leak a protocol DTO into the neutral contract; instead a
+// dedicated diagnostics ADAPTER (adapter/control/diag, which may import the service
+// packages) bridges those to the front-ends, the read-only sibling of the transport
+// cross-wire. So core/control names no protocol.
 type Diagnostics interface {
 	ListZones(ctx context.Context) ([]string, error)
-	// RegisteredNames returns the NBP name table (the names the server has bound on
-	// the AppleTalk internet), the drill-down behind NBP's "registered names" stat.
-	// ErrUnavailable when no NBP service is wired.
-	RegisteredNames(ctx context.Context) ([]NBPName, error)
-	// MacIPLeases returns the MacIP gateway's active IP↔AppleTalk leases, the
-	// drill-down behind MacIP's "active leases" stat. ErrUnavailable when no MacIP
-	// gateway is wired.
-	MacIPLeases(ctx context.Context) ([]MacIPLease, error)
-}
-
-// NBPName is the management view of one entry in the NBP name table: the AppleTalk
-// NVE tuple (object:type@zone) and the DDP socket it is registered on. The byte
-// fields are decoded to display strings at the diagnostics impl (MacRoman → UTF-8),
-// so a front-end renders them directly.
-type NBPName struct {
-	Object string `json:"object"`
-	Type   string `json:"type"`
-	Zone   string `json:"zone"`
-	Socket uint8  `json:"socket"`
-}
-
-// MacIPLease is the management view of one MacIP gateway lease: the assigned IPv4
-// (dotted-quad string), the AppleTalk network/node it maps to, and the lease source
-// ("static" from the pool, or "external" from a DHCP-relay / egress assignment).
-type MacIPLease struct {
-	IP        string `json:"ip"`
-	ATNetwork uint16 `json:"at_network"`
-	ATNode    uint8  `json:"at_node"`
-	Source    string `json:"source"`
 }
 
 type plane struct {
@@ -289,16 +276,17 @@ func (p *plane) Save(ctx context.Context) (revision string, err error) {
 // persist validates the live model and writes it to the store, returning the new
 // revision. It is the shared body behind Save and SetAdmin (which stamps the admin
 // credential into the model first, then persists). Validation rejects an invalid
-// section or a hostname that violates a consumer-gated rule (the NetBIOS ≤15-byte
-// limit, §4-bis) before it reaches the store, rather than serialising a config that
-// would mangle a name on the wire. NetBIOSEnabled is derived from the live component
-// set, since NetBIOS carries no config section of its own.
+// section or a hostname that violates a consumer-gated rule before it reaches the
+// store, rather than serialising a config that would mangle a name on the wire. The
+// active consumer-gated hostname constraints are reported by the supervisor (aggregated
+// from the live components implementing component.HostnameConstrainer), so control names
+// no specific service — it forwards whatever constraint keys are active.
 func (p *plane) persist() (revision string, err error) {
 	if p.codec == nil || p.store == nil {
 		return "", errPersistence
 	}
 	m := p.sup.Model()
-	if err := m.Validate(config.ValidateOptions{NetBIOSEnabled: p.netbiosEnabled()}); err != nil {
+	if err := m.Validate(config.ValidateOptions{HostnameConstraints: p.sup.HostnameConstraints()}); err != nil {
 		return "", err
 	}
 	data, err := p.codec.Marshal(m)
@@ -326,28 +314,12 @@ func (p *plane) SetAdmin(ctx context.Context, a config.AdminAuth) (revision stri
 	return p.persist()
 }
 
-// netbiosComponentName is the component name the supervisor reports for the NetBIOS
-// service in Status(). Matched by string (not an import of the service package) to
-// keep core/control free of service dependencies. Mirrors netbios.Name.
-const netbiosComponentName = "NetBIOS"
-
-// netbiosEnabled reports whether the NetBIOS service is present and configured-enabled
-// in the live component set, so Model.Validate applies the NetBIOS hostname rule only
-// when NetBIOS is actually in play (§4-bis).
-func (p *plane) netbiosEnabled() bool {
-	for _, u := range p.sup.Status() {
-		if u.Name == netbiosComponentName {
-			return u.Enabled
-		}
-	}
-	return false
-}
-
 func (p *plane) Start(ctx context.Context, name string) error   { return p.sup.Start(ctx, name) }
 func (p *plane) Stop(ctx context.Context, name string) error    { return p.sup.Stop(ctx, name) }
 func (p *plane) Restart(ctx context.Context, name string) error { return p.sup.Restart(ctx, name) }
 
 func (p *plane) Status() []Unit                           { return p.sup.Status() }
+func (p *plane) HostnameConstraints() []string            { return p.sup.HostnameConstraints() }
 func (p *plane) ListInterfaces() ([]InterfaceInfo, error) { return p.sup.ListInterfaces() }
 
 // SetInterface stages a named interface-namespace entry and reconciles referencing
@@ -432,13 +404,5 @@ func (p *plane) Subscribe(topics ...string) (<-chan bus.Event, func()) {
 type unavailableDiagnostics struct{}
 
 func (unavailableDiagnostics) ListZones(context.Context) ([]string, error) {
-	return nil, ErrUnavailable
-}
-
-func (unavailableDiagnostics) RegisteredNames(context.Context) ([]NBPName, error) {
-	return nil, ErrUnavailable
-}
-
-func (unavailableDiagnostics) MacIPLeases(context.Context) ([]MacIPLease, error) {
 	return nil, ErrUnavailable
 }

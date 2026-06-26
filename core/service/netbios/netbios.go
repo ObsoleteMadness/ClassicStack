@@ -42,6 +42,7 @@ import (
 	"sync"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
+	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbios"
 )
@@ -149,6 +150,11 @@ type Service struct {
 	dgramConsumer DatagramConsumer // connectionless datagram sink (browser/mailslot); set by compose
 	closers       []circuitCloser  // NBF/NBIPX session engines, one per transport; torn down on Stop
 	egresses      []datagramEgress // per-transport outbound-datagram emitters (browser sends fan to these)
+	// bound is the transport families the operator bound (from the NetBIOS section),
+	// stored so the service DECLARES its own transport intent (BoundTransports) — the
+	// compose root asks the service instead of re-reading the model. Empty = bind every
+	// built transport (back-compat), matching Section.Binds.
+	bound []string
 }
 
 // circuitCloser is the per-transport session engine surface the service holds for
@@ -325,6 +331,52 @@ func (s *Service) Transports() []string {
 	return out
 }
 
+// SetBoundTransports records the transport families the operator bound (the NetBIOS
+// section's list), so the service DECLARES its own transport intent. Empty (or nil)
+// keeps the implicit "bind every built transport" default. The compose root sets this
+// once at build time; idempotent, safe before Start.
+func (s *Service) SetBoundTransports(transports []string) {
+	s.mu.Lock()
+	s.bound = append([]string(nil), transports...)
+	s.mu.Unlock()
+}
+
+// BoundTransports returns the transport families this service wants bound
+// (component.TransportBinder), so the compose root wires only those without re-reading
+// the NetBIOS section. An empty result means "every built transport" (implicit default).
+func (s *Service) BoundTransports() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.bound...)
+}
+
+// HostnameConstraint declares that NetBIOS imposes the ≤15-byte NetBIOS-name rule on the
+// server hostname (component.HostnameConstrainer). The supervisor aggregates this so the
+// management plane applies the rule WITHOUT naming NetBIOS itself (§4-bis). The
+// constraint is active whenever the NetBIOS service is present (built/wired) — NetBIOS
+// has no separate enable flag, matching the prior "is the NetBIOS unit present" gate.
+func (s *Service) HostnameConstraint() (string, bool) {
+	return config.HostnameConstraintNetBIOS, true
+}
+
+// Binds reports whether the named transport family is bound: an empty bound list binds
+// everything (the historical default), else the list must name it. Mirrors
+// Section.Binds so the service and the section agree, and the compose cross-wire gates
+// each family by asking the service.
+func (s *Service) Binds(transport string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.bound) == 0 {
+		return true
+	}
+	for _, t := range s.bound {
+		if t == transport {
+			return true
+		}
+	}
+	return false
+}
+
 // RegisterName claims an additional NetBIOS file-server name, announcing it on
 // every attached transport. SMB calls this to register its server name.
 func (s *Service) RegisterName(name string) error {
@@ -354,5 +406,7 @@ func (s *Service) logf(msg string) {
 
 // compile-time assertions.
 var (
-	_ component.Component = (*Service)(nil)
+	_ component.Component           = (*Service)(nil)
+	_ component.TransportBinder     = (*Service)(nil)
+	_ component.HostnameConstrainer = (*Service)(nil)
 )

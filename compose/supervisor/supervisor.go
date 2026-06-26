@@ -540,6 +540,33 @@ func (s *Supervisor) restartNodeLocked(ctx context.Context, n *node, name string
 }
 
 // Status reports a snapshot Unit per managed component for the dashboard.
+// HostnameConstraints aggregates the active server-hostname constraints across the live
+// component set: each component implementing component.HostnameConstrainer that reports
+// active contributes its constraint key (e.g. "netbios" when NetBIOS is enabled). The
+// control plane passes the result to Model.Validate so the consumer-gated hostname rules
+// apply WITHOUT the plane naming any specific service (§4-bis; the leak fix for C2). The
+// keys are de-duplicated; order is unspecified.
+func (s *Supervisor) HostnameConstraints() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := map[string]struct{}{}
+	var out []string
+	for _, n := range s.nodes {
+		if n == nil {
+			continue
+		}
+		if hc, ok := n.c.(component.HostnameConstrainer); ok {
+			if key, active := hc.HostnameConstraint(); active && key != "" {
+				if _, dup := seen[key]; !dup {
+					seen[key] = struct{}{}
+					out = append(out, key)
+				}
+			}
+		}
+	}
+	return out
+}
+
 func (s *Supervisor) Status() []control.Unit {
 	s.mu.Lock()
 	defer s.mu.Unlock()

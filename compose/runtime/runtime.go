@@ -41,37 +41,16 @@ var stubNames = map[string]bool{
 	"stub-disabled": true,
 }
 
-// hardDeps declares the start-order edges between built components (a name must be
-// running before the names that list it). Soft transport bindings (IPX/NetBEUI →
-// NetBIOS) are component.Attachable side-effects, NOT edges (§11d), so they are not
-// here. This static map re-expresses the D5 main's hardcoded edges; a declarative
-// per-component dependency capability is a deliberate follow-on (noted in TODO),
-// kept out of this slice so the root stays pure assembly.
-//
-// Only edges whose BOTH ends are actually built take effect — Build filters against
-// the components it constructed, so a minimal build (no NetBEUI) simply drops the
-// SMB→NetBEUI edge rather than failing.
-var hardDeps = map[string][]string{
-	"AFP": {"Router"},
-	"SMB": {"NetBEUI"},
-	// The SMB-over-TCP listener drives the SMB service's session consumer, so SMB must
-	// be running before it accepts connections (and stop after it). Name matches
-	// smbtcp.Name; the edge drops if SMB-TCP was not built.
-	"SMB-TCP": {"SMB"},
-	// The core DDP router services ride the shared router: they must start after it (so
-	// their socket registration + table access has a live router) and stop before it.
-	// Names match the registry/component names (rtmp.RespondingName etc.); only edges
-	// whose both ends are built take effect, so a no-router build drops these silently.
-	"RTMP": {"Router"},
-	"ZIP":  {"Router"},
-	"NBP":  {"Router"},
-	"AEP":  {"Router"},
-	// MacIP is a DDP service (socket 72) and registers its IPGATEWAY name via NBP, so
-	// it starts after both the router and NBP and stops before them.
-	"MacIP": {"Router", "NBP"},
-	// IPXGW (MacIPX, socket 78) registers its "IPX Gateway" names via NBP — same edges.
-	"IPXGW": {"Router", "NBP"},
-}
+// hardDeps is the FALLBACK start-order edge map for components that have not (yet)
+// adopted the component.DependsOn capability — declaredDeps consults the component
+// first and only falls back here. Every component with edges now declares its own
+// dependencies (afp/smb/smbtcp/macip/ipxgw + the rtmp/zip/nbp/aep DDP services), so
+// this map is empty: each component owns its edges, and SMB's NetBEUI edge varies by
+// its transport-binding config (which a static map could not express). It is retained
+// (empty) as the seam for any future component that prefers static declaration. Soft
+// transport bindings (IPX/NetBEUI → NetBIOS) are component.Attachable side-effects, NOT
+// edges (§11d), so they were never here.
+var hardDeps = map[string][]string{}
 
 // componentSource enumerates and builds the components a Runtime assembles. The
 // production source is the global compose/registry; tests inject their own so they
@@ -268,7 +247,7 @@ func Build(opts Options) (*Runtime, error) {
 	// these mini-routers have no lifecycle of their own (the ports own start/stop),
 	// so they are built here rather than supervised. A build without the NetBIOS
 	// service is a no-op.
-	macipEgress := crossWireTransports(comps, opts.Model, opts.MacIPEgress)
+	macipEgress := crossWireTransports(comps, opts.MacIPEgress)
 
 	// Wire the user store (§4): build the configured store once and hand it to the
 	// supervisor (the web UI's user CRUD surface) AND to every built file service as
@@ -361,8 +340,13 @@ func crossWireRouter(rtr *router.RouterImpl, comps map[string]component.Componen
 // builtDeps returns name's hard dependencies, dropping any whose target was not
 // built in this configuration (so a minimal build omits the edge instead of
 // failing the topo sort on a missing node).
+//
+// The edges come from the COMPONENT itself when it implements component.DependsOn
+// (each component owns and may config-vary its dependencies); hardDeps is only a
+// fallback for components that have not yet adopted the capability. Once every edged
+// component declares its own dependencies, hardDeps is empty and can be removed.
 func builtDeps(name string, comps map[string]component.Component) []string {
-	want := hardDeps[name]
+	want := declaredDeps(name, comps)
 	if len(want) == 0 {
 		return nil
 	}
@@ -373,6 +357,17 @@ func builtDeps(name string, comps map[string]component.Component) []string {
 		}
 	}
 	return out
+}
+
+// declaredDeps returns the unfiltered dependency names for a built component: the
+// component's own DependsOn declaration when present, else the static hardDeps fallback.
+func declaredDeps(name string, comps map[string]component.Component) []string {
+	if c, ok := comps[name]; ok {
+		if d, ok := c.(component.DependsOn); ok {
+			return d.Dependencies()
+		}
+	}
+	return hardDeps[name]
 }
 
 // Start brings the whole stack up in dependency order, then attaches the declared

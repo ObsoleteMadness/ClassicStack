@@ -39,12 +39,11 @@ type Client interface {
 	SetInterface(ctx context.Context, iface config.InterfaceSection) error
 	RemoveInterface(ctx context.Context, name string) error
 	ListZones(ctx context.Context) ([]string, error)
-	// RegisteredNames / MacIPLeases are the drill-down probes behind the NBP
-	// "registered names" and MacIP "active leases" dashboard stats. Both surface
-	// control.ErrUnavailable when their service is not wired, round-tripped by every
-	// transport like ListZones.
-	RegisteredNames(ctx context.Context) ([]control.NBPName, error)
-	MacIPLeases(ctx context.Context) ([]control.MacIPLease, error)
+	// The protocol-specific diagnostic drill-downs (NBP registered names, MacIP leases)
+	// are NOT on this neutral client surface — they are served by the diagnostics adapter
+	// (adapter/control/diag) over the web/ubus front-ends directly, so no protocol DTO
+	// crosses the management contract. ListZones is the one neutral router probe that
+	// stays here.
 
 	Users() ([]control.UserInfo, error)
 	SetUser(name, password string) error
@@ -92,16 +91,6 @@ func (a *Adapter) RemoveInterface(ctx context.Context, name string) error {
 // ListZones runs the Diagnostics zone probe (control.ErrUnavailable when unsupported).
 func (a *Adapter) ListZones(ctx context.Context) ([]string, error) {
 	return a.plane.Diagnostics().ListZones(ctx)
-}
-
-// RegisteredNames runs the NBP name-table probe (control.ErrUnavailable when no NBP).
-func (a *Adapter) RegisteredNames(ctx context.Context) ([]control.NBPName, error) {
-	return a.plane.Diagnostics().RegisteredNames(ctx)
-}
-
-// MacIPLeases runs the MacIP lease probe (control.ErrUnavailable when no MacIP gateway).
-func (a *Adapter) MacIPLeases(ctx context.Context) ([]control.MacIPLease, error) {
-	return a.plane.Diagnostics().MacIPLeases(ctx)
 }
 
 // Users lists stored identities (control.ErrUnavailable when no store is wired).

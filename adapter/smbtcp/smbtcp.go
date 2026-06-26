@@ -74,6 +74,11 @@ func (t *Transport) Name() string { return Name }
 // Binding reports the listen address (component.Bindable), so the dashboard shows it.
 func (t *Transport) Binding() string { return t.addr }
 
+// Dependencies declares the SMB-TCP listener's start-order edge: the SMB service must be
+// running first, since the listener drives SMB's session consumer (and must stop before
+// it). Drops in a build without the SMB service.
+func (t *Transport) Dependencies() []string { return []string{smb.Name} }
+
 // Start opens the listener and begins accepting. Idempotent (§3). A nil consumer or an
 // empty address makes Start a no-op so a build that wires the transport but disables the
 // TCP binding stays inert rather than erroring.
@@ -240,4 +245,5 @@ func writeFramed(w io.Writer, msg []byte) error {
 var (
 	_ component.Component = (*Transport)(nil)
 	_ component.Bindable  = (*Transport)(nil)
+	_ component.DependsOn = (*Transport)(nil)
 )

@@ -146,3 +146,31 @@ func TestRemoveShare_KeepsInFlightHandle(t *testing.T) {
 		t.Fatalf("in-flight handle broke after RemoveShare: %v", err)
 	}
 }
+
+// TestDependencies_VariesByTransportBinding proves SMB's start-order edge to NetBEUI is
+// config-varying — present only when the NetBEUI transport is bound — which the old
+// static composition-root map could not express.
+func TestDependencies_VariesByTransportBinding(t *testing.T) {
+	// No bindings set → bind-all default → NetBEUI is bound → edge present.
+	s := New(nil)
+	if deps := s.Dependencies(); len(deps) != 1 || deps[0] != "NetBEUI" {
+		t.Fatalf("default Dependencies = %v, want [NetBEUI]", deps)
+	}
+
+	// Bind only TCP → NetBEUI not bound → no NetBEUI edge.
+	s.SetBoundTransports([]string{TransportTCP})
+	if deps := s.Dependencies(); len(deps) != 0 {
+		t.Fatalf("tcp-only Dependencies = %v, want none", deps)
+	}
+
+	// Explicitly bind NetBEUI → edge present.
+	s.SetBoundTransports([]string{TransportNetBEUI})
+	if deps := s.Dependencies(); len(deps) != 1 || deps[0] != "NetBEUI" {
+		t.Fatalf("netbeui-bound Dependencies = %v, want [NetBEUI]", deps)
+	}
+
+	// BoundTransports reflects the binding for the compose root (TransportBinder).
+	if bt := s.BoundTransports(); len(bt) != 1 || bt[0] != TransportNetBEUI {
+		t.Fatalf("BoundTransports = %v, want [netbeui]", bt)
+	}
+}

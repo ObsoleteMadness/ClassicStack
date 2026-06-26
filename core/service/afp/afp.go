@@ -644,10 +644,16 @@ func (s *Service) logf(msg string) {
 	s.logger.Log1(log.Info, msg, log.Str("scope", Name))
 }
 
+// Dependencies declares AFP's hard start-order edge: the AppleTalk router must be
+// running before AFP (its ASP/DDP transport binds to the router's socket table). The
+// edge drops automatically in a no-router build (the runtime filters to built targets).
+func (s *Service) Dependencies() []string { return []string{router.Name} }
+
 // compile-time assertions.
 var (
 	_ component.Component    = (*Service)(nil)
 	_ component.Configurable = (*Service)(nil)
+	_ component.DependsOn    = (*Service)(nil)
 	_ router.Service         = (*Service)(nil)
 	_ share.Manager          = (*Service)(nil)
 )

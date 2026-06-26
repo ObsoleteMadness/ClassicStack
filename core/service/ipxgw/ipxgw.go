@@ -522,10 +522,16 @@ func (s *Service) warn(msg string, f log.Field) {
 	s.logger.Log2(log.Warn, msg, log.Str("scope", Name), f)
 }
 
+// Dependencies declares IPXGW's start-order edges: the AppleTalk router (it is a DDP
+// service on the MacIPX socket) and NBP (it registers its "IPX Gateway" names via NBP).
+// Both edges drop automatically when their target is not built.
+func (s *Service) Dependencies() []string { return []string{router.Name, nbp.Name} }
+
 // compile-time assertions.
 var (
 	_ router.Service        = (*Service)(nil)
 	_ component.Component   = (*Service)(nil)
+	_ component.DependsOn   = (*Service)(nil)
 	_ component.Statful     = (*Service)(nil)
 	_ component.Describable = (*Service)(nil)
 	_ component.Enableable  = (*Service)(nil)

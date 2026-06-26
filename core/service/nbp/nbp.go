@@ -118,7 +118,9 @@ func (s *Service) UnregisterName(obj, typ, zone []byte) {
 	}
 }
 
-// Names returns a copy of the registered-name table (diagnostics).
+// Names returns a copy of the registered-name table (diagnostics). The diagnostics
+// adapter (adapter/control/diag) reads this and decodes the NVE tuple for display, so
+// the management plane carries no NBP type.
 func (s *Service) Names() []RegisteredName {
 	s.nameMu.RLock()
 	defer s.nameMu.RUnlock()
@@ -373,9 +375,14 @@ func (s *Service) bump(c *uint64) {
 	s.statMu.Unlock()
 }
 
+// Dependencies declares NBP's start-order edge: the AppleTalk router must be running
+// first (NBP is a DDP service on the names socket). Drops in a no-router build.
+func (s *Service) Dependencies() []string { return []string{router.Name} }
+
 // compile-time assertions.
 var (
 	_ router.Service      = (*Service)(nil)
 	_ component.Component = (*Service)(nil)
+	_ component.DependsOn = (*Service)(nil)
 	_ component.Statful   = (*Service)(nil)
 )

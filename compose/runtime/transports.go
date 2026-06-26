@@ -37,7 +37,6 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/core/auth"
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
-	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	diagproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx/diag"
 	ncpproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ncp"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/afp"
@@ -60,23 +59,23 @@ import (
 // nothing (the transports have nothing to feed); with NetBIOS but no SMB the session
 // engines run but drop session data after reassembly (no consumer), exactly the
 // graceful-degradation contract the seams already document.
-func crossWireTransports(comps map[string]component.Component, m *config.Model, egressOpener MacIPEgressOpener) MacIPEgress {
+func crossWireTransports(comps map[string]component.Component, egressOpener MacIPEgressOpener) MacIPEgress {
 	nb := netbiosService(comps)
 	sm := smbService(comps)
 
 	// Explicit transport bindings (§smb-transport-families / netbios-transport-bindings):
-	// the operator's SMB/NetBIOS config names which transport families to bind. An empty
-	// list binds every built transport (Binds returns true), so an unset section keeps
-	// the historical implicit behaviour. A family is wired only when the relevant service
-	// AND its config both allow it.
-	smbSec := smb.ServerSectionFromModel(m)
-	nbSec := netbios.SectionFromModel(m)
+	// which transport families each service wants bound is the SERVICE's own intent — the
+	// SMB/NetBIOS services hold their config (component.TransportBinder), so we ask THEM
+	// (sm.Binds / nb.Binds) instead of re-reading the model here (§B). An empty binding
+	// list binds every built transport (Binds returns true), so an unset section keeps the
+	// historical implicit behaviour. A family is wired only when the relevant service AND
+	// its own binding allow it.
 
 	// The NetBEUI family and the connectionless-datagram (mailslot) path are
 	// NetBIOS-only: with no NetBIOS service there is nothing to carry them. NetBEUI is
 	// gated by the NetBIOS transport binding (NBF rides NetBEUI).
 	if nb != nil {
-		if nbSec.Binds(netbios.TransportNetBEUI) {
+		if nb.Binds(netbios.TransportNetBEUI) {
 			wireNetBEUI(nb, comps)
 		}
 		wireMailslot(nb, comps)
@@ -93,13 +92,15 @@ func crossWireTransports(comps map[string]component.Component, m *config.Model, 
 	// (socket 0x0550, needs only SMB — NetBIOS-less, the "NWLink direct hosting"
 	// path). Each leg is gated by the consumer's own transport binding: the NB-IPX leg
 	// by the NetBIOS ipx binding, the direct-hosted leg by the SMB ipx binding.
-	wireIPX(nb, sm, comps, nbSec.Binds(netbios.TransportIPX), smbSec.Binds(smb.TransportIPX))
+	nbIPXBound := nb != nil && nb.Binds(netbios.TransportIPX)
+	smbIPXBound := sm != nil && sm.Binds(smb.TransportIPX)
+	wireIPX(nb, sm, comps, nbIPXBound, smbIPXBound)
 
 	// The TCP family (direct-hosted SMB over :445; NBT over :139) is a supervised
 	// adapter listener built inert in the registry; wire its SMB consumer + address
 	// here when SMB is present and the tcp binding is on. Direct-TCP needs only SMB
 	// (NetBIOS-less); NBT (gated by the SMB nbt binding) shares the same framing.
-	wireSMBTCP(sm, smbSec, comps)
+	wireSMBTCP(sm, comps)
 
 	// Browse-list provider (§3-ter, M8a compose wiring): when both SMB and the browser
 	// were built, install the browser as SMB's BrowseProvider so the IPC$ \PIPE\LANMAN
@@ -119,16 +120,16 @@ func crossWireTransports(comps map[string]component.Component, m *config.Model, 
 	// the DDP-service analogue of installing SMB as the NetBIOS session consumer. The
 	// IP-side egress adapter, when one exists, is injected the same way; until then
 	// MacIP runs AppleTalk-only (assignment + discovery work, IP data does not).
-	return wireMacIP(comps, m, egressOpener)
+	return wireMacIP(comps, egressOpener)
 }
 
 // wireMacIP injects the NBP service into the AppleTalk gateway services (MacIP's
-// IPGATEWAY name, IPXGW's "IPX Gateway" names) when NBP was built, and — when the
-// MacIP section names an interface and an egress opener was supplied — builds the
-// IP-side egress adapter and injects it via SetEgress, returning it so the runtime
-// can manage its lifecycle. The IPX mini-router is handed to IPXGW separately in
-// wireIPX (which owns that router). Returns nil egress when none was built.
-func wireMacIP(comps map[string]component.Component, m *config.Model, egressOpener MacIPEgressOpener) MacIPEgress {
+// IPGATEWAY name, IPXGW's "IPX Gateway" names) when NBP was built, and — when the MacIP
+// service DECLARES it wants IP egress (EgressParams, §B) and an egress opener was
+// supplied — builds the IP-side egress adapter and injects it via SetEgress, returning
+// it so the runtime can manage its lifecycle. The IPX mini-router is handed to IPXGW
+// separately in wireIPX (which owns that router). Returns nil egress when none was built.
+func wireMacIP(comps map[string]component.Component, egressOpener MacIPEgressOpener) MacIPEgress {
 	names := nbpService(comps)
 	mi := macipService(comps)
 	if names != nil {
@@ -140,19 +141,17 @@ func wireMacIP(comps map[string]component.Component, m *config.Model, egressOpen
 		}
 	}
 
-	// Build + inject the IP-side egress when the section configures an interface and the
-	// cmd edge supplied an opener (the pcap/cgo dependency lives there). A nil opener,
-	// no MacIP service, no section, or an empty Interface keeps MacIP AppleTalk-only. An
-	// open error is logged via the opener; here we just leave egress unwired.
+	// Build + inject the IP-side egress when the MacIP SERVICE declares an egress intent
+	// (a configured interface) and the cmd edge supplied an opener (the pcap/cgo
+	// dependency lives there). The service holds its own egress params, so the root asks
+	// it (EgressParams) rather than re-reading the section. A nil opener, no MacIP
+	// service, or no declared egress keeps MacIP AppleTalk-only. An open error is logged
+	// via the opener; here we just leave egress unwired.
 	if mi == nil || egressOpener == nil {
 		return nil
 	}
-	sec := macip.SectionFromModel(m)
-	if sec == nil || !sec.Enabled {
-		return nil
-	}
-	params := sec.EgressParams()
-	if params.Interface == "" {
+	params, ok := mi.EgressParams()
+	if !ok {
 		return nil
 	}
 	eg, err := egressOpener(params, mi.OwnsIP)
@@ -322,7 +321,7 @@ func wireIPX(nb *netbios.Service, sm *smb.Service, comps map[string]component.Co
 // NetBIOS session consumer, for the direct-TCP path. NBT (:139) shares the same
 // transport and framing; when only the nbt binding is on, the :139 address is used.
 // With no SMB service, or with both tcp+nbt bindings off, the transport stays inert.
-func wireSMBTCP(sm *smb.Service, smbSec *smb.ServerSection, comps map[string]component.Component) {
+func wireSMBTCP(sm *smb.Service, comps map[string]component.Component) {
 	if sm == nil {
 		return
 	}
@@ -335,8 +334,10 @@ func wireSMBTCP(sm *smb.Service, smbSec *smb.ServerSection, comps map[string]com
 		return
 	}
 
-	tcpOn := smbSec.Binds(smb.TransportTCP)
-	nbtOn := smbSec.Binds(smb.TransportNBT)
+	// Ask the SERVICE for its bindings + addresses (§B) — the SMB service holds its own
+	// config, so the root does not re-read the section here.
+	tcpOn := sm.Binds(smb.TransportTCP)
+	nbtOn := sm.Binds(smb.TransportNBT)
 	if !tcpOn && !nbtOn {
 		return // neither TCP transport requested
 	}
@@ -345,9 +346,9 @@ func wireSMBTCP(sm *smb.Service, smbSec *smb.ServerSection, comps map[string]com
 	// the direct-TCP address; use the NBT address when only nbt is bound. An empty
 	// address (the default) leaves the transport inert, so a config that lists the tcp
 	// binding but sets no tcp_addr does not collide with the OS SMB server.
-	addr := smbSec.DirectTCPAddr()
+	addr := sm.DirectTCPListenAddr()
 	if addr == "" && nbtOn {
-		addr = smbSec.NBTListenAddr()
+		addr = sm.NBTListenAddr()
 	}
 	if addr == "" {
 		return // transport requested but no address configured — stay inert

@@ -115,7 +115,8 @@ type Service struct {
 	pool *ipPool
 
 	mu      sync.Mutex
-	enabled bool // configured-enabled flag (component.Enableable); set by the factory
+	enabled bool          // configured-enabled flag (component.Enableable); set by the factory
+	egressP *EgressParams // IP-side egress intent from the section; the compose root reads it to build the egress (§B). nil = AppleTalk-only.
 	running bool
 	ch      chan item
 	stop    chan struct{}
@@ -184,6 +185,29 @@ func (s *Service) SetEnabled(enabled bool) {
 	s.mu.Lock()
 	s.enabled = enabled
 	s.mu.Unlock()
+}
+
+// SetEgressParams records the IP-side egress intent from the section, so the service
+// DECLARES whether it wants IP egress and with what params — the compose root reads
+// this (EgressParams) and builds the pcap/cgo egress adapter, instead of re-reading the
+// section itself (§B). A nil params (or an empty Interface) keeps the gateway
+// AppleTalk-only. Idempotent, safe before Start.
+func (s *Service) SetEgressParams(p *EgressParams) {
+	s.mu.Lock()
+	s.egressP = p
+	s.mu.Unlock()
+}
+
+// EgressParams returns the IP-side egress intent the service was configured with, and
+// ok=false when it wants no egress (no section, disabled, or no Interface) — the
+// compose root then leaves the gateway AppleTalk-only without re-reading the model.
+func (s *Service) EgressParams() (EgressParams, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.egressP == nil || s.egressP.Interface == "" {
+		return EgressParams{}, false
+	}
+	return *s.egressP, true
 }
 
 // Enabled reports the configured-enabled flag (component.Enableable). A service built
@@ -302,7 +326,9 @@ func (s *Service) Stats() component.Stats {
 	}
 }
 
-// Leases returns a point-in-time copy of all current leases (diagnostics).
+// Leases returns a point-in-time copy of all current leases (diagnostics). The
+// diagnostics adapter (adapter/control/diag) reads this and decodes IP↔AppleTalk for
+// display, so the management plane carries no MacIP type.
 func (s *Service) Leases() []LeaseInfo { return s.pool.leases() }
 
 // OwnsIP reports whether an IPv4 is currently leased to a MacIP client (static or
@@ -588,10 +614,16 @@ func appendUint(dst []byte, v byte) []byte {
 	return dst
 }
 
+// Dependencies declares MacIP's start-order edges: the AppleTalk router (it is a DDP
+// service on socket 72) and NBP (it registers its IPGATEWAY name via NBP). Both edges
+// drop automatically when their target is not built.
+func (s *Service) Dependencies() []string { return []string{router.Name, nbp.Name} }
+
 // compile-time assertions.
 var (
 	_ router.Service        = (*Service)(nil)
 	_ component.Component   = (*Service)(nil)
+	_ component.DependsOn   = (*Service)(nil)
 	_ component.Statful     = (*Service)(nil)
 	_ component.Describable = (*Service)(nil)
 	_ component.Enableable  = (*Service)(nil)

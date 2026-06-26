@@ -22,9 +22,17 @@ func init() {
 		// Identity, so NetBIOS and SMB cannot disagree. An empty hostname yields the
 		// nameless service (transports attach later; a name may be set then).
 		name := m.Identity.NetBIOSName()
+		var svc *netbios.Service
 		if name == "" {
-			return netbios.New(logger), nil
+			svc = netbios.New(logger)
+		} else {
+			svc = netbios.NewService(logger, name)
 		}
-		return netbios.NewService(logger, name), nil
+		// Record the operator's transport bindings on the service so it DECLARES its own
+		// transport intent (BoundTransports); the compose transport cross-wire then asks
+		// the service instead of re-reading the section (§B). Empty = bind every built
+		// transport (back-compat).
+		svc.SetBoundTransports(netbios.SectionFromModel(m).Transports)
+		return svc, nil
 	})
 }

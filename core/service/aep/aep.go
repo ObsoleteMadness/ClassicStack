@@ -124,8 +124,13 @@ func (s *Service) run(ctx context.Context, ch chan item, stop chan struct{}) {
 	}
 }
 
+// Dependencies declares AEP's start-order edge: the AppleTalk router must be running
+// first (AEP is a DDP echo service). Drops in a no-router build.
+func (s *Service) Dependencies() []string { return []string{router.Name} }
+
 // compile-time assertions.
 var (
 	_ router.Service      = (*Service)(nil)
 	_ component.Component = (*Service)(nil)
+	_ component.DependsOn = (*Service)(nil)
 )

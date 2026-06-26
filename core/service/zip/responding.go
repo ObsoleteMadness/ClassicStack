@@ -42,6 +42,10 @@ func NewRespondingService(rtr router.ServiceRouter, logger log.Logger) *Respondi
 // Name returns the component name.
 func (s *RespondingService) Name() string { return RespondingName }
 
+// Dependencies declares ZIP's start-order edge: the AppleTalk router must be running
+// first (ZIP rides the shared router's socket table). Drops in a no-router build.
+func (s *RespondingService) Dependencies() []string { return []string{router.Name} }
+
 // Socket returns the ZIP socket so the router dispatches ZIP datagrams here.
 func (s *RespondingService) Socket() uint8 { return SAS }
 

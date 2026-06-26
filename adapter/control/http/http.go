@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ObsoleteMadness/ClassicStack/adapter/control/diag"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/control/inproc"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/extmap"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/serial"
@@ -41,6 +42,7 @@ type Client = inproc.Client
 // Server exposes control.Plane over HTTP.
 type Server struct {
 	plane    control.Plane
+	diag     DiagProvider // protocol-specific diagnostic drill-downs (adapter/control/diag); nil = unavailable
 	addr     string
 	listener net.Listener
 	server   *http.Server
@@ -48,6 +50,19 @@ type Server struct {
 	closed   bool
 	wg       sync.WaitGroup
 }
+
+// DiagProvider is the protocol-specific diagnostics surface the server serves on the
+// /registered_names and /macip_leases routes. It is satisfied by *adapter/control/diag.
+// Provider, which imports the service packages — kept OUT of core/control so the neutral
+// plane carries no protocol type. nil leaves those routes reporting unavailable.
+type DiagProvider interface {
+	RegisteredNames() ([]diag.NBPName, error)
+	MacIPLeases() ([]diag.MacIPLease, error)
+}
+
+// SetDiagProvider installs the protocol diagnostics provider (the cmd edge builds it
+// over the runtime). Safe before Serve; nil leaves the drill-down routes unavailable.
+func (s *Server) SetDiagProvider(d DiagProvider) { s.diag = d }
 
 // NewServer builds an HTTP Server for the plane on address addr.
 func NewServer(plane control.Plane, addr string) *Server {
@@ -548,13 +563,18 @@ func (s *Server) handleListZones(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleRegisteredNames returns the NBP name table (the drill-down behind NBP's
-// "registered names" stat). 501 when no NBP service is wired (ErrUnavailable).
+// "registered names" stat), served by the diagnostics provider. 501 when the provider
+// is absent or no NBP service was built (ErrUnavailable).
 func (s *Server) handleRegisteredNames(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	res, err := s.plane.Diagnostics().RegisteredNames(r.Context())
+	if s.diag == nil {
+		http.Error(w, control.ErrUnavailable.Error(), statusForErr(control.ErrUnavailable))
+		return
+	}
+	res, err := s.diag.RegisteredNames()
 	if err != nil {
 		http.Error(w, err.Error(), statusForErr(err))
 		return
@@ -563,14 +583,19 @@ func (s *Server) handleRegisteredNames(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(res)
 }
 
-// handleMacIPLeases returns the MacIP gateway lease table (the drill-down behind
-// MacIP's "active leases" stat). 501 when no MacIP gateway is wired (ErrUnavailable).
+// handleMacIPLeases returns the MacIP gateway lease table (the drill-down behind MacIP's
+// "active leases" stat), served by the diagnostics provider. 501 when the provider is
+// absent or no MacIP gateway was built (ErrUnavailable).
 func (s *Server) handleMacIPLeases(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	res, err := s.plane.Diagnostics().MacIPLeases(r.Context())
+	if s.diag == nil {
+		http.Error(w, control.ErrUnavailable.Error(), statusForErr(control.ErrUnavailable))
+		return
+	}
+	res, err := s.diag.MacIPLeases()
 	if err != nil {
 		http.Error(w, err.Error(), statusForErr(err))
 		return
@@ -989,18 +1014,20 @@ func (c *AdapterClient) ListZones(ctx context.Context) ([]string, error) {
 	return out, err
 }
 
-// RegisteredNames runs the NBP name-table probe (control.ErrUnavailable when no NBP).
-func (c *AdapterClient) RegisteredNames(ctx context.Context) ([]control.NBPName, error) {
+// RegisteredNames runs the NBP name-table drill-down (the diagnostics-provider route).
+// control.ErrUnavailable when no NBP service is wired.
+func (c *AdapterClient) RegisteredNames(ctx context.Context) ([]diag.NBPName, error) {
 	_ = ctx
-	var out []control.NBPName
+	var out []diag.NBPName
 	err := c.getJSON("/registered_names", &out)
 	return out, err
 }
 
-// MacIPLeases runs the MacIP lease probe (control.ErrUnavailable when no MacIP gateway).
-func (c *AdapterClient) MacIPLeases(ctx context.Context) ([]control.MacIPLease, error) {
+// MacIPLeases runs the MacIP lease drill-down (the diagnostics-provider route).
+// control.ErrUnavailable when no MacIP gateway is wired.
+func (c *AdapterClient) MacIPLeases(ctx context.Context) ([]diag.MacIPLease, error) {
 	_ = ctx
-	var out []control.MacIPLease
+	var out []diag.MacIPLease
 	err := c.getJSON("/macip_leases", &out)
 	return out, err
 }

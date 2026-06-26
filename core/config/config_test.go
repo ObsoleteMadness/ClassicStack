@@ -74,11 +74,11 @@ func TestModelValidateNetBIOSGated(t *testing.T) {
 	m := NewModel()
 	m.Identity = Identity{Hostname: "THIS-NAME-IS-WAY-TOO-LONG"} // > 15 bytes, baseline-legal
 
-	if err := m.Validate(ValidateOptions{NetBIOSEnabled: false}); err != nil {
-		t.Fatalf("NetBIOS off: long hostname should be allowed: %v", err)
+	if err := m.Validate(ValidateOptions{}); err != nil {
+		t.Fatalf("no netbios constraint: long hostname should be allowed: %v", err)
 	}
-	if err := m.Validate(ValidateOptions{NetBIOSEnabled: true}); err == nil {
-		t.Fatal("NetBIOS on: over-length hostname should be rejected")
+	if err := m.Validate(ValidateOptions{HostnameConstraints: []string{HostnameConstraintNetBIOS}}); err == nil {
+		t.Fatal("netbios constraint active: over-length hostname should be rejected")
 	}
 }
 

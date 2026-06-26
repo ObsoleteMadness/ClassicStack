@@ -53,6 +53,7 @@ func (s fakeSource) Build(name string, ctx *registry.BuildContext) (component.Co
 type recComponent struct {
 	name string
 	log  *startLog
+	deps []string // declared start-order edges (component.DependsOn)
 }
 
 func (c *recComponent) Name() string { return c.name }
@@ -64,6 +65,7 @@ func (c *recComponent) Stop(context.Context) error {
 	c.log.add("stop:" + c.name)
 	return nil
 }
+func (c *recComponent) Dependencies() []string { return c.deps }
 
 type startLog struct {
 	mu  sync.Mutex
@@ -185,16 +187,16 @@ func TestBuild_SkipsStubsAndSupervises(t *testing.T) {
 }
 
 // TestBuild_HardDepOrdering proves a built dependency starts before its dependent
-// and stops after it. It registers components under the real hardDeps names so the
-// edge applies.
+// and stops after it. The dependent declares its edge via component.DependsOn (the
+// per-component dependency capability that replaced the static hardDeps map).
 func TestBuild_HardDepOrdering(t *testing.T) {
 	log := &startLog{}
-	mk := func(name string) registry_factory {
+	mk := func(name string, deps ...string) registry_factory {
 		return func(*registry.BuildContext) (component.Component, error) {
-			return &recComponent{name: name, log: log}, nil
+			return &recComponent{name: name, log: log, deps: deps}, nil
 		}
 	}
-	src := fakeSource{"Router": mk("Router"), "AFP": mk("AFP")}
+	src := fakeSource{"Router": mk("Router"), "AFP": mk("AFP", "Router")}
 
 	rt, err := Build(Options{Model: config.NewModel(), Telemetry: nil, source: src})
 	if err != nil {
@@ -218,14 +220,14 @@ func TestBuild_HardDepOrdering(t *testing.T) {
 	}
 }
 
-// TestBuild_DropsEdgeWhenDependencyAbsent proves a hardDeps edge whose target was
+// TestBuild_DropsEdgeWhenDependencyAbsent proves a declared edge whose target was
 // not built is dropped rather than failing the topo sort. SMB→NetBEUI: register SMB
-// but NOT NetBEUI; Build must still succeed and start SMB.
+// (declaring the NetBEUI edge) but NOT NetBEUI; Build must still succeed and start SMB.
 func TestBuild_DropsEdgeWhenDependencyAbsent(t *testing.T) {
 	log := &startLog{}
 	src := fakeSource{
 		"SMB": func(*registry.BuildContext) (component.Component, error) {
-			return &recComponent{name: "SMB", log: log}, nil
+			return &recComponent{name: "SMB", log: log, deps: []string{"NetBEUI"}}, nil
 		},
 		// Deliberately omit NetBEUI from this test build.
 	}

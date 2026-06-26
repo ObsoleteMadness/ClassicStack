@@ -33,6 +33,14 @@ func init() {
 		svc.SetServerName(m.Identity.Hostname)
 		svc.SetWorkgroup(m.Identity.Workgroup)
 		svc.SetDescription(m.Identity.Description)
+		// Record the operator's transport bindings + listen addresses on the service so
+		// it DECLARES its own transport intent (BoundTransports), dependency edges
+		// (Dependencies), and TCP/NBT addresses; the compose transport cross-wire then
+		// asks the service instead of re-reading the section (§B). Empty list = bind
+		// every built transport (back-compat); empty addr = do not bind that address.
+		smbSec := smb.ServerSectionFromModel(m)
+		svc.SetBoundTransports(smbSec.Transports)
+		svc.SetTCPListenAddrs(smbSec.DirectTCPAddr(), smbSec.NBTListenAddr())
 		// §10d: build each share over the shared FS-mutation bus for its host path, so
 		// a same-host-path AFP volume sees this share's mutations (and vice-versa). Set
 		// BEFORE the shares are built so the initial set gets the shared bus too.

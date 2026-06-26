@@ -84,6 +84,18 @@ type Service struct {
 	busFor   func(fs.ShareSpec) bus.Bus  // resolves the shared FS-mutation bus for a share's host path (§10d); nil = isolated
 	reactor  *share.Reactor              // §10d coordination consumer; subscribes to same-path buses on Start
 	sessions map[*smbSession]struct{}    // live circuits, for delivering async NOTIFY_CHANGE completions (§10d push)
+	// bound is the transport families the operator bound (from the SMB server section),
+	// stored so the service DECLARES its own transport intent (BoundTransports) and
+	// dependency edges (Dependencies) — the compose root asks the service instead of
+	// re-reading the model. Empty means "bind every built transport" (the historical
+	// implicit default), matching ServerSection.Binds.
+	bound []string
+	// tcpAddr / nbtAddr are the explicit direct-TCP (:445) and NBT (:139) listen
+	// addresses from the SMB server section, held so the compose root reads the TCP
+	// transport's address from the SERVICE (§B) rather than the section. Empty = do not
+	// bind that address (never an implicit default — Windows owns :445/:139).
+	tcpAddr string
+	nbtAddr string
 }
 
 // Authenticator validates a (username, cleartext password) credential. It is the
@@ -104,6 +116,86 @@ func (s *Service) SetAuthenticator(a Authenticator) {
 	s.auth = a
 	s.mu.Unlock()
 }
+
+// SetBoundTransports records the transport families the operator bound (the SMB server
+// section's list), so the service can DECLARE its own transport intent and dependency
+// edges. Empty (or nil) keeps the implicit "bind every built transport" default. The
+// compose root sets this from the section once at build time; idempotent, safe before
+// Start.
+func (s *Service) SetBoundTransports(transports []string) {
+	s.mu.Lock()
+	s.bound = append([]string(nil), transports...)
+	s.mu.Unlock()
+}
+
+// BoundTransports returns the transport families this service wants bound
+// (component.TransportBinder), so the compose root wires only those without re-reading
+// the SMB server section. An empty result means "every built transport" (implicit
+// default).
+func (s *Service) BoundTransports() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.bound...)
+}
+
+// SetTCPListenAddrs records the explicit direct-TCP and NBT listen addresses from the
+// server section, so the compose root reads them from the service (§B). Empty means
+// "do not bind" (never an implicit :445/:139). Idempotent, safe before Start.
+func (s *Service) SetTCPListenAddrs(tcpAddr, nbtAddr string) {
+	s.mu.Lock()
+	s.tcpAddr, s.nbtAddr = tcpAddr, nbtAddr
+	s.mu.Unlock()
+}
+
+// DirectTCPListenAddr returns the explicit direct-TCP (:445) listen address, or "" when
+// none was configured (the transport then stays inert — no implicit default).
+func (s *Service) DirectTCPListenAddr() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tcpAddr
+}
+
+// NBTListenAddr returns the explicit NBT (:139) listen address, or "" when none was
+// configured.
+func (s *Service) NBTListenAddr() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.nbtAddr
+}
+
+// Binds reports whether transport is bound: an empty bound list binds everything (the
+// historical default), else the list must name it. Mirrors ServerSection.Binds so the
+// service and the section agree; the compose transport cross-wire gates each family by
+// asking the SERVICE this, not by re-reading the section (§B).
+func (s *Service) Binds(transport string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.bound) == 0 {
+		return true
+	}
+	for _, t := range s.bound {
+		if t == transport {
+			return true
+		}
+	}
+	return false
+}
+
+// Dependencies declares SMB's start-order edges. SMB depends on NetBEUI ONLY when the
+// NetBEUI transport is bound — the config-varying edge the static composition-root map
+// could not express (it listed the edge unconditionally and relied on the built-both-
+// ends filter). The edge still drops when NetBEUI was not built.
+func (s *Service) Dependencies() []string {
+	if s.Binds(TransportNetBEUI) {
+		return []string{netbeuiComponentName}
+	}
+	return nil
+}
+
+// netbeuiComponentName is the component name of the NetBEUI port family SMB orders
+// after. Matched by string (not an import) to avoid a service→port dependency, the same
+// discipline the compose root and control plane use for cross-component name references.
+const netbeuiComponentName = "NetBEUI"
 
 // circuitCloser is the per-transport surface the SMB service holds for teardown:
 // a transport SMB owns directly (the direct-hosted-over-IPX transport, which is
@@ -485,7 +577,9 @@ func (s *Service) logf(msg string) {
 
 // compile-time assertions.
 var (
-	_ component.Component    = (*Service)(nil)
-	_ component.Configurable = (*Service)(nil)
-	_ share.Manager          = (*Service)(nil)
+	_ component.Component       = (*Service)(nil)
+	_ component.Configurable    = (*Service)(nil)
+	_ component.DependsOn       = (*Service)(nil)
+	_ component.TransportBinder = (*Service)(nil)
+	_ share.Manager             = (*Service)(nil)
 )

@@ -151,6 +151,10 @@ func Run(ctx context.Context, args []string, v Version) error {
 		// passes nil, which keeps the probes reporting ErrUnavailable.
 		plane.SetDiagnostics(buildDiagnostics(rt))
 		httpServer = controlhttp.NewServer(plane, *httpAddr)
+		// The protocol-specific diagnostic drill-downs (NBP names, MacIP leases) are served
+		// by the diagnostics adapter (which imports the services), NOT through the neutral
+		// plane — so core/control carries no protocol type.
+		httpServer.SetDiagProvider(buildDiagProvider(rt))
 		if err := httpServer.Start(); err != nil {
 			_ = rt.Stop(context.Background())
 			return fmt.Errorf("start web-admin on %s: %w", *httpAddr, err)

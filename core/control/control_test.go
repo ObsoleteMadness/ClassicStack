@@ -18,10 +18,11 @@ func (s fakeSection) Clone() config.Section { return fakeSection{key: s.key} }
 func (s fakeSection) Validate() error       { return nil }
 
 type fakeSupervisor struct {
-	model      *config.Model
-	units      []Unit
-	lastName   string
-	lastSetKey string
+	model               *config.Model
+	units               []Unit
+	hostnameConstraints []string
+	lastName            string
+	lastSetKey          string
 }
 
 func (s *fakeSupervisor) Model() *config.Model { return s.model }
@@ -54,6 +55,7 @@ func (s *fakeSupervisor) Start(context.Context, string) error   { return nil }
 func (s *fakeSupervisor) Stop(context.Context, string) error    { return nil }
 func (s *fakeSupervisor) Restart(context.Context, string) error { return nil }
 func (s *fakeSupervisor) Status() []Unit                        { return s.units }
+func (s *fakeSupervisor) HostnameConstraints() []string         { return s.hostnameConstraints }
 func (s *fakeSupervisor) ListInterfaces() ([]InterfaceInfo, error) {
 	return []InterfaceInfo{{Name: "eth0", Addr: "10.0.0.1"}}, nil
 }
@@ -217,22 +219,24 @@ func TestPlane_SaveNetBIOSHostnameRuleGated(t *testing.T) {
 		t.Fatalf("Save with NetBIOS off should accept a long hostname: %v", err)
 	}
 
-	// NetBIOS enabled → the consumer rule applies; Save rejected.
+	// The "netbios" hostname constraint is active → the ≤15-byte rule applies; Save
+	// rejected. The constraint is reported by the supervisor (aggregated from the
+	// component implementing HostnameConstrainer) — the plane names no service.
 	mOn := config.NewModel()
 	mOn.Identity = config.Identity{Hostname: longName}
-	supOn := &fakeSupervisor{model: mOn, units: []Unit{{Name: "NetBIOS", Enabled: true}}}
+	supOn := &fakeSupervisor{model: mOn, hostnameConstraints: []string{config.HostnameConstraintNetBIOS}}
 	pOn := New(supOn, fakeCodec{}, &fakeStore{}, bus.New(2))
 	if _, err := pOn.Save(context.Background()); err == nil {
-		t.Fatal("Save with NetBIOS enabled should reject an over-length hostname")
+		t.Fatal("Save with the netbios hostname constraint active should reject an over-length hostname")
 	}
 
-	// NetBIOS present but DISABLED → rule does not apply; Save OK.
+	// Constraint NOT active → rule does not apply; Save OK.
 	mDis := config.NewModel()
 	mDis.Identity = config.Identity{Hostname: longName}
-	supDis := &fakeSupervisor{model: mDis, units: []Unit{{Name: "NetBIOS", Enabled: false}}}
+	supDis := &fakeSupervisor{model: mDis, hostnameConstraints: nil}
 	pDis := New(supDis, fakeCodec{}, &fakeStore{}, bus.New(2))
 	if _, err := pDis.Save(context.Background()); err != nil {
-		t.Fatalf("Save with NetBIOS disabled should accept a long hostname: %v", err)
+		t.Fatalf("Save with no netbios constraint should accept a long hostname: %v", err)
 	}
 }
 

@@ -38,6 +38,14 @@ func init() {
 		// supervisor's enable-aware start can skip it.
 		svc := macip.New(routerFor(ctx), nil, nil, cfg, logger)
 		svc.SetEnabled(enabled)
+		// Record the IP-side egress intent on the service so it DECLARES whether it
+		// wants egress; the compose transport cross-wire reads EgressParams() and builds
+		// the pcap/cgo egress adapter, instead of re-reading the section (§B). Only when
+		// the section is enabled — a disabled gateway wants no egress.
+		if sec != nil && enabled {
+			ep := sec.EgressParams()
+			svc.SetEgressParams(&ep)
+		}
 		return svc, nil
 	})
 }

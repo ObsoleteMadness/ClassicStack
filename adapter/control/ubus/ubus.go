@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ObsoleteMadness/ClassicStack/adapter/control/diag"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/control/inproc"
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
@@ -42,6 +43,7 @@ type EventMessage struct {
 // Server exposes the control.Plane over a UNIX domain socket.
 type Server struct {
 	plane    control.Plane
+	diag     DiagProvider // protocol-specific diagnostic drill-downs (adapter/control/diag); nil = unavailable
 	sockPath string
 	listener net.Listener
 	mu       sync.Mutex
@@ -49,6 +51,19 @@ type Server struct {
 	conns    map[net.Conn]bool
 	wg       sync.WaitGroup
 }
+
+// DiagProvider is the protocol diagnostics surface the ubus server answers on the
+// registered_names / macip_leases methods. Satisfied by *adapter/control/diag.Provider,
+// kept out of core/control so the neutral plane carries no protocol type. nil leaves
+// those methods reporting unavailable.
+type DiagProvider interface {
+	RegisteredNames() ([]diag.NBPName, error)
+	MacIPLeases() ([]diag.MacIPLease, error)
+}
+
+// SetDiagProvider installs the protocol diagnostics provider (the cmd edge builds it
+// over the runtime). Safe before Serve; nil leaves the drill-down methods unavailable.
+func (s *Server) SetDiagProvider(d DiagProvider) { s.diag = d }
 
 // NewServer builds a ubus socket Server for the plane.
 func NewServer(plane control.Plane, sockPath string) *Server {
@@ -306,15 +321,17 @@ func (s *Server) handleConn(conn net.Conn) {
 				res = zones
 			}
 		case "registered_names":
-			names, err := s.plane.Diagnostics().RegisteredNames(ctx)
-			if err != nil {
+			if s.diag == nil {
+				methodErr = control.ErrUnavailable
+			} else if names, err := s.diag.RegisteredNames(); err != nil {
 				methodErr = err
 			} else {
 				res = names
 			}
 		case "macip_leases":
-			leases, err := s.plane.Diagnostics().MacIPLeases(ctx)
-			if err != nil {
+			if s.diag == nil {
+				methodErr = control.ErrUnavailable
+			} else if leases, err := s.diag.MacIPLeases(); err != nil {
 				methodErr = err
 			} else {
 				res = leases
@@ -550,18 +567,18 @@ func (c *AdapterClient) ListZones(ctx context.Context) ([]string, error) {
 	return out, err
 }
 
-// RegisteredNames runs the NBP name-table probe (control.ErrUnavailable when no NBP).
-func (c *AdapterClient) RegisteredNames(ctx context.Context) ([]control.NBPName, error) {
+// RegisteredNames runs the NBP name-table drill-down (control.ErrUnavailable when no NBP).
+func (c *AdapterClient) RegisteredNames(ctx context.Context) ([]diag.NBPName, error) {
 	_ = ctx
-	var out []control.NBPName
+	var out []diag.NBPName
 	err := c.call("registered_names", nil, &out)
 	return out, err
 }
 
-// MacIPLeases runs the MacIP lease probe (control.ErrUnavailable when no MacIP gateway).
-func (c *AdapterClient) MacIPLeases(ctx context.Context) ([]control.MacIPLease, error) {
+// MacIPLeases runs the MacIP lease drill-down (control.ErrUnavailable when no MacIP gateway).
+func (c *AdapterClient) MacIPLeases(ctx context.Context) ([]diag.MacIPLease, error) {
 	_ = ctx
-	var out []control.MacIPLease
+	var out []diag.MacIPLease
 	err := c.call("macip_leases", nil, &out)
 	return out, err
 }

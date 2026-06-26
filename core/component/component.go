@@ -58,6 +58,35 @@ type Attachable interface {
 	Detach(ctx context.Context) error
 }
 
+// DependsOn lets a component DECLARE its own hard start-order edges — the component
+// names that must be RUNNING before it starts (and stop after it). Optional: a
+// component with no edges omits it. The result is read from the CONSTRUCTED component,
+// so it may vary by how the component was configured (e.g. SMB depends on "NetBEUI"
+// only when its NetBEUI transport binding is on). This inverts the old composition-root
+// static map: each component owns its dependencies. The runtime filters the returned
+// names to those whose target was also built in this configuration, so a minimal build
+// simply drops an edge to an absent component rather than failing the topo sort.
+type DependsOn interface{ Dependencies() []string }
+
+// TransportBinder lets a service DECLARE which named transport families it wants bound,
+// so the compose root wires only those WITHOUT re-reading the service's config section
+// itself. Returns the lower-cased family names the service understands (e.g. "ipx",
+// "netbeui", "nbt", "tcp"). Optional: a service that takes no transport bindings omits
+// it. Like DependsOn, the value comes from the constructed component, so it reflects the
+// service's own configuration — the root asks the component instead of interrogating the
+// model on its behalf (§transport-families).
+type TransportBinder interface{ BoundTransports() []string }
+
+// HostnameConstrainer lets a component DECLARE that it imposes a constraint on the
+// server hostname when it is enabled (e.g. NetBIOS requires ≤15 bytes). The supervisor
+// aggregates this across the live component set so config validation can apply the rule
+// WITHOUT the management plane naming any specific service. Constraint is a stable key
+// the config validator understands (e.g. "netbios"). Optional: a component with no
+// hostname constraint omits it.
+type HostnameConstrainer interface {
+	HostnameConstraint() (constraint string, active bool)
+}
+
 // Stats is the typed (no-reflection) snapshot Statful returns and StatSample carries (§5).
 type Stats struct {
 	Counters map[string]uint64  // monotonic: frames_rx, bytes_tx, decode_errors, …
