@@ -148,3 +148,36 @@ jobs:
           BUILD_COMMIT: ${{ github.sha }}
           OUTPUT: ${{ matrix.output }}
         run: ${{ matrix.script }}
+
+  build-embedded:
+    name: Build Embedded (TinyGo)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Setup TinyGo
+        uses: acifani/setup-tinygo@v2
+        with:
+          tinygo-version: "0.41.0"
+
+      - name: Build WT32-ETH01
+        run: bash scripts/build_wt32eth01.sh
+
+      - name: Build Pico
+        run: bash scripts/build_pico.sh pico
+
+      - name: Build Pico W
+        run: bash scripts/build_pico.sh picow
+
+      - name: Build Pico 2
+        run: bash scripts/build_pico.sh pico2
+
+      - name: Build Pico 2 W
+        run: bash scripts/build_pico.sh pico2w
+

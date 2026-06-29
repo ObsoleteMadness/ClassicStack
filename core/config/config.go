@@ -443,6 +443,7 @@ const (
 	IfaceKindNIC    = "nic"    // a network interface (eth0); opened via pcap/rawsock/tap
 	IfaceKindSerial = "serial" // a UART/serial device (COM3, /dev/ttyUSB0); opened via adapter/serial
 	IfaceKindBridge = "bridge" // a virtual interface aggregating member NICs (the shared Bridge)
+	IfaceKindWifi   = "wifi"   // a wireless interface; opened via wifi driver
 )
 
 // InterfaceSection names an interface a component binds to. It is a SUPERSET across
@@ -451,7 +452,7 @@ const (
 // ignores the fields that do not apply to its Kind.
 type InterfaceSection struct {
 	Name string // namespace key the interface is referenced by ("eth0", "br-lan", "ttyUSB-attic"); "" = unset
-	Kind string // "" / "nic" / "serial" / "bridge" (see IfaceKind*); "" == nic
+	Kind string // "" / "nic" / "serial" / "bridge" / "wifi" (see IfaceKind*); "" == nic
 	Addr string // nic: optional pinned address
 	// Backend selects the LINK IMPLEMENTATION used to open a kind=nic interface:
 	// "pcap" (libpcap/Npcap raw capture — the default and only backend wired today),
@@ -461,6 +462,18 @@ type InterfaceSection struct {
 	// backend falls back to inert-but-routed, the same graceful degradation as a nil
 	// opener (see IfaceBackend*).
 	Backend string `toml:"backend"`
+
+	// Embedded network configuration (IP configuration)
+	Proto      string // "dhcp" or "static"
+	Controller string // ethernet: "lan8720" or "w5500"
+	IP         string // static IP address (e.g. "192.168.1.200")
+	Netmask    string // subnet mask (e.g. "255.255.255.0")
+	Gateway    string // gateway address (e.g. "192.168.1.1")
+	DNS        string // DNS server address (e.g. "8.8.8.8")
+
+	// Wireless (SSID/Key) parameters.
+	SSID string // WiFi SSID
+	Key  string // WiFi Key/Password
 
 	// Serial-kind parameters.
 	Device string // serial: OS device path ("COM3", "/dev/ttyUSB0")

@@ -157,17 +157,86 @@ jobs:
           BUILD_VARIANT: ${{ matrix.variant }}
         run: ${{ matrix.package_script }}
 
-      - name: Upload build artifact
+  build-embedded:
+    name: Build And Package Embedded (TinyGo)
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Setup TinyGo
+        uses: acifani/setup-tinygo@v2
+        with:
+          tinygo-version: "0.41.0"
+
+      - name: Build WT32-ETH01
+        run: bash scripts/build_wt32eth01.sh
+
+      - name: Build Pico
+        run: bash scripts/build_pico.sh pico
+
+      - name: Build Pico W
+        run: bash scripts/build_pico.sh picow
+
+      - name: Build Pico 2
+        run: bash scripts/build_pico.sh pico2
+
+      - name: Build Pico 2 W
+        run: bash scripts/build_pico.sh pico2w
+
+      - name: Package Release Artifacts
+        shell: bash
+        run: |
+          # Package WT32-ETH01
+          zip -j classicstack-${{ needs.version.outputs.release_tag }}-wt32eth01.zip bin/classicstack-wt32eth01.bin
+          # Package Pico
+          zip -j classicstack-${{ needs.version.outputs.release_tag }}-pico.zip bin/classicstack-pico.uf2
+          zip -j classicstack-${{ needs.version.outputs.release_tag }}-picow.zip bin/classicstack-picow.uf2
+          zip -j classicstack-${{ needs.version.outputs.release_tag }}-pico2.zip bin/classicstack-pico2.uf2
+          zip -j classicstack-${{ needs.version.outputs.release_tag }}-pico2w.zip bin/classicstack-pico2w.uf2
+
+      - name: Upload WT32-ETH01
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.archive_name }}
+          name: classicstack-wt32eth01
+          path: classicstack-${{ needs.version.outputs.release_tag }}-wt32eth01.zip
+
+      - name: Upload Pico
+        uses: actions/upload-artifact@v4
+        with:
+          name: classicstack-pico
+          path: classicstack-${{ needs.version.outputs.release_tag }}-pico.zip
+
+      - name: Upload Pico W
+        uses: actions/upload-artifact@v4
+        with:
+          name: classicstack-picow
+          path: classicstack-${{ needs.version.outputs.release_tag }}-picow.zip
+
+      - name: Upload Pico 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: classicstack-pico2
+          path: classicstack-${{ needs.version.outputs.release_tag }}-pico2.zip
+
+      - name: Upload Pico 2 W
+        uses: actions/upload-artifact@v4
+        with:
+          name: classicstack-pico2w
+          path: classicstack-${{ needs.version.outputs.release_tag }}-pico2w.zip
 
   release:
     name: Publish GitHub Release
     needs:
       - version
       - build
+      - build-embedded
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts

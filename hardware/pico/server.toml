@@ -1,0 +1,67 @@
+# Pico / Pico W ClassicStack Configuration
+
+[identity]
+hostname = "pico-classic"
+workgroup = "WORKGROUP"
+description = "ClassicStack Pico Embedded Server"
+
+[logging]
+Level = "info"
+
+[router]
+default_zone = "EtherTalk Network"
+members = ["EtherTalk", "LToUDP"]
+
+[bridge]
+Name = "eth0"
+Kind = "nic"
+
+# Interface Namespace
+[[interface]]
+Name = "eth0"
+Kind = "nic"
+Proto = "dhcp"
+
+[[interface]]
+Name = "wifi0"
+Kind = "wifi"
+Proto = "dhcp"
+SSID = "your-wifi-ssid"
+Key = "your-wifi-password"
+
+[[interface]]
+Name = "tty0"
+Kind = "serial"
+Device = "UART0"
+Baud = 1000000
+
+# Transports
+[[ethertalk]]
+iface = "eth0"
+enabled = true
+
+[[ltoudp]]
+enabled = true
+
+[[tashtalk]]
+iface = "tty0"
+enabled = true
+
+# File Shares (pointing to SD card /data directory)
+[[afpvolumes]]
+name = "Data"
+fs_type = "fatfs"
+path = "/data"
+read_only = false
+
+[[smbshares]]
+name = "data"
+description = "SD Card Share"
+fs_type = "fatfs"
+path = "/data"
+read_only = false
+
+[WebUI]
+enabled = true
+bind = "0.0.0.0:8080"
+tls = false

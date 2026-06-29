@@ -91,6 +91,23 @@ archtest:
 tinygo-gate:
 	bash scripts/ci/tinygo-gate.sh
 
+# --- Hardware Build Targets ---
+build-wt32eth01:
+	bash scripts/build_wt32eth01.sh
+
+build-pico:
+	bash scripts/build_pico.sh pico
+
+build-picow:
+	bash scripts/build_pico.sh picow
+
+build-pico2:
+	bash scripts/build_pico.sh pico2
+
+build-pico2w:
+	bash scripts/build_pico.sh pico2w
+
 clean:
 	rm -f classicstack classicstack.exe classicstackd classicstack-svc.exe cs-tinygo.exe
-	rm -rf out dist
+	rm -rf out dist bin/*.bin bin/*.uf2
+
