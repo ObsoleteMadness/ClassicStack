@@ -299,6 +299,56 @@ func TestAARPGleansFromRequest(t *testing.T) {
 	}
 }
 
+// TestAARPTableSnapshot proves EtherTalkAARP.AARPTable exposes the live AMT: nil before
+// any Start, and the gleaned mappings once the framer has serviced inbound AARP.
+func TestAARPTableSnapshot(t *testing.T) {
+	station := aarpMAC(0x00, 0x11, 0x22, 0x33, 0x44, 0x55)
+	peerMAC := aarpMAC(0x77, 0x77, 0x77, 0x77, 0x77, 0x77)
+
+	f := &EtherTalkAARP{
+		SrcMAC:        station[:],
+		Addr:          &LiveAddr{},
+		SeedNetMin:    0xFE01,
+		SeedNetMax:    0xFE01,
+		ProbeCount:    2,
+		ProbeInterval: 5 * time.Millisecond,
+		RandNode:      func() uint8 { return 0x42 },
+	}
+	// Before any Framing call there is no live link, so the table is nil.
+	if got := f.AARPTable(); got != nil {
+		t.Fatalf("AARPTable before Start = %v, want nil", got)
+	}
+
+	local, peer := inmem.Pair(8)
+	dl, err := f.Framing(local)
+	if err != nil {
+		t.Fatalf("Framing: %v", err)
+	}
+	t.Cleanup(func() { _ = dl.Close() })
+	_ = drainReadLoop(dl)
+
+	// Feed an inbound Request so the framer gleans the peer's MAC.
+	req := aarp.Request(peerMAC, aarp.ProtoAddr{Network: 0xFE01, Node: 0x55}, aarp.ProtoAddr{Network: 0xFE01, Node: 0x99})
+	writeAARPFrame(peer, peerMAC, req)
+
+	deadline := time.Now().Add(300 * time.Millisecond)
+	var entries []aarp.Entry
+	for time.Now().Before(deadline) {
+		entries = f.AARPTable()
+		if len(entries) > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("AARPTable = %d entries, want 1", len(entries))
+	}
+	e := entries[0]
+	if e.Addr != (aarp.ProtoAddr{Network: 0xFE01, Node: 0x55}) || e.HW != peerMAC {
+		t.Fatalf("entry = %+v, want addr FE01.55 hw %v", e, peerMAC)
+	}
+}
+
 func equalBytes(a, b []byte) bool {
 	if len(a) != len(b) {
 		return false

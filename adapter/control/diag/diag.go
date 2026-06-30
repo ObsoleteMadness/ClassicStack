@@ -22,15 +22,18 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/control"
+	"github.com/ObsoleteMadness/ClassicStack/core/port/ethertalk"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/macip"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/nbp"
 )
 
 // componentSource is the read-only lookup the provider needs: resolve a built component
-// by name. *runtime.Runtime satisfies it (Component); a local interface keeps this
-// package from importing compose/runtime just for one method.
+// by name and enumerate the built names. *runtime.Runtime satisfies it (Component +
+// Built); a local interface keeps this package from importing compose/runtime just for
+// those two methods.
 type componentSource interface {
 	Component(name string) component.Component
+	Built() []string
 }
 
 // Provider answers the protocol-specific diagnostic drill-downs by resolving the live
@@ -61,6 +64,17 @@ type MacIPLease struct {
 	ATNetwork uint16 `json:"at_network"`
 	ATNode    uint8  `json:"at_node"`
 	Source    string `json:"source"`
+}
+
+// AARPEntry is the management view of one AARP Address Mapping Table entry: the EtherTalk
+// port instance it belongs to, the resolved AppleTalk address (network.node), the MAC it
+// maps to (colon-hex), and the UnixNano of the last confirm/glean. Owned by this adapter.
+type AARPEntry struct {
+	Port    string `json:"port"`    // the EtherTalk port instance name
+	Network uint16 `json:"network"` // AppleTalk network of the mapped address
+	Node    uint8  `json:"node"`    // AppleTalk node of the mapped address
+	MAC     string `json:"mac"`     // resolved hardware address (aa:bb:cc:dd:ee:ff)
+	SeenNs  int64  `json:"seen_ns"` // UnixNano of the last confirm/glean
 }
 
 // RegisteredNames returns the NBP name table, decoding the NVE byte fields to display
@@ -112,6 +126,57 @@ func (p *Provider) MacIPLeases() ([]MacIPLease, error) {
 	return out, nil
 }
 
+// AARPTable returns the AARP Address Mapping Table across every built EtherTalk port
+// instance (each instance is a distinct EtherTalk segment with its own AMT, §M11),
+// decoding each mapping's MAC to colon-hex and tagging it with the owning port. Entries
+// are sorted by port, then network, then node. control.ErrUnavailable when no EtherTalk
+// port was built; an empty (non-nil) slice when the ports exist but have resolved nothing
+// yet (no station MAC → plain broadcast framer → no AMT, also empty).
+func (p *Provider) AARPTable() ([]AARPEntry, error) {
+	ports := p.etherTalkPorts()
+	if len(ports) == 0 {
+		return nil, control.ErrUnavailable
+	}
+	out := []AARPEntry{}
+	for name, port := range ports {
+		for _, e := range port.AARPTable() {
+			out = append(out, AARPEntry{
+				Port:    name,
+				Network: e.Addr.Network,
+				Node:    e.Addr.Node,
+				MAC:     macString(e.HW),
+				SeenNs:  e.Seen,
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Port != out[j].Port {
+			return out[i].Port < out[j].Port
+		}
+		if out[i].Network != out[j].Network {
+			return out[i].Network < out[j].Network
+		}
+		return out[i].Node < out[j].Node
+	})
+	return out, nil
+}
+
+// etherTalkPorts resolves every built EtherTalk port instance, keyed by its component
+// (instance) name. Multiple named instances are possible (§M11), each its own segment;
+// the singleton case is one entry under ethertalk.Name. Empty when none was built.
+func (p *Provider) etherTalkPorts() map[string]*ethertalk.Port {
+	if p.src == nil {
+		return nil
+	}
+	out := map[string]*ethertalk.Port{}
+	for _, name := range p.src.Built() {
+		if et, ok := p.src.Component(name).(*ethertalk.Port); ok {
+			out[name] = et
+		}
+	}
+	return out
+}
+
 // nbp resolves the live NBP service, or nil when none was built.
 func (p *Provider) nbp() *nbp.Service {
 	if p.src == nil {
@@ -142,4 +207,17 @@ func (p *Provider) macip() *macip.Service {
 func ipv4String(ip macip.IPv4) string {
 	return strconv.Itoa(int(ip[0])) + "." + strconv.Itoa(int(ip[1])) + "." +
 		strconv.Itoa(int(ip[2])) + "." + strconv.Itoa(int(ip[3]))
+}
+
+// macString renders a 6-byte hardware address as lower-case colon-hex (aa:bb:cc:dd:ee:ff).
+func macString(hw [6]byte) string {
+	const hexDigits = "0123456789abcdef"
+	b := make([]byte, 0, 17)
+	for i, v := range hw {
+		if i > 0 {
+			b = append(b, ':')
+		}
+		b = append(b, hexDigits[v>>4], hexDigits[v&0x0f])
+	}
+	return string(b)
 }

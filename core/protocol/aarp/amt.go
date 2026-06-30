@@ -81,6 +81,26 @@ func (t *AMT) Age(now int64) {
 // Len reports the number of live entries (diagnostics/tests).
 func (t *AMT) Len() int { return len(t.entries) }
 
+// Entry is one AMT mapping in snapshot form: the AppleTalk protocol address, its
+// hardware address, and the UnixNano of the last confirm/glean (so a diagnostic can show
+// freshness). It is the unit Entries returns.
+type Entry struct {
+	Addr ProtoAddr
+	HW   [6]byte
+	Seen int64 // UnixNano of the last confirm/update
+}
+
+// Entries returns a snapshot of every live mapping (diagnostics). The order is
+// unspecified (map iteration) — the caller sorts for display. It copies, so the returned
+// slice is safe to retain while the table mutates.
+func (t *AMT) Entries() []Entry {
+	out := make([]Entry, 0, len(t.entries))
+	for addr, e := range t.entries {
+		out = append(out, Entry{Addr: addr, HW: e.hw, Seen: e.seen})
+	}
+	return out
+}
+
 // evictLRU removes the single least-recently-confirmed entry.
 func (t *AMT) evictLRU() {
 	var oldest ProtoAddr

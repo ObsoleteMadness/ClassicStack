@@ -59,6 +59,13 @@ type EtherTalkAARP struct {
 	// claim quickly.
 	ProbeCount    int
 	ProbeInterval time.Duration
+
+	// live points at the most recent aarpLink built by Framing, so a diagnostic can read
+	// its AMT (AARPTable) without the framer owning the table. A port reopens on every
+	// Start (the libpcap handle is terminal), so this is replaced each Framing call; the
+	// mutex guards the swap against a concurrent AARPTable read.
+	mu   sync.Mutex
+	live *aarpLink
 }
 
 // Framing wraps a FrameLink as an AARP-aware DatagramLink and starts the claim goroutine
@@ -89,10 +96,27 @@ func (e *EtherTalkAARP) Framing(fl link.FrameLink) (link.DatagramLink, error) {
 	if d.probeInterval <= 0 {
 		d.probeInterval = probeInterval
 	}
+	e.mu.Lock()
+	e.live = d
+	e.mu.Unlock()
 	d.wg.Add(2)
 	go d.claimLoop()
 	go d.tickLoop()
 	return d, nil
+}
+
+// AARPTable returns a snapshot of the current AMT (address→MAC mappings) for diagnostics,
+// or nil before the first Start (no link yet). It reads the most recently built link's
+// table under the link's own lock, so it is safe to call concurrently with the read/claim/
+// tick paths. The compose layer wires it to the EtherTalk port's AARPTable accessor.
+func (e *EtherTalkAARP) AARPTable() []aarp.Entry {
+	e.mu.Lock()
+	d := e.live
+	e.mu.Unlock()
+	if d == nil {
+		return nil
+	}
+	return d.amtSnapshot()
 }
 
 var _ link.Framer = (*EtherTalkAARP)(nil)
@@ -144,6 +168,13 @@ func (d *aarpLink) ReadDatagram() (ddp.Datagram, error) {
 			continue
 		}
 	}
+}
+
+// amtSnapshot returns a copy of the engine's AMT under the engine lock (diagnostics).
+func (d *aarpLink) amtSnapshot() []aarp.Entry {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.engine.AMT().Entries()
 }
 
 // serviceAARP feeds one inbound AARP payload to the engine and writes back any replies.

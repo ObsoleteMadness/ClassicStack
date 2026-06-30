@@ -65,6 +65,10 @@ func init() {
 				claimWiring.OnClaimed = func(network uint16, node uint8, netMin, netMax uint16) {
 					p.SetAddress(network, node, netMin, netMax)
 				}
+				// Symmetric read seam: point the port's AARP-table accessor at the
+				// framer's live AMT so a diagnostic can print the resolved node→MAC
+				// mappings (the framer owns the table; the port exposes it).
+				p.SetAARPTableSource(claimWiring.AARPTable)
 			}
 		}
 		return comp, nil

@@ -53,12 +53,13 @@ type Server struct {
 }
 
 // DiagProvider is the protocol diagnostics surface the ubus server answers on the
-// registered_names / macip_leases methods. Satisfied by *adapter/control/diag.Provider,
-// kept out of core/control so the neutral plane carries no protocol type. nil leaves
-// those methods reporting unavailable.
+// registered_names / macip_leases / aarp_table methods. Satisfied by
+// *adapter/control/diag.Provider, kept out of core/control so the neutral plane carries no
+// protocol type. nil leaves those methods reporting unavailable.
 type DiagProvider interface {
 	RegisteredNames() ([]diag.NBPName, error)
 	MacIPLeases() ([]diag.MacIPLease, error)
+	AARPTable() ([]diag.AARPEntry, error)
 }
 
 // SetDiagProvider installs the protocol diagnostics provider (the cmd edge builds it
@@ -336,6 +337,14 @@ func (s *Server) handleConn(conn net.Conn) {
 			} else {
 				res = leases
 			}
+		case "aarp_table":
+			if s.diag == nil {
+				methodErr = control.ErrUnavailable
+			} else if entries, err := s.diag.AARPTable(); err != nil {
+				methodErr = err
+			} else {
+				res = entries
+			}
 		case "users":
 			users, err := s.plane.Users()
 			if err != nil {
@@ -580,6 +589,15 @@ func (c *AdapterClient) MacIPLeases(ctx context.Context) ([]diag.MacIPLease, err
 	_ = ctx
 	var out []diag.MacIPLease
 	err := c.call("macip_leases", nil, &out)
+	return out, err
+}
+
+// AARPTable runs the AARP address-mapping-table drill-down (control.ErrUnavailable when
+// no EtherTalk port).
+func (c *AdapterClient) AARPTable(ctx context.Context) ([]diag.AARPEntry, error) {
+	_ = ctx
+	var out []diag.AARPEntry
+	err := c.call("aarp_table", nil, &out)
 	return out, err
 }
 

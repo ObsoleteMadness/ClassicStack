@@ -52,12 +52,13 @@ type Server struct {
 }
 
 // DiagProvider is the protocol-specific diagnostics surface the server serves on the
-// /registered_names and /macip_leases routes. It is satisfied by *adapter/control/diag.
+// /registered_names, /macip_leases and /aarp_table routes. It is satisfied by *adapter/control/diag.
 // Provider, which imports the service packages — kept OUT of core/control so the neutral
 // plane carries no protocol type. nil leaves those routes reporting unavailable.
 type DiagProvider interface {
 	RegisteredNames() ([]diag.NBPName, error)
 	MacIPLeases() ([]diag.MacIPLease, error)
+	AARPTable() ([]diag.AARPEntry, error)
 }
 
 // SetDiagProvider installs the protocol diagnostics provider (the cmd edge builds it
@@ -99,6 +100,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/list_zones", s.handleListZones)
 	mux.HandleFunc("/registered_names", s.handleRegisteredNames)
 	mux.HandleFunc("/macip_leases", s.handleMacIPLeases)
+	mux.HandleFunc("/aarp_table", s.handleAARPTable)
 	mux.HandleFunc("/reconfigure", s.handleReconfigure)
 	mux.HandleFunc("/add_instance", s.handleAddInstance)
 	mux.HandleFunc("/remove_instance", s.handleRemoveInstance)
@@ -604,6 +606,27 @@ func (s *Server) handleMacIPLeases(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(res)
 }
 
+// handleAARPTable returns the AARP Address Mapping Table across the EtherTalk ports (the
+// resolved AppleTalk-node→MAC mappings), served by the diagnostics provider. 501 when the
+// provider is absent or no EtherTalk port was built (ErrUnavailable).
+func (s *Server) handleAARPTable(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.diag == nil {
+		http.Error(w, control.ErrUnavailable.Error(), statusForErr(control.ErrUnavailable))
+		return
+	}
+	res, err := s.diag.AARPTable()
+	if err != nil {
+		http.Error(w, err.Error(), statusForErr(err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
+}
+
 func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1029,6 +1052,15 @@ func (c *AdapterClient) MacIPLeases(ctx context.Context) ([]diag.MacIPLease, err
 	_ = ctx
 	var out []diag.MacIPLease
 	err := c.getJSON("/macip_leases", &out)
+	return out, err
+}
+
+// AARPTable runs the AARP address-mapping-table drill-down (the diagnostics-provider
+// route). control.ErrUnavailable when no EtherTalk port is wired.
+func (c *AdapterClient) AARPTable(ctx context.Context) ([]diag.AARPEntry, error) {
+	_ = ctx
+	var out []diag.AARPEntry
+	err := c.getJSON("/aarp_table", &out)
 	return out, err
 }
 

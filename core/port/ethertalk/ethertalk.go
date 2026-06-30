@@ -17,6 +17,7 @@ package ethertalk
 
 import (
 	"errors"
+	"sync"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
@@ -24,6 +25,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/port"
 	"github.com/ObsoleteMadness/ClassicStack/core/port/internal/runport"
+	"github.com/ObsoleteMadness/ClassicStack/core/protocol/aarp"
 	"github.com/ObsoleteMadness/ClassicStack/core/router"
 )
 
@@ -34,6 +36,33 @@ const Name = "EtherTalk"
 // loop, metering, RoutedPort data half) and adds the EtherTalk framing.
 type Port struct {
 	*runport.Port
+
+	mu        sync.Mutex
+	aarpTable func() []aarp.Entry // nil until SetAARPTableSource (only the AARP framer sets it)
+}
+
+// SetAARPTableSource installs the function a diagnostic calls to snapshot this port's AARP
+// Address Mapping Table. The compose layer wires it to the AARP-aware framer's AARPTable
+// once the framer is built (the symmetric seam to the OnClaimed→SetAddress hook). A port
+// built with the plain broadcast framer never has one, so AARPTable reports nil there.
+func (p *Port) SetAARPTableSource(fn func() []aarp.Entry) {
+	p.mu.Lock()
+	p.aarpTable = fn
+	p.mu.Unlock()
+}
+
+// AARPTable returns a snapshot of this port's AARP Address Mapping Table (the resolved
+// AppleTalk-node→MAC mappings), or nil when the port has no AARP framer (plain
+// broadcast-only) or has not yet started. It is the read a diagnostic uses to print the
+// table.
+func (p *Port) AARPTable() []aarp.Entry {
+	p.mu.Lock()
+	fn := p.aarpTable
+	p.mu.Unlock()
+	if fn == nil {
+		return nil
+	}
+	return fn()
 }
 
 // New builds the real EtherTalk port. frame is the raw Ethernet FrameLink

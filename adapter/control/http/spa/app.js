@@ -15,6 +15,7 @@
 //   GET  /list_zones                   AppleTalk zone probe (diagnostics)
 //   GET  /registered_names             NBP name table (NBP stat drill-down)
 //   GET  /macip_leases                 MacIP lease table (MacIP stat drill-down)
+//   GET  /aarp_table                   AARP address mapping table (EtherTalk drill-down)
 //   GET  /users                        stored identities
 //   POST /set_user|/set_user_disabled|/remove_user
 //   GET  /subscribe?topics=stats,state,log   Server-Sent Events telemetry
@@ -98,6 +99,14 @@ const api = {
   async macipLeases() {
     const r = await fetch("macip_leases");
     if (r.status === 501) throw new Error("MacIP gateway not available in this build");
+    if (!r.ok) throw new Error(await errText(r));
+    return r.json();
+  },
+  // aarpTable is the drill-down probe behind the EtherTalk port: the AARP Address Mapping
+  // Table (resolved AppleTalk-node→MAC mappings) across the EtherTalk segments.
+  async aarpTable() {
+    const r = await fetch("aarp_table");
+    if (r.status === 501) throw new Error("EtherTalk not available in this build");
     if (!r.ok) throw new Error(await errText(r));
     return r.json();
   },
@@ -527,6 +536,12 @@ function drillDownFor(name) {
         () => api.macipLeases(), macipLeaseColumns)),
     ]);
   }
+  if (name === "EtherTalk") {
+    return el("div", { class: "kv drill" }, [
+      linkButton("▸ AARP table", () => openProbeModal("AARP address mapping table",
+        () => api.aarpTable(), aarpEntryColumns)),
+    ]);
+  }
   return null;
 }
 
@@ -541,6 +556,11 @@ const macipLeaseColumns = [
   { label: "IP", get: (r) => r.ip },
   { label: "AppleTalk", get: (r) => `${r.at_network}.${r.at_node}` },
   { label: "Source", get: (r) => r.source },
+];
+const aarpEntryColumns = [
+  { label: "Port", get: (r) => r.port },
+  { label: "AppleTalk", get: (r) => `${r.network}.${r.node}` },
+  { label: "MAC", get: (r) => r.mac },
 ];
 
 // openProbeModal opens a read-only modal that loads rows from a probe fn and renders

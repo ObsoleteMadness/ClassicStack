@@ -55,6 +55,39 @@ func TestAMTDelete(t *testing.T) {
 	}
 }
 
+// TestAMTEntries proves Entries snapshots every live mapping with its address, hardware
+// address and confirm time, and returns a copy decoupled from the table.
+func TestAMTEntries(t *testing.T) {
+	amt := NewAMT(0, 0)
+	if got := amt.Entries(); len(got) != 0 {
+		t.Fatalf("empty table Entries = %d, want 0", len(got))
+	}
+	a := ProtoAddr{Network: 1, Node: 2}
+	b := ProtoAddr{Network: 3, Node: 4}
+	amt.Glean(a, mac(0xAA), 5*sec)
+	amt.Glean(b, mac(0xBB), 6*sec)
+
+	got := amt.Entries()
+	if len(got) != 2 {
+		t.Fatalf("Entries = %d, want 2", len(got))
+	}
+	byAddr := map[ProtoAddr]Entry{}
+	for _, e := range got {
+		byAddr[e.Addr] = e
+	}
+	if e := byAddr[a]; e.HW != mac(0xAA) || e.Seen != 5*sec {
+		t.Fatalf("entry a = %+v, want HW=%v Seen=%d", e, mac(0xAA), 5*sec)
+	}
+	if e := byAddr[b]; e.HW != mac(0xBB) || e.Seen != 6*sec {
+		t.Fatalf("entry b = %+v, want HW=%v Seen=%d", e, mac(0xBB), 6*sec)
+	}
+	// Snapshot is a copy: deleting from the table leaves the slice intact.
+	amt.Delete(a)
+	if len(got) != 2 {
+		t.Fatal("Entries snapshot mutated by a later Delete")
+	}
+}
+
 // TestAMTLRUEviction proves a full table evicts the least-recently-confirmed entry when a
 // new mapping arrives.
 func TestAMTLRUEviction(t *testing.T) {
