@@ -21,8 +21,12 @@ import (
 // served by the one transport-agnostic core/port/localtalk package (LLAP framing
 // + runport); the transport differs only in the FrameLink the factory injects.
 func init() {
-	registerLocalTalk(localtalk.NameLToUDP, ltoudpLinkOpener)
-	registerLocalTalk(localtalk.NameTashTalk, tashtalkLinkOpener)
+	// respondToEnq differs per segment (spec/09 §"respondToEnq Flag"): the LToUDP
+	// shared simulated segment must answer ENQs for a claimed node so new joiners
+	// learn it is taken; the physical TashTalk medium defends in hardware, so the
+	// host stays silent.
+	registerLocalTalk(localtalk.NameLToUDP, ltoudpLinkOpener, true)
+	registerLocalTalk(localtalk.NameTashTalk, tashtalkLinkOpener, false)
 }
 
 // segmentOpener builds the per-Start FrameLink opener for one LocalTalk segment
@@ -34,8 +38,9 @@ type segmentOpener func(ctx *BuildContext, sec *port.Section) func() (link.Frame
 
 // registerLocalTalk registers one LocalTalk segment port under key, building its
 // per-Start transport opener via openerFor. The two segments share this body (LLAP
-// framing, LiveAddr binding, router attach); only the key + transport opener differ.
-func registerLocalTalk(key string, openerFor segmentOpener) {
+// framing + node-claim, OnClaimed→SetAddress wiring, router attach); only the key,
+// transport opener, and respondToEnq (shared-segment vs hardware-defended) differ.
+func registerLocalTalk(key string, openerFor segmentOpener, respondToEnq bool) {
 	// Repeated schema: several named instances per segment key — e.g. multiple
 	// TashTalk dongles, each its own serial line and segment (§M11).
 	config.Register(config.SectionSchema{
@@ -58,21 +63,37 @@ func registerLocalTalk(key string, openerFor segmentOpener) {
 			return localtalk.NewInstance(sec, nil, nil, ctx.Router, logger)
 		}
 
-		// LIVE. LiveAddr is bound to the port after construction so the LLAP framer can
-		// read the port's claimed node/network (for outbound source-node stamping and
-		// inbound short-header reconstruction); the short/long header CHOICE is the
-		// router's, read from the datagram, not from this addr.
+		// LIVE. The LLAP framer runs the node-claim (ENQ/ACK) dance: it probes a
+		// candidate node, rerolls on a collision, and on success publishes the claimed
+		// node into the shared LiveAddr (so the framer stamps it as the LLAP source +
+		// reconstructs inbound short-header network/node) AND via OnClaimed, which we
+		// point at the port's SetAddress so the router sees the claim. This mirrors the
+		// EtherTalk AARP wiring. The short/long header CHOICE stays the router's, read
+		// from the datagram, not from this addr.
 		live := &framing.LiveAddr{}
-		framer := &framing.LocalTalk{Addr: live, CalcChecksum: true}
+		framer := &framing.LocalTalk{
+			Addr:         live,
+			Live:         live,
+			CalcChecksum: true,
+			EnableClaim:  true,
+			RespondToEnq: respondToEnq,
+			SeedNetwork:  sec.SeedNetwork,
+		}
 
 		comp, err := localtalk.NewInstanceFromOpener(sec, open, framer, ctx.Router, logger)
 		if err != nil || comp == nil {
 			return comp, err
 		}
-		// The constructed port exposes Network()/Node() (runport) — exactly the
-		// framing.Addr shape. Bind it so the framer tracks the live claim.
-		if src, ok := comp.(framing.Addr); ok {
-			live.Set(src)
+		// Late-bind the claim → port.SetAddress hook now that the port exists: the claim
+		// goroutine publishes the claimed node into the LiveAddr (src stamping) and calls
+		// OnClaimed, which records the address on the port so the router can deliver to
+		// it. (LocalTalk is non-extended: netMin==netMax==network.)
+		if p, ok := comp.(interface {
+			SetAddress(network uint16, node uint8, netMin, netMax uint16)
+		}); ok {
+			framer.OnClaimed = func(network uint16, node uint8, netMin, netMax uint16) {
+				p.SetAddress(network, node, netMin, netMax)
+			}
 		}
 		return comp, nil
 	})

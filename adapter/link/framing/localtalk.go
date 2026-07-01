@@ -2,31 +2,38 @@ package framing
 
 import (
 	"errors"
+	"math/rand"
 	"sync"
+	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/ddp"
+	"github.com/ObsoleteMadness/ClassicStack/core/protocol/llap"
 )
 
-// LocalTalk LLAP wire constants (spec/09-port-localtalk-base.md §"LLAP Frame
-// Format"). An LLAP frame is a 3-byte header — destination node, source node,
-// type — followed (for DDP types only) by a short- or long-header DDP datagram.
+// LocalTalk LLAP wire constants. The authoritative definitions live in the pure
+// core/protocol/llap package (header length, type codes, broadcast node); these
+// package-local aliases keep the existing framer body + tests reading the same names.
 const (
-	llapHdrLen = 3 // dest(1) + src(1) + type(1)
+	llapHdrLen = llap.HeaderLen // dest(1) + src(1) + type(1)
 
 	// LLAP type codes carried in the third header byte.
-	llapShortDDP = 0x01 // short-header DDP (intra-network; net numbers implicit)
-	llapLongDDP  = 0x02 // long-header DDP (inter-network; full DDP header)
-	llapENQ      = 0x81 // node-claim probe (control; no payload)
-	llapACK      = 0x82 // node-claim response (control; no payload)
+	llapShortDDP = llap.TypeShortDDP // short-header DDP (intra-network; net numbers implicit)
+	llapLongDDP  = llap.TypeLongDDP  // long-header DDP (inter-network; full DDP header)
+	llapENQ      = llap.TypeENQ      // node-claim probe (control; no payload)
+	llapACK      = llap.TypeACK      // node-claim response (control; no payload)
 
-	llapBroadcastNode = 0xFF // LLAP destination selecting every node on the segment
+	llapBroadcastNode = llap.BroadcastNode // LLAP destination selecting every node on the segment
 
 	// ddpShortHdrLen is the DDP short header: length(2) + destSocket(1) +
 	// srcSocket(1) + ddpType(1) = 5 bytes (net numbers + nodes are implicit, taken
 	// from the LLAP frame). The long header is ddp.headerLen (13), handled by the
 	// core ddp codec.
 	ddpShortHdrLen = 5
+
+	// llapProbeInterval is the gap between node-claim ENQ probes (spec §"Acquisition
+	// Algorithm": a 250ms timer tick).
+	llapProbeInterval = 250 * time.Millisecond
 )
 
 var (
@@ -34,8 +41,8 @@ var (
 	// small to hold the 3-byte LLAP header.
 	ErrShortLLAP = errors.New("framing: LocalTalk frame too short for LLAP header")
 	// ErrLLAPControl marks an LLAP control frame (ENQ/ACK/RTS/CTS) — not a DDP
-	// datagram. The read loop skips it; node-claim is handled elsewhere (deferred,
-	// like EtherTalk AARP).
+	// datagram. The read loop services it (node-claim) then skips it; it never
+	// surfaces as a datagram.
 	ErrLLAPControl = errors.New("framing: LocalTalk LLAP control frame (no DDP)")
 	// ErrShortDDPHeader is returned for a short-header payload below the minimum.
 	ErrShortDDPHeader = errors.New("framing: LocalTalk short-header DDP payload too short")
@@ -68,18 +75,55 @@ type Addr interface {
 // short-header network/node stamping both depend on the port's claimed address,
 // so it reads that via Addr.
 //
-// SCOPE: DDP-data frames (short 0x01 / long 0x02) are real. LLAP control frames
-// (ENQ/ACK node-claim) are NOT produced or consumed here — ReadDatagram skips
-// them and node acquisition is deferred (the EtherTalk-AARP analogue), matching
-// the M3 deferral. Until a node is claimed (Addr reports node 0) the port has no
-// address; the runport drops outbound until SetAddress runs.
+// NODE-CLAIM: when EnableClaim is set (with a *LiveAddr Addr to publish into), the
+// framer runs the LLAP ENQ/ACK probe-and-claim dance — the LocalTalk analogue of
+// EtherTalk AARP — in a background goroutine started by Framing: it probes a
+// candidate node, rerolls on a collision, and on success publishes the claimed
+// node via the LiveAddr (src stamping) + the OnClaimed callback (compose wires that
+// to port.SetAddress). The read loop services inbound ENQ/ACK (defending our node
+// with an ACK when RespondToEnq is set, detecting collisions otherwise). Until a
+// node is claimed (Addr reports node 0) the runport drops outbound.
+//
+// Without EnableClaim the framer is the plain stateless LLAP DDP framer (a fixed
+// Addr, no goroutine): ReadDatagram still skips control frames, but no claim runs —
+// the form tests and the inert-but-routed path use.
 type LocalTalk struct {
-	// Addr is the live node/network source. nil → unclaimed (net 0, node 0).
+	// Addr is the live node/network source. nil → unclaimed (net 0, node 0). When
+	// EnableClaim is set this must be a *LiveAddr the claim goroutine Set()s.
 	Addr Addr
 	// CalcChecksum stamps a DDP checksum on outbound long-header frames when true
 	// (the spec allows either; false matches the core ddp.Encode default of a zero
 	// "checksum disabled" field).
 	CalcChecksum bool
+
+	// EnableClaim turns on the LLAP node-claim goroutine. It requires Live to be a
+	// *LiveAddr (so the claimed node can be published back to the framer + port).
+	EnableClaim bool
+	// Live is the *LiveAddr shared with the port; the claim goroutine Set()s it once
+	// a node is accepted. (Addr is set to this same value by the factory; Live is
+	// kept typed so the claim goroutine can publish.)
+	Live *LiveAddr
+	// RespondToEnq makes a claimed segment answer an ENQ for our node with a
+	// defending ACK — true for LToUDP (shared simulated segment), false for TashTalk
+	// (the physical medium defends in hardware). Spec §"respondToEnq Flag".
+	RespondToEnq bool
+	// OnClaimed is called once a node is accepted, so compose can drive
+	// port.SetAddress. nil is allowed (the LiveAddr update alone suffices for framing).
+	OnClaimed func(network uint16, node uint8, netMin, netMax uint16)
+	// SeedNetwork is the network the claimed node lives on, passed through to
+	// OnClaimed (LocalTalk is non-extended: netMin==netMax==SeedNetwork). 0 until a
+	// router teaches it via RTMP.
+	SeedNetwork uint16
+	// DesiredNode is the first node candidate to probe (0 → the spec default 0xFE).
+	DesiredNode uint8
+	// ProbeCount / ProbeInterval override the claim burst (0 → the spec defaults:
+	// llap.DefaultProbeCount ENQs at llapProbeInterval). Tests set a small count +
+	// interval to claim quickly.
+	ProbeCount    int
+	ProbeInterval time.Duration
+	// RandNode supplies the engine's reroll RNG (a pseudo-random uint8); nil → a
+	// default source so simultaneous routers diverge.
+	RandNode func() uint8
 }
 
 // staticAddr is a trivial Addr for a fixed network/node (tests, or a port that
@@ -138,12 +182,39 @@ func (a *LiveAddr) Node() uint8 {
 var _ Addr = (*LiveAddr)(nil)
 
 // Framing wraps a FrameLink as a DatagramLink doing LLAP DDP framing. It
-// satisfies link.Framer.
+// satisfies link.Framer. When EnableClaim is set it also starts the node-claim
+// goroutine (which Set()s the Live address + calls OnClaimed on success) and the
+// read loop services inbound ENQ/ACK; the call returns immediately (async claim,
+// like the EtherTalk AARP framer).
 func (e *LocalTalk) Framing(fl link.FrameLink) (link.DatagramLink, error) {
 	if fl == nil {
 		return nil, errors.New("framing: nil FrameLink")
 	}
-	return &ltDatagramLink{fl: fl, addr: e.Addr, calcChecksum: e.CalcChecksum}, nil
+	d := &ltDatagramLink{fl: fl, addr: e.Addr, calcChecksum: e.CalcChecksum}
+
+	if e.EnableClaim && e.Live != nil {
+		d.live = e.Live
+		d.onClaimed = e.OnClaimed
+		d.seedNetwork = e.SeedNetwork
+		d.probeInterval = e.ProbeInterval
+		if d.probeInterval <= 0 {
+			d.probeInterval = llapProbeInterval
+		}
+		randNode := e.RandNode
+		if randNode == nil {
+			randNode = defaultLLAPRand
+		}
+		d.engine = llap.NewEngine(llap.Config{
+			DesiredNode:  e.DesiredNode,
+			ProbeCount:   e.ProbeCount,
+			RespondToEnq: e.RespondToEnq,
+			Rand:         randNode,
+		})
+		d.done = make(chan struct{})
+		d.wg.Add(1)
+		go d.claimLoop()
+	}
+	return d, nil
 }
 
 // Compile-time assertions.
@@ -156,6 +227,19 @@ type ltDatagramLink struct {
 	fl           link.FrameLink
 	addr         Addr
 	calcChecksum bool
+
+	// Node-claim state (nil/zero when EnableClaim is off — the plain framer path).
+	// The engine is touched by both the claim goroutine and the read loop's
+	// serviceControl, so engineMu guards it.
+	engineMu      sync.Mutex
+	engine        *llap.Engine
+	live          *LiveAddr
+	onClaimed     func(uint16, uint8, uint16, uint16)
+	seedNetwork   uint16
+	probeInterval time.Duration
+
+	done chan struct{}
+	wg   sync.WaitGroup
 }
 
 // network/node read the live claimed address (0/0 when unclaimed).
@@ -174,20 +258,45 @@ func (d *ltDatagramLink) node() uint8 {
 }
 
 // ReadDatagram reads frames until one is an LLAP DDP datagram, then returns the
-// decoded ddp.Datagram. Control frames (ENQ/ACK) and malformed frames are skipped
-// — surfaced to the caller only as the underlying link's ErrTimeout/ErrClosed.
+// decoded ddp.Datagram. Control frames (ENQ/ACK) are serviced by the node-claim
+// engine (defending our node / detecting collisions) and then skipped; non-DDP and
+// malformed frames are skipped — surfaced to the caller only as the underlying
+// link's ErrTimeout/ErrClosed.
 func (d *ltDatagramLink) ReadDatagram() (ddp.Datagram, error) {
 	for {
 		frame, err := d.fl.Read()
 		if err != nil {
 			return ddp.Datagram{}, err
 		}
+		if _, _, typ, ok := llap.Header(frame); ok && llap.IsControl(typ) {
+			d.serviceControl(frame)
+			continue
+		}
 		dg, err := d.decode(frame)
 		if err != nil {
-			// Control frame, non-DDP, or malformed: skip and keep reading.
+			// Non-DDP or malformed: skip and keep reading.
 			continue
 		}
 		return dg, nil
+	}
+}
+
+// serviceControl feeds one inbound LLAP control frame (ENQ/ACK) to the claim engine
+// and writes back any defending ACK. With no claim engine (plain framer) it is a
+// no-op — the frame is simply skipped, the historical behaviour.
+func (d *ltDatagramLink) serviceControl(frame []byte) {
+	if d.engine == nil {
+		return
+	}
+	c, err := llap.DecodeControl(frame)
+	if err != nil {
+		return
+	}
+	d.engineMu.Lock()
+	reply, hasReply, _ := d.engine.Inbound(c)
+	d.engineMu.Unlock()
+	if hasReply {
+		_ = d.fl.Write(llap.EncodeControl(reply))
 	}
 }
 
@@ -203,7 +312,87 @@ func (d *ltDatagramLink) WriteDatagram(dg ddp.Datagram) error {
 	return d.fl.Write(frame)
 }
 
-func (d *ltDatagramLink) Close() error { return d.fl.Close() }
+// Close stops the claim goroutine (if any) and closes the link.
+func (d *ltDatagramLink) Close() error {
+	if d.done != nil {
+		select {
+		case <-d.done:
+		default:
+			close(d.done)
+		}
+	}
+	err := d.fl.Close()
+	d.wg.Wait()
+	return err
+}
+
+// claimLoop runs the LLAP node-address acquisition: probe the candidate node with
+// ENQs, reroll on a collision the read loop reported, and on success publish the
+// claimed node via the LiveAddr + OnClaimed. It exits on success or Close. Mirrors
+// the EtherTalk AARP claimLoop.
+func (d *ltDatagramLink) claimLoop() {
+	defer d.wg.Done()
+	for {
+		d.engineMu.Lock()
+		d.engine.BeginProbe()
+		d.engineMu.Unlock()
+
+		if d.probeBurst() {
+			return // claimed or closed
+		}
+		// conflict → loop; the engine already rerolled to a fresh candidate
+	}
+}
+
+// probeBurst sends the ENQ burst for the current candidate. It returns true when the
+// node is accepted (claim done, published) or the link closes; false on a collision
+// (the caller re-arms with the rerolled candidate). The collision is detected by the
+// read loop's serviceControl feeding the engine, so this just observes Conflicted().
+func (d *ltDatagramLink) probeBurst() bool {
+	for {
+		d.engineMu.Lock()
+		enq, ok := d.engine.NextProbe()
+		conflicted := d.engine.Conflicted()
+		d.engineMu.Unlock()
+
+		if conflicted {
+			return false
+		}
+		if !ok {
+			// Burst complete with no collision → claim the candidate.
+			d.engineMu.Lock()
+			node, accepted := d.engine.AcceptTentative()
+			d.engineMu.Unlock()
+			if accepted {
+				d.publishClaim(node)
+			}
+			return true
+		}
+		_ = d.fl.Write(llap.EncodeControl(enq))
+
+		select {
+		case <-d.done:
+			return true
+		case <-time.After(d.probeInterval):
+		}
+	}
+}
+
+// publishClaim records the claimed node into the LiveAddr (so the framer stamps it
+// as the LLAP source) and notifies compose via OnClaimed (so the port's SetAddress
+// runs). LocalTalk is non-extended, so the network range passed is SeedNetwork for
+// both min and max (0 until a router teaches it via RTMP).
+func (d *ltDatagramLink) publishClaim(node uint8) {
+	if d.live != nil {
+		d.live.Set(NewStaticAddr(d.seedNetwork, node))
+	}
+	if d.onClaimed != nil {
+		d.onClaimed(d.seedNetwork, node, d.seedNetwork, d.seedNetwork)
+	}
+}
+
+// defaultLLAPRand is the engine's reroll RNG when none is injected.
+func defaultLLAPRand() uint8 { return uint8(rand.Intn(256)) }
 
 // encode builds an LLAP frame carrying dg. It chooses short vs long per the
 // intra-network test, stamps the LLAP dst node from dg.DestNode (0xFF broadcast)

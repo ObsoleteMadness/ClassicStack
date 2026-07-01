@@ -3,13 +3,21 @@
 // so the router sees a DatagramLink regardless of whether the bytes came from a
 // kernel AF_APPLETALK socket or a libpcap FrameLink.
 //
-// SCOPE (M1): the Ethernet/SNAP DDP encapsulation (EtherTalk wire framing) is
-// real here — encode wraps a ddp.Datagram in IEEE 802.2 + SNAP + the AppleTalk
-// PID and decodes the inverse. What is DELIBERATELY DEFERRED to M3 is the
-// stateful part of EtherTalk: AARP address resolution and node-claim, the
-// src/dst hardware-address learning, and node acquisition. Until then this
-// framer does the framing only; it does not resolve or claim addresses. Those
-// hooks are marked TODO(M3) below.
+// SCOPE: the Ethernet/SNAP DDP encapsulation (EtherTalk wire framing) is real
+// here — encode wraps a ddp.Datagram in IEEE 802.2 + SNAP + the AppleTalk PID and
+// decodes the inverse. The STATEFUL link protocols are now implemented too, each
+// in its own file beside the plain framers:
+//
+//   - aarp.go (EtherTalkAARP): AARP address resolution + node-claim over a pure
+//     core/protocol/aarp.Engine — claims a node by probing, resolves peer node→MAC
+//     via the AMT for unicast, gleans/answers AARP.
+//   - localtalk.go (LocalTalk, EnableClaim): the LLAP ENQ/ACK node-claim over a
+//     pure core/protocol/llap.Engine — the LocalTalk analogue of AARP node-claim.
+//
+// Both publish the claimed address via the shared LiveAddr + an OnClaimed callback
+// (compose wires that to port.SetAddress), and both keep their probe/aging TIMING
+// in the adapter while the pure engine stays deterministic. The plain EtherTalk /
+// LocalTalk framers (no claim) remain as the stateless framing-only fallback.
 //
 // Ring: adapter.
 package framing

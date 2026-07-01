@@ -8,7 +8,8 @@
 // Like EtherTalk, the read loop, metering, and lifecycle live in the shared
 // runport base; this package only wires the LocalTalk-specific framing seam.
 // LocalTalk node-claim is the LLAP ENQ/ACK dance, performed in the framer/link
-// adapter (M3-deferred where not yet implemented); SetAddress records the claim.
+// adapter (adapter/link/framing.LocalTalk over the pure core/protocol/llap engine);
+// the claim goroutine calls SetAddress via OnClaimed to record the claim.
 package localtalk
 
 import (
