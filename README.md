@@ -401,6 +401,10 @@ thanks to:
 - **mars_nwe** (the MARtin Stover NetWare Emulator), © 1993,1995 Martin Stover, Marburg,
   Germany — the canonical open-source NetWare/NCP reference that inspired our NCP service
   (alongside Linux ncpfs by Volker Lendecke et al).
+- **atalk-proxy** by **joshua stein** — the proxy-AARP rule (rewriting AARP Replies'
+  sender-hardware to the egress MAC so AppleTalk bridges onto Wi-Fi) behind our
+  proxy-AARP Wi-Fi/tunnel bridge, cross-checked against the Linux kernel's
+  `net/appletalk/aarp.c` `proxies[]` table. https://github.com/jcs/atalk-proxy
 
 ## License
 

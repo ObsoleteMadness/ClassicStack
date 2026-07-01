@@ -19,5 +19,11 @@
 // in the adapter while the pure engine stays deterministic. The plain EtherTalk /
 // LocalTalk framers (no claim) remain as the stateless framing-only fallback.
 //
+//   - proxyaarp.go (ProxyRewriteFrame): the FRAME-level half of the proxy-AARP transform
+//     the Wi-Fi/tunnel bridge (adapter/bridge) applies — it finds an AARP Reply inside an
+//     Ethernet/SNAP frame and rewrites both its AARP sender-hardware and outer Ethernet
+//     source MAC to the egress MAC (the pure decoded-packet rule lives in
+//     core/protocol/aarp.ProxyReply).
+//
 // Ring: adapter.
 package framing
