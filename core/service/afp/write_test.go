@@ -119,7 +119,31 @@ func TestTwoPhaseWrite_DataPath(t *testing.T) {
 
 	// Phase 2b: the workstation answers the aspDataWrite TReq with the data as an
 	// EOM TResp echoing the server's transaction id.
+	from.sent = nil
 	svc.Inbound(dataResponse(dh.TransID, payload), from)
+
+	// The service must release the exactly-once aspDataWrite transaction with a
+	// TRel for the same transaction id, addressed to the WSS — otherwise the Mac
+	// holds the XO transaction open and reports the write as failed.
+	var sawTRel bool
+	for _, pkt := range from.sent {
+		th, derr := atp.Decode(pkt.Data)
+		if derr != nil {
+			continue
+		}
+		if th.FuncCode() == atp.FuncTRel {
+			sawTRel = true
+			if th.TransID != dh.TransID {
+				t.Errorf("TRel TransID = %d, want %d (the aspDataWrite tid)", th.TransID, dh.TransID)
+			}
+			if pkt.DestSocket != 200 {
+				t.Errorf("TRel DestSocket = %d, want 200 (WSS)", pkt.DestSocket)
+			}
+		}
+	}
+	if !sawTRel {
+		t.Fatalf("no TRel sent to release the aspDataWrite XO transaction (Mac would report the write as failed)")
+	}
 
 	// Phase 3: the reply to the *original* aspWrite reports lastWritten.
 	if len(r.replies) != 1 {

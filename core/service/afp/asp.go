@@ -230,7 +230,13 @@ func (s *Service) sendDataWrite(req atpRequest, sess *session, seq uint16, tid u
 	nPackets := min(max((want+atp.MaxATPData-1)/atp.MaxATPData, 1), atp.MaxResponsePackets)
 	bitmap := uint8((1 << uint(nPackets)) - 1)
 
+	// The aspDataWrite is an exactly-once (XO) transaction: the workstation holds
+	// the transaction open until the server releases it with a TRel (sent from
+	// handleDataResponse once the data is in hand). The TRel-timeout indicator in
+	// the control byte tells the .XPP driver how long to wait for that TRel before
+	// abandoning the transaction.
 	h := atp.Header{Control: atp.TREQ | atp.XO, Bitmap: bitmap, TransID: tid, UserData: ud}
+	h.SetTRelTimeout(atp.TRel30s)
 	frame := h.Encode(make([]byte, 0, atp.HeaderSize+2))
 	frame = append(frame, asp.WriteContinuePacket{BufferSize: uint16(want)}.MarshalData()...)
 
@@ -245,6 +251,31 @@ func (s *Service) sendDataWrite(req atpRequest, sess *session, seq uint16, tid u
 		Data:        frame,
 	}
 	req.from.Unicast(sess.net, sess.node, d)
+}
+
+// sendTRel releases the exactly-once aspDataWrite transaction: after the server
+// has collected the workstation's data TResp, it sends a TRel (Transaction
+// Release) for tid so the .XPP driver can drop its transaction control block and
+// consider the write delivered. Without this the workstation holds the XO
+// transaction open, retransmits its data TResp until it gives up, and reports the
+// write as failed — even though the server already applied it. The TRel is
+// addressed back to the workstation's session socket, exactly as the aspDataWrite
+// TReq was (main's ATP endpoint sends this automatically for an XO requester; the
+// spine's hand-rolled aspDataWrite must do it explicitly).
+func (s *Service) sendTRel(orig atpRequest, sess *session, tid uint16) {
+	h := atp.Header{Control: atp.TREL, TransID: tid}
+	frame := h.Encode(make([]byte, 0, atp.HeaderSize))
+	d := ddp.Datagram{
+		DestNetwork: sess.net,
+		SrcNetwork:  orig.d.DestNetwork,
+		DestNode:    sess.node,
+		SrcNode:     orig.d.DestNode,
+		DestSocket:  sess.wss,
+		SrcSocket:   orig.d.DestSocket,
+		DDPType:     atp.DDPType,
+		Data:        frame,
+	}
+	orig.from.Unicast(sess.net, sess.node, d)
 }
 
 // handleDataResponse collects phase-2b write data: the workstation's TResp to the
@@ -271,6 +302,12 @@ func (s *Service) handleDataResponse(resp atpResponse) {
 
 	s.pendingWrites.remove(resp.transID)
 	pw.sess.lastRx = time.Now()
+
+	// Release the exactly-once aspDataWrite transaction now that its data is in
+	// hand, so the workstation stops holding it open (and stops retransmitting the
+	// data TResp). This closes phase 2; the phase-3 reply below answers the
+	// separate phase-1 aspWrite transaction.
+	s.sendTRel(pw.orig, pw.sess, resp.transID)
 
 	block := appendWriteData(pw.cmdBlk, pw.hdrLen, pw.data)
 	reply, result := pw.sess.conn.Command(block)
