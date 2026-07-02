@@ -634,6 +634,12 @@ func (s *Service) afpEnumerate(a *afpSession, block []byte) ([]byte, int32) {
 	dirBitmap := bp.BE16(block[10:12])
 	reqCount := int(bp.BE16(block[12:14]))
 	startIndex := int(bp.BE16(block[14:16]))
+	// maxReplySize (AFP 2.x: 2 bytes) is the client's reply-buffer budget. The
+	// server MUST NOT exceed it: an over-long reply is truncated by the transport,
+	// leaving the client a partial final entry that desyncs its parse and discards
+	// the whole listing (observed as "volume enumerates nothing"). enumReplyHeader
+	// (fileBitmap+dirBitmap+actCount) counts against the budget.
+	maxReply := int(bp.BE16(block[16:18]))
 	pathType := block[18]
 	store, code := resolveBlockPath(vol, dirID, block, 19, pathType)
 	if code != afpNoErr {
@@ -650,6 +656,7 @@ func (s *Service) afpEnumerate(a *afpSession, block []byte) ([]byte, int32) {
 		return nil, afpErrObjectNotFnd // kFPObjectNotFound == "no more entries"
 	}
 
+	const enumReplyHeader = 6 // fileBitmap(2) dirBitmap(2) actCount(2)
 	var entries2 []byte
 	actual := 0
 	for i := start; i < len(entries) && actual < reqCount; i++ {
@@ -672,7 +679,16 @@ func (s *Service) afpEnumerate(a *afpSession, block []byte) ([]byte, int32) {
 		// NO pad byte between the type byte and the params, or every client
 		// mis-reads the name pointer.
 		params := vol.fileDirParams(nil, childStore, info, bitmap, pathType)
-		entries2 = append(entries2, enumEntry(de.IsDir(), params)...)
+		entry := enumEntry(de.IsDir(), params)
+		// Stop before overflowing the client's reply budget (but always return at
+		// least one entry, per the AFP convention, so a single over-large entry
+		// still makes progress rather than looping).
+		if maxReply > 0 && actual > 0 && enumReplyHeader+len(entries2)+len(entry) > maxReply {
+			// Budget reached; the client re-requests from startIndex+actual for the
+			// next page.
+			break
+		}
+		entries2 = append(entries2, entry...)
 		actual++
 	}
 	if actual == 0 {
@@ -726,6 +742,15 @@ func isMetadataName(name string) bool {
 	if strings.HasPrefix(name, "._") {
 		return true
 	}
+	// Netatalk-style metadata containers and the CNID database must never surface
+	// as catalog entries (matches main's alwaysHiddenNames + isMetadataArtifact).
+	// A stray visible ".AppleDouble"/".AppleDesktop" was cluttering the Finder and
+	// (with the CNID .db) padding the listing.
+	for _, hidden := range alwaysHiddenNames {
+		if strings.EqualFold(name, hidden) {
+			return true
+		}
+	}
 	// xattr engine EA shadow ("name\x00ea\x00…") and ads engine stream shadow
 	// ("name:AFP_Resource"/"name:AFP_AfpInfo") — neither is a real child name.
 	if strings.Contains(name, "\x00ea\x00") {
@@ -735,4 +760,13 @@ func isMetadataName(name string) bool {
 		return true
 	}
 	return false
+}
+
+// alwaysHiddenNames are metadata containers hidden from every enumeration,
+// case-insensitively (Netatalk layout + the CNID sidecar db). Ported from main's
+// service/afp alwaysHiddenNames.
+var alwaysHiddenNames = []string{
+	".appledesktop",
+	".appledouble",
+	".desktop.db", // legacy Desktop DB
 }

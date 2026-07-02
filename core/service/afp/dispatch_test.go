@@ -2,6 +2,7 @@ package afp
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"sync"
 	"testing"
@@ -544,6 +545,91 @@ func TestDispatch_ServerCallsMapAndMsg(t *testing.T) {
 	msg := respPayload(r.lastReply())
 	if bp.BE16(msg[0:2]) != 1 || msg[4] != 0 {
 		t.Fatalf("GetSrvrMsg reply = % x, want type=1 empty message", msg)
+	}
+}
+
+// atpTReqAllPackets builds a TReq requesting all 8 response packets (bitmap 0xFF),
+// as a real client does for a multi-packet reply like a large FPEnumerate.
+func atpTReqAllPackets(userData uint32, payload []byte) []byte {
+	h := atp.Header{Control: atp.TREQ | atp.XO, Bitmap: 0xFF, TransID: 7, UserData: userData}
+	return append(h.Encode(nil), payload...)
+}
+
+// TestDispatch_EnumerateHonoursMaxReply is the regression for "volume enumerates
+// nothing": FPEnumerate must not pack more than the client's maxReplySize, and its
+// ActCount must match the bytes actually delivered. A reply that overflows the
+// budget is truncated by the transport, leaving a partial final entry that desyncs
+// the client's parse — so it silently discards the whole listing. This drives a
+// directory far larger than one reply, reassembles every ATP packet, and asserts
+// the stream is self-consistent and fully pages.
+func TestDispatch_EnumerateHonoursMaxReply(t *testing.T) {
+	svc, r := newRunningService(t)
+	from := fakePort{}
+	vol := svc.Volumes()[0]
+	const nDirs = 40
+	for i := 0; i < nDirs; i++ {
+		if err := vol.FS().CreateDir(fmt.Sprintf("Directory Number %02d With A Long Name", i)); err != nil {
+			t.Fatalf("CreateDir: %v", err)
+		}
+	}
+	sessID := login(t, svc, r)
+	r.reset()
+	ov := []byte{cmdOpenVol, 0}
+	ov = bp.AppendBE16(ov, volBitmapID)
+	ov = putPString(ov, []byte("Share"))
+	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 3), ov)), from)
+	volID := bp.BE16(respPayload(r.lastReply())[2:4])
+
+	const maxReply = 4624 // 8 ATP packets — the classic client budget
+	total, startIdx := 0, 1
+	for page := 0; page < 30; page++ {
+		r.reset()
+		enum := []byte{cmdEnumerate, 0}
+		enum = bp.AppendBE16(enum, volID)
+		enum = bp.AppendBE32(enum, 2)
+		enum = bp.AppendBE16(enum, 0x077f)
+		enum = bp.AppendBE16(enum, 0x137f)
+		enum = bp.AppendBE16(enum, 64) // reqCount
+		enum = bp.AppendBE16(enum, uint16(startIdx))
+		enum = bp.AppendBE16(enum, maxReply)
+		enum = append(enum, PathTypeLongNames)
+		svc.Inbound(ddpTo(svc.Socket(), atpTReqAllPackets(aspUserData(asp.SPFuncCommand, sessID, uint16(4+page)), enum)), from)
+
+		rc := int32(respUserData(r.lastReply()))
+		if rc == afpErrObjectNotFnd {
+			break // end of directory
+		}
+		if rc != afpNoErr {
+			t.Fatalf("page %d Enumerate rc=%d", page, rc)
+		}
+		// Reassemble every ATP response packet into the full AFP reply.
+		var full []byte
+		for _, d := range r.replies {
+			full = append(full, d.Data[atp.HeaderSize:]...)
+		}
+		if len(full) > maxReply {
+			t.Fatalf("page %d: reply %d bytes exceeds maxReplySize %d", page, len(full), maxReply)
+		}
+		ac := int(bp.BE16(full[4:6]))
+		off := 6
+		for i := 0; i < ac; i++ {
+			if off >= len(full) {
+				t.Fatalf("page %d entry %d: stream overrun (ActCount %d exceeds delivered bytes)", page, i, ac)
+			}
+			ln := int(full[off])
+			if ln == 0 {
+				t.Fatalf("page %d entry %d: zero-length entry (desync)", page, i)
+			}
+			off += ln
+		}
+		if off != len(full) {
+			t.Fatalf("page %d: consumed %d != reply len %d (trailing garbage / miscount)", page, off, len(full))
+		}
+		total += ac
+		startIdx += ac
+	}
+	if total != nDirs {
+		t.Fatalf("paged enumeration returned %d entries, want %d", total, nDirs)
 	}
 }
 
