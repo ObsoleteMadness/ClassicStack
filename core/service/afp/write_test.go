@@ -45,7 +45,7 @@ func openForkRW(t *testing.T, svc *Service, r *fakeRouter, from *recordingPort, 
 	openFork = bp.AppendBE16(openFork, 0)
 	openFork = bp.AppendBE16(openFork, accessRead|accessWrite)
 	openFork = append(openFork, PathTypeUTF8Names)
-	openFork = append(openFork, []byte(path)...)
+	openFork = putPString(openFork, []byte(path))
 	r.reset()
 	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 4), openFork)), from)
 	if got := int32(respUserData(r.lastReply())); got != afpNoErr {

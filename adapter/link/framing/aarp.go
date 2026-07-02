@@ -156,6 +156,13 @@ func (d *aarpLink) ReadDatagram() (ddp.Datagram, error) {
 		}
 		switch {
 		case equal(pid, snapAppleTalk):
+			// Drop DDP frames not addressed to us / broadcast / multicast: a
+			// datagram we forwarded out this port and that a hub/bridge/capture
+			// echoes back must NOT be re-ingested and re-routed (it would loop,
+			// hop-count climbing to the 15-hop DDP limit).
+			if !deliverableTo(frame, d.srcMAC[:]) {
+				continue
+			}
 			dg, derr := ddp.Decode(frame[off:])
 			if derr != nil {
 				continue

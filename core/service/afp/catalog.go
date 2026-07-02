@@ -4,6 +4,7 @@ import (
 	"errors"
 	stdfs "io/fs"
 	"os"
+	"strings"
 
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 
@@ -248,19 +249,75 @@ func dirPath(vol *Volume, dirID uint32) (string, int32) {
 	return p, afpNoErr
 }
 
-// resolveCatalogPath resolves a command block's pathname (starting at off)
+// pascalPathAt reads the AFP pathname at off in a command block. For every path
+// type (short/long/UTF-8) the pathname on the wire is a Pascal string: a 1-byte
+// length followed by that many name bytes (the bytes may themselves contain the
+// interior \x00 separators of a multi-level path). It returns just the name
+// bytes, WITHOUT the length prefix — the form ResolvePath expects. Failing to
+// strip this length byte makes it the first character of the first path element,
+// so every non-empty by-name lookup resolves to a bogus store path and returns
+// kFPObjectNotFound (the mount-blocking regression, observed on the wire as
+// FPGetFileDirParms Name=… → object not found -5018).
+func pascalPathAt(block []byte, off int) (string, bool) {
+	if off >= len(block) {
+		// No pathname present at all is treated as the empty (this-dir) path.
+		return "", off == len(block)
+	}
+	n := int(block[off])
+	off++
+	if off+n > len(block) {
+		return "", false
+	}
+	return string(block[off : off+n]), true
+}
+
+// wantsVolumeRoot reports whether a parent-of-root (DID 1) request names the
+// volume itself: an empty path (the root implicitly) or a path whose single
+// element decodes to the volume's display name. The comparison is done on the
+// decoded, store-charset name so it is codec-consistent with the volume Name the
+// server advertises in FPOpenVol / FPGetVolParms.
+func wantsVolumeRoot(vol *Volume, name string, pathType uint8) bool {
+	// Strip a leading NUL and a trailing NUL terminator, matching ResolvePath's
+	// element convention, so "\x00Test Volume" and "Test Volume\x00" both match.
+	name = strings.Trim(name, "\x00")
+	if name == "" {
+		return true
+	}
+	if strings.Contains(name, "\x00") {
+		return false // a multi-level path can't name the volume root
+	}
+	decoded, err := vol.codec().Decode([]byte(name), wireFor(pathType))
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(string(decoded), vol.Name())
+}
+
+// resolveCatalogPath resolves a command block's pathname (a Pascal string at off)
 // relative to dirID, returning the target store path. It is the dirID-aware
 // successor to resolveBlockPath: the directory id selects the base, then the
 // volume's FilenameCodec decodes each wire element to a store-native name.
 func resolveCatalogPath(vol *Volume, dirID uint32, block []byte, off int, pathType uint8) (string, int32) {
-	if off > len(block) {
+	name, ok := pascalPathAt(block, off)
+	if !ok {
 		return "", afpErrParamErr
+	}
+	// Parent-of-root (DID 1) is the synthetic directory whose sole child is the
+	// volume itself. The Finder resolves a freshly-mounted volume with
+	// FPGetFileDirParms DID=1 Name="<volume name>"; the only valid target is the
+	// volume root. Without this it returned kFPDirNotFound (-5029) and the volume
+	// mounted nameless. Inside Macintosh: Networking — ParentDirID of the root is 1.
+	if dirID == metastore.CNIDParentOfRoot {
+		if wantsVolumeRoot(vol, name, pathType) {
+			return "", afpNoErr
+		}
+		return "", afpErrObjectNotFnd
 	}
 	parent, code := dirPath(vol, dirID)
 	if code != afpNoErr {
 		return "", code
 	}
-	store, err := vol.ResolvePath(parent, string(block[off:]), pathType)
+	store, err := vol.ResolvePath(parent, name, pathType)
 	if err != nil {
 		return "", afpErrParamErr // unrepresentable name → "illegal name"
 	}

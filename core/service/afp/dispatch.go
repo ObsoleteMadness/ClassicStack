@@ -16,15 +16,22 @@ const (
 	cmdGetForkParms    uint8 = 14 // FPGetForkParms
 	cmdGetSrvrInfo     uint8 = 15 // FPGetSrvrInfo (also served via ASPGetStatus)
 	cmdGetSrvrParms    uint8 = 16 // FPGetSrvrParms
+	cmdGetVolParms     uint8 = 17 // FPGetVolParms
 	cmdLogin           uint8 = 18 // FPLogin
 	cmdLoginCont       uint8 = 19 // FPLoginCont
 	cmdLogout          uint8 = 20 // FPLogout
+	cmdMapID           uint8 = 21 // FPMapID
+	cmdMapName         uint8 = 22 // FPMapName
+	cmdGetSrvrMsg      uint8 = 38 // FPGetSrvrMsg
+	cmdSetDirParms     uint8 = 29 // FPSetDirParms
+	cmdSetFileParms    uint8 = 30 // FPSetFileParms
 	cmdOpenDir         uint8 = 25 // FPOpenDir
 	cmdOpenFork        uint8 = 26 // FPOpenFork
 	cmdOpenVol         uint8 = 24 // FPOpenVol
 	cmdRead            uint8 = 27 // FPRead
 	cmdRename          uint8 = 28 // FPRename
 	cmdGetFileDirParms uint8 = 34 // FPGetFileDirParms
+	cmdSetFileDirParms uint8 = 35 // FPSetFileDirParms
 	cmdWrite           uint8 = 33 // FPWrite
 )
 
@@ -112,6 +119,11 @@ func (s *Service) dispatchAFP(a *afpSession, block []byte) (reply []byte, result
 		return s.afpOpenVol(a, block)
 	case cmdCloseVol:
 		return s.afpCloseVol(a, block)
+	case cmdGetVolParms:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpGetVolParms(a, block)
 	case cmdEnumerate:
 		if !a.loggedIn {
 			return nil, afpErrAccessDenied
@@ -122,6 +134,28 @@ func (s *Service) dispatchAFP(a *afpSession, block []byte) (reply []byte, result
 			return nil, afpErrAccessDenied
 		}
 		return s.afpGetFileDirParms(a, block)
+	case cmdSetFileDirParms, cmdSetDirParms, cmdSetFileParms:
+		// FPSetDirParms (29) / FPSetFileParms (30) share the unified
+		// FPSetFileDirParms (35) request layout in this server.
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpSetFileDirParms(a, block)
+	case cmdMapID:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpMapID(a, block)
+	case cmdMapName:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpMapName(a, block)
+	case cmdGetSrvrMsg:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpGetSrvrMsg(a, block)
 	case cmdCreateFile:
 		if !a.loggedIn {
 			return nil, afpErrAccessDenied

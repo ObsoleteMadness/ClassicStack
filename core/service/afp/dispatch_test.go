@@ -195,6 +195,33 @@ func TestDispatch_CommandBeforeLoginDenied(t *testing.T) {
 	}
 }
 
+// TestDispatch_OpenVolSignatureIsFixedDirID pins the FPOpenVol volume signature to
+// Fixed Directory ID (2). A volume that reports Flat (1) is not mountable by the
+// Finder — the regression that blocked mounts.
+func TestDispatch_OpenVolSignatureIsFixedDirID(t *testing.T) {
+	svc, r := newRunningService(t)
+	from := fakePort{}
+	sessID := login(t, svc, r)
+
+	r.reset()
+	openVol := []byte{cmdOpenVol, 0}
+	openVol = bp.AppendBE16(openVol, volBitmapSignature)
+	openVol = putPString(openVol, []byte("Share"))
+	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 2), openVol)), from)
+	if got := int32(respUserData(r.lastReply())); got != afpNoErr {
+		t.Fatalf("OpenVol result = %d, want 0", got)
+	}
+	reply := respPayload(r.lastReply())
+	bitmap := bp.BE16(reply[0:2])
+	if bitmap&volBitmapSignature == 0 {
+		t.Fatalf("OpenVol reply bitmap %#x missing Signature bit", bitmap)
+	}
+	// Signature (bit 1) is the lowest requested bit, so it is the first param.
+	if sig := bp.BE16(reply[2:4]); sig != volSignatureFixedDirID {
+		t.Fatalf("volume signature = %d, want %d (Fixed Directory ID)", sig, volSignatureFixedDirID)
+	}
+}
+
 func TestDispatch_LoginGetSrvrParmsOpenVolEnumerate(t *testing.T) {
 	svc, r := newRunningService(t)
 	from := fakePort{}
@@ -268,6 +295,258 @@ func TestDispatch_LoginGetSrvrParmsOpenVolEnumerate(t *testing.T) {
 	}
 }
 
+// TestDispatch_GetFileDirParmsByNameStripsPascalLen reproduces the mount-blocking
+// regression seen on the wire (FPGetFileDirParms Did=2 Name=<child> → object not
+// found -5018): the request pathname is a Pascal string (length byte + name), and
+// the resolver must strip that length byte before decoding. A child that exists is
+// resolved by name from the root DID (2).
+func TestDispatch_GetFileDirParmsByNameStripsPascalLen(t *testing.T) {
+	svc, r := newRunningService(t)
+	from := fakePort{}
+	vol := svc.Volumes()[0]
+	if err := vol.FS().CreateDir("Configuration"); err != nil {
+		t.Fatalf("CreateDir: %v", err)
+	}
+	sessID := login(t, svc, r)
+
+	r.reset()
+	openVol := []byte{cmdOpenVol, 0}
+	openVol = bp.AppendBE16(openVol, volBitmapID)
+	openVol = putPString(openVol, []byte("Share"))
+	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 3), openVol)), from)
+	volID := bp.BE16(respPayload(r.lastReply())[2:4])
+
+	// FPGetFileDirParms Did=2 (root) Name="Configuration" — the exact failing wire
+	// shape. It must resolve, not return object-not-found.
+	r.reset()
+	req := []byte{cmdGetFileDirParms, 0}
+	req = bp.AppendBE16(req, volID)
+	req = bp.AppendBE32(req, 2) // DID = root
+	req = bp.AppendBE16(req, fdBitmapLongName)
+	req = bp.AppendBE16(req, fdBitmapLongName|dirBitmapDirID)
+	req = append(req, PathTypeUTF8Names)
+	req = putPString(req, []byte("Configuration"))
+	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 4), req)), from)
+	if got := int32(respUserData(r.lastReply())); got != afpNoErr {
+		t.Fatalf("GetFileDirParms Name=Configuration = %d, want 0 (Pascal length byte not stripped?)", got)
+	}
+	reply := respPayload(r.lastReply())
+	if reply[4]&isDirFlag == 0 {
+		t.Fatalf("Configuration not reported as a directory")
+	}
+}
+
+// TestDispatch_SubdirDIDRoundTrips proves a directory id handed out in a catalog
+// reply resolves back to its path on a later request: enumerate the root, read a
+// subdir's DirID from the reply, then GetFileDirParms with that DID (empty path)
+// and confirm it resolves to the subdir. Without honouring the request DirID this
+// silently returned the root — the "no directory enumeration" symptom.
+func TestDispatch_SubdirDIDRoundTrips(t *testing.T) {
+	svc, r := newRunningService(t)
+	from := fakePort{}
+	vol := svc.Volumes()[0]
+	if err := vol.FS().CreateDir("subdir"); err != nil {
+		t.Fatalf("CreateDir: %v", err)
+	}
+	mustCreate(t, vol, "subdir/inner.txt")
+	sessID := login(t, svc, r)
+
+	r.reset()
+	openVol := []byte{cmdOpenVol, 0}
+	openVol = bp.AppendBE16(openVol, volBitmapID)
+	openVol = putPString(openVol, []byte("Share"))
+	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 3), openVol)), from)
+	volID := bp.BE16(respPayload(r.lastReply())[2:4])
+
+	// GetFileDirParms Did=2 Name="subdir" requesting the DirID bit → learn its DID.
+	r.reset()
+	req := []byte{cmdGetFileDirParms, 0}
+	req = bp.AppendBE16(req, volID)
+	req = bp.AppendBE32(req, 2)
+	req = bp.AppendBE16(req, 0)                               // fileBitmap (n/a, it's a dir)
+	req = bp.AppendBE16(req, dirBitmapDirID|fdBitmapLongName) // dirBitmap
+	req = append(req, PathTypeUTF8Names)
+	req = putPString(req, []byte("subdir"))
+	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 4), req)), from)
+	if got := int32(respUserData(r.lastReply())); got != afpNoErr {
+		t.Fatalf("GetFileDirParms subdir = %d, want 0", got)
+	}
+	// dir reply: fileBitmap(2) dirBitmap(2) type(1) pad(1) params. params bit order:
+	// LongName offset(2) then DirID(4).
+	params := respPayload(r.lastReply())[6:]
+	subdirDID := bp.BE32(params[2:6])
+	if subdirDID <= 2 {
+		t.Fatalf("subdir DID = %d, want a freshly-minted id > 2", subdirDID)
+	}
+
+	// Enumerate that DID (empty path) → must list inner.txt, proving the DID mapped
+	// back to the subdir rather than the root.
+	r.reset()
+	enum := []byte{cmdEnumerate, 0}
+	enum = bp.AppendBE16(enum, volID)
+	enum = bp.AppendBE32(enum, subdirDID)
+	enum = bp.AppendBE16(enum, fdBitmapLongName|fileBitmapDataForkLen)
+	enum = bp.AppendBE16(enum, fdBitmapLongName)
+	enum = bp.AppendBE16(enum, 10)
+	enum = bp.AppendBE16(enum, 1)
+	enum = bp.AppendBE16(enum, 4624)
+	enum = append(enum, PathTypeUTF8Names)
+	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 5), enum)), from)
+	if got := int32(respUserData(r.lastReply())); got != afpNoErr {
+		t.Fatalf("Enumerate subdir DID = %d, want 0", got)
+	}
+	enReply := respPayload(r.lastReply())
+	names := decodeEnumNames(t, enReply[6:], int(bp.BE16(enReply[4:6])))
+	if !contains(names, "inner.txt") {
+		t.Fatalf("Enumerate subdir names = %v, want inner.txt", names)
+	}
+}
+
+// TestDispatch_GetFileDirParmsParentOfRootByVolumeName reproduces the Finder's
+// mount probe: FPGetFileDirParms DID=1 (parent-of-root) Name="<volume name>". It
+// must resolve to the volume root, not kFPDirNotFound (-5029) — the regression
+// that made the volume mount with no name.
+func TestDispatch_GetFileDirParmsParentOfRootByVolumeName(t *testing.T) {
+	svc, r := newRunningService(t)
+	from := fakePort{}
+	sessID := login(t, svc, r)
+
+	r.reset()
+	openVol := []byte{cmdOpenVol, 0}
+	openVol = bp.AppendBE16(openVol, volBitmapID)
+	openVol = putPString(openVol, []byte("Share"))
+	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 3), openVol)), from)
+	volID := bp.BE16(respPayload(r.lastReply())[2:4])
+
+	// DID=1 Name="Share" (the volume's own name) → resolves to the root dir.
+	r.reset()
+	req := []byte{cmdGetFileDirParms, 0}
+	req = bp.AppendBE16(req, volID)
+	req = bp.AppendBE32(req, 1) // DID = parent-of-root
+	req = bp.AppendBE16(req, 0)
+	req = bp.AppendBE16(req, fdBitmapLongName|dirBitmapDirID)
+	req = append(req, PathTypeUTF8Names)
+	req = putPString(req, []byte("Share"))
+	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 4), req)), from)
+	if got := int32(respUserData(r.lastReply())); got != afpNoErr {
+		t.Fatalf("GetFileDirParms DID=1 Name=Share = %d, want 0 (parent-of-root volume resolution)", got)
+	}
+	reply := respPayload(r.lastReply())
+	if reply[4]&isDirFlag == 0 {
+		t.Fatalf("volume root not reported as a directory")
+	}
+	// A wrong volume name under DID=1 must be object-not-found, not the root.
+	r.reset()
+	req2 := []byte{cmdGetFileDirParms, 0}
+	req2 = bp.AppendBE16(req2, volID)
+	req2 = bp.AppendBE32(req2, 1)
+	req2 = bp.AppendBE16(req2, 0)
+	req2 = bp.AppendBE16(req2, dirBitmapDirID)
+	req2 = append(req2, PathTypeUTF8Names)
+	req2 = putPString(req2, []byte("Not The Volume"))
+	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 5), req2)), from)
+	if got := int32(respUserData(r.lastReply())); got != afpErrObjectNotFnd {
+		t.Fatalf("GetFileDirParms DID=1 Name=<wrong> = %d, want object-not-found", got)
+	}
+}
+
+// TestDispatch_SetFileDirParmsAcksFinderInfo proves FPSetFileDirParms is answered
+// (not -5024) and persists Finder info the client can read back.
+func TestDispatch_SetFileDirParmsAcksFinderInfo(t *testing.T) {
+	svc, r := newRunningService(t)
+	from := fakePort{}
+	vol := svc.Volumes()[0]
+	mustCreate(t, vol, "doc.txt")
+	sessID := login(t, svc, r)
+
+	r.reset()
+	openVol := []byte{cmdOpenVol, 0}
+	openVol = bp.AppendBE16(openVol, volBitmapID)
+	openVol = putPString(openVol, []byte("Share"))
+	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 3), openVol)), from)
+	volID := bp.BE16(respPayload(r.lastReply())[2:4])
+
+	// FPSetFileDirParms Did=2 Name="doc.txt", FinderInfo bit set, followed by the
+	// 32-byte Finder info (word-aligned after the Pascal pathname).
+	r.reset()
+	req := []byte{cmdSetFileDirParms, 0}
+	req = bp.AppendBE16(req, volID)
+	req = bp.AppendBE32(req, 2)
+	req = bp.AppendBE16(req, fdBitmapFinderInfo)
+	req = append(req, PathTypeUTF8Names)
+	req = putPString(req, []byte("doc.txt")) // nameLen=7 (odd) → params word-aligned
+	if len("doc.txt")%2 != 0 {
+		req = append(req, 0) // word-align the parameter block, as a real client does
+	}
+	var fi [32]byte
+	copy(fi[:], []byte("TEXTttxt")) // recognisable type/creator
+	req = append(req, fi[:]...)
+	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 4), req)), from)
+	if got := int32(respUserData(r.lastReply())); got != afpNoErr {
+		t.Fatalf("SetFileDirParms = %d, want 0 (must not be -5024)", got)
+	}
+	back, ok := vol.FinderInfo("doc.txt")
+	if !ok || string(back[:8]) != "TEXTttxt" {
+		t.Fatalf("FinderInfo not persisted: back=%q ok=%v", back[:8], ok)
+	}
+}
+
+// TestDispatch_ServerCallsMapAndMsg proves the mount-time server calls the Finder
+// issues are answered (not -5024): FPMapID → owner/group name, FPMapName → id 0,
+// FPGetSrvrMsg → empty message echoing the request type.
+func TestDispatch_ServerCallsMapAndMsg(t *testing.T) {
+	svc, r := newRunningService(t)
+	from := fakePort{}
+	sessID := login(t, svc, r)
+
+	// FPMapID function 1 (id→user) → "root".
+	r.reset()
+	mapID := []byte{cmdMapID, 1}
+	mapID = bp.AppendBE32(mapID, 0)
+	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 2), mapID)), from)
+	if got := int32(respUserData(r.lastReply())); got != afpNoErr {
+		t.Fatalf("MapID = %d, want 0", got)
+	}
+	if name, _, ok := pString(respPayload(r.lastReply()), 0); !ok || string(name) != "root" {
+		t.Fatalf("MapID name = %q, want root", name)
+	}
+
+	// FPMapID function 2 (id→group) → "wheel".
+	r.reset()
+	mapIDg := []byte{cmdMapID, 2}
+	mapIDg = bp.AppendBE32(mapIDg, 0)
+	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 3), mapIDg)), from)
+	if name, _, ok := pString(respPayload(r.lastReply()), 0); !ok || string(name) != "wheel" {
+		t.Fatalf("MapID group name = %q, want wheel", name)
+	}
+
+	// FPMapName → id 0.
+	r.reset()
+	mapName := []byte{cmdMapName, 3}
+	mapName = putPString(mapName, []byte("alice"))
+	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 4), mapName)), from)
+	if got := int32(respUserData(r.lastReply())); got != afpNoErr {
+		t.Fatalf("MapName = %d, want 0", got)
+	}
+	if id := bp.BE32(respPayload(r.lastReply())[0:4]); id != 0 {
+		t.Fatalf("MapName id = %d, want 0", id)
+	}
+
+	// FPGetSrvrMsg → echoes type, empty message.
+	r.reset()
+	getMsg := []byte{cmdGetSrvrMsg, 0}
+	getMsg = bp.AppendBE16(getMsg, 1) // messageType
+	getMsg = bp.AppendBE16(getMsg, 3) // bitmap
+	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 5), getMsg)), from)
+	if got := int32(respUserData(r.lastReply())); got != afpNoErr {
+		t.Fatalf("GetSrvrMsg = %d, want 0", got)
+	}
+	msg := respPayload(r.lastReply())
+	if bp.BE16(msg[0:2]) != 1 || msg[4] != 0 {
+		t.Fatalf("GetSrvrMsg reply = % x, want type=1 empty message", msg)
+	}
+}
+
 func TestDispatch_GetFileDirParms(t *testing.T) {
 	svc, r := newRunningService(t)
 	from := fakePort{}
@@ -292,20 +571,20 @@ func TestDispatch_GetFileDirParms(t *testing.T) {
 	req = bp.AppendBE16(req, fdBitmapLongName|fileBitmapDataForkLen)
 	req = bp.AppendBE16(req, fdBitmapLongName)
 	req = append(req, PathTypeUTF8Names)
-	req = append(req, []byte("report.doc")...)
+	req = putPString(req, []byte("report.doc"))
 	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 4), req)), from)
 
 	if got := int32(respUserData(r.lastReply())); got != afpNoErr {
 		t.Fatalf("GetFileDirParms result = %d, want 0", got)
 	}
 	reply := respPayload(r.lastReply())
-	// reply = bitmap(2) isDir(1) pad(1) <param block>. The param block holds the
-	// fixed fields in bit order — LongName's 2-byte offset, then DataForkLen(4) —
-	// followed by the variable area the LongName offset points into.
-	if reply[2]&isDirFlag != 0 {
+	// reply = fileBitmap(2) dirBitmap(2) isDir(1) pad(1) <param block>. The param
+	// block holds the fixed fields in bit order — LongName's 2-byte offset, then
+	// DataForkLen(4) — followed by the variable area the LongName offset points into.
+	if reply[4]&isDirFlag != 0 {
 		t.Fatalf("report.doc reported as directory")
 	}
-	params := reply[4:]
+	params := reply[6:]
 	nameOff := int(bp.BE16(params[0:2]))
 	dataLen := bp.BE32(params[2:6])
 	if dataLen != 4 { // mustCreate wrote "data"
@@ -329,11 +608,13 @@ func decodeEnumNames(t *testing.T, b []byte, count int) []string {
 		}
 		entryLen := int(b[off])
 		entry := b[off+1 : off+entryLen]
-		// entry = isDir(1) pad(1) then the parameter block. The block's first
-		// field (LongName is the lowest requested bit here) is a 2-byte offset,
-		// measured from the start of the parameter block, to the name pstring in
-		// the trailing variable area.
-		params := entry[2:]
+		// A framed entry is [len][type][params]: after the length byte, entry =
+		// type(1) then the parameter block (NO pad byte between them — the name
+		// offsets are anchored at the start of the params, i.e. byte 2 of the
+		// framed entry). The block's first field (LongName is the lowest requested
+		// bit here) is a 2-byte offset, measured from the start of the parameter
+		// block, to the name pstring in the trailing variable area.
+		params := entry[1:]
 		nameOff := int(bp.BE16(params[0:2]))
 		name, _, ok := pString(params, nameOff)
 		if ok {

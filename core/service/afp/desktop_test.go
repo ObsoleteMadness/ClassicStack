@@ -261,7 +261,7 @@ func TestDesktop_APPLRoundTrip(t *testing.T) {
 	add = append(add, creator[:]...)
 	add = bp.AppendBE32(add, tag)
 	add = append(add, PathTypeUTF8Names)
-	add = append(add, []byte("TeachText")...) // resolveCatalogPath reads rest-of-block
+	add = putPString(add, []byte("TeachText"))
 	if code, _ := sendCmd(t, svc, r, sessID, 6, add); code != afpNoErr {
 		t.Fatalf("AddAPPL result = %d, want 0", code)
 	}
@@ -296,7 +296,7 @@ func TestDesktop_APPLRoundTrip(t *testing.T) {
 	rem = bp.AppendBE32(rem, 2)
 	rem = append(rem, creator[:]...)
 	rem = append(rem, PathTypeUTF8Names)
-	rem = append(rem, []byte("TeachText")...) // resolveCatalogPath reads rest-of-block
+	rem = putPString(rem, []byte("TeachText"))
 	if code, _ := sendCmd(t, svc, r, sessID, 8, rem); code != afpNoErr {
 		t.Fatalf("RemoveAPPL result = %d, want 0", code)
 	}

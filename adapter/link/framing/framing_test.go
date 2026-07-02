@@ -85,6 +85,56 @@ func TestDecode_SkipsNonAppleTalk(t *testing.T) {
 	}
 }
 
+// TestReadDatagram_DropsForeignUnicast proves the inbound destination filter: a
+// DDP frame addressed to another node's unicast MAC (not ours, not broadcast, not
+// multicast) is skipped, not handed up. Without this a router that forwards a
+// datagram out this port re-ingests its own echoed frame and forwards it again,
+// looping until the DDP 15-hop limit — the regression this guards against.
+func TestReadDatagram_DropsForeignUnicast(t *testing.T) {
+	fl := inmem.Loopback(4)
+	defer fl.Close()
+
+	station := []byte{1, 2, 3, 4, 5, 6}
+	framer := &EtherTalk{SrcMAC: station}
+	dl, err := framer.Framing(fl)
+	if err != nil {
+		t.Fatalf("Framing: %v", err)
+	}
+
+	// A frame destined for a DIFFERENT unicast MAC (a foreign node on the wire),
+	// tagged with a distinguishing destination socket so we can prove it is the one
+	// dropped rather than returned.
+	foreign := []byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
+	foreignDG := sampleDatagram()
+	foreignDG.DestSocket = 0x42
+	frame, err := encode(nil, station, foreign, foreignDG)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if err := fl.Write(frame); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	// Follow it with a frame addressed to us so ReadDatagram has something valid to
+	// return once it has skipped the foreign one.
+	oursDG := sampleDatagram() // its own (different) DestSocket
+	ours, err := encode(nil, station, station, oursDG)
+	if err != nil {
+		t.Fatalf("encode ours: %v", err)
+	}
+	if err := fl.Write(ours); err != nil {
+		t.Fatalf("Write ours: %v", err)
+	}
+
+	out, err := dl.ReadDatagram()
+	if err != nil {
+		t.Fatalf("ReadDatagram: %v", err)
+	}
+	if out.DestSocket == foreignDG.DestSocket {
+		t.Fatalf("ReadDatagram returned the foreign-unicast frame (socket %#x); it must be dropped", out.DestSocket)
+	}
+	assertDatagramEqual(t, oursDG, out)
+}
+
 func assertDatagramEqual(t *testing.T, want, got ddp.Datagram) {
 	t.Helper()
 	if want.Hops != got.Hops || want.DestNetwork != got.DestNetwork ||

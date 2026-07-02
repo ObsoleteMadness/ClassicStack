@@ -112,7 +112,7 @@ func TestConn_FullSequenceOverSeam(t *testing.T) {
 	openFork = bp.AppendBE16(openFork, fileBitmapDataForkLen)
 	openFork = bp.AppendBE16(openFork, accessRead|accessWrite)
 	openFork = append(openFork, PathTypeUTF8Names)
-	openFork = append(openFork, []byte("doc.txt")...)
+	openFork = putPString(openFork, []byte("doc.txt"))
 	if _, result := c.Command(openFork); result != afpNoErr {
 		t.Fatalf("OpenFork result = %d, want 0", result)
 	}
@@ -141,7 +141,7 @@ func TestConn_CloseDrainsForks(t *testing.T) {
 	openFork = bp.AppendBE16(openFork, fileBitmapDataForkLen)
 	openFork = bp.AppendBE16(openFork, accessRead|accessWrite)
 	openFork = append(openFork, PathTypeUTF8Names)
-	openFork = append(openFork, []byte("doc.txt")...)
+	openFork = putPString(openFork, []byte("doc.txt"))
 	if _, result := c.Command(openFork); result != afpNoErr {
 		t.Fatalf("OpenFork result = %d, want 0", result)
 	}

@@ -237,6 +237,12 @@ func (v *Volume) FinderInfo(path string) (info [32]byte, ok bool) {
 	return [32]byte{}, false
 }
 
+// SetFinderInfo persists the 32-byte AFP Finder info for a path through the fork
+// engine (the write side of FinderInfo, used by FPSetFileDirParms/Set*Parms).
+func (v *Volume) SetFinderInfo(path string, info [32]byte) error {
+	return v.FS().WriteFinderInfo(path, info)
+}
+
 // ShortName returns the volume's 8.3-style short name for a path's final
 // element, derived through the share's NameEngine. The engine returns a store
 // path; the caller wants just the leaf for the wire, so the parent is trimmed.

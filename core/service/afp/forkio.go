@@ -56,10 +56,11 @@ func (s *Service) afpOpenFork(a *afpSession, block []byte) ([]byte, int32) {
 	if !ok {
 		return nil, afpErrParamErr
 	}
+	dirID := bp.BE32(block[4:8])
 	bitmap := bp.BE16(block[8:10])
 	accessMode := bp.BE16(block[10:12])
 	pathType := block[12]
-	store, code := resolveBlockPath(vol, block, 13, pathType)
+	store, code := resolveBlockPath(vol, dirID, block, 13, pathType)
 	if code != afpNoErr {
 		return nil, code
 	}

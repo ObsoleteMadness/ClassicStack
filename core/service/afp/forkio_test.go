@@ -51,7 +51,7 @@ func TestForkIO_OpenWriteReadClose(t *testing.T) {
 	openFork = bp.AppendBE16(openFork, fileBitmapDataForkLen)
 	openFork = bp.AppendBE16(openFork, accessRead|accessWrite)
 	openFork = append(openFork, PathTypeUTF8Names)
-	openFork = append(openFork, []byte("doc.txt")...)
+	openFork = putPString(openFork, []byte("doc.txt"))
 	code, reply := sendCmd(t, svc, r, sessID, 4, openFork)
 	if code != afpNoErr {
 		t.Fatalf("OpenFork result = %d, want 0", code)
@@ -132,7 +132,7 @@ func TestForkIO_WriteFromEnd(t *testing.T) {
 	openFork = bp.AppendBE16(openFork, 0)
 	openFork = bp.AppendBE16(openFork, accessRead|accessWrite)
 	openFork = append(openFork, PathTypeUTF8Names)
-	openFork = append(openFork, []byte("log.txt")...)
+	openFork = putPString(openFork, []byte("log.txt"))
 	code, reply := sendCmd(t, svc, r, sessID, 4, openFork)
 	if code != afpNoErr {
 		t.Fatalf("OpenFork result = %d, want 0", code)
@@ -183,7 +183,7 @@ func TestForkIO_WriteToReadOnlyFork(t *testing.T) {
 	openFork = bp.AppendBE16(openFork, 0)
 	openFork = bp.AppendBE16(openFork, accessRead) // read-only
 	openFork = append(openFork, PathTypeUTF8Names)
-	openFork = append(openFork, []byte("ro.txt")...)
+	openFork = putPString(openFork, []byte("ro.txt"))
 	code, reply := sendCmd(t, svc, r, sessID, 4, openFork)
 	if code != afpNoErr {
 		t.Fatalf("OpenFork result = %d, want 0", code)

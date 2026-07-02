@@ -54,6 +54,33 @@ type EtherTalk struct {
 // appleTalkBroadcastMAC is the EtherTalk (ELAP) broadcast address.
 var appleTalkBroadcastMAC = []byte{0x09, 0x00, 0x07, 0xFF, 0xFF, 0xFF}
 
+// appleTalkMulticastPrefix is the first five octets of an EtherTalk (ELAP) zone
+// multicast address (09:00:07:00:00:xx, xx ≤ 0xFC); the sixth octet selects the
+// zone-hash bucket. Inside AppleTalk, EtherTalk Link Access Protocol.
+var appleTalkMulticastPrefix = []byte{0x09, 0x00, 0x07, 0x00, 0x00}
+
+// deliverableTo reports whether an inbound EtherTalk frame's destination MAC is
+// one this station should hand up to the router: our own station MAC, the ELAP
+// broadcast, or a valid ELAP zone-multicast. Frames addressed to another node's
+// unicast MAC (including our OWN forwarded unicasts echoed back by the capture /
+// a hub / a software bridge) are dropped here — without this filter a router that
+// forwards a datagram out this port re-ingests it and forwards it again, looping
+// until the DDP 15-hop limit drops it. (This mirrors the legacy ethertalk port's
+// inbound destination filtering, lost in the framer refactor.)
+func deliverableTo(frame, stationMAC []byte) bool {
+	if len(frame) < 6 {
+		return false
+	}
+	dst := frame[0:6]
+	if len(stationMAC) == 6 && equal(dst, stationMAC) {
+		return true
+	}
+	if equal(dst, appleTalkBroadcastMAC) {
+		return true
+	}
+	return equal(dst[0:5], appleTalkMulticastPrefix) && dst[5] <= 0xFC
+}
+
 // Framing wraps a FrameLink as a DatagramLink doing Ethernet/SNAP DDP framing.
 // It satisfies link.Framer.
 func (e *EtherTalk) Framing(fl link.FrameLink) (link.DatagramLink, error) {
@@ -98,6 +125,11 @@ func (d *datagramLink) ReadDatagram() (ddp.Datagram, error) {
 		dg, err := decode(frame)
 		if err != nil {
 			// Not a DDP datagram (AARP/other) or malformed: skip and keep reading.
+			continue
+		}
+		// Drop frames not addressed to us / broadcast / multicast so a forwarded
+		// datagram echoed back onto this segment is not re-ingested and re-routed.
+		if !deliverableTo(frame, d.srcMAC) {
 			continue
 		}
 		return dg, nil

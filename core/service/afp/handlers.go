@@ -235,8 +235,10 @@ const (
 	volBitmapName       uint16 = 1 << 8
 )
 
-// volSignatureFixed is the AFP volume signature for a fixed (non-variable) volume.
-const volSignatureFixed uint16 = 1
+// AFP volume signature values (Inside Macintosh: Networking, "Volume signature"):
+// 1 = Flat (no directories, not mountable by the Finder), 2 = Fixed Directory ID,
+// 3 = Variable Directory ID. A mountable hierarchical volume advertises Fixed.
+const volSignatureFixedDirID uint16 = 2
 
 // afpOpenVol opens a volume by name and packs the requested volume parameters.
 //
@@ -276,39 +278,94 @@ func (s *Service) afpOpenVol(a *afpSession, block []byte) ([]byte, int32) {
 // packVolParams appends the volume parameters named by bitmap, in ascending
 // bit order (the order AFP packs them). Dates default to the AFP epoch; free/
 // total bytes come from the share's DiskUsage (0/0 when the backend can't report).
+//
+// The volume Name is a VARIABLE-length field: per AFP its fixed-section slot
+// holds a 2-byte OFFSET (measured from the start of the parameters block, i.e.
+// just after the reply bitmap) to a Pascal string appended after all the fixed
+// fields. Writing the Pascal string inline — where the offset belongs — makes
+// every real client mis-read the name pointer and truncates the reply.
 func packVolParams(out []byte, vol *Volume, bitmap uint16) []byte {
 	var total, free uint64
 	if t, f, err := vol.FS().DiskUsage(""); err == nil {
 		total, free = t, f
 	}
+	// The name offset is relative to the parameters block, so it counts the
+	// fixed fields only (the name's own 2-byte pointer included) but NOT the
+	// bitmap word that precedes this block.
+	fixedSize := volFixedParamsSize(bitmap)
+	fixed := make([]byte, 0, fixedSize)
+	var variable []byte
+
 	if bitmap&volBitmapAttributes != 0 {
-		out = bp.AppendBE16(out, 0)
+		fixed = bp.AppendBE16(fixed, 0)
 	}
 	if bitmap&volBitmapSignature != 0 {
-		out = bp.AppendBE16(out, volSignatureFixed)
+		// Hierarchical, CNID-backed volumes advertise Fixed Directory ID so the
+		// Finder will mount them (Flat volumes are not mountable). Matches the
+		// legacy server's volumeType().
+		fixed = bp.AppendBE16(fixed, volSignatureFixedDirID)
 	}
 	if bitmap&volBitmapCreateDate != 0 {
-		out = bp.AppendBE32(out, macTime(afpEpoch))
+		fixed = bp.AppendBE32(fixed, macTime(afpEpoch))
 	}
 	if bitmap&volBitmapModDate != 0 {
-		out = bp.AppendBE32(out, macTime(afpEpoch))
+		fixed = bp.AppendBE32(fixed, macTime(afpEpoch))
 	}
 	if bitmap&volBitmapBackupDate != 0 {
-		out = bp.AppendBE32(out, noBackupDate)
+		fixed = bp.AppendBE32(fixed, noBackupDate)
 	}
 	if bitmap&volBitmapID != 0 {
-		out = bp.AppendBE16(out, vol.ID())
+		fixed = bp.AppendBE16(fixed, vol.ID())
 	}
 	if bitmap&volBitmapBytesFree != 0 {
-		out = bp.AppendBE32(out, sat32(free))
+		fixed = bp.AppendBE32(fixed, sat32(free))
 	}
 	if bitmap&volBitmapBytesTotal != 0 {
-		out = bp.AppendBE32(out, sat32(total))
+		fixed = bp.AppendBE32(fixed, sat32(total))
 	}
 	if bitmap&volBitmapName != 0 {
-		out = putPString(out, []byte(vol.Name()))
+		fixed = bp.AppendBE16(fixed, uint16(fixedSize+len(variable)))
+		variable = putPString(variable, []byte(vol.Name()))
 	}
+	out = append(out, fixed...)
+	out = append(out, variable...)
 	return out
+}
+
+// volFixedParamsSize returns the byte size of the fixed section of a volume
+// parameter block for bitmap — every field contributes its own width, and the
+// variable-length Name contributes only its 2-byte offset pointer. Used to seed
+// the name offset (see packVolParams).
+func volFixedParamsSize(bitmap uint16) int {
+	size := 0
+	if bitmap&volBitmapAttributes != 0 {
+		size += 2
+	}
+	if bitmap&volBitmapSignature != 0 {
+		size += 2
+	}
+	if bitmap&volBitmapCreateDate != 0 {
+		size += 4
+	}
+	if bitmap&volBitmapModDate != 0 {
+		size += 4
+	}
+	if bitmap&volBitmapBackupDate != 0 {
+		size += 4
+	}
+	if bitmap&volBitmapID != 0 {
+		size += 2
+	}
+	if bitmap&volBitmapBytesFree != 0 {
+		size += 4
+	}
+	if bitmap&volBitmapBytesTotal != 0 {
+		size += 4
+	}
+	if bitmap&volBitmapName != 0 {
+		size += 2 // offset pointer, not the string
+	}
+	return size
 }
 
 // afpMaxVolumeBytes is the largest free/total byte count the AFP 2.x volume
@@ -340,6 +397,80 @@ func (s *Service) afpCloseVol(a *afpSession, block []byte) ([]byte, int32) {
 	return nil, afpNoErr
 }
 
+// afpMapID maps a user or group id to a name (FPMapID, cmd 21). This is a
+// compatibility server with no real user database, so it answers the two IDs the
+// Finder cares about: the owner ("root") and the group ("wheel"). Ported from
+// main's handleMapID.
+//
+// Request: cmd(1) function(1) id(4). Reply: pstring(name).
+func (s *Service) afpMapID(a *afpSession, block []byte) ([]byte, int32) {
+	if len(block) < 6 {
+		return nil, afpErrParamErr
+	}
+	function := block[1]
+	name := "root"
+	// Functions 2 (MapUGRGID→group) and 4 (kUserUUID variants) → the group name.
+	if function == 2 || function == 4 {
+		name = "wheel"
+	}
+	return putPString(nil, []byte(name)), afpNoErr
+}
+
+// afpMapName maps a user or group name to an id (FPMapName, cmd 22). With no user
+// database every name maps to id 0. Ported from main's handleMapName.
+//
+// Request: cmd(1) function(1) pstring(name). Reply: id(4).
+func (s *Service) afpMapName(a *afpSession, block []byte) ([]byte, int32) {
+	if len(block) < 3 {
+		return nil, afpErrParamErr
+	}
+	return bp.AppendBE32(nil, 0), afpNoErr
+}
+
+// afpGetSrvrMsg returns a server or login message (FPGetSrvrMsg, cmd 38). The
+// Finder issues it during mount; this server carries no messages, so it echoes
+// the requested message type with an empty message. Ported from main.
+//
+// Request: cmd(1) pad(1) messageType(2) bitmap(2).
+// Reply:   messageType(2) bitmap(2) pstring(message).
+func (s *Service) afpGetSrvrMsg(a *afpSession, block []byte) ([]byte, int32) {
+	var msgType, bitmap uint16
+	if len(block) >= 6 {
+		msgType = bp.BE16(block[2:4])
+		bitmap = bp.BE16(block[4:6])
+	}
+	out := make([]byte, 0, 5)
+	out = bp.AppendBE16(out, msgType)
+	out = bp.AppendBE16(out, bitmap)
+	out = putPString(out, nil) // no message
+	return out, afpNoErr
+}
+
+// afpGetVolParms returns the parameters of an already-open volume. The Finder
+// issues it during mount; the refactor's scratch rewrite dropped it entirely,
+// so it answered kFPCallNotSupported (-5024) and the mount stalled.
+//
+// Request: cmd(1) pad(1) volID(2) bitmap(2).
+// Reply:   bitmap(2) <packed volume params> — the same parameter block FPOpenVol
+// returns, so it shares packVolParams (the volume Name is a trailing variable
+// field addressed by a 2-byte offset).
+func (s *Service) afpGetVolParms(a *afpSession, block []byte) ([]byte, int32) {
+	if len(block) < 6 {
+		return nil, afpErrParamErr
+	}
+	vol, ok := a.openVols[bp.BE16(block[2:4])]
+	if !ok {
+		return nil, afpErrParamErr
+	}
+	// Always answer at least the volume id so the reply is well-formed even if the
+	// client asked for nothing, matching afpOpenVol.
+	bitmap := bp.BE16(block[4:6]) | volBitmapID
+	out := make([]byte, 0, 64)
+	out = bp.AppendBE16(out, bitmap)
+	out = packVolParams(out, vol, bitmap)
+	return out, afpNoErr
+}
+
 // --- FPGetFileDirParms / FPEnumerate (catalog reads; spec/AFP_Connection_Flow
 // §7). The requested file/dir parameters are packed by the volume's full
 // bitmap packer (parms.go), in ascending bit order with variable-length names in
@@ -349,13 +480,23 @@ func (s *Service) afpCloseVol(a *afpSession, block []byte) ([]byte, int32) {
 // reply: set for a directory, clear for a file.
 const isDirFlag uint8 = 0x80
 
+// fileDirParmsHeader appends the fixed FPGetFileDirParms reply header to out and
+// returns it: fileBitmap(2) dirBitmap(2) then the file/dir byte pair — isDirFlag
+// (0x80) followed by a pad for a directory, or 0x00 0x00 for a file. It delegates
+// to FPGetFileDirParmsRes.Marshal (the production path) so the golden test that
+// pins this framing validates the same code the handler runs.
+func fileDirParmsHeader(out []byte, fileBitmap, dirBitmap uint16, isDir bool) []byte {
+	hdr := (&FPGetFileDirParmsRes{FileBitmap: fileBitmap, DirBitmap: dirBitmap, IsDir: isDir}).Marshal()
+	return append(out, hdr...)
+}
+
 // afpGetFileDirParms stats one path and packs the requested file/dir parameters.
 //
 // Request: cmd(1) pad(1) volID(2) dirID(4) fileBitmap(2) dirBitmap(2) pathType(1)
 //
 //	pathname...
 //
-// Reply: fileDirBitmap(2) isDir(1) pad(1) <packed params>.
+// Reply: fileBitmap(2) dirBitmap(2) isDir(1) pad(1) <packed params>.
 func (s *Service) afpGetFileDirParms(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 13 {
 		return nil, afpErrParamErr
@@ -364,10 +505,11 @@ func (s *Service) afpGetFileDirParms(a *afpSession, block []byte) ([]byte, int32
 	if !ok {
 		return nil, afpErrParamErr
 	}
+	dirID := bp.BE32(block[4:8])
 	fileBitmap := bp.BE16(block[8:10])
 	dirBitmap := bp.BE16(block[10:12])
 	pathType := block[12]
-	store, code := resolveBlockPath(vol, block, 13, pathType)
+	store, code := resolveBlockPath(vol, dirID, block, 13, pathType)
 	if code != afpNoErr {
 		return nil, code
 	}
@@ -380,15 +522,93 @@ func (s *Service) afpGetFileDirParms(a *afpSession, block []byte) ([]byte, int32
 	if !info.IsDir() {
 		bitmap = fileBitmap
 	}
-	out := make([]byte, 0, 32)
-	out = bp.AppendBE16(out, bitmap)
-	if info.IsDir() {
-		out = append(out, isDirFlag, 0)
-	} else {
-		out = append(out, 0, 0)
+	// Reply echoes BOTH bitmaps (file then dir), then the type/pad byte pair,
+	// then the packed params governed by the applicable bitmap. The DTO owns the
+	// fixed header; fileDirParams packs the variable params.
+	res := &FPGetFileDirParmsRes{
+		FileBitmap: fileBitmap,
+		DirBitmap:  dirBitmap,
+		IsDir:      info.IsDir(),
+		Params:     vol.fileDirParams(nil, store, info, bitmap, pathType),
 	}
-	out = vol.fileDirParams(out, store, info, bitmap, pathType)
-	return out, afpNoErr
+	return res.Marshal(), afpNoErr
+}
+
+// afpSetFileDirParms sets parameters common to files and directories. The Finder
+// issues it during mount (e.g. to stamp folder Finder info); the refactor's
+// scratch rewrite omitted it, so it answered kFPCallNotSupported (-5024) and the
+// Finder treated the volume as faulty.
+//
+// Request: cmd(1) pad(1) volID(2) dirID(4) bitmap(2) pathType(1) pathname(pascal)
+//
+//	[pad to even] <params in bitmap order>
+//
+// Only the Finder-info parameter is persisted; other bits (dates/attributes) are
+// accepted and acknowledged so the client proceeds. Reply: empty.
+func (s *Service) afpSetFileDirParms(a *afpSession, block []byte) ([]byte, int32) {
+	if len(block) < 11 {
+		return nil, afpErrParamErr
+	}
+	vol, ok := a.openVols[bp.BE16(block[2:4])]
+	if !ok {
+		return nil, afpErrParamErr
+	}
+	if vol.FS().Capabilities().ReadOnly {
+		return nil, afpErrAccessDenied
+	}
+	dirID := bp.BE32(block[4:8])
+	bitmap := bp.BE16(block[8:10])
+	pathType := block[10]
+	store, code := resolveBlockPath(vol, dirID, block, 11, pathType)
+	if code != afpNoErr {
+		return nil, code
+	}
+	// The parameter block follows the Pascal pathname, word-aligned to an even
+	// offset from the start of the command block.
+	nameLen := int(block[11])
+	off := 12 + nameLen
+	if off%2 != 0 {
+		off++
+	}
+	if fi, okFI := setParamsFinderInfo(block, off, bitmap); okFI && store != "" {
+		// The volume root ("") carries no per-object Finder-info sidecar; the Finder
+		// still stamps it during mount, so that case is acknowledged without a write.
+		if err := vol.SetFinderInfo(store, fi); err != nil {
+			return nil, afpErrAccessDenied
+		}
+	}
+	return nil, afpNoErr
+}
+
+// setParamsFinderInfo extracts the 32-byte Finder info from a Set*Parms parameter
+// block at off, walking the fixed fields that precede FinderInfo (bit 5) in
+// ascending bitmap-bit order. Returns ok=false if the FinderInfo bit is clear or
+// the block is too short.
+func setParamsFinderInfo(block []byte, off int, bitmap uint16) ([32]byte, bool) {
+	var fi [32]byte
+	if bitmap&fdBitmapFinderInfo == 0 {
+		return fi, false
+	}
+	if bitmap&fdBitmapAttributes != 0 {
+		off += 2
+	}
+	if bitmap&fdBitmapParentDID != 0 {
+		off += 4
+	}
+	if bitmap&fdBitmapCreateDate != 0 {
+		off += 4
+	}
+	if bitmap&fdBitmapModDate != 0 {
+		off += 4
+	}
+	if bitmap&fdBitmapBackupDate != 0 {
+		off += 4
+	}
+	if off+32 > len(block) {
+		return fi, false
+	}
+	copy(fi[:], block[off:off+32])
+	return fi, true
 }
 
 // afpEnumerate lists a directory's children, packing one entry per child with the
@@ -409,12 +629,13 @@ func (s *Service) afpEnumerate(a *afpSession, block []byte) ([]byte, int32) {
 	if !ok {
 		return nil, afpErrParamErr
 	}
+	dirID := bp.BE32(block[4:8])
 	fileBitmap := bp.BE16(block[8:10])
 	dirBitmap := bp.BE16(block[10:12])
 	reqCount := int(bp.BE16(block[12:14]))
 	startIndex := int(bp.BE16(block[14:16]))
 	pathType := block[18]
-	store, code := resolveBlockPath(vol, block, 19, pathType)
+	store, code := resolveBlockPath(vol, dirID, block, 19, pathType)
 	if code != afpNoErr {
 		return nil, code
 	}
@@ -429,12 +650,7 @@ func (s *Service) afpEnumerate(a *afpSession, block []byte) ([]byte, int32) {
 		return nil, afpErrObjectNotFnd // kFPObjectNotFound == "no more entries"
 	}
 
-	out := make([]byte, 0, 256)
-	out = bp.AppendBE16(out, fileBitmap)
-	out = bp.AppendBE16(out, dirBitmap)
-	countOff := len(out)
-	out = bp.AppendBE16(out, 0) // actualCount, patched below
-
+	var entries2 []byte
 	actual := 0
 	for i := start; i < len(entries) && actual < reqCount; i++ {
 		de := entries[i]
@@ -450,44 +666,32 @@ func (s *Service) afpEnumerate(a *afpSession, block []byte) ([]byte, int32) {
 		if !de.IsDir() {
 			bitmap = fileBitmap
 		}
-		entry := make([]byte, 0, 64)
-		isDir := byte(0)
-		if de.IsDir() {
-			isDir = isDirFlag
-		}
-		entry = append(entry, isDir, 0) // isDir + pad, after the length byte
-		entry = vol.fileDirParams(entry, childStore, info, bitmap, pathType)
-		// Each entry is prefixed by its own length byte (incl. the length byte)
-		// and padded to an even total length.
-		entryLen := len(entry) + 1
-		if entryLen%2 != 0 {
-			entry = append(entry, 0)
-			entryLen++
-		}
-		out = append(out, byte(entryLen))
-		out = append(out, entry...)
+		// The packed params carry their own name-offset words, anchored at the
+		// start of the params (byte 2 of the framed entry: length + type). enumEntry
+		// frames them as [len][type][params] with even-length padding at the tail —
+		// NO pad byte between the type byte and the params, or every client
+		// mis-reads the name pointer.
+		params := vol.fileDirParams(nil, childStore, info, bitmap, pathType)
+		entries2 = append(entries2, enumEntry(de.IsDir(), params)...)
 		actual++
 	}
 	if actual == 0 {
 		return nil, afpErrObjectNotFnd
 	}
-	out[countOff] = byte(actual >> 8)
-	out[countOff+1] = byte(actual)
-	return out, afpNoErr
+	res := &FPEnumerateRes{
+		FileBitmap: fileBitmap,
+		DirBitmap:  dirBitmap,
+		ActCount:   uint16(actual),
+		Entries:    entries2,
+	}
+	return res.Marshal(), afpNoErr
 }
 
 // resolveBlockPath resolves the pathname starting at off in an AFP command block
 // (relative to the volume root in this spine — dir-id-relative resolution lands
 // with FPOpenDir in a later slice) and maps codec errors to AFP result codes.
-func resolveBlockPath(vol *Volume, block []byte, off int, pathType uint8) (string, int32) {
-	if off > len(block) {
-		return "", afpErrParamErr
-	}
-	store, err := vol.ResolvePath("", string(block[off:]), pathType)
-	if err != nil {
-		return "", afpErrParamErr // unrepresentable name → "illegal name"
-	}
-	return store, afpNoErr
+func resolveBlockPath(vol *Volume, dirID uint32, block []byte, off int, pathType uint8) (string, int32) {
+	return resolveCatalogPath(vol, dirID, block, off, pathType)
 }
 
 // mapStatErr maps a store Stat/Enumerate error to an AFP result code.

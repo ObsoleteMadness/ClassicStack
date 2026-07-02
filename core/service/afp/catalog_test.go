@@ -16,7 +16,7 @@ func catalogPath(cmd, flag uint8, volID uint16, dirID uint32, name string) []byt
 	b = bp.AppendBE16(b, volID)
 	b = bp.AppendBE32(b, dirID)
 	b = append(b, PathTypeUTF8Names)
-	b = append(b, []byte(name)...)
+	b = putPString(b, []byte(name))
 	return b
 }
 
