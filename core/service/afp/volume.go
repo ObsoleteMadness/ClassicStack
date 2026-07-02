@@ -247,6 +247,11 @@ func (v *Volume) SetFinderInfo(path string, info [32]byte) error {
 // element, derived through the share's NameEngine. The engine returns a store
 // path; the caller wants just the leaf for the wire, so the parent is trimmed.
 func (v *Volume) ShortName(path string) string {
+	if path == "" {
+		// The volume root's short name is the configured volume name (matching
+		// MediumName and main's catalogNameForPath), not an empty leaf.
+		return v.Name()
+	}
 	n, err := v.FS().ShortName(path)
 	if err != nil || n == "" {
 		_, base := splitStore(path)
@@ -265,7 +270,11 @@ func (v *Volume) ShortName(path string) string {
 // returns a store path; the leaf is taken for the wire.
 func (v *Volume) MediumName(path string) string {
 	if path == "" {
-		return "" // the volume root carries no name element of its own
+		// The volume root has no host name element of its own; AFP clients must
+		// see the configured volume name for the root catalog entry (it drives the
+		// mounted volume's window title). Matches main's catalogNameForPath, which
+		// substitutes the volume name when the path is the volume root.
+		return v.Name()
 	}
 	n, err := v.FS().MediumName(path)
 	if err != nil || n == "" {

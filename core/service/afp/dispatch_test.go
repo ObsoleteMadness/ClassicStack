@@ -451,6 +451,49 @@ func TestDispatch_GetFileDirParmsParentOfRootByVolumeName(t *testing.T) {
 	}
 }
 
+// TestDispatch_GetFileDirParmsRootHasVolumeName reproduces the Finder's
+// window-title probe: FPGetFileDirParms DID=2 (the root) with an empty path,
+// requesting LongName. The root entry's LongName must carry the CONFIGURED
+// volume name, not an empty string — the regression that made the mounted
+// volume's root display with no name. Matches main's catalogNameForPath, which
+// substitutes the volume name for the root catalog entry.
+func TestDispatch_GetFileDirParmsRootHasVolumeName(t *testing.T) {
+	svc, r := newRunningService(t)
+	from := fakePort{}
+	sessID := login(t, svc, r)
+
+	r.reset()
+	openVol := []byte{cmdOpenVol, 0}
+	openVol = bp.AppendBE16(openVol, volBitmapID)
+	openVol = putPString(openVol, []byte("Share"))
+	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 3), openVol)), from)
+	volID := bp.BE16(respPayload(r.lastReply())[2:4])
+
+	// GetFileDirParms Did=2 (root), empty path, LongName requested.
+	r.reset()
+	req := []byte{cmdGetFileDirParms, 0}
+	req = bp.AppendBE16(req, volID)
+	req = bp.AppendBE32(req, 2) // DID = root
+	req = bp.AppendBE16(req, 0) // fileBitmap (n/a, root is a dir)
+	req = bp.AppendBE16(req, fdBitmapLongName|dirBitmapDirID)
+	req = append(req, PathTypeUTF8Names)
+	req = putPString(req, nil) // empty path → the root itself
+	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 4), req)), from)
+	if got := int32(respUserData(r.lastReply())); got != afpNoErr {
+		t.Fatalf("GetFileDirParms root = %d, want 0", got)
+	}
+	reply := respPayload(r.lastReply())
+	// dir reply: fileBitmap(2) dirBitmap(2) type(1) pad(1) params. params bit order:
+	// LongName offset(2) then DirID(4); LongName is the lowest requested field, so
+	// its offset points into the variable area at params-start + fixedSize.
+	params := reply[6:]
+	nameOff := int(bp.BE16(params[0:2]))
+	name, _, ok := pString(params, nameOff)
+	if !ok || string(name) != "Share" {
+		t.Fatalf("root LongName = %q (ok=%v), want %q (volume name); empty means the root shows nameless in Finder", name, ok, "Share")
+	}
+}
+
 // TestDispatch_SetFileDirParmsAcksFinderInfo proves FPSetFileDirParms is answered
 // (not -5024) and persists Finder info the client can read back.
 func TestDispatch_SetFileDirParmsAcksFinderInfo(t *testing.T) {
