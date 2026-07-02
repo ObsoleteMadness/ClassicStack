@@ -21,6 +21,7 @@ import (
 type fakeRouter struct {
 	mu      sync.Mutex
 	replies []ddp.Datagram
+	routed  []ddp.Datagram // server-initiated sends via Route (aspDataWrite/TRel/tickle/attention)
 }
 
 func (f *fakeRouter) Reply(d ddp.Datagram, _ router.RoutedPort, ddpType uint8, data []byte) {
@@ -39,12 +40,36 @@ func (f *fakeRouter) Reply(d ddp.Datagram, _ router.RoutedPort, ddpType uint8, d
 	})
 	f.mu.Unlock()
 }
-func (f *fakeRouter) Route(ddp.Datagram, bool) error      { return nil }
+func (f *fakeRouter) Route(d ddp.Datagram, _ bool) error {
+	f.mu.Lock()
+	f.routed = append(f.routed, d)
+	f.mu.Unlock()
+	return nil
+}
 func (f *fakeRouter) RoutingTable() *router.RoutingTable  { return nil }
 func (f *fakeRouter) Zones() *router.ZoneInformationTable { return nil }
 func (f *fakeRouter) Ports() []router.RoutedPort          { return nil }
 func (f *fakeRouter) lastReply() ddp.Datagram             { return f.replies[len(f.replies)-1] }
-func (f *fakeRouter) reset()                              { f.mu.Lock(); f.replies = nil; f.mu.Unlock() }
+func (f *fakeRouter) reset() {
+	f.mu.Lock()
+	f.replies = nil
+	f.routed = nil
+	f.mu.Unlock()
+}
+
+// routedByFunc returns the ATP function code of the routed datagrams, filtered to
+// server-initiated ASP frames. Helper for tests asserting aspDataWrite/TRel emission.
+func (f *fakeRouter) routedControls() []uint8 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]uint8, 0, len(f.routed))
+	for _, d := range f.routed {
+		if h, err := atp.Decode(d.Data); err == nil {
+			out = append(out, h.Control)
+		}
+	}
+	return out
+}
 
 // fakePort is a minimal RoutedPort; Reply ignores it, so the methods are stubs.
 type fakePort struct{ router.RoutedPort }
@@ -69,6 +94,13 @@ func ddpTo(sock uint8, frame []byte) ddp.Datagram {
 // and payload.
 func atpTReq(userData uint32, payload []byte) []byte {
 	h := atp.Header{Control: atp.TREQ | atp.XO, Bitmap: 0x01, TransID: 7, UserData: userData}
+	return append(h.Encode(nil), payload...)
+}
+
+// atpTReqTID is atpTReq with an explicit ATP transaction id, for tests that model
+// a workstation retransmitting the same ASP request under a fresh tid.
+func atpTReqTID(userData uint32, tid uint16, payload []byte) []byte {
+	h := atp.Header{Control: atp.TREQ | atp.XO, Bitmap: 0x01, TransID: tid, UserData: userData}
 	return append(h.Encode(nil), payload...)
 }
 

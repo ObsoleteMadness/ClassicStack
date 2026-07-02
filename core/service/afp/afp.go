@@ -54,6 +54,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
+	"github.com/ObsoleteMadness/ClassicStack/core/protocol/asp"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/atp"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/ddp"
 	"github.com/ObsoleteMadness/ClassicStack/core/router"
@@ -103,9 +104,13 @@ type Service struct {
 	sessions      *sessionTable
 	pendingWrites *pendingWriteTable
 
+	wg        sync.WaitGroup // tracks per-session maintenance + write-retry goroutines
+	drainStop chan struct{}  // closed on Stop to unblock those goroutines
+
 	mu         sync.Mutex
 	rtr        router.ServiceRouter
 	auth       Authenticator
+	names      NameRegistrar                // NBP name-info service; AFP registers serverName:AFPServer@zone here (nil = no NBP in this build)
 	zone       string                       // advertised AppleTalk zone (NBP registration); "" = router default
 	transports []string                     // bound transport tokens (ddp/tcp); empty = bind-all (back-compat)
 	resolver   func() ([]VolumeSpec, error) // re-resolves the desired volume set from the model; set at wire time for hot-apply
@@ -130,6 +135,28 @@ type Authenticator interface {
 func (s *Service) SetAuthenticator(a Authenticator) {
 	s.mu.Lock()
 	s.auth = a
+	s.mu.Unlock()
+}
+
+// NameRegistrar is the minimal Name Binding Protocol seam AFP uses to advertise its
+// server name so Macs discover it in the Chooser: it registers/unregisters an NBP tuple
+// (object=server name, type "AFPServer", zone) pointing at AFP's ASP socket. It is a
+// LOCAL interface — structurally satisfied by *core/service/nbp.Service — so this package
+// does not import the NBP service (the same acyclicity discipline as the Authenticator
+// seam). A nil registrar means "no NBP in this build": AFP still serves sessions, it just
+// isn't advertised by name (the historical behaviour before this wiring existed).
+type NameRegistrar interface {
+	RegisterName(obj, typ, zone []byte, socket uint8)
+	UnregisterName(obj, typ, zone []byte)
+}
+
+// SetNBP installs the NBP name-information service AFP registers its AFPServer name with.
+// The compose cross-wire calls it once NBP is resolved (the registry builds AFP before it
+// can reach the NBP component), so it must be called before Start; a nil service skips the
+// registration (AFP serves but is not name-advertised). Idempotent.
+func (s *Service) SetNBP(names NameRegistrar) {
+	s.mu.Lock()
+	s.names = names
 	s.mu.Unlock()
 }
 
@@ -585,9 +612,42 @@ func (s *Service) Start(ctx context.Context) error {
 		return nil
 	}
 	s.running = true
+	s.drainStop = make(chan struct{})
 	s.subscribeReactorLocked()
+	s.registerNBPLocked()
 	s.logf("AFP service started (dispatch spine: ASP session + catalog read/mutate + full file/dir bitmaps + fork I/O + two-phase write + desktop DB + catsearch)")
 	return nil
+}
+
+// afpServerType is the NBP type Macs look up to find an AFP file server in the Chooser.
+var afpServerType = []byte("AFPServer")
+
+// nbpTupleLocked returns the NBP object/zone AFP advertises: object = the effective
+// server name, zone = the configured zone or, when unset, the router's first zone (the
+// AppleTalk convention for a single-zone seed). Caller holds s.mu.
+func (s *Service) nbpTupleLocked() (obj, zone []byte) {
+	obj = []byte(s.serverInfo().ServerName)
+	zone = []byte(s.zone)
+	if len(zone) == 0 && s.rtr != nil {
+		if zones := s.rtr.Zones().Zones(); len(zones) > 0 {
+			zone = append([]byte(nil), zones[0]...)
+		}
+	}
+	return obj, zone
+}
+
+// registerNBPLocked advertises the AFP server's NBP name (serverName:AFPServer@zone) at
+// AFP's ASP socket, so a Chooser lookup for AFPServer in the zone resolves to this server.
+// A no-op when no NBP service is wired (nil) or no zone can be resolved. Caller holds s.mu.
+func (s *Service) registerNBPLocked() {
+	if s.names == nil {
+		return
+	}
+	obj, zone := s.nbpTupleLocked()
+	if len(zone) == 0 {
+		return // no zone yet — nothing to register into
+	}
+	s.names.RegisterName(obj, afpServerType, zone, s.socket)
 }
 
 // subscribeReactorLocked attaches the §10d reactor to each distinct FS bus among the
@@ -618,13 +678,35 @@ func (s *Service) Stop(ctx context.Context) error {
 		return nil
 	}
 	s.running = false
+	// Withdraw the NBP advertisement so a stopped server stops answering Chooser lookups.
+	if s.names != nil {
+		obj, zone := s.nbpTupleLocked()
+		if len(zone) != 0 {
+			s.names.UnregisterName(obj, afpServerType, zone)
+		}
+	}
 	reactor := s.reactor
 	// Snapshot the live volumes so their backends can be closed after the lock drops.
 	// Stop is definitive teardown (no session can still hold a volume), so closing each
 	// volume's FS here releases any GC-invisible backend resource (zipfs handles,
 	// macgarden goroutine). A plain backend's Close is a no-op.
 	volumes := append([]*Volume(nil), s.volumes...)
+	drainStop := s.drainStop
 	s.mu.Unlock()
+
+	// Tell every live client the server is going down (best-effort SPAttention),
+	// then unblock and wait out the per-session maintenance + write-retry
+	// goroutines so none outlive Stop.
+	for _, id := range s.sessions.ids() {
+		if sess, ok := s.sessions.get(id); ok {
+			s.sendAttention(sess, asp.AspAttnServerGoingDown)
+			s.teardownSession(sess)
+		}
+	}
+	if drainStop != nil {
+		close(drainStop)
+	}
+	s.wg.Wait()
 
 	if reactor != nil {
 		reactor.Stop()
@@ -644,10 +726,18 @@ func (s *Service) logf(msg string) {
 	s.logger.Log1(log.Info, msg, log.Str("scope", Name))
 }
 
-// Dependencies declares AFP's hard start-order edge: the AppleTalk router must be
-// running before AFP (its ASP/DDP transport binds to the router's socket table). The
-// edge drops automatically in a no-router build (the runtime filters to built targets).
-func (s *Service) Dependencies() []string { return []string{router.Name} }
+// nbpComponentName is the NBP name-info service's component name (core/service/nbp.Name).
+// It is duplicated here as a plain string so AFP declares a start-order edge to NBP
+// WITHOUT importing the NBP service package (AFP reaches NBP only through the local
+// NameRegistrar seam). The runtime filters the edge to built components, so a no-NBP build
+// simply drops it.
+const nbpComponentName = "NBP"
+
+// Dependencies declares AFP's hard start-order edges: the AppleTalk router must be running
+// before AFP (its ASP/DDP transport binds to the router's socket table), and NBP before it
+// so AFP's AFPServer name is registered into a live name table on Start. Both edges drop
+// automatically when their target is not built (the runtime filters to built targets).
+func (s *Service) Dependencies() []string { return []string{router.Name, nbpComponentName} }
 
 // compile-time assertions.
 var (

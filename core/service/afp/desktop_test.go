@@ -155,14 +155,13 @@ func TestDesktop_IconTwoPhaseAddGet(t *testing.T) {
 
 	// Phase 1: aspWrite carrying the FPAddIcon header (no bitmap yet).
 	header := fpAddIconHeader(dtRef, creator, fileType, iconType, tag, uint16(len(bitmap)))
-	from.sent = nil
 	r.reset()
 	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncWrite, sessID, 9), header)), from)
-	if len(from.sent) != 1 {
-		t.Fatalf("FPAddIcon aspDataWrite TReqs = %d, want 1", len(from.sent))
+	if len(r.routed) != 1 {
+		t.Fatalf("FPAddIcon aspDataWrite TReqs = %d, want 1", len(r.routed))
 	}
-	dh, _ := atp.Decode(from.sent[0].Data)
-	if bsz := bp.BE16(from.sent[0].Data[atp.HeaderSize:]); int(bsz) != len(bitmap) {
+	dh, _ := atp.Decode(r.routed[0].Data)
+	if bsz := bp.BE16(r.routed[0].Data[atp.HeaderSize:]); int(bsz) != len(bitmap) {
 		t.Fatalf("aspDataWrite bufferSize = %d, want %d", bsz, len(bitmap))
 	}
 	if len(r.replies) != 0 {

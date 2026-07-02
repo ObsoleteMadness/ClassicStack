@@ -85,11 +85,12 @@ func TestTwoPhaseWrite_DataPath(t *testing.T) {
 	header := fpWriteHeader(forkRef, 0, uint32(len(payload)))
 	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncWrite, sessID, seq), header)), from)
 
-	// The service must have sent exactly one aspDataWrite TReq to the WSS.
-	if len(from.sent) != 1 {
-		t.Fatalf("aspDataWrite TReqs sent = %d, want 1", len(from.sent))
+	// The service must have routed exactly one aspDataWrite TReq to the WSS
+	// (server-initiated sends go through router.Route, mirroring main).
+	if len(r.routed) != 1 {
+		t.Fatalf("aspDataWrite TReqs routed = %d, want 1", len(r.routed))
 	}
-	dw := from.sent[0]
+	dw := r.routed[0]
 	if dw.DestSocket != 200 { // the WSS the test client opened the session from
 		t.Errorf("aspDataWrite DestSocket = %d, want 200 (WSS)", dw.DestSocket)
 	}
@@ -119,14 +120,14 @@ func TestTwoPhaseWrite_DataPath(t *testing.T) {
 
 	// Phase 2b: the workstation answers the aspDataWrite TReq with the data as an
 	// EOM TResp echoing the server's transaction id.
-	from.sent = nil
+	r.routed = nil
 	svc.Inbound(dataResponse(dh.TransID, payload), from)
 
 	// The service must release the exactly-once aspDataWrite transaction with a
 	// TRel for the same transaction id, addressed to the WSS — otherwise the Mac
 	// holds the XO transaction open and reports the write as failed.
 	var sawTRel bool
-	for _, pkt := range from.sent {
+	for _, pkt := range r.routed {
 		th, derr := atp.Decode(pkt.Data)
 		if derr != nil {
 			continue
@@ -186,15 +187,14 @@ func TestTwoPhaseWrite_MultiPacketData(t *testing.T) {
 	for i := range payload {
 		payload[i] = byte(i)
 	}
-	from.sent = nil
 	r.reset()
 
 	header := fpWriteHeader(forkRef, 0, uint32(len(payload)))
 	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncWrite, sessID, 1), header)), from)
-	if len(from.sent) != 1 {
-		t.Fatalf("aspDataWrite TReqs = %d, want 1", len(from.sent))
+	if len(r.routed) != 1 {
+		t.Fatalf("aspDataWrite TReqs = %d, want 1", len(r.routed))
 	}
-	tid, _ := atp.Decode(from.sent[0].Data)
+	tid, _ := atp.Decode(r.routed[0].Data)
 
 	// Two TResp packets: seq 0 (not EOM) and seq 1 (EOM).
 	svc.Inbound(dataResponseSeq(tid.TransID, 0, false, payload[:atp.MaxATPData]), from)
@@ -233,13 +233,12 @@ func TestTwoPhaseWrite_ZeroLength(t *testing.T) {
 
 	from := &recordingPort{}
 	sessID, forkRef := openForkRW(t, svc, r, from, "empty.txt")
-	from.sent = nil
 	r.reset()
 
 	header := fpWriteHeader(forkRef, 0, 0)
 	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncWrite, sessID, 1), header)), from)
-	if len(from.sent) != 0 {
-		t.Fatalf("zero-length write sent %d aspDataWrite TReqs, want 0", len(from.sent))
+	if len(r.routed) != 0 {
+		t.Fatalf("zero-length write routed %d aspDataWrite TReqs, want 0", len(r.routed))
 	}
 	if len(r.replies) != 1 {
 		t.Fatalf("zero-length write replies = %d, want 1", len(r.replies))

@@ -1,6 +1,7 @@
 package afp
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -15,12 +16,65 @@ import (
 // per-circuit Conn from conn.go); the session adds only the ASP transport state
 // (socket/address/timer), so the AFP layer holds no socket knowledge.
 type session struct {
-	id     uint8
-	wss    uint8     // workstation session socket (for server tickles / attention)
-	net    uint16    // client network — server-initiated packets address here
-	node   uint8     // client node
+	id   uint8
+	wss  uint8  // workstation session socket (for server tickles / attention)
+	net  uint16 // client network — server-initiated packets address here
+	node uint8  // client node
+
+	// srvNet/srvNode/srvSocket are the server-side address the workstation reached
+	// us on (the OpenSession request's destination). Server-initiated packets
+	// (tickle / attention / aspDataWrite / TRel) are routed FROM here so the .XPP
+	// driver correlates them to this session. Kept so async sends need not hold
+	// the original inbound port.
+	srvNet    uint16
+	srvNode   uint8
+	srvSocket uint8
+
+	conn *Conn // the transport-agnostic AFP command circuit (conn.go)
+
+	mu     sync.Mutex
 	lastRx time.Time // updated on every inbound packet for the maintenance timer
-	conn   *Conn     // the transport-agnostic AFP command circuit (conn.go)
+	seq    seqFilter // ASP-level duplicate filter (retransmitted TReq must not re-run)
+	closed bool      // set once the maintenance loop / CloseSess has torn it down
+	stop   chan struct{}
+}
+
+// seqFilter is the per-session ASP duplicate filter. A workstation retransmits a
+// TReq (same seqNum) with a fresh ATP transaction id when it thinks a reply was
+// lost; without this an idempotent-unsafe command (FPWrite, FPCreateFile) would
+// run twice. Mirrors main's service/asp seqFilter: a request is a duplicate only
+// when the ASP seqNum repeats under a DIFFERENT ATP tid.
+type seqFilter struct {
+	lastSeq uint16
+	lastTID uint16
+	inited  bool
+}
+
+// accept records (seq, tid) and reports whether the request should be processed.
+// False means duplicate — drop.
+func (f *seqFilter) accept(seq, tid uint16) bool {
+	if f.inited && seq == f.lastSeq && tid != f.lastTID {
+		return false
+	}
+	f.lastSeq, f.lastTID, f.inited = seq, tid, true
+	return true
+}
+
+// touch updates the activity timestamp and applies the duplicate filter under the
+// session lock. It returns false when the request is an ASP-level duplicate that
+// must be silently dropped.
+func (s *session) touch(seqNum, tid uint16) (fresh bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastRx = time.Now()
+	return s.seq.accept(seqNum, tid)
+}
+
+// idle reports how long since the last inbound packet on this session.
+func (s *session) idle() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return time.Since(s.lastRx)
 }
 
 // sessionTable holds the live ASP sessions keyed by session id, and allocates new
@@ -37,9 +91,11 @@ func newSessionTable() *sessionTable {
 }
 
 // open allocates a session id and registers a new session bound to the given AFP
-// command circuit. It returns ok=false if all 255 ids are in use (the client sees
+// command circuit. wss/net/node address the workstation; srv* is the server-side
+// address the client reached us on (threaded onto server-initiated packets). It
+// returns ok=false if all 255 ids are in use (the client sees
 // SPErrorNoMoreSessions / ServerBusy).
-func (t *sessionTable) open(wss uint8, net uint16, node uint8, conn *Conn) (*session, bool) {
+func (t *sessionTable) open(wss uint8, net uint16, node uint8, srvNet uint16, srvNode, srvSocket uint8, conn *Conn) (*session, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if len(t.byID) >= 255 {
@@ -55,10 +111,26 @@ func (t *sessionTable) open(wss uint8, net uint16, node uint8, conn *Conn) (*ses
 		}
 		id++
 	}
-	s := &session{id: id, wss: wss, net: net, node: node, lastRx: time.Now(), conn: conn}
+	s := &session{
+		id: id, wss: wss, net: net, node: node,
+		srvNet: srvNet, srvNode: srvNode, srvSocket: srvSocket,
+		lastRx: time.Now(), conn: conn, stop: make(chan struct{}),
+	}
 	t.byID[id] = s
 	t.nextID = id + 1
 	return s, true
+}
+
+// ids returns a snapshot of the live session ids (for Stop's ServerGoingDown
+// sweep, which must not hold the table lock while sending).
+func (t *sessionTable) ids() []uint8 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]uint8, 0, len(t.byID))
+	for id := range t.byID {
+		out = append(out, id)
+	}
+	return out
 }
 
 // get returns the session for an id, if live.
@@ -131,7 +203,11 @@ func (s *Service) handleOpenSession(req atpRequest) {
 		return
 	}
 
-	sess, ok := s.sessions.open(open.WSSSocket, req.d.SrcNetwork, req.d.SrcNode, s.NewConn())
+	sess, ok := s.sessions.open(
+		open.WSSSocket, req.d.SrcNetwork, req.d.SrcNode,
+		req.d.DestNetwork, req.d.DestNode, req.d.DestSocket,
+		s.NewConn(),
+	)
 	if !ok {
 		reply.ErrorCode = asp.SPErrorServerBusy
 		req.respond(s.rtr, reply.MarshalUserData(), nil)
@@ -139,6 +215,32 @@ func (s *Service) handleOpenSession(req atpRequest) {
 	}
 	reply.SessionID = sess.id
 	req.respond(s.rtr, reply.MarshalUserData(), nil)
+
+	// Start the per-session maintenance loop: it tickles the workstation to keep
+	// the session alive and reaps it if the client goes silent past the
+	// maintenance timeout (so a vanished client does not leak its forks).
+	s.wg.Add(1)
+	go s.maintainSession(sess)
+}
+
+// teardownSession closes a session exactly once: stops its maintenance loop,
+// closes any forks the client left open, and drops it from the table. Safe to
+// call from the maintenance loop (idle reap) or an inbound CloseSess; the first
+// caller wins and the rest are no-ops.
+func (s *Service) teardownSession(sess *session) {
+	sess.mu.Lock()
+	if sess.closed {
+		sess.mu.Unlock()
+		return
+	}
+	sess.closed = true
+	close(sess.stop)
+	sess.mu.Unlock()
+
+	if sess.conn != nil {
+		sess.conn.Close()
+	}
+	s.sessions.close(sess.id)
 }
 
 // handleCloseSession tears down the session and replies empty (UserData 0). Any
@@ -146,10 +248,9 @@ func (s *Service) handleOpenSession(req atpRequest) {
 // FPCloseFork does not leak file handles.
 func (s *Service) handleCloseSession(req atpRequest) {
 	pkt := asp.ParseCloseSessPacket(req.userData)
-	if sess, ok := s.sessions.get(pkt.SessionID); ok && sess.conn != nil {
-		sess.conn.Close()
+	if sess, ok := s.sessions.get(pkt.SessionID); ok {
+		s.teardownSession(sess)
 	}
-	s.sessions.close(pkt.SessionID)
 	req.respond(s.rtr, asp.CloseSessReplyUserData(), nil)
 }
 
@@ -158,7 +259,36 @@ func (s *Service) handleCloseSession(req atpRequest) {
 func (s *Service) handleTickle(req atpRequest) {
 	sessID := uint8(req.userData >> 16)
 	if sess, ok := s.sessions.get(sessID); ok {
+		sess.mu.Lock()
 		sess.lastRx = time.Now()
+		sess.mu.Unlock()
+	}
+}
+
+// maintainSession runs the per-session keep-alive + inactivity-reap loop (main's
+// SessionManager.maintenance). Every TickleInterval it sends a tickle to the
+// workstation; if no inbound packet has arrived within SessionMaintenanceTimeout
+// it tears the session down (so a client that vanished without CloseSess does not
+// leak its forks). The loop exits when the session is torn down (stop closed) or
+// the service drains (drainStop closed).
+func (s *Service) maintainSession(sess *session) {
+	defer s.wg.Done()
+	ticker := time.NewTicker(asp.TickleInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-sess.stop:
+			return
+		case <-s.drainStop:
+			return
+		case <-ticker.C:
+			if sess.idle() > asp.SessionMaintenanceTimeout {
+				s.logf(fmt.Sprintf("ASP session %d timed out (idle > %v), closing", sess.id, asp.SessionMaintenanceTimeout))
+				s.teardownSession(sess)
+				return
+			}
+			s.sendTickle(sess)
+		}
 	}
 }
 
@@ -175,7 +305,17 @@ func (s *Service) handleCommand(req atpRequest) {
 		req.respond(s.rtr, uint32(int32ToUserData(int32(asp.SPErrorParamErr))), nil)
 		return
 	}
-	sess.lastRx = time.Now()
+	if len(cmd.CmdBlock) > asp.ATPMaxData {
+		// Oversized command block (> one ATP packet): reject with the ASP size
+		// error (spec/10; main's effectiveMaxCmdSize == ATPMaxData == 578).
+		req.respond(s.rtr, int32ToUserData(int32(asp.SPErrorSizeErr)), nil)
+		return
+	}
+	if !sess.touch(cmd.SeqNum, req.transID) {
+		// ASP-level duplicate (retransmitted seq under a new tid): the original is
+		// still in flight or just answered; drop rather than re-run the command.
+		return
+	}
 
 	reply, result := sess.conn.Command(cmd.CmdBlock)
 	req.respond(s.rtr, int32ToUserData(result), reply)
@@ -200,7 +340,16 @@ func (s *Service) handleWrite(req atpRequest) {
 		req.respond(s.rtr, int32ToUserData(int32(asp.SPErrorParamErr)), nil)
 		return
 	}
-	sess.lastRx = time.Now()
+	if len(pkt.CmdBlock) > asp.ATPMaxData {
+		req.respond(s.rtr, int32ToUserData(int32(asp.SPErrorSizeErr)), nil)
+		return
+	}
+	if !sess.touch(pkt.SeqNum, req.transID) {
+		// Duplicate aspWrite retransmission: the original is in flight (its
+		// aspDataWrite is pending). Dropping avoids issuing a second data pull /
+		// double-applying the write.
+		return
+	}
 
 	want, hdrLen := writeDataCount(pkt.CmdBlock)
 	if want <= 0 {
@@ -214,9 +363,64 @@ func (s *Service) handleWrite(req atpRequest) {
 		want = writeQuantum
 	}
 
-	pw := &pendingWrite{orig: req, sess: sess, cmdBlk: pkt.CmdBlock, hdrLen: hdrLen, want: want}
+	pw := &pendingWrite{orig: req, sess: sess, cmdBlk: pkt.CmdBlock, hdrLen: hdrLen, want: want, seq: pkt.SeqNum}
 	tid := s.pendingWrites.add(pw)
-	s.sendDataWrite(req, sess, pkt.SeqNum, tid, want)
+	s.sendDataWrite(sess, pkt.SeqNum, tid, want)
+	s.wg.Add(1)
+	go s.retryDataWrite(pw, tid)
+}
+
+// retryDataWrite guards one in-flight aspDataWrite against a lost request/response
+// (the spine drives it as a raw TReq, so unlike main's ATP endpoint it has no
+// built-in retransmission). It resends the aspDataWrite up to writeMaxRetries
+// times, one every writeRetryInterval, until the write completes (the pending
+// entry is removed by handleDataResponse) or the service drains. If the
+// workstation never answers it abandons the write, cleans up the pending entry,
+// and fails the phase-1 aspWrite so the client is not left waiting forever.
+func (s *Service) retryDataWrite(pw *pendingWrite, tid uint16) {
+	defer s.wg.Done()
+	ticker := time.NewTicker(writeRetryInterval)
+	defer ticker.Stop()
+	for attempt := 0; attempt < writeMaxRetries; attempt++ {
+		select {
+		case <-pw.sess.stop:
+			return
+		case <-s.drainStop:
+			return
+		case <-ticker.C:
+			if _, live := s.pendingWrites.get(tid); !live {
+				return // handleDataResponse already completed this write
+			}
+			s.sendDataWrite(pw.sess, pw.seq, tid, pw.want)
+		}
+	}
+	// Exhausted retries: drop the pending write and fail the phase-1 aspWrite so
+	// the client stops waiting.
+	if _, live := s.pendingWrites.get(tid); live {
+		s.pendingWrites.remove(tid)
+		pw.orig.respond(s.rtr, int32ToUserData(int32(asp.SPErrorParamErr)), nil)
+	}
+}
+
+// routeToWorkstation sends a server-initiated ATP frame to the session's
+// workstation session socket, sourced from the server address the client reached
+// us on. It mirrors main's requester-side send (router.Route with explicit
+// src/dst) so tickle / attention / aspDataWrite / TRel all address the .XPP
+// driver correctly without holding the original inbound port.
+func (s *Service) routeToWorkstation(sess *session, frame []byte) {
+	if s.rtr == nil {
+		return
+	}
+	s.rtr.Route(ddp.Datagram{
+		DestNetwork: sess.net,
+		DestNode:    sess.node,
+		DestSocket:  sess.wss,
+		SrcNetwork:  sess.srvNet,
+		SrcNode:     sess.srvNode,
+		SrcSocket:   sess.srvSocket,
+		DDPType:     atp.DDPType,
+		Data:        frame,
+	}, true)
 }
 
 // sendDataWrite emits the phase-2a aspDataWrite TReq to the workstation's session
@@ -224,7 +428,7 @@ func (s *Service) handleWrite(req atpRequest) {
 // transaction: tid is the transaction id the workstation will echo in its TResp
 // (so handleDataResponse can correlate the data back to the pending write), and
 // the request bitmap names the response packets the server is prepared to take.
-func (s *Service) sendDataWrite(req atpRequest, sess *session, seq uint16, tid uint16, want int) {
+func (s *Service) sendDataWrite(sess *session, seq uint16, tid uint16, want int) {
 	ud := asp.WriteContinuePacket{SessionID: sess.id, SeqNum: seq, BufferSize: uint16(want)}.MarshalUserData()
 
 	nPackets := min(max((want+atp.MaxATPData-1)/atp.MaxATPData, 1), atp.MaxResponsePackets)
@@ -239,18 +443,7 @@ func (s *Service) sendDataWrite(req atpRequest, sess *session, seq uint16, tid u
 	h.SetTRelTimeout(atp.TRel30s)
 	frame := h.Encode(make([]byte, 0, atp.HeaderSize+2))
 	frame = append(frame, asp.WriteContinuePacket{BufferSize: uint16(want)}.MarshalData()...)
-
-	d := ddp.Datagram{
-		DestNetwork: sess.net,
-		SrcNetwork:  req.d.DestNetwork,
-		DestNode:    sess.node,
-		SrcNode:     req.d.DestNode,
-		DestSocket:  sess.wss,
-		SrcSocket:   req.d.DestSocket,
-		DDPType:     atp.DDPType,
-		Data:        frame,
-	}
-	req.from.Unicast(sess.net, sess.node, d)
+	s.routeToWorkstation(sess, frame)
 }
 
 // sendTRel releases the exactly-once aspDataWrite transaction: after the server
@@ -258,24 +451,33 @@ func (s *Service) sendDataWrite(req atpRequest, sess *session, seq uint16, tid u
 // Release) for tid so the .XPP driver can drop its transaction control block and
 // consider the write delivered. Without this the workstation holds the XO
 // transaction open, retransmits its data TResp until it gives up, and reports the
-// write as failed — even though the server already applied it. The TRel is
-// addressed back to the workstation's session socket, exactly as the aspDataWrite
-// TReq was (main's ATP endpoint sends this automatically for an XO requester; the
-// spine's hand-rolled aspDataWrite must do it explicitly).
-func (s *Service) sendTRel(orig atpRequest, sess *session, tid uint16) {
+// write as failed — even though the server already applied it. main's ATP
+// endpoint sends this automatically for an XO requester; the spine's hand-rolled
+// aspDataWrite must do it explicitly.
+func (s *Service) sendTRel(sess *session, tid uint16) {
 	h := atp.Header{Control: atp.TREL, TransID: tid}
-	frame := h.Encode(make([]byte, 0, atp.HeaderSize))
-	d := ddp.Datagram{
-		DestNetwork: sess.net,
-		SrcNetwork:  orig.d.DestNetwork,
-		DestNode:    sess.node,
-		SrcNode:     orig.d.DestNode,
-		DestSocket:  sess.wss,
-		SrcSocket:   orig.d.DestSocket,
-		DDPType:     atp.DDPType,
-		Data:        frame,
+	s.routeToWorkstation(sess, h.Encode(make([]byte, 0, atp.HeaderSize)))
+}
+
+// sendTickle sends a keep-alive SPTickle TReq to the workstation (main's
+// sendTickle). No reply is needed — it exists only to reset the client's own
+// session-maintenance timer so an idle-but-live session is not torn down.
+func (s *Service) sendTickle(sess *session) {
+	ud := asp.TicklePacket{SessionID: sess.id}.MarshalUserData()
+	h := atp.Header{Control: atp.TREQ, Bitmap: 0x01, TransID: 0, UserData: ud}
+	s.routeToWorkstation(sess, h.Encode(make([]byte, 0, atp.HeaderSize)))
+}
+
+// sendAttention sends an SPAttention TReq to the workstation carrying a non-zero
+// attention code (e.g. AspAttnServerGoingDown on Stop). Best-effort: it is a
+// server-initiated notification, so no reply is awaited.
+func (s *Service) sendAttention(sess *session, code uint16) {
+	if code == 0 {
+		return
 	}
-	orig.from.Unicast(sess.net, sess.node, d)
+	ud := asp.AttentionPacket{SessionID: sess.id, AttentionCode: code}.MarshalUserData()
+	h := atp.Header{Control: atp.TREQ, Bitmap: 0x01, TransID: 0, UserData: ud}
+	s.routeToWorkstation(sess, h.Encode(make([]byte, 0, atp.HeaderSize)))
 }
 
 // handleDataResponse collects phase-2b write data: the workstation's TResp to the
@@ -301,13 +503,15 @@ func (s *Service) handleDataResponse(resp atpResponse) {
 	}
 
 	s.pendingWrites.remove(resp.transID)
+	pw.sess.mu.Lock()
 	pw.sess.lastRx = time.Now()
+	pw.sess.mu.Unlock()
 
 	// Release the exactly-once aspDataWrite transaction now that its data is in
 	// hand, so the workstation stops holding it open (and stops retransmitting the
 	// data TResp). This closes phase 2; the phase-3 reply below answers the
 	// separate phase-1 aspWrite transaction.
-	s.sendTRel(pw.orig, pw.sess, resp.transID)
+	s.sendTRel(pw.sess, resp.transID)
 
 	block := appendWriteData(pw.cmdBlk, pw.hdrLen, pw.data)
 	reply, result := pw.sess.conn.Command(block)

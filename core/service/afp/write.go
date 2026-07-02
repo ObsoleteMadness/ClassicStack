@@ -2,6 +2,7 @@ package afp
 
 import (
 	"sync"
+	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/asp"
 )
@@ -31,6 +32,17 @@ import (
 // reqCount of any single phase-1 aspWrite we will see.
 const writeQuantum = asp.QuantumSize
 
+// writeRetryInterval / writeMaxRetries bound the resend of a server-initiated
+// aspDataWrite whose request or data response was lost (the spine drives it as a
+// raw TReq, so it has no endpoint-level retransmission of its own). After
+// writeMaxRetries unanswered attempts the write is abandoned and the phase-1
+// aspWrite is failed. Chosen to match main's WriteContinue SendRequest
+// (RetryTimeout 2s, MaxRetries 8).
+const (
+	writeRetryInterval = 2 * time.Second
+	writeMaxRetries    = 8
+)
+
 // pendingWrite is one in-flight two-phase write: the phase-1 aspWrite request we
 // must answer once the data arrives, the FPWrite command block bound to the AFP
 // session, how many data bytes we asked the workstation for, and the data
@@ -41,6 +53,7 @@ type pendingWrite struct {
 	cmdBlk []byte     // the command block (FPWrite/FPAddIcon header) from phase 1
 	hdrLen int        // fixed header length to splice the data back onto
 	want   int        // bytes requested in the aspDataWrite (data is clamped to it)
+	seq    uint16     // the phase-1 aspWrite ASP seqNum (echoed on aspDataWrite resends)
 	data   []byte     // write data accumulated from TResp packets
 }
 
