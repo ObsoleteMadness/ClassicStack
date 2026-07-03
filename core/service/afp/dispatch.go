@@ -1,9 +1,22 @@
 package afp
 
+import (
+	"strconv"
+
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
+)
+
 // AFP command codes (Inside Macintosh: Networking, AFP 2.x §6 "AFP command
 // summary"). Only the spine's starter set is enumerated; further commands land
 // in follow-up slices.
 const (
+	cmdByteRangeLock   uint8 = 1  // FPByteRangeLock
+	cmdCopyFile        uint8 = 5  // FPCopyFile
+	cmdGetDirParms     uint8 = 12 // FPGetDirParms
+	cmdGetFileParms    uint8 = 13 // FPGetFileParms
+	cmdMoveAndRename   uint8 = 23 // FPMoveAndRename
+	cmdSetVolParms     uint8 = 32 // FPSetVolParms
+	cmdExchangeFiles   uint8 = 42 // FPExchangeFiles
 	cmdCloseDir        uint8 = 3  // FPCloseDir
 	cmdCloseFork       uint8 = 4  // FPCloseFork
 	cmdCloseVol        uint8 = 2  // FPCloseVol
@@ -14,6 +27,7 @@ const (
 	cmdFlush           uint8 = 10 // FPFlush
 	cmdFlushFork       uint8 = 11 // FPFlushFork
 	cmdGetForkParms    uint8 = 14 // FPGetForkParms
+	cmdSetForkParms    uint8 = 31 // FPSetForkParms
 	cmdGetSrvrInfo     uint8 = 15 // FPGetSrvrInfo (also served via ASPGetStatus)
 	cmdGetSrvrParms    uint8 = 16 // FPGetSrvrParms
 	cmdGetVolParms     uint8 = 17 // FPGetVolParms
@@ -35,6 +49,113 @@ const (
 	cmdWrite           uint8 = 33 // FPWrite
 )
 
+// afpCommandName maps an AFP command byte to its FP name for debug logging; an
+// unrecognised code renders as "FP#<n>" so the raw byte is still visible.
+func afpCommandName(cmd uint8) string {
+	switch cmd {
+	case cmdByteRangeLock:
+		return "FPByteRangeLock"
+	case cmdCopyFile:
+		return "FPCopyFile"
+	case cmdGetDirParms:
+		return "FPGetDirParms"
+	case cmdGetFileParms:
+		return "FPGetFileParms"
+	case cmdMoveAndRename:
+		return "FPMoveAndRename"
+	case cmdSetVolParms:
+		return "FPSetVolParms"
+	case cmdExchangeFiles:
+		return "FPExchangeFiles"
+	case cmdCloseDir:
+		return "FPCloseDir"
+	case cmdCloseFork:
+		return "FPCloseFork"
+	case cmdCloseVol:
+		return "FPCloseVol"
+	case cmdCreateDir:
+		return "FPCreateDir"
+	case cmdCreateFile:
+		return "FPCreateFile"
+	case cmdDelete:
+		return "FPDelete"
+	case cmdEnumerate:
+		return "FPEnumerate"
+	case cmdFlush:
+		return "FPFlush"
+	case cmdFlushFork:
+		return "FPFlushFork"
+	case cmdGetForkParms:
+		return "FPGetForkParms"
+	case cmdSetForkParms:
+		return "FPSetForkParms"
+	case cmdGetSrvrInfo:
+		return "FPGetSrvrInfo"
+	case cmdGetSrvrParms:
+		return "FPGetSrvrParms"
+	case cmdGetVolParms:
+		return "FPGetVolParms"
+	case cmdLogin:
+		return "FPLogin"
+	case cmdLoginCont:
+		return "FPLoginCont"
+	case cmdLogout:
+		return "FPLogout"
+	case cmdMapID:
+		return "FPMapID"
+	case cmdMapName:
+		return "FPMapName"
+	case cmdGetSrvrMsg:
+		return "FPGetSrvrMsg"
+	case cmdSetDirParms:
+		return "FPSetDirParms"
+	case cmdSetFileParms:
+		return "FPSetFileParms"
+	case cmdOpenDir:
+		return "FPOpenDir"
+	case cmdOpenFork:
+		return "FPOpenFork"
+	case cmdOpenVol:
+		return "FPOpenVol"
+	case cmdRead:
+		return "FPRead"
+	case cmdRename:
+		return "FPRename"
+	case cmdGetFileDirParms:
+		return "FPGetFileDirParms"
+	case cmdSetFileDirParms:
+		return "FPSetFileDirParms"
+	case cmdWrite:
+		return "FPWrite"
+	case cmdOpenDT:
+		return "FPOpenDT"
+	case cmdCloseDT:
+		return "FPCloseDT"
+	case cmdAddComment:
+		return "FPAddComment"
+	case cmdRemoveComment:
+		return "FPRemoveComment"
+	case cmdGetComment:
+		return "FPGetComment"
+	case cmdAddIcon:
+		return "FPAddIcon"
+	case cmdGetIcon:
+		return "FPGetIcon"
+	case cmdGetIconInfo:
+		return "FPGetIconInfo"
+	case cmdAddAPPL:
+		return "FPAddAPPL"
+	case cmdRemoveAPPL:
+		return "FPRemoveAPPL"
+	case cmdGetAPPL:
+		return "FPGetAPPL"
+	case cmdCatSearch:
+		return "FPCatSearch"
+	default:
+		return "FP#" + strconv.Itoa(int(cmd))
+	}
+}
+
 // AFP result codes (kFP*; Inside Macintosh: Networking, "AFP result codes"). The
 // wire form is a signed 32-bit OSErr carried in the ASP/ATP reply UserData.
 const (
@@ -43,9 +164,14 @@ const (
 	afpErrCantMove      int32 = -5005 // kFPCantMove
 	afpErrBadUAM        int32 = -5002 // kFPBadUAM
 	afpErrBadVersNum    int32 = -5003 // kFPBadVersNum
+	afpErrBitmapErr     int32 = -5004 // kFPBitmapErr (no/invalid bit set in a parameter bitmap)
 	afpErrDiskFull      int32 = -5008 // kFPDiskFull
 	afpErrEOFErr        int32 = -5009 // kFPEOFErr (read/write past end of fork)
+	afpErrLockErr       int32 = -5013 // kFPLockErr (range locked by another fork)
 	afpErrMiscErr       int32 = -5014 // kFPMiscErr
+	afpErrNoMoreLocks   int32 = -5015 // kFPNoMoreLocks (lock table full)
+	afpErrRangeNotLockd int32 = -5020 // kFPRangeNotLocked (unlock of an unheld range)
+	afpErrRangeOverlap  int32 = -5021 // kFPRangeOverlap (range overlaps a lock this fork holds)
 	afpErrObjectExists  int32 = -5017 // kFPObjectExists
 	afpErrObjectNotFnd  int32 = -5018 // kFPObjectNotFound
 	afpErrParamErr      int32 = -5019 // kFPParamErr
@@ -95,7 +221,25 @@ func (s *Service) dispatchAFP(a *afpSession, block []byte) (reply []byte, result
 	}
 	cmd := block[0]
 
+	// Per-command debug trace: which AFP command ran and what result code it
+	// returned. This is the seam every request crosses, so one line here makes the
+	// whole command stream visible at debug level (the class of "silent -5024"
+	// regression that is otherwise only diagnosable from a packet capture).
+	if s.logger != nil && s.logger.Enabled(log.Debug) {
+		defer func() {
+			s.logger.Log(log.Debug, "AFP command",
+				log.Str("cmd", afpCommandName(cmd)),
+				log.Int("code", int64(cmd)),
+				log.Int("result", int64(result)))
+		}()
+	}
+
 	switch cmd {
+	case cmdByteRangeLock:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpByteRangeLock(a, block)
 	case cmdGetSrvrInfo:
 		return s.serverInfoBlock(), afpNoErr
 	case cmdLogin:
@@ -156,6 +300,36 @@ func (s *Service) dispatchAFP(a *afpSession, block []byte) (reply []byte, result
 			return nil, afpErrAccessDenied
 		}
 		return s.afpGetSrvrMsg(a, block)
+	case cmdGetDirParms:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpGetDirParms(a, block)
+	case cmdGetFileParms:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpGetFileParms(a, block)
+	case cmdMoveAndRename:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpMoveAndRename(a, block)
+	case cmdExchangeFiles:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpExchangeFiles(a, block)
+	case cmdCopyFile:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpCopyFile(a, block)
+	case cmdSetVolParms:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpSetVolParms(a, block)
 	case cmdCreateFile:
 		if !a.loggedIn {
 			return nil, afpErrAccessDenied
@@ -215,6 +389,11 @@ func (s *Service) dispatchAFP(a *afpSession, block []byte) (reply []byte, result
 			return nil, afpErrAccessDenied
 		}
 		return s.afpGetForkParms(a, block)
+	case cmdSetForkParms:
+		if !a.loggedIn {
+			return nil, afpErrAccessDenied
+		}
+		return s.afpSetForkParms(a, block)
 	case cmdOpenDT:
 		if !a.loggedIn {
 			return nil, afpErrAccessDenied

@@ -199,4 +199,135 @@ func TestForkIO_WriteToReadOnlyFork(t *testing.T) {
 	if code != afpErrAccessDenied {
 		t.Fatalf("Write to R/O fork result = %d, want %d", code, afpErrAccessDenied)
 	}
+
+	// FPSetForkParms is a write to the fork; a read-only handle is likewise denied.
+	setLen := []byte{cmdSetForkParms, 0}
+	setLen = bp.AppendBE16(setLen, forkRef)
+	setLen = bp.AppendBE16(setLen, fileBitmapDataForkLen)
+	setLen = bp.AppendBE32(setLen, 0)
+	code, _ = sendCmd(t, svc, r, sessID, 6, setLen)
+	if code != afpErrAccessDenied {
+		t.Fatalf("SetForkParms on R/O fork result = %d, want %d", code, afpErrAccessDenied)
+	}
+}
+
+// TestForkIO_SetForkParms proves FPSetForkParms pre-sizes and truncates an open
+// data fork, the call the Finder/StuffIt issues right after FPCreateFile (the
+// refactor answered kFPCallNotSupported here, stalling the write path).
+func TestForkIO_SetForkParms(t *testing.T) {
+	svc, r := newRunningService(t)
+	vol := svc.Volumes()[0]
+	mustCreate(t, vol, "size.bin") // "data" (4 bytes)
+
+	sessID, volID := openVolForFork(t, svc, r)
+
+	openFork := []byte{cmdOpenFork, forkFlagData}
+	openFork = bp.AppendBE16(openFork, volID)
+	openFork = bp.AppendBE32(openFork, 2)
+	openFork = bp.AppendBE16(openFork, fileBitmapDataForkLen)
+	openFork = bp.AppendBE16(openFork, accessRead|accessWrite)
+	openFork = append(openFork, PathTypeUTF8Names)
+	openFork = putPString(openFork, []byte("size.bin"))
+	code, reply := sendCmd(t, svc, r, sessID, 4, openFork)
+	if code != afpNoErr {
+		t.Fatalf("OpenFork result = %d, want 0", code)
+	}
+	forkRef := bp.BE16(reply[2:4])
+
+	// getLen issues FPGetForkParms and returns the reported data-fork length.
+	getLen := func(seq uint16) uint32 {
+		t.Helper()
+		gp := []byte{cmdGetForkParms, 0}
+		gp = bp.AppendBE16(gp, forkRef)
+		gp = bp.AppendBE16(gp, fileBitmapDataForkLen)
+		c, rep := sendCmd(t, svc, r, sessID, seq, gp)
+		if c != afpNoErr {
+			t.Fatalf("GetForkParms result = %d, want 0", c)
+		}
+		// reply = bitmap(2) <dataForkLen(4)>.
+		return bp.BE32(rep[2:6])
+	}
+
+	// Grow the fork to 55808 bytes (the size the capture's client pre-allocates).
+	setLen := []byte{cmdSetForkParms, 0}
+	setLen = bp.AppendBE16(setLen, forkRef)
+	setLen = bp.AppendBE16(setLen, fileBitmapDataForkLen)
+	setLen = bp.AppendBE32(setLen, 55808)
+	code, _ = sendCmd(t, svc, r, sessID, 5, setLen)
+	if code != afpNoErr {
+		t.Fatalf("SetForkParms(grow) result = %d, want 0", code)
+	}
+	if got := getLen(6); got != 55808 {
+		t.Fatalf("dataForkLen after grow = %d, want 55808", got)
+	}
+
+	// Truncate back to 10 bytes.
+	setLen = []byte{cmdSetForkParms, 0}
+	setLen = bp.AppendBE16(setLen, forkRef)
+	setLen = bp.AppendBE16(setLen, fileBitmapDataForkLen)
+	setLen = bp.AppendBE32(setLen, 10)
+	code, _ = sendCmd(t, svc, r, sessID, 7, setLen)
+	if code != afpNoErr {
+		t.Fatalf("SetForkParms(truncate) result = %d, want 0", code)
+	}
+	if got := getLen(8); got != 10 {
+		t.Fatalf("dataForkLen after truncate = %d, want 10", got)
+	}
+}
+
+// TestForkIO_ByteRangeLock exercises FPByteRangeLock: a lock succeeds, the same
+// fork re-locking the range is kFPRangeOverlap, unlocking it succeeds, and
+// unlocking a range that is not held is kFPRangeNotLocked. This is the call the
+// Finder issues before a delete/rename; the refactor had dropped it (-5024).
+func TestForkIO_ByteRangeLock(t *testing.T) {
+	svc, r := newRunningService(t)
+	vol := svc.Volumes()[0]
+	mustCreate(t, vol, "lock.txt")
+
+	sessID, volID := openVolForFork(t, svc, r)
+
+	openFork := []byte{cmdOpenFork, forkFlagData}
+	openFork = bp.AppendBE16(openFork, volID)
+	openFork = bp.AppendBE32(openFork, 2)
+	openFork = bp.AppendBE16(openFork, fileBitmapDataForkLen)
+	openFork = bp.AppendBE16(openFork, accessRead|accessWrite)
+	openFork = append(openFork, PathTypeUTF8Names)
+	openFork = putPString(openFork, []byte("lock.txt"))
+	code, reply := sendCmd(t, svc, r, sessID, 4, openFork)
+	if code != afpNoErr {
+		t.Fatalf("OpenFork result = %d, want 0", code)
+	}
+	forkRef := bp.BE16(reply[2:4])
+
+	lock := func(flag byte, offset, length uint32) (int32, []byte) {
+		b := []byte{cmdByteRangeLock, flag}
+		b = bp.AppendBE16(b, forkRef)
+		b = bp.AppendBE32(b, offset)
+		b = bp.AppendBE32(b, length)
+		return sendCmd(t, svc, r, sessID, 5, b)
+	}
+
+	// Lock [2,3): succeeds, reply carries the start offset.
+	code, rep := lock(0x00, 2, 1)
+	if code != afpNoErr {
+		t.Fatalf("lock result = %d, want 0", code)
+	}
+	if off := bp.BE32(rep[0:4]); off != 2 {
+		t.Fatalf("lock reply offset = %d, want 2", off)
+	}
+
+	// Same fork re-locking the overlapping range is kFPRangeOverlap.
+	if code, _ = lock(0x00, 2, 1); code != afpErrRangeOverlap {
+		t.Fatalf("re-lock result = %d, want %d", code, afpErrRangeOverlap)
+	}
+
+	// Unlock [2,3): succeeds.
+	if code, _ = lock(0x01, 2, 1); code != afpNoErr {
+		t.Fatalf("unlock result = %d, want 0", code)
+	}
+
+	// Unlocking a range that is not held is kFPRangeNotLocked.
+	if code, _ = lock(0x01, 2, 1); code != afpErrRangeNotLockd {
+		t.Fatalf("unlock-unheld result = %d, want %d", code, afpErrRangeNotLockd)
+	}
 }

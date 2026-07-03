@@ -9,6 +9,7 @@ import (
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 )
 
 // --- fork I/O (FPOpenFork / FPRead / FPWrite / FPCloseFork / FPGetForkParms;
@@ -328,6 +329,184 @@ func (s *Service) afpGetForkParms(a *afpSession, block []byte) ([]byte, int32) {
 	// charset-free choice when there is no request path-type byte).
 	out = h.vol.fileDirParams(out, h.path, info, bitmap, 0)
 	return out, afpNoErr
+}
+
+// afpSetForkParms sets the length of the fork backing an open fork ref, so a
+// client can pre-size a fork it is about to write or truncate one it has emptied.
+// The Finder/StuffIt issue it right after FPCreateFile to stamp the final size;
+// the refactor omitted it, so it answered kFPCallNotSupported (-5024) and the
+// write path stalled.
+//
+// Request: cmd(1) pad(1) forkRefNum(2) bitmap(2) forkLen(4). The bitmap carries
+// the DataForkLen (bit 9) or RsrcForkLen (bit 10) bit; only the length is
+// settable via this call (Inside Macintosh: Networking, "FPSetForkParms"), so any
+// other bit is accepted and ignored. Reply: empty.
+func (s *Service) afpSetForkParms(a *afpSession, block []byte) ([]byte, int32) {
+	if len(block) < 10 {
+		return nil, afpErrParamErr
+	}
+	h, ok := a.forks.get(bp.BE16(block[2:4]))
+	if !ok {
+		return nil, afpErrParamErr
+	}
+	if !h.writable {
+		return nil, afpErrAccessDenied
+	}
+	bitmap := bp.BE16(block[4:6])
+	// Per AFP 2.x §5.1.31 the bitmap must set exactly one fork-length bit; with
+	// neither set there is nothing to size, which main answered as kFPBitmapErr.
+	if bitmap&(fileBitmapDataForkLen|fileBitmapRsrcForkLen) == 0 {
+		return nil, afpErrBitmapErr
+	}
+	forkLen := int64(int32(bp.BE32(block[6:10])))
+	if forkLen < 0 {
+		return nil, afpErrParamErr
+	}
+	// FS-layer trace: the actual Truncate on the backing fork file, with its path,
+	// requested length and error. Paired with the dispatcher trace, this makes a
+	// pre-size failure attributable to the storage layer rather than the command
+	// decode (the two places a copy's pre-size step can silently fail).
+	err := h.file.Truncate(forkLen)
+	if s.logger != nil && s.logger.Enabled(log.Debug) {
+		s.logger.Log(log.Debug, "AFP fork truncate",
+			log.Str("path", h.path),
+			log.Str("fork", forkName(h.fork)),
+			log.Int("len", forkLen),
+			log.Str("err", errString(err)))
+	}
+	if err != nil {
+		return nil, mapWriteErr(err)
+	}
+	return nil, afpNoErr
+}
+
+// afpByteRangeLock locks or unlocks a byte range in an open fork
+// (FPByteRangeLock; Inside Macintosh: Networking, AFP 2.x §5.1.1). The Finder
+// issues it before a delete/rename to test whether another workstation holds the
+// file open, and to guard its own write ranges; the refactor omitted it, so it
+// answered kFPCallNotSupported (-5024) and delete/copy operations stalled.
+//
+// Request: cmd(1) flag(1) forkRefNum(2) offset(4) length(4). flag bit 0x01 =
+// unlock, bit 0x80 = offset measured from end of fork (lock only). length == -1
+// locks to end of fork. Reply: offset(4) — the start offset of the (un)locked
+// range. This server tracks locks per session and enforces conflicts against
+// ranges held by other forks; it does not project them onto the host OS.
+func (s *Service) afpByteRangeLock(a *afpSession, block []byte) ([]byte, int32) {
+	if len(block) < 12 {
+		return nil, afpErrParamErr
+	}
+	flag := block[1]
+	unlock := flag&0x01 != 0
+	fromEnd := flag&fromEndFlag != 0
+	h, ok := a.forks.get(bp.BE16(block[2:4]))
+	if !ok {
+		return nil, afpErrParamErr
+	}
+	offset := int64(int32(bp.BE32(block[4:8])))
+	length := int64(int32(bp.BE32(block[8:12])))
+	// length 0 locks nothing; length < -1 is undefined (only -1 means "to EOF").
+	if length == 0 || length < -1 {
+		return nil, afpErrParamErr
+	}
+	// Start/EndFlag is defined for locking only; unlocking must give an absolute
+	// offset (Inside Macintosh: Networking, FPByteRangeLock).
+	if unlock && fromEnd {
+		return nil, afpErrParamErr
+	}
+	if fromEnd && !unlock {
+		forkLen, err := h.vol.ForkLen(h.path, h.fork)
+		if err != nil {
+			return nil, afpErrAccessDenied
+		}
+		offset += forkLen
+	}
+	if offset < 0 {
+		return nil, afpErrParamErr
+	}
+
+	key := byteRangeLockKey(h)
+	ref := bp.BE16(block[2:4])
+
+	a.forks.mu.Lock()
+	defer a.forks.mu.Unlock()
+
+	if unlock {
+		for i := range a.forks.locks {
+			lk := a.forks.locks[i]
+			if lk.lockKey == key && lk.ownerFork == ref && lk.start == offset && lk.length == length {
+				a.forks.locks = append(a.forks.locks[:i], a.forks.locks[i+1:]...)
+				return bp.AppendBE32(make([]byte, 0, 4), uint32(int32(offset))), afpNoErr
+			}
+		}
+		return nil, afpErrRangeNotLockd
+	}
+
+	for _, lk := range a.forks.locks {
+		if lk.lockKey != key || !byteRangeOverlaps(lk.start, lk.length, offset, length) {
+			continue
+		}
+		if lk.ownerFork == ref {
+			return nil, afpErrRangeOverlap // this fork already locks the range
+		}
+		return nil, afpErrLockErr // another fork holds it
+	}
+	if len(a.forks.locks) >= maxByteRangeLocks {
+		return nil, afpErrNoMoreLocks
+	}
+	a.forks.locks = append(a.forks.locks, byteRangeLock{lockKey: key, ownerFork: ref, start: offset, length: length})
+	return bp.AppendBE32(make([]byte, 0, 4), uint32(int32(offset))), afpNoErr
+}
+
+// byteRangeLockKey scopes a lock to a specific fork of a file so the data and
+// resource forks of one path share independent lock namespaces.
+func byteRangeLockKey(h *forkHandle) string {
+	if h.fork == fs.ResourceFork {
+		return "rsrc:" + h.path
+	}
+	return "data:" + h.path
+}
+
+// byteRangeOverlaps reports whether [aStart,aLen) and [bStart,bLen) intersect. A
+// length of -1 means "to end of fork" — an open-ended range that overlaps any
+// range starting at or after its start.
+func byteRangeOverlaps(aStart, aLen, bStart, bLen int64) bool {
+	aEnd, aOpen := byteRangeEnd(aStart, aLen)
+	bEnd, bOpen := byteRangeEnd(bStart, bLen)
+	switch {
+	case aOpen && bOpen:
+		return true
+	case aOpen:
+		return aStart < bEnd
+	case bOpen:
+		return bStart < aEnd
+	default:
+		return aStart < bEnd && bStart < aEnd
+	}
+}
+
+// byteRangeEnd returns the exclusive end of a range and whether it is open-ended
+// (length -1, "to EOF").
+func byteRangeEnd(start, length int64) (end int64, open bool) {
+	if length == -1 {
+		return 0, true
+	}
+	return start + length, false
+}
+
+// forkName renders a fork kind for debug logging.
+func forkName(f fs.ForkType) string {
+	if f == fs.ResourceFork {
+		return "resource"
+	}
+	return "data"
+}
+
+// errString renders an error for a debug field, "" when nil.
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // --- error mapping ---

@@ -1,8 +1,15 @@
 package afp
 
 import (
+	"errors"
+
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 )
+
+// errShortRequest is returned by a request DTO's Unmarshal when the block is too
+// short to hold the fixed header the command requires; the handler maps it to
+// kFPParamErr.
+var errShortRequest = errors.New("afp: request block too short")
 
 // Self-serialising AFP reply DTOs (CLAUDE.md rule #10). These carry the exact
 // wire layout ported from the known-good main-branch service/afp *_models.go so
@@ -84,4 +91,159 @@ func enumEntry(isDir bool, params []byte) []byte {
 	}
 	entry[0] = byte(len(entry))
 	return entry
+}
+
+// --- request DTOs for the ported catalog file/dir commands (CLAUDE.md rule #10) ---
+// Ported verbatim from the known-good main branch service/afp/{filedir,file}_models.go
+// so each request decodes itself (Unmarshal) rather than being picked apart in the
+// handler body. Offsets count from the command byte, matching Inside Macintosh's
+// request-block tables. Names are Pascal strings whose interior \x00 bytes are the
+// path separators ResolvePath expects, so they are kept as raw strings here.
+
+// FPMoveAndRameReq: cmd(0) pad(1) volID(2:4) srcDirID(4:8) dstDirID(8:12)
+// srcPathType(12) srcName(pascal) dstPathType dstDirName(pascal) newPathType
+// newName(pascal).
+type FPMoveAndRenameReq struct {
+	VolumeID    uint16
+	SrcDirID    uint32
+	DstDirID    uint32
+	SrcPathType uint8
+	SrcName     string
+	DstPathType uint8
+	DstDirName  string
+	NewPathType uint8
+	NewName     string
+}
+
+func (req *FPMoveAndRenameReq) Unmarshal(data []byte) error {
+	if len(data) < 14 {
+		return errShortRequest
+	}
+	req.VolumeID = bp.BE16(data[2:4])
+	req.SrcDirID = bp.BE32(data[4:8])
+	req.DstDirID = bp.BE32(data[8:12])
+	req.SrcPathType = data[12]
+	srcLen := int(data[13])
+	if len(data) < 14+srcLen {
+		return errShortRequest
+	}
+	req.SrcName = string(data[14 : 14+srcLen])
+	idx := 14 + srcLen
+	if idx+2 > len(data) {
+		return nil
+	}
+	req.DstPathType = data[idx]
+	dstLen := int(data[idx+1])
+	if idx+2+dstLen > len(data) {
+		return nil
+	}
+	req.DstDirName = string(data[idx+2 : idx+2+dstLen])
+	idx += 2 + dstLen
+	if idx+2 > len(data) {
+		return nil
+	}
+	req.NewPathType = data[idx]
+	newLen := int(data[idx+1])
+	if idx+2+newLen > len(data) {
+		return nil
+	}
+	req.NewName = string(data[idx+2 : idx+2+newLen])
+	return nil
+}
+
+// FPExchangeFilesReq: cmd(0) pad(1) volID(2:4) srcDirID(4:8) dstDirID(8:12)
+// srcPathType(12) srcName(pascal) [pad to even] dstPathType dstName(pascal).
+type FPExchangeFilesReq struct {
+	VolumeID    uint16
+	SrcDirID    uint32
+	DstDirID    uint32
+	SrcPathType uint8
+	SrcName     string
+	DstPathType uint8
+	DstName     string
+}
+
+func (req *FPExchangeFilesReq) Unmarshal(data []byte) error {
+	if len(data) < 14 {
+		return errShortRequest
+	}
+	req.VolumeID = bp.BE16(data[2:4])
+	req.SrcDirID = bp.BE32(data[4:8])
+	req.DstDirID = bp.BE32(data[8:12])
+	req.SrcPathType = data[12]
+	srcLen := int(data[13])
+	if len(data) < 14+srcLen {
+		return errShortRequest
+	}
+	req.SrcName = string(data[14 : 14+srcLen])
+	idx := 14 + srcLen
+	if srcLen%2 != 0 {
+		idx++ // the second path type is word-aligned
+	}
+	if idx+2 > len(data) {
+		return nil
+	}
+	req.DstPathType = data[idx]
+	dstLen := int(data[idx+1])
+	if idx+2+dstLen > len(data) {
+		return nil
+	}
+	req.DstName = string(data[idx+2 : idx+2+dstLen])
+	return nil
+}
+
+// FPCopyFileReq: cmd(0) pad(1) srcVolID(2:4) srcDirID(4:8) dstVolID(8:10)
+// dstDirID(10:14) srcPathType(14) srcName(pascal) [pad to even] dstPathType
+// dstDirName(pascal) newPathType newName(pascal).
+type FPCopyFileReq struct {
+	SrcVolumeID uint16
+	SrcDirID    uint32
+	DstVolumeID uint16
+	DstDirID    uint32
+	SrcPathType uint8
+	SrcName     string
+	DstPathType uint8
+	DstDirName  string
+	NewPathType uint8
+	NewName     string
+}
+
+func (req *FPCopyFileReq) Unmarshal(data []byte) error {
+	if len(data) < 16 {
+		return errShortRequest
+	}
+	req.SrcVolumeID = bp.BE16(data[2:4])
+	req.SrcDirID = bp.BE32(data[4:8])
+	req.DstVolumeID = bp.BE16(data[8:10])
+	req.DstDirID = bp.BE32(data[10:14])
+	req.SrcPathType = data[14]
+	srcLen := int(data[15])
+	if len(data) < 16+srcLen {
+		return errShortRequest
+	}
+	req.SrcName = string(data[16 : 16+srcLen])
+	idx := 16 + srcLen
+	if srcLen%2 != 0 {
+		idx++
+	}
+	if idx+2 > len(data) {
+		return nil
+	}
+	req.DstPathType = data[idx]
+	dstLen := int(data[idx+1])
+	if idx+2+dstLen > len(data) {
+		return nil
+	}
+	req.DstDirName = string(data[idx+2 : idx+2+dstLen])
+	idx += 2 + dstLen
+	if idx+2 > len(data) {
+		return nil
+	}
+	req.NewPathType = data[idx]
+	newLen := int(data[idx+1])
+	if idx+2+newLen > len(data) {
+		return nil
+	}
+	req.NewName = string(data[idx+2 : idx+2+newLen])
+	return nil
 }

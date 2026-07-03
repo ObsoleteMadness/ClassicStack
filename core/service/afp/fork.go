@@ -31,6 +31,22 @@ type forkTable struct {
 	mu      sync.Mutex
 	byRef   map[uint16]*forkHandle
 	nextRef uint16
+	locks   []byteRangeLock // active FPByteRangeLock ranges for this session
+}
+
+// maxByteRangeLocks caps a session's simultaneous byte-range locks; a request
+// past this answers kFPNoMoreLocks (Inside Macintosh: Networking, FPByteRangeLock).
+const maxByteRangeLocks = 4096
+
+// byteRangeLock is one held FPByteRangeLock range. lockKey scopes the lock to a
+// fork of a file ("data:"/"rsrc:" + path) so two forks of the same file share a
+// lock namespace, matching the Mac's per-fork locking. length == -1 locks from
+// start to end of fork (the open-ended range the spec allows).
+type byteRangeLock struct {
+	lockKey   string
+	ownerFork uint16
+	start     int64
+	length    int64
 }
 
 func newForkTable() *forkTable {
