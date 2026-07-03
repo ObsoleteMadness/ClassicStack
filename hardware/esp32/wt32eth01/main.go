@@ -19,6 +19,7 @@ import (
 	storefile "github.com/ObsoleteMadness/ClassicStack/adapter/store/file"
 	controlhttp "github.com/ObsoleteMadness/ClassicStack/adapter/control/http"
 	"github.com/ObsoleteMadness/ClassicStack/core/control"
+	"github.com/ObsoleteMadness/ClassicStack/core/hostinfo"
 
 	"github.com/ObsoleteMadness/ClassicStack/hardware/peripherals/lan8720a"
 	_ "github.com/ObsoleteMadness/ClassicStack/hardware/peripherals/sdcard"
@@ -38,9 +39,19 @@ const (
 	UART_CTS = 35
 )
 
+// Build metadata injected at link time
+var (
+	BuildVersion = "0.0.0-dev"
+	BuildCommit  = "unknown"
+	BuildDate    = "unknown"
+)
+
 func main() {
 	time.Sleep(2 * time.Second) // Allow hardware to stabilize
 	println("--- ClassicStack WT32-ETH01 Booting ---")
+
+	hostinfo.SetBoardInfo("WT32-ETH01", "LAN8720A", "xtensa")
+	hostinfo.SetBuildInfo(BuildVersion, BuildCommit, BuildDate)
 
 	// 1. Initialize the LAN8720A PHY
 	println("Initializing LAN8720A PHY...")
@@ -75,6 +86,7 @@ func main() {
 			} else {
 				wifiIP, _ = wifi.GetIP()
 				println("WiFi connected successfully. IP:", wifiIP)
+				hostinfo.SetHostNetworkInfo(wifiIP, "N/A")
 			}
 			break
 		}

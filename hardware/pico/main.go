@@ -19,6 +19,7 @@ import (
 	storefile "github.com/ObsoleteMadness/ClassicStack/adapter/store/file"
 	controlhttp "github.com/ObsoleteMadness/ClassicStack/adapter/control/http"
 	"github.com/ObsoleteMadness/ClassicStack/core/control"
+	"github.com/ObsoleteMadness/ClassicStack/core/hostinfo"
 
 	"github.com/ObsoleteMadness/ClassicStack/hardware/peripherals/lan8720a"
 	_ "github.com/ObsoleteMadness/ClassicStack/hardware/peripherals/sdcard"
@@ -42,9 +43,18 @@ const (
 	ETH_REFCLK = 20
 )
 
+// Build metadata injected at link time
+var (
+	BuildVersion = "0.0.0-dev"
+	BuildCommit  = "unknown"
+	BuildDate    = "unknown"
+)
+
 func main() {
 	time.Sleep(2 * time.Second) // Allow hardware to stabilize
 	println("--- ClassicStack Raspberry Pi Pico Booting ---")
+
+	hostinfo.SetBuildInfo(BuildVersion, BuildCommit, BuildDate)
 
 	// 1. Load Configuration First
 	println("Loading configuration...")
@@ -67,6 +77,12 @@ func main() {
 		}
 	}
 
+	ethType := "LAN8720A"
+	if ethernetController == "w5500" {
+		ethType = "W5500"
+	}
+	hostinfo.SetBoardInfo("Pi Pico", ethType, "arm")
+
 	// 2. Initialize the LAN8720A PHY (only if configured)
 	var phyDriver *lan8720a.Device
 	if ethernetController == "lan8720" {
@@ -84,6 +100,9 @@ func main() {
 	// 3. Initialize WiFi (if Pico W / Pico 2 W and configured)
 	var wifiIP string
 	setupWiFi(m, &wifiIP)
+	if wifiIP != "" {
+		hostinfo.SetHostNetworkInfo(wifiIP, "N/A")
+	}
 
 	// 4. Setup Custom Openers for the Supervisor
 	telemetry := bus.New(32)
