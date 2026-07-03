@@ -7,7 +7,7 @@ import (
 	"runtime"
 )
 
-func getCPULoad() float64 { return 0 }
+func getCPULoad() float64             { return 0 }
 func getMemoryInfo() (uint64, uint64) { return 0, 0 }
 
 func detectHostIPAndMAC() (string, string) {

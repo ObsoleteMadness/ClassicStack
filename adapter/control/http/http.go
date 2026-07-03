@@ -94,6 +94,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/restart", s.handleRestart)
 	mux.HandleFunc("/save", s.handleSave)
 	mux.HandleFunc("/list_fs_types", s.handleListFSTypes)
+	mux.HandleFunc("/schemas", s.handleSchemas)
 	mux.HandleFunc("/params_for", s.handleParamsFor)
 	mux.HandleFunc("/list_interfaces", s.handleListInterfaces)
 	mux.HandleFunc("/set_interface", s.handleSetInterface)
@@ -229,6 +230,37 @@ func (s *Server) handleListFSTypes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res := s.plane.ListFSTypes()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
+}
+
+// handleSchemas reports the config sections registered in THIS build, split into
+// singleton and repeated keys. Registration is build-tag gated (a component's init()
+// calls config.Register only when its tag is present), so this is the runtime signal
+// for "which transports/services can this binary configure" — the config-builder UI
+// uses the repeated keys to offer an Add editor for a transport (IPX/NetBEUI/EtherTalk…)
+// even when the current model has zero instances of it. Mirrors handleListFSTypes:
+// a read-only "what's available in this build" surface for the front-end.
+func (s *Server) handleSchemas(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var res struct {
+		Singleton []string `json:"singleton"`
+		Repeated  []string `json:"repeated"`
+	}
+	res.Singleton = []string{}
+	res.Repeated = []string{}
+	for _, sc := range config.Schemas() {
+		if sc.Repeated {
+			res.Repeated = append(res.Repeated, sc.Key)
+		} else {
+			res.Singleton = append(res.Singleton, sc.Key)
+		}
+	}
+	sort.Strings(res.Singleton)
+	sort.Strings(res.Repeated)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(res)
 }
@@ -551,7 +583,7 @@ func (s *Server) handleRemoveInterface(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 }
-	
+
 func (s *Server) handleHostInfo(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

@@ -14,10 +14,10 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
-	
+
 	configtoml "github.com/ObsoleteMadness/ClassicStack/adapter/config/toml"
-	storefile "github.com/ObsoleteMadness/ClassicStack/adapter/store/file"
 	controlhttp "github.com/ObsoleteMadness/ClassicStack/adapter/control/http"
+	storefile "github.com/ObsoleteMadness/ClassicStack/adapter/store/file"
 	"github.com/ObsoleteMadness/ClassicStack/core/control"
 	"github.com/ObsoleteMadness/ClassicStack/core/hostinfo"
 
@@ -27,7 +27,7 @@ import (
 
 const (
 	ConfigPath = "server.toml"
-	
+
 	// WT32-ETH01 Pin mapping
 	PHY_MDC   = 23
 	PHY_MDIO  = 18
@@ -113,11 +113,11 @@ func main() {
 		if err != nil {
 			return nil, err
 		}
-		
+
 		// Configure CTS input pin
 		ctsPin := machine.Pin(UART_CTS)
 		ctsPin.Configure(machine.PinConfig{Mode: machine.PinInput})
-		
+
 		// Wrap UART with custom flow-control if necessary, or return standard UART
 		return uart, nil
 	}
@@ -153,7 +153,7 @@ func main() {
 	}
 
 	println("ClassicStack is running!")
-	
+
 	// Keep main goroutine alive and periodically print status
 	for {
 		time.Sleep(10 * time.Second)

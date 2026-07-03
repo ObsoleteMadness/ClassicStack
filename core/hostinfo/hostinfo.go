@@ -5,9 +5,9 @@ import (
 )
 
 type HostInfo struct {
-	BoardName           string  `json:"boardName"`
-	EthernetAdapterType string  `json:"ethernetAdapterType"`
-	Architecture        string  `json:"architecture"`
+	BoardName           string `json:"boardName"`
+	EthernetAdapterType string `json:"ethernetAdapterType"`
+	Architecture        string `json:"architecture"`
 
 	// Basic diagnostics
 	CPULoad        float64 `json:"cpuLoad"`
