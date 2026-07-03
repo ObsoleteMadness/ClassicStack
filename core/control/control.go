@@ -7,6 +7,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
+	"github.com/ObsoleteMadness/ClassicStack/core/hostinfo"
 )
 
 var (
@@ -33,6 +34,9 @@ type Plane interface {
 	// server.toml" backup rather than the JSON shape Config() returns. Secrets are
 	// masked, exactly as Config(). ErrUnavailable when no codec is wired.
 	MarshalConfig() ([]byte, error)
+
+	// HostInfo returns static board/build details and dynamic OS/system metrics.
+	HostInfo() (hostinfo.HostInfo, error)
 
 	Start(ctx context.Context, name string) error
 	Stop(ctx context.Context, name string) error
@@ -319,6 +323,7 @@ func (p *plane) Stop(ctx context.Context, name string) error    { return p.sup.S
 func (p *plane) Restart(ctx context.Context, name string) error { return p.sup.Restart(ctx, name) }
 
 func (p *plane) Status() []Unit                           { return p.sup.Status() }
+func (p *plane) HostInfo() (hostinfo.HostInfo, error)      { return hostinfo.Get(), nil }
 func (p *plane) HostnameConstraints() []string            { return p.sup.HostnameConstraints() }
 func (p *plane) ListInterfaces() ([]InterfaceInfo, error) { return p.sup.ListInterfaces() }
 

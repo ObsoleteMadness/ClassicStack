@@ -15,6 +15,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/control"
+	"github.com/ObsoleteMadness/ClassicStack/core/hostinfo"
 )
 
 // Client is the ubus Client interface.
@@ -179,6 +180,13 @@ func (s *Server) handleConn(conn net.Conn) {
 		switch req.Method {
 		case "status":
 			res = s.plane.Status()
+		case "host_info":
+			info, err := s.plane.HostInfo()
+			if err != nil {
+				methodErr = err
+			} else {
+				res = info
+			}
 		case "start":
 			var args struct{ Name string }
 			if err := json.Unmarshal(req.Params, &args); err == nil {
@@ -459,6 +467,13 @@ func errFromUbus(msg string) error {
 func (c *AdapterClient) Status() ([]control.Unit, error) {
 	var out []control.Unit
 	err := c.call("status", nil, &out)
+	return out, err
+}
+
+// HostInfo retrieves the host info.
+func (c *AdapterClient) HostInfo() (hostinfo.HostInfo, error) {
+	var out hostinfo.HostInfo
+	err := c.call("host_info", nil, &out)
 	return out, err
 }
 

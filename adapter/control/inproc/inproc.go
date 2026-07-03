@@ -10,6 +10,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/control"
+	"github.com/ObsoleteMadness/ClassicStack/core/hostinfo"
 )
 
 // Client is the front-end-agnostic surface every control adapter (inproc, http,
@@ -23,6 +24,7 @@ import (
 type Client interface {
 	Config() (*config.Model, error)
 	Status() ([]control.Unit, error)
+	HostInfo() (hostinfo.HostInfo, error)
 	Reconfigure(ctx context.Context, name string, section config.Section) error
 	AddInstance(ctx context.Context, owner string, section config.NamedSection) error
 	RemoveInstance(ctx context.Context, owner, key, instanceName string) error
@@ -69,6 +71,9 @@ func (a *Adapter) Config() (*config.Model, error) { return a.plane.Config() }
 
 // Status returns the component status snapshot.
 func (a *Adapter) Status() ([]control.Unit, error) { return a.plane.Status(), nil }
+
+// HostInfo returns the static board/build details and dynamic OS/system metrics.
+func (a *Adapter) HostInfo() (hostinfo.HostInfo, error) { return a.plane.HostInfo() }
 
 // Save validates and persists the live model, returning the store revision.
 func (a *Adapter) Save(ctx context.Context) (string, error) { return a.plane.Save(ctx) }

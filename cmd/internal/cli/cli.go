@@ -40,6 +40,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/control"
+	"github.com/ObsoleteMadness/ClassicStack/core/hostinfo"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 
 	// Blank-import the components so their build-tagged init()s self-register with the
@@ -92,6 +93,9 @@ func Main(v Version) {
 // Main and the service/daemon wrappers both invoke. -version short-circuits with a
 // nil error after printing.
 func Run(ctx context.Context, args []string, v Version) error {
+	hostinfo.SetBuildInfo(v.Version, v.Commit, v.Date)
+	hostinfo.SetBoardInfo("N/A", "N/A", gort.GOARCH)
+
 	fs := flag.NewFlagSet("classicstack", flag.ContinueOnError)
 	configPath := fs.String("config", DefaultConfigPath, "path to the config file (TOML, or UCI for an /etc/config path or *.uci file)")
 	httpAddr := fs.String("http", "", "serve the web-admin control API on this address (e.g. :8080); empty = disabled")

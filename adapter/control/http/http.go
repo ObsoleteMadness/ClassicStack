@@ -23,6 +23,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/control"
+	"github.com/ObsoleteMadness/ClassicStack/core/hostinfo"
 )
 
 // statusForErr maps a control error to an HTTP status. control.ErrUnavailable —
@@ -98,6 +99,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/set_interface", s.handleSetInterface)
 	mux.HandleFunc("/remove_interface", s.handleRemoveInterface)
 	mux.HandleFunc("/list_zones", s.handleListZones)
+	mux.HandleFunc("/host_info", s.handleHostInfo)
 	mux.HandleFunc("/registered_names", s.handleRegisteredNames)
 	mux.HandleFunc("/macip_leases", s.handleMacIPLeases)
 	mux.HandleFunc("/aarp_table", s.handleAARPTable)
@@ -549,6 +551,20 @@ func (s *Server) handleRemoveInterface(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 }
+	
+func (s *Server) handleHostInfo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	res, err := s.plane.HostInfo()
+	if err != nil {
+		http.Error(w, err.Error(), statusForErr(err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
+}
 
 func (s *Server) handleListZones(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -836,6 +852,21 @@ func (c *AdapterClient) Status() ([]control.Unit, error) {
 		return nil, fmt.Errorf("HTTP error: %s", res.Status)
 	}
 	var out []control.Unit
+	err = json.NewDecoder(res.Body).Decode(&out)
+	return out, err
+}
+
+// HostInfo returns host and system information.
+func (c *AdapterClient) HostInfo() (hostinfo.HostInfo, error) {
+	res, err := c.client.Get(c.baseURL + "/host_info")
+	if err != nil {
+		return hostinfo.HostInfo{}, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return hostinfo.HostInfo{}, fmt.Errorf("HTTP error: %s", res.Status)
+	}
+	var out hostinfo.HostInfo
 	err = json.NewDecoder(res.Body).Decode(&out)
 	return out, err
 }
