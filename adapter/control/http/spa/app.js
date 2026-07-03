@@ -77,6 +77,11 @@ const api = {
     const r = await fetch("params_for?fs_type=" + encodeURIComponent(t));
     return r.ok ? r.json() : [];
   },
+  async hostInfo() {
+    const r = await fetch("host_info");
+    if (!r.ok) throw new Error(await errText(r));
+    return r.json();
+  },
   async interfaces() {
     const r = await fetch("list_interfaces");
     if (!r.ok) throw new Error(await errText(r));
@@ -279,7 +284,10 @@ class CsApp extends HTMLElement {
       this.units = body || [];
       this.views = {
         dashboard: new CsDashboard(),
-        config: new CsConfig(),
+        interfaces: new CsInterfacesTab(),
+        router: new CsRouterTab(),
+        protocols: new CsProtocolsTab(),
+        sharing: new CsSharingTab(),
         diagnostics: new CsDiagnostics(),
         users: new CsUsers(),
         logs: new CsLogs(),
@@ -384,6 +392,11 @@ class CsDashboard extends HTMLElement {
     } catch (e) {
       this.units = [];
     }
+    try {
+      this.hostInfo = await api.hostInfo();
+    } catch (e) {
+      this.hostInfo = null;
+    }
     this.render();
   }
   async act(verb, name) {
@@ -422,12 +435,16 @@ class CsDashboard extends HTMLElement {
     const tops = this.units.filter((u) => !isChild.has(u.Name));
     const groups = groupUnits(tops);
 
-    const sections = [
+    const sections = [];
+    if (this.hostInfo) {
+      sections.push(this.systemPanel());
+    }
+    sections.push(
       el("div", { class: "row spread" }, [
         el("h2", {}, ["Components"]),
         button("Refresh", "", () => this.activate()),
-      ]),
-    ];
+      ])
+    );
     let any = false;
     for (const g of DASHBOARD_GROUPS) {
       const list = groups[g.id];
@@ -491,6 +508,50 @@ class CsDashboard extends HTMLElement {
       actions,
       ...kids,
     ]);
+  }
+  systemPanel() {
+    const info = this.hostInfo || {};
+    const cols = [];
+
+    // Col 1: System / Board
+    cols.push(el("div", { style: "display: flex; flex-direction: column; gap: 4px;" }, [
+      el("h4", { style: "margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);" }, ["System / Board"]),
+      kv("Board Name", info.boardName || "N/A"),
+      kv("Ethernet Adaptor", info.ethernetAdapterType || "N/A"),
+      kv("Architecture", info.architecture || "N/A"),
+      kv("OS Name", info.osName || "N/A"),
+    ]));
+
+    // Col 2: Performance
+    const cpuVal = (info.cpuLoad != null) ? info.cpuLoad.toFixed(1) + "%" : "N/A";
+    cols.push(el("div", { style: "display: flex; flex-direction: column; gap: 4px;" }, [
+      el("h4", { style: "margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);" }, ["Performance"]),
+      kv("CPU Load", cpuVal),
+      kv("Total Memory", formatBytes(info.totalMemory)),
+      kv("Free Memory", formatBytes(info.freeMemory)),
+    ]));
+
+    // Col 3: Network
+    cols.push(el("div", { style: "display: flex; flex-direction: column; gap: 4px;" }, [
+      el("h4", { style: "margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);" }, ["Network"]),
+      kv("IP Address", info.hostIp || "N/A"),
+      kv("MAC Address", info.hostMacAddress || "N/A"),
+    ]));
+
+    // Col 4: Build Info
+    const buildCol = [
+      el("h4", { style: "margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);" }, ["Build Data"]),
+      kv("Version", info.version || "N/A"),
+      kv("Go Version", info.goVersion || "N/A"),
+    ];
+    if (info.tinygoVersion) {
+      buildCol.push(kv("TinyGo Version", info.tinygoVersion));
+    }
+    buildCol.push(kv("Git SHA", (info.gitSha && info.gitSha.substring(0, 8)) || "N/A"));
+    buildCol.push(kv("Build Date", info.buildDate || "N/A"));
+    cols.push(el("div", { style: "display: flex; flex-direction: column; gap: 4px;" }, buildCol));
+
+    return el("div", { class: "panel", style: "display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 20px;" }, cols);
   }
   // childRow renders a nested dependent (e.g. SMB-TCP under SMB) as a compact line with
   // its own state dot, binding, and lifecycle controls.
@@ -653,7 +714,10 @@ async function openConfigModal(name) {
     return;
   }
   if (!section) {
-    body.replaceChildren(el("p", { class: "muted" }, ["This component has no editable config section."]));
+    // Some services carry no singleton section — their whole config is a repeated list
+    // edited on the Configuration tab (NCP is configured entirely through its volumes).
+    body.replaceChildren(el("p", { class: "muted" }, [LIST_ONLY_CONFIG[name] ||
+      "This component has no editable config section."]));
     applyBtn.disabled = true;
     return;
   }
@@ -679,7 +743,7 @@ async function openConfigModal(name) {
 // repeated Lists (by instance name). Returns [sectionObject, reconfigureKey].
 function findSection(model, name) {
   const wellKnown = {
-    Logging: "Logging", Router: "Router", Bridge: "Bridge",
+    Logging: "Logging", Router: "Router",
     Identity: "Identity", AdminAuth: "AdminAuth",
   };
   if (wellKnown[name] && model[name]) return [model[name], name];
@@ -690,12 +754,16 @@ function findSection(model, name) {
       if (inst && (inst.Name === name || inst.name === name)) return [inst, k];
     }
   }
+  // A built server component with no stored section yet: synthesise its default so the
+  // cog opens an editable form (the applied section reconfigures live like a stored one).
+  // Only components in the dashboard card are opened this way, so the component IS built.
+  if (SERVER_DEFAULTS[name]) return [{ ...SERVER_DEFAULTS[name] }, name];
   return [null, null];
 }
 
 // sectionEditor is the SINGLE source of truth for editing one config section, shared
 // by BOTH the dashboard cog modal (openConfigModal) and the Configuration page
-// (CsConfig.sectionPanel) so the two render identical fields/widgets and apply the same
+// (CsConfigBase.sectionPanel) so the two render identical fields/widgets and apply the same
 // way. It builds the model-aware form (formOptionsFor) and an apply() that POSTs
 // /reconfigure for the section's key. Callers wrap node/apply in their own chrome (a
 // modal vs. a collapsible panel) but never re-implement the form.
@@ -733,11 +801,11 @@ const FIELD_META = {
   Zone: { label: "Zone", desc: "AppleTalk zone this service advertises into. Empty = the router's default zone." },
   Transports: { label: "Transports", desc: "Which transport stacks to bind. Empty = bind all built transports." },
   TCPAddr: { label: "TCP listen address", desc: "Explicit host:port for the TCP transport (never an implicit privileged port)." },
-  NBTAddr: { label: "NBT listen address", desc: "Explicit host:port for NetBIOS-over-TCP (:139). Empty = not bound." },
+  NBTAddr: { label: "NBT listen address (:139)", desc: "Explicit host:port for NetBIOS-over-TCP (:139). Empty = not bound (never an implicit :139, which the OS may own)." },
   ScopeID: { label: "NetBIOS scope", desc: "NetBIOS scope identifier (rarely used; empty = default scope)." },
   // Port / transport instance
   Name: { label: "Instance name", desc: "Unique name for this instance (referenced by the router's Members list)." },
-  Iface: { label: "Interface", desc: "The named interface this transport binds to. Empty inherits the bridge." },
+  Iface: { label: "Interface", desc: "The named interface this transport binds to. Empty inherits the default interface." },
   IsEnabled: { label: "Enabled", desc: "Whether this instance is configured on (≠ currently running)." },
   MAC: { label: "Station MAC", desc: "Ethernet source address for EtherTalk. Empty = use the NIC's own MAC." },
   SeedNetwork: { label: "Seed network start", desc: "First AppleTalk network number this port asserts. 0 = non-seed (learn from a peer router)." },
@@ -749,6 +817,7 @@ const FIELD_META = {
   Backend: { label: "Link backend", desc: "pcap (default) · tap · tun. Only meaningful for a NIC." },
   Device: { label: "Device", desc: "Serial device path (COM3 / /dev/ttyUSB0)." },
   Baud: { label: "Baud rate", desc: "Serial line speed. 0 = adapter default." },
+  Default: { label: "Default interface", desc: "Ports that name no interface of their own inherit this one. At most one entry should be the default." },
   // AFP volume / SMB share
   VName: { label: "Volume name", desc: "Display name shown to AFP clients." },
   SName: { label: "Share name", desc: "Display name shown to SMB clients." },
@@ -760,7 +829,31 @@ const FIELD_META = {
   ExtMapPath: { label: "Extension map file", desc: "Netatalk-style type/creator map for files with no stored Finder info." },
   // MacIP / capture
   Mode: { label: "Mode", desc: "Gateway mode (bridge / nat)." },
+  Enabled: { label: "Enabled", desc: "Whether this service is configured on (≠ currently running)." },
+  GatewayIP: { label: "Gateway IP", desc: "The gateway's own IP address handed to MacIP clients." },
+  Network: { label: "Network", desc: "IP network/CIDR the gateway leases client addresses from." },
+  Nameserver: { label: "Name server", desc: "DNS server address handed to MacIP clients." },
+  Broadcast: { label: "Broadcast address", desc: "IP broadcast address for the client subnet." },
+  SubnetMask: { label: "Subnet mask", desc: "IP subnet mask for leased client addresses." },
+  HostCount: { label: "Host count", desc: "Number of client IP addresses to lease (0 = derive from the network)." },
+  Interface: { label: "Interface", desc: "The egress interface for gatewayed IP traffic." },
+  HostMAC: { label: "Host MAC", desc: "Override MAC for the gateway's egress side (empty = the NIC's own)." },
+  HostIP: { label: "Host IP", desc: "The host-side IP of the gateway." },
+  DefaultGateway: { label: "Default gateway", desc: "Upstream router the gateway forwards to." },
+  DHCPRelay: { label: "DHCP relay", desc: "Relay client DHCP to an upstream server instead of leasing locally." },
   Snaplen: { label: "Snap length", desc: "Bytes captured per packet (0 = full frame)." },
+  // Section titles (panel summaries) that need a friendlier label than the humanised key.
+  Identity: { label: "Server identity", desc: "" },
+  Logging: { label: "Logging", desc: "" },
+  Capture: { label: "Packet capture", desc: "" },
+  Router: { label: "Router", desc: "" },
+  NetBIOS: { label: "NetBIOS", desc: "" },
+  MacIP: { label: "MacIP gateway", desc: "" },
+  AdminAuth: { label: "Web-admin account", desc: "" },
+  AFP: { label: "AFP server", desc: "" },
+  SMB: { label: "SMB server", desc: "" },
+  NCP: { label: "NCP (NetWare) server", desc: "" },
+  EtherDFS: { label: "EtherDFS server", desc: "" },
 };
 
 // fieldMeta returns the label + description for a field key, humanising unknown keys.
@@ -900,6 +993,17 @@ function dropdown(label, choices, value, hint) {
   return { node, collect: () => sel.value };
 }
 
+// textField renders a labelled free-text input as a form override (value → {node,
+// collect}) — used where a field wants a custom LABEL/hint but stays a plain string
+// (e.g. the LToUDP bind address, which is not a namespace interface). Returns {node,
+// collect}.
+function textField(label, value, hint) {
+  const input = el("input", { type: "text", value: value == null ? "" : String(value) });
+  const kids = [el("label", {}, [label]), input];
+  if (hint) kids.push(el("p", { class: "field-hint" }, [hint]));
+  return { node: el("div", { class: "field-group" }, kids), collect: () => input.value };
+}
+
 // portInstanceNames returns the names of the configured port instances in the model —
 // the candidates for [Router].Members. Ports live in Model.Lists keyed by a transport
 // schema (EtherTalk/TashTalk/LToUDP/IPX/NetBEUI); each instance's name is its join key.
@@ -919,13 +1023,38 @@ function portInstanceNames(model) {
 }
 
 // interfaceChoices returns the selectable interface names: the declared namespace
-// entries (Model.Interfaces) plus the default Bridge, for a port/bridge interface
-// dropdown. Host NICs are offered too via the live enumerator where relevant.
+// entries (Model.Interfaces), for a port/bridge interface dropdown. A bridge is just
+// one of these entries now (kind=bridge), so no separate default is folded in. Host
+// NICs are offered too via the live enumerator where relevant.
 function interfaceChoices(model) {
-  const names = new Set();
-  for (const k of Object.keys(model.Interfaces || {})) names.add(k);
-  if (model.Bridge && model.Bridge.Name) names.add(model.Bridge.Name);
-  return [...names];
+  return Object.keys(model.Interfaces || {});
+}
+
+// zoneChoices returns the AppleTalk zone names DEFINED by the current config: the
+// router's default zone plus every AppleTalk port instance's seed zone (SeedZone). This
+// is the config-model source (no live ZIP probe), so it is always available and reflects
+// what the operator has set — the candidates a service (AFP) picks a zone from.
+function zoneChoices(model) {
+  const zones = new Set();
+  const add = (z) => { if (z && String(z).trim()) zones.add(String(z).trim()); };
+  add(model.Router && model.Router.DefaultZone);
+  const lists = model.Lists || {};
+  for (const k of AT_PORT_KEYS) {
+    for (const inst of lists[k] || []) add(inst.SeedZone || inst.seed_zone);
+  }
+  return [...zones];
+}
+
+// datalistField renders a text input backed by a <datalist> — a dropdown of suggested
+// values that still accepts free text. Used for the AFP zone (pick a configured zone or
+// type a new one). Returns {node, collect}.
+function datalistField(label, choices, value, hint) {
+  const listId = "dl-" + Math.random().toString(36).slice(2);
+  const input = el("input", { type: "text", value: value == null ? "" : String(value), list: listId });
+  const datalist = el("datalist", { id: listId }, (choices || []).map((c) => el("option", { value: c })));
+  const kids = [el("label", {}, [label]), el("div", { class: "row" }, [input, datalist])];
+  if (hint) kids.push(el("p", { class: "field-hint" }, [hint]));
+  return { node: el("div", { class: "field-group" }, kids), collect: () => input.value };
 }
 
 // APPLETALK_TRANSPORTS are the transport schema keys whose port instances seed the
@@ -935,6 +1064,15 @@ function interfaceChoices(model) {
 const APPLETALK_TRANSPORTS = ["EtherTalk", "LToUDP", "TashTalk"];
 const NON_AT_TRANSPORTS = ["IPX", "NetBEUI"];
 
+// LIST_ONLY_CONFIG maps a component whose config is a repeated list (no singleton
+// section) to the hint shown in its dashboard cog modal — pointing the operator to the
+// Configuration tab where the list editor lives. NCP has no server-level section: it
+// binds the shared IPX transport and takes its name from the Identity, so its only
+// configuration is its exported volumes.
+const LIST_ONLY_CONFIG = {
+  NCP: "NCP has no server-level settings. Its volumes are configured on the Sharing tab (NCP Volumes); its server name comes from the shared Identity.",
+};
+
 // formOptionsFor returns the sectionForm opts (overrides + hidden fields) for a given
 // section/reconfigure key, making the generic form model-aware: Router gets a member
 // checkbox list; SMB/NetBIOS/AFP get transport-binding checkboxes; Bridge gets a member
@@ -943,71 +1081,128 @@ const NON_AT_TRANSPORTS = ["IPX", "NetBEUI"];
 function formOptionsFor(name, model) {
   const opts = { overrides: {}, hide: new Set() };
   if (name === "Router") {
-    opts.overrides.Members = (v) => checkboxList("Members — ports that join this router",
-      portInstanceNames(model), v, "Checked ports forward/participate in RTMP+ZIP; unchecked ports run standalone on their own segment.");
+    opts.overrides.Members = (v) => checkboxList("Members — AppleTalk ports that join this router",
+      portInstanceNames(model), v, "The AppleTalk transport ports (EtherTalk / LToUDP / TashTalk) that participate in RTMP + ZIP forwarding. A checked port routes; an unchecked one runs standalone on its own segment. Each port's seed zone/network define its segment.");
   } else if (name === "SMB") {
     opts.overrides.Transports = (v) => checkboxList("Transports",
-      ["netbeui", "ipx", "nbt", "tcp"], v, "Empty = bind all built transports. tcp/nbt also need an address below.");
+      ["netbeui", "ipx", "nbt", "tcp"], v, "Empty = bind all built transports. tcp needs the address below; the nbt (:139) address is set on the NetBIOS panel.");
   } else if (name === "NetBIOS") {
     opts.overrides.Transports = (v) => checkboxList("Transports",
-      ["netbeui", "ipx", "nbt"], v, "Empty = bind all built transports.");
+      ["netbeui", "ipx", "nbt"], v, "Empty = bind all built transports. nbt also needs its :139 listen address below.");
   } else if (name === "AFP") {
     opts.overrides.Transports = (v) => checkboxList("Transports",
       ["ddp", "tcp"], v, "ddp = classic (needs router membership); tcp = AFP-over-TCP (DSI). Empty = all.");
+    // The AppleTalk zone AFP advertises into is one of the zones the router/ports define,
+    // so offer them as a dropdown (still free-text-typable for an as-yet-unconfigured zone).
+    opts.overrides.Zone = (v) => datalistField("Zone", zoneChoices(model), v,
+      "AppleTalk zone this service advertises into. Empty = the router's default zone.");
   } else if (name === "EtherDFS") {
     // EtherDFS binds ONE NIC for its raw-Ethernet (EtherType 0xEDF5) link, so its
     // Interface is a single-select dropdown like a transport port's.
     opts.overrides.Interface = (v) => dropdown("Interface — the NIC this EtherDFS server binds to",
-      interfaceChoices(model), v, "Empty inherits the shared bridge interface.");
-  } else if (name === "Bridge") {
-    // A bridge aggregates member interfaces; it has no serial line speed or device.
-    opts.hide.add("Baud").add("Device").add("Kind");
-    opts.overrides.Members = (v) => checkboxList("Member interfaces",
-      interfaceChoices(model).filter((n) => n !== model.Bridge?.Name), v,
-      "The NICs this bridge aggregates.");
+      interfaceChoices(model), v, "Empty inherits the default interface.");
+  } else if (name === "MacIP") {
+    // The MacIP gateway advertises into an AppleTalk zone and binds an egress interface.
+    opts.overrides.Zone = (v) => datalistField("Zone", zoneChoices(model), v,
+      "AppleTalk zone the gateway advertises into. Empty = the router's default zone.");
+    opts.overrides.Interface = (v) => dropdown("Interface — the egress NIC for IP traffic",
+      interfaceChoices(model), v, "Empty inherits the default interface.");
+    opts.overrides.Mode = (v) => dropdown("Mode", ["bridge", "nat"], v, "bridge = shared L2 segment; nat = translate to the host's IP.");
   } else if (APPLETALK_TRANSPORTS.includes(name) || NON_AT_TRANSPORTS.includes(name)) {
-    // A transport port binds ONE interface from the namespace (plus the implicit
-    // bridge inheritance), so Iface is a single-select dropdown rather than free text.
-    opts.overrides.Iface = (v) => dropdown("Interface — the named interface this port binds to",
-      interfaceChoices(model), v, "Empty inherits the shared bridge interface.");
-    if (NON_AT_TRANSPORTS.includes(name)) {
-      // IPX / NetBEUI carry no AppleTalk seed; hide the AppleTalk-only fields.
-      opts.hide.add("SeedNetwork").add("SeedNetworkEnd").add("SeedZone").add("MAC");
-    } else if (name !== "EtherTalk") {
-      // Only EtherTalk uses a station MAC; LToUDP/TashTalk have none.
-      opts.hide.add("MAC");
+    // Each transport port carries its OWN binding; the widget set differs by transport:
+    //   EtherTalk / IPX / NetBEUI → an interface (bridge/uplink) dropdown + MAC.
+    //   TashTalk                  → its own serial line (Device dropdown + Baud), no iface.
+    //   LToUDP                    → host-wide multicast; Iface is an optional bind address.
+    if (name === "TashTalk") {
+      // Serial line lives on the port: the Device dropdown is injected by openInstanceModal
+      // (it needs the async serial-port list); here we just hide the fields that do not
+      // apply — the interface picker, the MAC, and Baud is a plain number field.
+      opts.hide.add("Iface").add("MAC");
+    } else if (name === "LToUDP") {
+      // LToUDP rides UDP multicast on the host; Iface is an optional bind ADDRESS, not a
+      // namespace interface. Serial/MAC do not apply.
+      opts.overrides.Iface = (v) => textField("Bind address (optional)", v,
+        "Local IPv4 address to bind/join the multicast group on. Empty = every multicast-capable interface.");
+      opts.hide.add("MAC").add("Device").add("Baud");
+    } else {
+      // EtherTalk / IPX / NetBEUI bind ONE namespace interface (the bridge/uplink), or
+      // inherit the default when empty — a single-select dropdown. Serial fields hidden.
+      opts.overrides.Iface = (v) => dropdown("Interface — the uplink this port binds to",
+        interfaceChoices(model), v, "Empty inherits the default interface.");
+      opts.hide.add("Device").add("Baud");
+      if (NON_AT_TRANSPORTS.includes(name)) {
+        // IPX / NetBEUI carry no AppleTalk seed; hide the AppleTalk-only fields.
+        opts.hide.add("SeedNetwork").add("SeedNetworkEnd").add("SeedZone").add("MAC");
+      }
     }
   }
   return opts;
 }
 
 // ---------------------------------------------------------------------------
-// Configuration tab: shows every editable section, drives Save (persist) and a
-// client-side Download of the live model as a JSON backup.
+// Configuration tabs. The single legacy "Configuration" page is split into five
+// focused top-level tabs, each a subclass of CsConfigBase: Interfaces (raw links),
+// AppleTalk Router (router membership + AppleTalk transports + zones), Protocols
+// (IPX / NetBEUI / NetBIOS / MacIP), Sharing (AFP / SMB / NCP / EtherDFS + their
+// volumes), and Users (its own class). Every config tab shares one model load, the
+// Save-to-disk / Download bar, and the section-panel / list-editor / synthesised-
+// default machinery on the base; each subclass only supplies renderBody().
 // ---------------------------------------------------------------------------
-class CsConfig extends HTMLElement {
+
+// SERVER_DEFAULTS synthesises a singleton section for a built component that carries no
+// stored section yet, so an operator can set e.g. the AFP name/zone or a transport
+// binding on a fresh install without first hand-editing server.toml. Shared by every
+// tab (and reused for the dashboard cog's editableSections lookup). NBT (:139) lives on
+// NetBIOS now, not SMB (see errata: "NBT listen address lives on [NetBIOS]").
+const SERVER_DEFAULTS = {
+  AFP: { ServerName: "", Zone: "", Transports: [], TCPAddr: "" },
+  SMB: { Transports: [], TCPAddr: "" },
+  NetBIOS: { Transports: [], ScopeID: "", NBTAddr: "" },
+  // EtherDFS is BOTH the wire endpoint and the file server, so its singleton section
+  // carries the NIC binding (Interface/MAC/IsEnabled) plus the advertised name.
+  EtherDFS: { IsEnabled: false, Interface: "", MAC: "", ServerName: "" },
+  // MacIP (IP-over-AppleTalk) gateway: synthesised with its full field shape so it is
+  // configurable on a fresh install. Mirrors macip.Section (toml keys → Go field names).
+  MacIP: {
+    Enabled: false, Mode: "", Zone: "", GatewayIP: "", Network: "", Nameserver: "",
+    Broadcast: "", SubnetMask: "", HostCount: 0, Interface: "", HostMAC: "", HostIP: "",
+    DefaultGateway: "", DHCPRelay: false,
+  },
+};
+
+// LIST_OWNERS maps a repeated-section schema key to the component that owns its live
+// reconcile (the /add_instance + /reconfigure "owner"). Used by the Sharing tab.
+const LIST_OWNERS = {
+  AFPVolumes: "AFP",
+  SMBShares: "SMB",
+  EtherDFSDrives: "EtherDFS",
+  NCPVolumes: "NCP",
+};
+
+class CsConfigBase extends HTMLElement {
+  // title is the H2 shown at the top of the tab; subclasses set it.
+  title = "Configuration";
   async activate() {
-    this.render(el("p", { class: "muted" }, ["loading…"]));
+    this.replaceChildren(el("div", { class: "panel" }, [el("h2", {}, [this.title]), el("p", { class: "muted" }, ["loading…"])]));
     try {
       this.model = await api.config();
       // Status tells us which components were actually built, so the share/volume
       // editors and binding panels show even when their lists are still empty.
       this.units = await api.status().catch(() => []);
     } catch (e) {
-      this.render(el("p", { class: "err" }, [e.message]));
+      this.replaceChildren(el("div", { class: "panel err" }, [e.message]));
       return;
     }
-    this.renderModel();
+    this.render();
   }
   hasComponent(name) {
     return (this.units || []).some((u) => u.Name === name);
   }
-  render(child) {
-    this.replaceChildren(el("div", { class: "panel" }, [el("h2", {}, ["Configuration"]), child]));
-  }
-  renderModel() {
+  // saveBar is the shared Save-to-disk / Download-server.toml row every config tab
+  // carries: a change applied live on any tab is persisted for the WHOLE model here.
+  saveBar() {
     const status = el("div", { class: "err" });
-    const save = button("Save to disk", "primary", async () => {
+    const save = button("Save all to disk", "primary", async () => {
       status.textContent = ""; status.className = "err";
       try {
         const { revision } = await api.save();
@@ -1015,31 +1210,29 @@ class CsConfig extends HTMLElement {
         status.textContent = "Saved. Backup revision: " + revision;
       } catch (e) { status.textContent = e.message; }
     });
-    // Download the faithful on-disk server.toml (server-rendered through the codec),
-    // not the JSON model shape — the operator wants a real backup file.
     const download = button("Download server.toml", "", () => api.downloadConfig());
-
-    const singletons = this.editableSections().map(([name, key, sec]) =>
-      this.sectionPanel(name, key, sec));
-
-    this.replaceChildren(
-      el("div", { class: "banner" }, ["Saving rewrites server.toml and drops any comments in the file. Apply changes a section live without persisting; Save writes them all to disk."]),
+    return el("div", {}, [
+      el("div", { class: "banner" }, ["Apply changes a section live without persisting; Save writes the whole config to disk (rewrites server.toml, dropping comments)."]),
       el("div", { class: "row", style: "margin-bottom:14px" }, [save, download]),
       status,
-      // Repeated-section editors (AFP volumes / SMB shares) with Add/Delete + a path picker.
-      ...this.listEditors(),
-      // Interface namespace editor (NIC / serial / bridge entries ports bind to).
-      new CsInterfaces(this.model, () => this.activate()),
-      // Extension-map grid editor (a file, not a model section).
-      this.extMapPanel(),
-      ...singletons,
+    ]);
+  }
+  render() {
+    this.replaceChildren(
+      el("h2", { class: "tab-title" }, [this.title]),
+      this.saveBar(),
+      ...this.renderBody(),
     );
   }
+  // renderBody returns the tab-specific panels. Subclasses override it.
+  renderBody() { return []; }
+
+  // --- shared panel builders -----------------------------------------------------
 
   // sectionPanel renders one singleton section as a collapsible form with Apply (live).
   // It reuses the SAME sectionEditor as the dashboard cog modal, so the fields, widgets,
-  // and apply behaviour are identical between the two surfaces.
-  sectionPanel(name, key, sec) {
+  // and apply behaviour are identical between the two surfaces. `open` expands it.
+  sectionPanel(name, key, sec, open = false) {
     const editor = sectionEditor(key, sec, this.model);
     const sstat = el("div", { class: "err" });
     const apply = button("Apply (live)", "", async () => {
@@ -1049,81 +1242,159 @@ class CsConfig extends HTMLElement {
         sstat.className = "ok-msg"; sstat.textContent = "Applied.";
       } catch (e) { sstat.textContent = e.message; }
     });
-    return el("details", { class: "panel" }, [
-      el("summary", {}, [name]),
+    return el("details", open ? { class: "panel", open: "" } : { class: "panel" }, [
+      el("summary", {}, [fieldMeta(name).label]),
       editor.node,
       el("div", { class: "row" }, [apply]),
       sstat,
     ]);
   }
 
-  // listEditors builds one panel per repeated-section key (AFPVolumes/SMBShares): a row
-  // per instance with Edit/Delete and an Add form. The owner component (AFP/SMB) drives
-  // the live reconcile. The well-known editors are shown whenever their owner component
-  // was built (even with no instances yet, so "Add volume/share" is always reachable);
-  // any other repeated key present in the model is shown too.
-  listEditors() {
-    const known = [
-      { key: "AFPVolumes", owner: "AFP" },
-      { key: "SMBShares", owner: "SMB" },
-      { key: "EtherDFSDrives", owner: "EtherDFS" },
-    ];
+  // singletonPanel renders a singleton section identified by `key`, reading it from the
+  // model's well-known field or Sections map, or synthesising a SERVER_DEFAULTS default
+  // when the component is built but carries no stored section. Returns null when neither
+  // the section nor the component is present (so callers can filter it out).
+  singletonPanel(key, open = false) {
+    const m = this.model;
+    let sec = (m[key] && typeof m[key] === "object") ? m[key]
+      : (m.Sections && m.Sections[key]) || null;
+    if (!sec && SERVER_DEFAULTS[key] && this.hasComponent(key)) sec = { ...SERVER_DEFAULTS[key] };
+    if (!sec) return null;
+    return this.sectionPanel(key, key, sec, open);
+  }
+
+  // listEditor returns the Add/Edit/Delete table for a repeated-section key, shown when
+  // its owner component is built OR the list already has entries. Returns null otherwise.
+  listEditor(key) {
+    const owner = LIST_OWNERS[key] || key;
     const lists = this.model.Lists || {};
-    const shown = new Set();
+    if (!this.hasComponent(owner) && !lists[key]) return null;
+    return new CsInstanceEditor(key, owner, lists[key] || [], () => this.activate(), this.model);
+  }
+
+  // portEditor returns the Add/Edit/Delete table for a transport-port schema key
+  // (EtherTalk / LToUDP / TashTalk / IPX / NetBEUI). Port instances live in Model.Lists
+  // keyed by the component name; the owner IS that component (each instance reconciles
+  // itself). Shown when the component is built or an instance exists.
+  portEditor(key) {
+    const lists = this.model.Lists || {};
+    if (!this.hasComponent(key) && !lists[key]) return null;
+    return new CsInstanceEditor(key, key, lists[key] || [], () => this.activate(), this.model);
+  }
+}
+
+// AppleTalk transport schema keys (repeated ports) and the non-AppleTalk transports,
+// used to route port editors to the Router vs Protocols tabs.
+const AT_PORT_KEYS = ["EtherTalk", "LToUDP", "TashTalk"];
+const PROTO_PORT_KEYS = ["IPX", "NetBEUI"];
+
+// --- Interfaces tab: raw links (NIC/pcap, TashTalk serial, LToUDP) + the bridge, plus
+// the general server settings (Identity / Logging / Capture / web-admin) that belong to
+// no single protocol group. --------------------------------------------------------
+class CsInterfacesTab extends CsConfigBase {
+  title = "Interfaces";
+  renderBody() {
     const out = [];
-    for (const { key, owner } of known) {
-      if (this.hasComponent(owner) || lists[key]) {
-        out.push(new CsInstanceEditor(key, owner, lists[key] || [], () => this.activate()));
-        shown.add(key);
-      }
-    }
-    for (const [key, list] of Object.entries(lists)) {
-      if (shown.has(key)) continue;
-      out.push(new CsInstanceEditor(key, key, list || [], () => this.activate()));
+    out.push(el("p", { class: "field-hint" }, ["The uplink bridge(s) — a host NIC via pcap/tap/raw. This is the only interface: EtherTalk / IPX / NetBEUI ports bind a bridge by name (a port that names none inherits the one flagged Default). TashTalk (serial) and LToUDP (multicast) own their binding on the port itself, not here."]));
+    // The interface-namespace editor (NIC / serial / bridge entries; one flagged the
+    // default). A bridge is just a kind=bridge entry here — there is no separate
+    // singleton bridge panel any more.
+    out.push(new CsInterfaces(this.model, () => this.activate()));
+    // General server settings that fit no protocol group. (The web-admin account is NOT
+    // here — its salt/hash are derived server-side via first-run setup, not a text edit.)
+    out.push(el("h3", { class: "group-head" }, ["General"]));
+    for (const k of ["Identity", "Logging", "Capture"]) {
+      const p = this.singletonPanel(k);
+      if (p) out.push(p);
     }
     return out;
   }
+}
 
-  // extMapPanel is a collapsible 3-column (Extension/Creator/Type) grid editor over an
-  // extension-map file. The file path is taken from the first AFP volume that names an
-  // ExtMapPath; the operator can point it elsewhere.
+// --- AppleTalk Router tab: router membership + default zone, and the AppleTalk
+// transports (EtherTalk / LToUDP / TashTalk) whose per-port seed network numbers and
+// zone names define the AppleTalk internet. -----------------------------------------
+class CsRouterTab extends CsConfigBase {
+  title = "AppleTalk Router";
+  renderBody() {
+    const out = [];
+    out.push(el("p", { class: "field-hint" }, ["The router forwards between its member AppleTalk ports (RTMP + ZIP). Each port's seed network range and zone name define the internet; the default zone is advertised when a port seeds none."]));
+    const router = this.singletonPanel("Router", true);
+    if (router) out.push(router);
+    out.push(el("h3", { class: "group-head" }, ["AppleTalk transports"]));
+    let anyPort = false;
+    for (const k of AT_PORT_KEYS) {
+      const p = this.portEditor(k);
+      if (p) { out.push(p); anyPort = true; }
+    }
+    if (!anyPort) out.push(el("div", { class: "panel muted" }, ["No AppleTalk transports built."]));
+    return out;
+  }
+}
+
+// --- Protocols tab: the non-AppleTalk protocol stacks — IPX and NetBEUI (transport
+// ports), NetBIOS (bindings + scope + NBT :139 address), and the MacIP gateway. -----
+class CsProtocolsTab extends CsConfigBase {
+  title = "Protocols";
+  renderBody() {
+    const out = [];
+    out.push(el("p", { class: "field-hint" }, ["Non-AppleTalk protocols: IPX and NetBEUI links, the NetBIOS name service (which carries SMB), and the MacIP (IP-over-AppleTalk) gateway."]));
+    // NetBIOS + MacIP singletons.
+    for (const k of ["NetBIOS", "MacIP", "IPXGW"]) {
+      const p = this.singletonPanel(k);
+      if (p) out.push(p);
+    }
+    // IPX / NetBEUI transport ports.
+    out.push(el("h3", { class: "group-head" }, ["IPX / NetBEUI links"]));
+    let anyPort = false;
+    for (const k of PROTO_PORT_KEYS) {
+      const p = this.portEditor(k);
+      if (p) { out.push(p); anyPort = true; }
+    }
+    if (!anyPort) out.push(el("div", { class: "panel muted" }, ["No IPX / NetBEUI transports built."]));
+    return out;
+  }
+}
+
+// --- Sharing tab: the file services (AFP / SMB / NCP / EtherDFS) — each service's
+// server-level settings followed by its exported volumes/shares — plus the shared
+// extension-map editor. -------------------------------------------------------------
+class CsSharingTab extends CsConfigBase {
+  title = "Sharing";
+  renderBody() {
+    const out = [];
+    out.push(el("p", { class: "field-hint" }, ["File services and their exported trees. Each service has server-level settings and a list of volumes/shares; a volume and a share over the same host path stay coordinated."]));
+    // One block per file service: its singleton settings then its share/volume list.
+    const services = [
+      { name: "AFP", list: "AFPVolumes" },
+      { name: "SMB", list: "SMBShares" },
+      { name: "NCP", list: "NCPVolumes" },
+      { name: "EtherDFS", list: "EtherDFSDrives" },
+    ];
+    let any = false;
+    for (const svc of services) {
+      const built = this.hasComponent(svc.name) || (this.model.Lists || {})[svc.list];
+      if (!built) continue;
+      any = true;
+      out.push(el("h3", { class: "group-head" }, [svc.name]));
+      const singleton = this.singletonPanel(svc.name);
+      if (singleton) out.push(singleton);
+      const list = this.listEditor(svc.list);
+      if (list) out.push(list);
+    }
+    if (!any) out.push(el("div", { class: "panel muted" }, ["No file services built."]));
+    // The extension-map (type/creator) editor — a file, shared across AFP volumes.
+    out.push(this.extMapPanel());
+    return out;
+  }
+  // extMapPanel builds the 3-column extension-map grid editor, seeding its path from the
+  // first AFP volume that names an ExtMapPath.
   extMapPanel() {
     const ed = new CsExtMap();
-    // Seed the path from an AFP volume's ExtMapPath, if any.
     for (const inst of (this.model.Lists && this.model.Lists.AFPVolumes) || []) {
       if (inst.ExtMapPath || inst.extmap_path) { ed.path = inst.ExtMapPath || inst.extmap_path; break; }
     }
     return ed;
-  }
-  // editableSections returns the SINGLETON sections as [displayName, reconfigureKey,
-  // section] tuples: the well-known typed fields + the registered Sections map. Repeated
-  // instances (Lists) are handled separately by listEditors (they need Add/Delete).
-  //
-  // Server-level singletons (AFP/SMB/NetBIOS) are SYNTHESISED with their defaults when
-  // their owner component exists but the model carries no section yet — so an operator
-  // can set the AFP name/zone or SMB/NetBIOS bindings on a fresh install without first
-  // hand-editing server.toml. The synthesised default reconfigures live like a stored one.
-  editableSections() {
-    const m = this.model, out = [];
-    for (const k of ["Identity", "Logging", "Router", "Bridge", "Capture"]) {
-      if (m[k] && typeof m[k] === "object") out.push([k, k, m[k]]);
-    }
-    const sections = { ...(m.Sections || {}) };
-    // Synthesise server singletons for built components missing a section.
-    const serverDefaults = {
-      AFP: { ServerName: "", Zone: "", Transports: [], TCPAddr: "" },
-      SMB: { Transports: [], TCPAddr: "", NBTAddr: "" },
-      NetBIOS: { Transports: [], ScopeID: "" },
-      // EtherDFS is BOTH the wire endpoint and the file server, so its singleton
-      // section carries the NIC binding (Interface/MAC/IsEnabled) plus the name
-      // advertised in install checks.
-      EtherDFS: { IsEnabled: false, Interface: "", MAC: "", ServerName: "" },
-    };
-    for (const [key, def] of Object.entries(serverDefaults)) {
-      if (!sections[key] && this.hasComponent(key)) sections[key] = def;
-    }
-    for (const [k, sec] of Object.entries(sections)) out.push([k, k, sec]);
-    return out;
   }
 }
 
@@ -1134,9 +1405,9 @@ class CsConfig extends HTMLElement {
 // service reconciles its live set. The name/path fields carry a Browse picker.
 // ---------------------------------------------------------------------------
 class CsInstanceEditor extends HTMLElement {
-  constructor(key, owner, list, onChange) {
+  constructor(key, owner, list, onChange, model) {
     super();
-    this.key = key; this.owner = owner; this.list = list; this.onChange = onChange;
+    this.key = key; this.owner = owner; this.list = list; this.onChange = onChange; this.model = model;
   }
   connectedCallback() { this.render(); }
   async add(section) {
@@ -1151,33 +1422,46 @@ class CsInstanceEditor extends HTMLElement {
   render() {
     const title = this.key === "AFPVolumes" ? "AFP Volumes"
       : this.key === "SMBShares" ? "SMB Shares"
-      : this.key === "EtherDFSDrives" ? "EtherDFS Drives" : this.key;
+      : this.key === "EtherDFSDrives" ? "EtherDFS Drives"
+      : this.key === "NCPVolumes" ? "NCP Volumes" : this.key;
+    // A transport-port list shows a binding/seed summary; a volume/share list shows path/fs/mode.
+    const isPort = AT_PORT_KEYS.includes(this.key) || PROTO_PORT_KEYS.includes(this.key);
+    const cols = isPort ? ["Name", "Binding", "Seed", "State", ""] : ["Name", "Path", "FS", "Mode", ""];
     const rows = this.list.map((inst) => {
       const name = instName(inst);
-      const path = inst.Path || inst.path || "";
-      const ro = inst.ReadOnly || inst.read_only;
-      const fst = inst.FSType || inst.fs_type || "";
+      let colB, colC, colD;
+      if (isPort) {
+        colB = inst.Device || inst.Iface || "(default uplink)";
+        const s0 = inst.SeedNetwork || 0, s1 = inst.SeedNetworkEnd || 0;
+        const net = s0 ? (s1 && s1 !== s0 ? `${s0}–${s1}` : String(s0)) : "non-seed";
+        colC = [net, inst.SeedZone].filter(Boolean).join(" · ");
+        colD = inst.IsEnabled === false ? "disabled" : "enabled";
+      } else {
+        colB = inst.Path || inst.path || "";
+        colC = inst.FSType || inst.fs_type || "";
+        colD = (inst.ReadOnly || inst.read_only) ? "ro" : "rw";
+      }
       return el("tr", {}, [
         el("td", {}, [name]),
-        el("td", { class: "muted" }, [path]),
-        el("td", { class: "muted" }, [fst]),
-        el("td", {}, [ro ? "ro" : "rw"]),
+        el("td", { class: "muted" }, [colB]),
+        el("td", { class: "muted" }, [colC]),
+        el("td", {}, [colD]),
         el("td", {}, [el("div", { class: "row" }, [
-          button("Edit", "", () => openInstanceModal(this.key, this.owner, inst, this.onChange)),
+          button("Edit", "", () => openInstanceModal(this.key, this.owner, inst, this.onChange, this.model)),
           button("Delete", "danger", () => this.remove(name)),
         ])]),
       ]);
     });
     const table = el("table", {}, [
-      el("thead", {}, [el("tr", {}, [th("Name"), th("Path"), th("FS"), th("Mode"), th("")])]),
+      el("thead", {}, [el("tr", {}, cols.map((c) => th(c)))]),
       el("tbody", {}, rows.length ? rows : [el("tr", {}, [el("td", { class: "muted", colspan: "5" }, ["No entries."])])]),
     ]);
     this.replaceChildren(el("details", { class: "panel", open: "" }, [
       el("summary", {}, [title]),
       table,
       el("div", { class: "row" }, [
-        button("Add " + (this.key === "AFPVolumes" ? "volume" : this.key === "SMBShares" ? "share" : this.key === "EtherDFSDrives" ? "drive" : "entry"), "primary",
-          () => openInstanceModal(this.key, this.owner, this.blankInstance(), this.onChange)),
+        button("Add " + (this.key === "AFPVolumes" ? "volume" : this.key === "SMBShares" ? "share" : this.key === "EtherDFSDrives" ? "drive" : this.key === "NCPVolumes" ? "volume" : "entry"), "primary",
+          () => openInstanceModal(this.key, this.owner, this.blankInstance(), this.onChange, this.model)),
       ]),
     ]));
   }
@@ -1192,6 +1476,16 @@ class CsInstanceEditor extends HTMLElement {
         out[k] = typeof v === "boolean" ? false : Array.isArray(v) ? [] : typeof v === "number" ? 0 : "";
       }
       return out;
+    }
+    // A transport PORT has a fixed field shape (mirrors core/port Section's JSON keys),
+    // distinct from the volume/share shape below. Name empty → the server defaults it to
+    // the transport type (EtherTalk / LToUDP / TashTalk); formOptionsFor hides the fields
+    // that do not apply to the chosen transport.
+    if (AT_PORT_KEYS.includes(this.key) || PROTO_PORT_KEYS.includes(this.key)) {
+      return {
+        Name: "", Iface: "", IsEnabled: true, MAC: "",
+        SeedNetwork: 0, SeedNetworkEnd: 0, SeedZone: "", Device: "", Baud: 0,
+      };
     }
     const nameKey = this.key === "SMBShares" ? "SName" : this.key === "EtherDFSDrives" ? "DName" : "VName";
     const base = { [nameKey]: "", FSType: "local_fs", Path: "", ReadOnly: false, Options: [] };
@@ -1209,11 +1503,22 @@ function instName(inst) {
   return inst.VName || inst.SName || inst.Name || inst.name || "";
 }
 
-// openInstanceModal edits one repeated-section instance (a volume/share). isNew is
-// inferred from whether the instance currently exists in the list; a create goes through
-// /add_instance, an edit through /reconfigure. The path field gets a Browse picker and
-// fs_type a dropdown from /list_fs_types.
-async function openInstanceModal(key, owner, inst, onChange) {
+function formatBytes(bytes) {
+  if (!bytes || bytes === 0) return "N/A";
+  const k = 1024;
+  const sizes = ["Bytes", "KB", "MB", "GB", "TB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  if (i < 0 || i >= sizes.length) return bytes + " Bytes";
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+}
+
+// openInstanceModal edits one repeated-section instance (a volume/share OR a transport
+// port). isNew is inferred from whether the instance currently exists in the list; a
+// create goes through /add_instance, an edit through /reconfigure. A volume/share gets
+// the Path Browse picker + fs_type dropdown; a transport PORT gets its model-aware
+// widgets (EtherTalk interface dropdown, TashTalk serial-port dropdown, per-transport
+// field hiding) via formOptionsFor + the passed model.
+async function openInstanceModal(key, owner, inst, onChange, model) {
   const isNew = !instName(inst);
   const overlay = el("div", { class: "modal-overlay" });
   const body = el("div", { class: "modal-body" }, [el("p", { class: "muted" }, ["loading…"])]);
@@ -1229,7 +1534,16 @@ async function openInstanceModal(key, owner, inst, onChange) {
   document.body.append(overlay);
 
   const fsTypes = await api.fsTypes().catch(() => []);
-  const form = instanceForm(inst, fsTypes);
+  // A transport port carries model-aware widgets; TashTalk additionally needs the host
+  // serial-port list for its Device dropdown. Volume/share instances pass neither.
+  const isPort = AT_PORT_KEYS.includes(key) || PROTO_PORT_KEYS.includes(key);
+  const opts = isPort && model ? formOptionsFor(key, model) : { overrides: {}, hide: new Set() };
+  if (key === "TashTalk") {
+    opts.serialDevice = true;
+    opts.serialPorts = (await api.serialPorts().catch(() => []))
+      .map((p) => (typeof p === "string" ? p : p.Name || p.Device || "")).filter(Boolean);
+  }
+  const form = instanceForm(inst, fsTypes, opts);
   body.replaceChildren(form.node);
 
   saveBtn.addEventListener("click", async () => {
@@ -1246,18 +1560,37 @@ async function openInstanceModal(key, owner, inst, onChange) {
 
 // instanceForm renders a volume/share form: a Browse-able path field, an fs_type
 // dropdown, and the remaining fields via the generic reflection. Returns {node, collect}.
-function instanceForm(inst, fsTypes) {
-  const base = sectionForm(inst);
-  // Decorate: replace the plain path input with one carrying a Browse button, and
-  // swap fs_type for a dropdown. We rebuild the node from inst to control field order.
+// instanceForm renders one repeated-section instance. For volume/share instances it
+// decorates the Path (Browse) and fs_type (dropdown) fields; for a transport-PORT
+// instance it applies the model-aware `opts` (from formOptionsFor) so the EtherTalk
+// interface picker, the TashTalk serial-port dropdown, and the per-transport `hide`
+// rules take effect — the same overrides the singleton editor gets, which the port
+// list editor previously bypassed. `opts` is {overrides, hide, serialPorts}.
+function instanceForm(inst, fsTypes, opts = {}) {
+  const overrides = opts.overrides || {};
+  const hide = opts.hide || new Set();
+  const serialPorts = opts.serialPorts || [];
   const nodes = [];
   const fields = {};
+  const custom = {}; // key → {node, collect} from an override
 
   const pathKey = "Path" in inst ? "Path" : "path" in inst ? "path" : null;
   const fsKey = "FSType" in inst ? "FSType" : "fs_type" in inst ? "fs_type" : null;
 
   for (const [k, v] of Object.entries(inst)) {
-    if (k === pathKey) {
+    if (hide.has(k)) continue;
+    if (opts.serialDevice && k === "Device") {
+      // TashTalk serial device: a dropdown of detected host serial ports, so the operator
+      // picks the tty ON THE PORT (TashTalk owns its own serial line).
+      const w = dropdown(fieldMeta(k).label, serialPorts, v,
+        "Pick a detected host serial port. TashTalk owns its own tty.");
+      custom[k] = w;
+      nodes.push(w.node);
+    } else if (overrides[k]) {
+      const w = overrides[k](v, inst);
+      custom[k] = w;
+      nodes.push(...(Array.isArray(w.nodes) ? w.nodes : [w.node]));
+    } else if (k === pathKey) {
       const meta = fieldMeta(k);
       const inp = el("input", { type: "text", value: v || "" });
       fields[k] = { input: inp, orig: v };
@@ -1283,6 +1616,8 @@ function instanceForm(inst, fsTypes) {
     node: el("div", {}, nodes),
     collect() {
       const out = {};
+      // Preserve hidden fields verbatim so a port's unused keys round-trip unchanged.
+      for (const k of hide) if (k in inst) out[k] = inst[k];
       for (const [k, { input, orig }] of Object.entries(fields)) {
         if (typeof orig === "boolean") out[k] = input.checked;
         else if (typeof orig === "number") out[k] = Number(input.value);
@@ -1290,6 +1625,7 @@ function instanceForm(inst, fsTypes) {
         else if (input.dataset && input.dataset.kind === "json") { try { out[k] = JSON.parse(input.value); } catch (_) { out[k] = orig; } }
         else out[k] = input.value;
       }
+      for (const [k, w] of Object.entries(custom)) out[k] = w.collect();
       return out;
     },
   };
@@ -1345,10 +1681,11 @@ async function openPathBrowser(startDir, onPick) {
 
 // ---------------------------------------------------------------------------
 // <cs-interfaces> — the interface-namespace editor (Model.Interfaces): a row per
-// named NIC/serial/bridge entry with Edit/Delete and an Add form, over
-// /set_interface and /remove_interface. Kind-aware: a bridge picks member
-// interfaces (no baud); a serial picks a device + baud; a nic picks an address +
-// backend (pcap/tap/tun). The NIC device dropdown is populated from /list_interfaces.
+// named entry with Edit/Delete and an Add form, over /set_interface and
+// /remove_interface. Type-aware (see openInterfaceModal): a Bridge picks a host
+// Ethernet/pcap adaptor + bridge type; a TashTalk picks a serial port + baud; an
+// LToUDP is fixed to the host (UDP multicast). NIC and serial device lists come from
+// /list_interfaces and /list_serial_ports.
 // ---------------------------------------------------------------------------
 class CsInterfaces extends HTMLElement {
   constructor(model, onChange) {
@@ -1366,8 +1703,8 @@ class CsInterfaces extends HTMLElement {
   render() {
     const entries = Object.entries(this.ifaces);
     const rows = entries.map(([name, iface]) => el("tr", {}, [
-      el("td", {}, [name]),
-      el("td", { class: "muted" }, [iface.Kind || "nic"]),
+      el("td", {}, [name, ...(iface.Default ? [el("span", { class: "badge", title: "Default interface" }, [" default"])] : [])]),
+      el("td", { class: "muted" }, [ifaceType(iface.Kind)]),
       el("td", { class: "muted" }, [ifaceSummary(iface)]),
       el("td", {}, [el("div", { class: "row" }, [
         button("Edit", "", () => openInterfaceModal({ Name: name, ...iface }, this.model, this.onChange)),
@@ -1375,12 +1712,12 @@ class CsInterfaces extends HTMLElement {
       ])]),
     ]));
     const table = el("table", {}, [
-      el("thead", {}, [el("tr", {}, [th("Name"), th("Kind"), th("Detail"), th("")])]),
+      el("thead", {}, [el("tr", {}, [th("Name"), th("Type"), th("Detail"), th("")])]),
       el("tbody", {}, rows.length ? rows : [el("tr", {}, [el("td", { class: "muted", colspan: "4" }, ["No interfaces declared. Ports fall back to a bare NIC by name."])])]),
     ]);
     this.replaceChildren(el("details", { class: "panel" }, [
       el("summary", {}, ["Interfaces"]),
-      el("p", { class: "field-hint" }, ["Named NIC / serial / bridge entries a transport binds to. A bridge aggregates NICs and has no baud rate."]),
+      el("p", { class: "field-hint" }, ["Named interfaces a transport binds to, by type: a Bridge (Ethernet via pcap/tap/raw), a TashTalk serial line, or LToUDP (UDP multicast on the host)."]),
       table,
       el("div", { class: "row" }, [
         button("Add interface", "primary", () => openInterfaceModal(blankInterface(), this.model, this.onChange)),
@@ -1389,22 +1726,32 @@ class CsInterfaces extends HTMLElement {
   }
 }
 
+// ifaceType returns the operator-facing TYPE label for a stored interface kind. An
+// interface is now only ever the uplink Bridge (pcap/tap/raw) — serial/multicast are
+// no longer interfaces — so this collapses to "Bridge". Kept as a function so the list
+// row and any legacy kind still render a sensible label.
+function ifaceType(_kind) {
+  return "Bridge";
+}
+
 // ifaceSummary renders a one-line detail for an interface row by kind.
 function ifaceSummary(iface) {
-  const kind = iface.Kind || "nic";
-  if (kind === "bridge") return "members: " + ((iface.Members || []).join(", ") || "—");
+  const kind = iface.Kind || "bridge";
+  if (kind === "multicast") return "host (UDP multicast)";
   if (kind === "serial") return `${iface.Device || "—"} @ ${iface.Baud || "default"}`;
-  return [iface.Addr, iface.Backend].filter(Boolean).join(" · ") || "pcap";
+  // bridge / nic — the pcap/tap/raw backend over a host adaptor.
+  return [iface.Device || iface.Addr, iface.Backend].filter(Boolean).join(" · ") || "pcap";
 }
 
-// blankInterface seeds a new nic-kind entry.
+// blankInterface seeds a new Bridge (Ethernet/pcap) entry — the common case.
 function blankInterface() {
-  return { Name: "", Kind: "nic", Addr: "", Backend: "pcap", Device: "", Baud: 0, Members: [] };
+  return { Name: "", Kind: "bridge", Addr: "", Backend: "pcap", Device: "", Baud: 0, Members: [], Default: false };
 }
 
-// openInterfaceModal edits one interface-namespace entry with kind-aware fields. The
-// Kind selector swaps the field set live: nic → address + backend (+ device dropdown
-// from /list_interfaces); serial → device + baud; bridge → member checkboxes (NO baud).
+// openInterfaceModal edits one interface-namespace entry. An interface is now ONLY the
+// uplink bridge (pcap/tap/raw over a host NIC) — serial (TashTalk) and multicast (LToUDP)
+// are no longer interfaces; each of those ports owns its own binding on the port itself.
+// So the dialog is a single Bridge form: backend + host adaptor + the default flag.
 async function openInterfaceModal(iface, model, onChange) {
   const overlay = el("div", { class: "modal-overlay" });
   const body = el("div", { class: "modal-body" });
@@ -1412,7 +1759,7 @@ async function openInterfaceModal(iface, model, onChange) {
   const close = () => overlay.remove();
   const saveBtn = button("Save", "primary", () => {});
   overlay.append(el("div", { class: "modal" }, [
-    el("div", { class: "modal-head" }, [el("h2", {}, ["Interface"]), button("✕", "modal-close", close)]),
+    el("div", { class: "modal-head" }, [el("h2", {}, ["Bridge / uplink interface"]), button("✕", "modal-close", close)]),
     body, status,
     el("div", { class: "modal-foot" }, [button("Cancel", "", close), saveBtn]),
   ]));
@@ -1421,48 +1768,41 @@ async function openInterfaceModal(iface, model, onChange) {
 
   const hostNics = await api.interfaces().catch(() => []);
   const cur = { ...iface };
-  const nameIn = el("input", { type: "text", value: cur.Name || "", placeholder: "e.g. eth0, br-lan, ttyUSB-attic" });
-  const kindSel = el("select", {}, ["nic", "serial", "bridge"].map((k) =>
-    el("option", k === (cur.Kind || "nic") ? { value: k, selected: "" } : { value: k }, [k])));
-  const fields = el("div", {});
-
-  let collectKind = () => ({});
-  function renderFields() {
-    const kind = kindSel.value;
-    if (kind === "nic") {
-      const nicNames = hostNics.map((n) => n.Name);
-      const dev = dropdown("Device (host NIC)", nicNames, cur.Name || "", "Pick a detected NIC, or type the name above.");
-      const addr = el("input", { type: "text", value: cur.Addr || "", placeholder: "optional pinned address" });
-      const backend = dropdown("Link backend", ["pcap", "tap", "tun"], cur.Backend || "pcap", "pcap is the default and only backend wired today.");
-      fields.replaceChildren(dev.node, el("label", {}, ["Address"]), addr, backend.node);
-      collectKind = () => ({ Kind: "nic", Addr: addr.value, Backend: backend.collect(), Device: "", Baud: 0, Members: [] });
-    } else if (kind === "serial") {
-      const device = el("input", { type: "text", value: cur.Device || "", placeholder: "COM3 / /dev/ttyUSB0" });
-      const baud = el("input", { type: "number", value: String(cur.Baud || 0) });
-      fields.replaceChildren(el("label", {}, ["Device"]), device, el("label", {}, ["Baud (0 = default)"]), baud);
-      collectKind = () => ({ Kind: "serial", Device: device.value, Baud: Number(baud.value), Addr: "", Backend: "", Members: [] });
-    } else { // bridge — member NICs, NO baud
-      const choices = [...new Set([...hostNics.map((n) => n.Name), ...Object.keys(model.Interfaces || {})])]
-        .filter((n) => n && n !== cur.Name);
-      const members = checkboxList("Member interfaces", choices, cur.Members || [], "The NICs this bridge aggregates. A bridge has no baud rate.");
-      fields.replaceChildren(members.node);
-      collectKind = () => ({ Kind: "bridge", Members: members.collect(), Addr: "", Backend: "", Device: "", Baud: 0 });
-    }
-  }
-  kindSel.addEventListener("change", renderFields);
+  const nameIn = el("input", { type: "text", value: cur.Name || "", placeholder: "interface alias, e.g. br-lan" });
+  // Bridge Type = the link backend (pcap/tap/raw); Interface = a host adaptor.
+  const backend = dropdown("Bridge type", ["pcap", "tap", "raw"], cur.Backend || "pcap",
+    "pcap captures on a host NIC; tap is an L2 virtual device; raw is a bound raw socket.");
+  // Each NIC option STORES the raw pcap device (n.Name) but DISPLAYS the friendly label
+  // (n.Description) so the friendly text never gets saved as the device string.
+  const nicChoices = hostNics.map((n) => ({
+    value: n.Name,
+    label: n.Description ? `${n.Name} (${n.Description})` : n.Name,
+  }));
+  const dev = dropdown("Interface — the host Ethernet / pcap adaptor", nicChoices, cur.Device || cur.Addr || "",
+    "Pick a detected NIC. On Windows this is a device GUID shown with a friendly label.");
+  // Default toggle: ports that name no interface of their own inherit this one.
+  const defaultCb = el("input", { type: "checkbox" });
+  if (cur.Default) defaultCb.checked = true;
+  const defaultField = el("div", { class: "field-group" }, [
+    el("label", { class: "inline" }, [defaultCb, "Default interface"]),
+    el("p", { class: "field-hint" }, ["Ports that name no interface of their own inherit this one. At most one entry should be the default."]),
+  ]);
   body.replaceChildren(
     el("label", {}, ["Name"]), nameIn,
-    el("label", {}, ["Kind"]), kindSel,
-    fields,
+    backend.node, dev.node,
+    defaultField,
   );
-  renderFields();
 
   saveBtn.addEventListener("click", async () => {
     status.textContent = ""; status.className = "err";
     const name = nameIn.value.trim();
     if (!name) { status.textContent = "Name is required."; return; }
     try {
-      await api.setInterface({ Name: name, ...collectKind() });
+      await api.setInterface({
+        Name: name, Default: defaultCb.checked,
+        Kind: "bridge", Backend: backend.collect(), Device: dev.collect(),
+        Addr: "", Baud: 0, Members: [],
+      });
       status.className = "ok-msg"; status.textContent = "Saved.";
       setTimeout(() => { close(); onChange(); }, 400);
     } catch (e) { status.textContent = e.message; }
@@ -1768,7 +2108,10 @@ function linkButton(label, onClick) {
 customElements.define("cs-app", CsApp);
 customElements.define("cs-setup", CsSetup);
 customElements.define("cs-dashboard", CsDashboard);
-customElements.define("cs-config", CsConfig);
+customElements.define("cs-interfaces-tab", CsInterfacesTab);
+customElements.define("cs-router-tab", CsRouterTab);
+customElements.define("cs-protocols-tab", CsProtocolsTab);
+customElements.define("cs-sharing-tab", CsSharingTab);
 customElements.define("cs-instance-editor", CsInstanceEditor);
 customElements.define("cs-interfaces", CsInterfaces);
 customElements.define("cs-extmap", CsExtMap);

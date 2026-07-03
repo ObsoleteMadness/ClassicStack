@@ -228,7 +228,12 @@ button.link:hover { text-decoration: underline; border: none; }
 .field-group > label:first-child { display: block; margin-bottom: 4px; }
 .field-group label.inline { margin-right: 12px; }
 
-/* --- dashboard functional group headings --- */
+/* --- dashboard + config-tab functional group headings --- */
 .group-head { display: flex; align-items: baseline; gap: 10px; margin: 18px 0 8px; border-bottom: 1px solid var(--border, #30363d); padding-bottom: 4px; }
 .group-head h3 { margin: 0; font-size: 14px; }
+/* an h3 that IS the group head (config tabs use <h3 class="group-head">, not a wrapper) */
+h3.group-head { font-size: 14px; }
 .group-desc { font-size: 12px; color: var(--muted); }
+
+/* config-tab title */
+.tab-title { margin: 0 0 10px; }
