@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
+	"github.com/ObsoleteMadness/ClassicStack/core/port"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/afp"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/etherdfs"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/ipxgw"
@@ -231,14 +232,22 @@ func TestIPXGWSectionRoundTrip(t *testing.T) {
 	}
 }
 
-// TestCaptureSectionRoundTrip proves the per-interface pcap capture paths + snaplen
-// survive a TOML round-trip (the [capture] well-known section).
-func TestCaptureSectionRoundTrip(t *testing.T) {
+// TestPortCaptureRoundTrip proves a port's pcap capture path + snaplen (now a property
+// of the port section, not a central [capture] table) survive a TOML round-trip.
+func TestPortCaptureRoundTrip(t *testing.T) {
+	// Register the EtherTalk repeated schema so the codec knows to decode [[ethertalk]]
+	// into a port.Section (mirrors the tashtalk round-trip test above).
+	config.Register(config.SectionSchema{
+		Key:      "EtherTalk",
+		New:      func() config.Section { return &port.Section{SKey: "EtherTalk"} },
+		Repeated: true,
+	})
+
 	m := config.NewModel()
-	m.Capture = config.CaptureSection{
-		Paths:   map[string]string{"eth0": "/var/cap/eth0.pcap", "br-lan": "/var/cap/lan.pcap"},
-		Snaplen: 256,
-	}
+	m.AddInstance(&port.Section{
+		SKey: "EtherTalk", Name: "et-cap", IsEnabled: true,
+		Capture: "/var/cap/et.pcap", CaptureSnaplen: 256,
+	})
 
 	c := New()
 	data, err := c.Marshal(m)
@@ -250,31 +259,11 @@ func TestCaptureSectionRoundTrip(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	if got.Capture.PathFor("eth0") != "/var/cap/eth0.pcap" {
-		t.Errorf("eth0 path: got %q", got.Capture.PathFor("eth0"))
+	sec := port.InstanceFromModel(got, "EtherTalk", "et-cap")
+	if sec.Capture != "/var/cap/et.pcap" {
+		t.Errorf("capture path: got %q", sec.Capture)
 	}
-	if got.Capture.PathFor("br-lan") != "/var/cap/lan.pcap" {
-		t.Errorf("br-lan path: got %q", got.Capture.PathFor("br-lan"))
-	}
-	if got.Capture.Snaplen != 256 {
-		t.Errorf("snaplen: got %d want 256", got.Capture.Snaplen)
-	}
-}
-
-// TestCaptureSectionDefaultOmitted proves a model with no capture configured emits no
-// [capture] block (Any()==false, snaplen 0) and round-trips to an empty section.
-func TestCaptureSectionDefaultOmitted(t *testing.T) {
-	m := config.NewModel()
-	c := New()
-	data, err := c.Marshal(m)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
-	got := config.NewModel()
-	if err := c.Unmarshal(data, got); err != nil {
-		t.Fatalf("Unmarshal: %v", err)
-	}
-	if got.Capture.Any() {
-		t.Errorf("empty model should round-trip to no capture, got %+v", got.Capture)
+	if sec.CaptureSnaplen != 256 {
+		t.Errorf("capture snaplen: got %d want 256", sec.CaptureSnaplen)
 	}
 }

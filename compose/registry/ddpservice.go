@@ -3,7 +3,6 @@
 package registry
 
 import (
-	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/router"
 )
 
@@ -18,5 +17,5 @@ func routerFor(ctx *BuildContext) router.ServiceRouter {
 	if ctx.Router != nil {
 		return ctx.Router
 	}
-	return router.New(log.New(router.Name, log.NewStderrSink(log.NewLevelVar(log.Info))))
+	return router.New(ctx.Logger(router.Name))
 }

@@ -5,7 +5,6 @@ package registry
 import (
 	"github.com/ObsoleteMadness/ClassicStack/adapter/smbtcp"
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
-	"github.com/ObsoleteMadness/ClassicStack/core/log"
 )
 
 func init() {
@@ -17,7 +16,7 @@ func init() {
 	// messenger are built sink-less and wired later). With no SMB service, or with the
 	// tcp/nbt bindings off, it stays inert — Start is a no-op.
 	Register(smbtcp.Name, func(ctx *BuildContext) (component.Component, error) {
-		logger := log.New(smbtcp.Name, log.NewStderrSink(log.NewLevelVar(log.Info)))
+		logger := ctx.Logger(smbtcp.Name)
 		return smbtcp.New("", nil, logger), nil
 	})
 }

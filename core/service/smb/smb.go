@@ -90,12 +90,12 @@ type Service struct {
 	// re-reading the model. Empty means "bind every built transport" (the historical
 	// implicit default), matching ServerSection.Binds.
 	bound []string
-	// tcpAddr / nbtAddr are the explicit direct-TCP (:445) and NBT (:139) listen
-	// addresses from the SMB server section, held so the compose root reads the TCP
-	// transport's address from the SERVICE (§B) rather than the section. Empty = do not
-	// bind that address (never an implicit default — Windows owns :445/:139).
+	// tcpAddr is the explicit direct-TCP (:445) listen address from the SMB server
+	// section, held so the compose root reads the TCP transport's address from the
+	// SERVICE (§B) rather than the section. Empty = do not bind (never an implicit :445 —
+	// Windows owns it). The NBT (:139) address is NOT here: NBT is a NetBIOS transport,
+	// so its address lives on the NetBIOS service (netbios.Service.NBTListenAddr).
 	tcpAddr string
-	nbtAddr string
 }
 
 // Authenticator validates a (username, cleartext password) credential. It is the
@@ -138,12 +138,13 @@ func (s *Service) BoundTransports() []string {
 	return append([]string(nil), s.bound...)
 }
 
-// SetTCPListenAddrs records the explicit direct-TCP and NBT listen addresses from the
-// server section, so the compose root reads them from the service (§B). Empty means
-// "do not bind" (never an implicit :445/:139). Idempotent, safe before Start.
-func (s *Service) SetTCPListenAddrs(tcpAddr, nbtAddr string) {
+// SetDirectTCPListenAddr records the explicit direct-TCP (:445) listen address from the
+// server section, so the compose root reads it from the service (§B). Empty means "do not
+// bind" (never an implicit :445 — Windows owns it). The NBT (:139) address is NOT an SMB
+// concern: it lives on the NetBIOS service. Idempotent, safe before Start.
+func (s *Service) SetDirectTCPListenAddr(tcpAddr string) {
 	s.mu.Lock()
-	s.tcpAddr, s.nbtAddr = tcpAddr, nbtAddr
+	s.tcpAddr = tcpAddr
 	s.mu.Unlock()
 }
 
@@ -153,14 +154,6 @@ func (s *Service) DirectTCPListenAddr() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.tcpAddr
-}
-
-// NBTListenAddr returns the explicit NBT (:139) listen address, or "" when none was
-// configured.
-func (s *Service) NBTListenAddr() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.nbtAddr
 }
 
 // Binds reports whether transport is bound: an empty bound list binds everything (the

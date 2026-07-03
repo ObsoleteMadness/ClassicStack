@@ -3,13 +3,13 @@
 package registry
 
 import (
+	"github.com/ObsoleteMadness/ClassicStack/adapter/capture/pcapfile"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/framing"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/ltoudp"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/tashtalk"
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
-	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/port"
 	"github.com/ObsoleteMadness/ClassicStack/core/port/localtalk"
 )
@@ -51,7 +51,7 @@ func registerLocalTalk(key string, openerFor segmentOpener, respondToEnq bool) {
 
 	RegisterPort(key, func(ctx *BuildContext) (component.Component, error) {
 		sec := port.InstanceFromModel(ctx.Model, key, ctx.Instance)
-		logger := log.New(sec.InstanceName(), log.NewStderrSink(log.NewLevelVar(log.Info)))
+		logger := ctx.Logger(sec.InstanceName())
 
 		// Build the transport opener. A nil result means the device backend is absent
 		// (a tag-free build, a unit test, or a serial port with no serial opener
@@ -127,26 +127,25 @@ func ltoudpLinkOpener(ctx *BuildContext, sec *port.Section) func() (link.FrameLi
 		return nil
 	}
 	iface := sec.Iface
-	return func() (link.FrameLink, error) { return ltoudpOpen(iface) }
+	base := func() (link.FrameLink, error) { return ltoudpOpen(iface) }
+	// LToUDP presents clean LLAP frames upward, so a Section.Capture writes DLT_LTALK.
+	return captureOpener(sec, pcapfile.LinkTypeLocalTalk, base)
 }
 
 // tashtalkLinkOpener is the TashTalk segment's transport opener: TashTalk rides a
-// serial line, so it takes the kind=serial branch of the opener dispatch (M11.c/D7).
-// It resolves the instance's effective interface and, when that is a serial-kind
-// interface, opens the device via the injected shared serial opener and frames it
-// with tashtalk. Returns nil (→ inert) when no serial backend is injected. The device
-// path/baud come from the named serial INTERFACE (the §3b/D7 move), falling back to
-// sec.Iface as the device path when the interface declares none — back-compat with a
-// section that put the device path directly in iface.
+// serial line, so it opens the device via the injected shared serial opener and
+// frames it with tashtalk. Returns nil (→ inert) when no serial backend is injected.
+// The device path/baud come from the PORT itself (Section.Device/Baud) — a TashTalk
+// port owns its own tty, so serial is a port property, not a named interface (the
+// "one interface = the uplink bridge" model). Device falls back to sec.Iface so an
+// older section that put the device path in iface still opens.
 func tashtalkLinkOpener(ctx *BuildContext, sec *port.Section) func() (link.FrameLink, error) {
-	iface, ok := effectiveSerialInterface(ctx.Model, sec)
-	if !ok {
-		// The resolved interface is not serial-kind. Back-compat: treat sec.Iface as
-		// the device path directly (a bare serial section with no namespace entry).
-		iface = config.InterfaceSection{Kind: config.IfaceKindSerial, Device: sec.Iface}
+	device := sec.Device
+	if device == "" {
+		device = sec.Iface
 	}
-	if iface.Device == "" {
-		iface.Device = sec.Iface
-	}
-	return serialLinkOpener(ctx, iface, tashtalkFrame)
+	iface := config.InterfaceSection{Kind: config.IfaceKindSerial, Device: device, Baud: sec.Baud}
+	base := serialLinkOpener(ctx, iface, tashtalkFrame)
+	// TashTalk frames the serial byte stream as LLAP, so a Section.Capture writes DLT_LTALK.
+	return captureOpener(sec, pcapfile.LinkTypeLocalTalk, base)
 }

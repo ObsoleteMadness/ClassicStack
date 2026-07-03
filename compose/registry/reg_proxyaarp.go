@@ -7,7 +7,6 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
-	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/port"
 )
 
@@ -27,7 +26,7 @@ func init() {
 		if sec == nil || !sec.Enabled {
 			return nil, nil // no section / disabled → nothing built
 		}
-		logger := log.New(bridge.Name, log.NewStderrSink(log.NewLevelVar(log.Info)))
+		logger := ctx.Logger(bridge.Name)
 
 		// Resolve the egress MAC: the configured value, or the zero MAC when unset
 		// (the device-link builder falls back to the interface's own hardware address).
@@ -61,7 +60,9 @@ func proxyAARPSideOpener(ctx *BuildContext, ifaceName string) bridge.LinkOpener 
 	// Resolve the bare interface name against the [Interface] namespace: a declared
 	// entry wins (its Kind/Backend), otherwise the name is a plain pcap NIC.
 	iface := ctx.Model.ResolveInterface(config.InterfaceSection{Name: ifaceName})
-	open := nicLinkOpener(ctx, iface)
+	// The proxy-AARP bridge sides are not ports with a config Section, so they carry no
+	// per-port capture (nil sec); a bridge-side capture would be its own config if wanted.
+	open := nicLinkOpener(ctx, nil, iface)
 	if open == nil {
 		return nil
 	}

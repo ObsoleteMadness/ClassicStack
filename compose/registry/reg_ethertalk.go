@@ -7,7 +7,6 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
-	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/port"
 	"github.com/ObsoleteMadness/ClassicStack/core/port/ethertalk"
 )
@@ -28,7 +27,7 @@ func init() {
 		// Resolve THIS instance (ctx.Instance) from the model; the component names
 		// itself from the instance name via the runport.
 		sec := port.InstanceFromModel(ctx.Model, ethertalk.Name, ctx.Instance)
-		logger := log.New(sec.InstanceName(), log.NewStderrSink(log.NewLevelVar(log.Info)))
+		logger := ctx.Logger(sec.InstanceName())
 
 		// EtherTalk is a NIC-bound transport, so it dispatches on the kind=nic branch
 		// of the opener table (M11.c/D6): nicLinkOpener resolves this instance's
@@ -38,7 +37,7 @@ func init() {
 		// nil per-Start opener → the inert-but-routed form, the same graceful
 		// degradation as before: the port satisfies the lifecycle and is attached to
 		// the router, but moves no frames until a backend exists.
-		opener := nicLinkOpener(ctx, ctx.Model.EffectiveInterfaceFor(sec))
+		opener := nicLinkOpener(ctx, sec, ctx.Model.EffectiveInterfaceFor(sec))
 		if opener == nil {
 			return ethertalk.NewInstance(sec, nil, nil, ctx.Router, logger)
 		}

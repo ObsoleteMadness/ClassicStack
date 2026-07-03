@@ -4,7 +4,6 @@ package registry
 
 import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
-	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/ipxgw"
 )
 
@@ -34,7 +33,7 @@ func init() {
 			bindings = sec.ZoneBindings()
 			enabled = sec.Enabled
 		}
-		logger := log.New(ipxgw.Name, log.NewStderrSink(log.NewLevelVar(log.Info)))
+		logger := ctx.Logger(ipxgw.Name)
 		svc := ipxgw.NewWithConfig(routerFor(ctx), nil, bindings, cfg, logger)
 		svc.SetEnabled(enabled)
 		return svc, nil

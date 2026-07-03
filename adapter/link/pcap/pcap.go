@@ -19,6 +19,12 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 )
 
+// ErrUnavailable mirrors the stub build's sentinel so callers can test for "no pcap
+// backend" with errors.Is on EITHER build. In the tagged build Open never returns it
+// (libpcap is present) — it exists only to keep the symbol defined so cmd-edge code
+// that maps ErrUnavailable → inert compiles identically with or without the tag.
+var ErrUnavailable = errors.New("pcap: built without the 'pcap' tag (libpcap/cgo unavailable)")
+
 // Config holds parameters for opening a libpcap handle. Promiscuous mode, snap
 // length, and read timeout are fixed at construction; they are not part of the
 // core/link.FrameLink contract.
@@ -28,13 +34,25 @@ type Config struct {
 	Promiscuous   bool          // enable promiscuous capture
 	ReadTimeout   time.Duration // libpcap read timeout (-> link.ErrTimeout)
 	ImmediateMode bool          // immediate-mode delivery (low latency)
+	// Filter is a kernel BPF expression applied at Activate ("" = capture everything).
+	// A promiscuous handle sees ALL NIC traffic (and loops back this station's own TX);
+	// a per-protocol filter narrows the read loop to the frames the port understands and
+	// keeps a wire-capture file clean. Applied best-effort — a rejected expression logs
+	// nothing here but leaves the handle unfiltered rather than failing the open.
+	Filter string
 }
 
 const defaultSnapLen = 65535
 
-// DefaultEtherTalkConfig returns a Config suited to EtherTalk/IPX/NetBEUI:
-// promiscuous, immediate mode, 250ms read timeout — the low-latency shape those
-// latency-sensitive protocols need.
+// EtherTalkBPFFilter narrows an EtherTalk capture to AppleTalk traffic: DDP over
+// 802.2/SNAP (tcpdump's "atalk") plus the AppleTalk ARP used for node-claim/resolution
+// ("aarp"). It excludes the IPv4/ARP/etc. background a promiscuous handle would otherwise
+// grab — and, crucially, keeps the read loop from re-processing unrelated frames.
+const EtherTalkBPFFilter = "atalk or aarp"
+
+// DefaultEtherTalkConfig returns a Config suited to EtherTalk: promiscuous, immediate
+// mode, 250ms read timeout — the low-latency shape EtherTalk needs — plus the AppleTalk
+// BPF filter so the handle only surfaces DDP + AARP frames.
 func DefaultEtherTalkConfig(iface string) Config {
 	return Config{
 		Interface:     iface,
@@ -42,6 +60,7 @@ func DefaultEtherTalkConfig(iface string) Config {
 		Promiscuous:   true,
 		ReadTimeout:   250 * time.Millisecond,
 		ImmediateMode: true,
+		Filter:        EtherTalkBPFFilter,
 	}
 }
 
@@ -139,6 +158,13 @@ func Open(cfg Config) (link.FrameLink, error) {
 	h, err := inactive.Activate()
 	if err != nil {
 		return nil, fmt.Errorf("pcap: activate %s: %w", cfg.Interface, err)
+	}
+	// Apply the kernel BPF filter best-effort: a promiscuous handle otherwise surfaces all
+	// NIC traffic (and this station's own looped-back TX). A rejected expression must not
+	// fail the open — the read loop still demuxes by SNAP PID / socket — so we leave the
+	// handle unfiltered on error rather than propagating it.
+	if cfg.Filter != "" {
+		_ = h.SetBPFFilter(cfg.Filter)
 	}
 	return &frameLink{handle: h, medium: linkTypeToMedium(h.LinkType())}, nil
 }

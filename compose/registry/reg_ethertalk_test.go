@@ -84,7 +84,9 @@ func TestEtherTalkFactory_InheritsBridgeInterface(t *testing.T) {
 			return &idleFrameLink{}, nil
 		}
 		m := config.NewModel()
-		m.Bridge = config.InterfaceSection{Name: bridge}
+		if bridge != "" {
+			m.SetInterface(config.InterfaceSection{Name: bridge, Kind: config.IfaceKindBridge, Default: true})
+		}
 		m.Set(&port.Section{SKey: ethertalk.Name, Iface: sectionIface, IsEnabled: true})
 
 		c, ok, err := Build(ethertalk.Name, &BuildContext{Model: m, Opener: opener})
@@ -100,10 +102,10 @@ func TestEtherTalkFactory_InheritsBridgeInterface(t *testing.T) {
 			t.Fatalf("opened iface = %v, want %v", got, want)
 		}
 	}
-	t.Run("inherits bridge when iface empty", func(t *testing.T) {
+	t.Run("inherits default interface when iface empty", func(t *testing.T) {
 		check(t, "", "br0", "br0")
 	})
-	t.Run("override beats bridge", func(t *testing.T) {
+	t.Run("override beats default interface", func(t *testing.T) {
 		check(t, "eth9", "br0", "eth9")
 	})
 }

@@ -16,6 +16,13 @@ import (
 // MAC; an IPX port has no AppleTalk seed network). This keeps a single
 // stage/round-trip/ApplyConfig path rather than one section type per transport —
 // the same "placeholder accepts anything" stance the schema already takes.
+//
+// A port owns its OWN binding, because the only INTERFACE is the uplink bridge:
+// EtherTalk/IPX/NetBEUI name a bridge via Iface (or inherit the default); a
+// TashTalk port names its serial tty via Device/Baud directly (serial is a port
+// property, not an interface); an LToUDP port rides host-wide multicast (Iface, if
+// set, is an optional bind address). Seed zone/network (below) are the AppleTalk
+// segment config the router reads for its member ports.
 type Section struct {
 	// SKey is the section/SCHEMA key shared by every instance of a transport
 	// ("EtherTalk", "LToUDP", "IPX", …). It is the registry/codec key, NOT the
@@ -28,7 +35,7 @@ type Section struct {
 	Name string `toml:"name"`
 	// Iface is the NAME of the interface this instance binds to ("eth0", "br-lan",
 	// "ttyUSB-attic"); resolved against the interface namespace (§M11). Empty
-	// inherits the default Bridge interface.
+	// inherits the namespace's default interface (Model.DefaultInterface).
 	Iface string `toml:"iface"`
 	// IsEnabled mirrors the configured-enabled flag (≠ running).
 	IsEnabled bool `toml:"enabled"`
@@ -47,6 +54,24 @@ type Section struct {
 	SeedNetworkEnd uint16 `toml:"seed_network_end"`
 	// SeedZone is the default zone name this port seeds ("" = non-seed / inherit).
 	SeedZone string `toml:"seed_zone"`
+
+	// Device / Baud are the SERIAL binding a serial-riding port (TashTalk) opens
+	// directly. A TashTalk port owns its own tty rather than resolving one from a
+	// named serial interface: the operator picks a host serial port (e.g. "COM3",
+	// "/dev/ttyUSB0") on the port itself, and Baud is the line speed (0 = adapter
+	// default). Ignored by non-serial transports. This keeps "one interface = the
+	// uplink bridge" true — a serial line is a port property, not an interface.
+	Device string `toml:"device"`
+	Baud   int    `toml:"baud"`
+
+	// Capture is a pcap file path for THIS port's wire traffic ("" = no capture).
+	// Capture is a property of the port that owns the segment (like Device/SeedZone),
+	// not a central table: every frame the port's link reads or writes is tee'd to
+	// this file, written with the transport's data-link type (Ethernet for EtherTalk,
+	// LocalTalk/DLT_LTALK for LToUDP/TashTalk). CaptureSnaplen caps the bytes stored
+	// per frame (0 = full frame). Best-effort: an unopenable path never fails Start.
+	Capture        string `toml:"capture"`
+	CaptureSnaplen int    `toml:"capture_snaplen"`
 }
 
 // Key returns the shared SCHEMA key (the registry/codec key, matched per transport
@@ -68,15 +93,16 @@ func (s *Section) InstanceName() string {
 var _ config.NamedSection = (*Section)(nil)
 
 // Interface makes a port Section a config.InterfaceProvider: its Iface is a
-// per-port OVERRIDE of the shared Bridge interface (§4/§9d). An empty Iface
+// per-port OVERRIDE of the shared default interface (§4/§9d). An empty Iface
 // yields an empty InterfaceSection, so Model.EffectiveInterface falls through to
-// the Bridge NIC — i.e. several ports with no iface of their own all bind to the
-// one shared interface, and only a port that names its own iface diverges.
+// the namespace's default interface — i.e. several ports with no iface of their
+// own all bind to the one shared default, and only a port that names its own iface
+// diverges.
 func (s *Section) Interface() config.InterfaceSection {
 	return config.InterfaceSection{Name: s.Iface}
 }
 
-// compile-time assertion: *Section is an InterfaceProvider (bridge override).
+// compile-time assertion: *Section is an InterfaceProvider (interface override).
 var _ config.InterfaceProvider = (*Section)(nil)
 
 // Clone returns a deep copy.

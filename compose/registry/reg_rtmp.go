@@ -4,7 +4,6 @@ package registry
 
 import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
-	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/rtmp"
 )
 
@@ -16,7 +15,7 @@ func init() {
 	// router so the component is always valid-but-inert — the graceful-degradation
 	// contract every factory honours (mirrors reg_router.go's standalone path).
 	Register(rtmp.RespondingName, func(ctx *BuildContext) (component.Component, error) {
-		logger := log.New(rtmp.RespondingName, log.NewStderrSink(log.NewLevelVar(log.Info)))
+		logger := ctx.Logger(rtmp.RespondingName)
 		return rtmp.New(routerFor(ctx), logger), nil
 	})
 }

@@ -22,12 +22,10 @@ type Model struct {
 	AdminAuth AdminAuth // web-management-interface admin credential (§4-ter); username + salted hash
 	Logging   LoggingSection
 	Router    RouterSection
-	Bridge    InterfaceSection
-	Capture   CaptureSection // per-interface wire-capture (pcap) paths + snaplen; cross-cutting singleton
 	// Interfaces is the named interface namespace (§M11): NIC / serial / bridge
-	// entries a port references by name. A bridge is just one entry here, which
-	// generalises the single Bridge field — Bridge remains the DEFAULT interface a
-	// port inherits when it names none (back-compat during the M11 transition).
+	// entries a port references by name. A bridge is just one entry here; the entry
+	// flagged Default (see DefaultInterface) is the shared interface an un-bound port
+	// inherits — which is what the former singleton Model.Bridge did.
 	Interfaces map[string]InterfaceSection
 	Sections   map[string]Section   // registered singleton component sections
 	Lists      map[string][]Section // registered repeated (named-instance) sections
@@ -49,8 +47,6 @@ func (m *Model) Clone() *Model {
 		AdminAuth: m.AdminAuth.Clone(),
 		Logging:   m.Logging,
 		Router:    m.Router.Clone(),
-		Bridge:    m.Bridge.Clone(),
-		Capture:   m.Capture.Clone(),
 		Sections:  make(map[string]Section, len(m.Sections)),
 		Lists:     make(map[string][]Section, len(m.Lists)),
 	}
@@ -328,13 +324,13 @@ func (m *Model) RemoveInstance(key, name string) bool {
 }
 
 // EffectiveInterface resolves a component's interface, folding the named interface
-// namespace + per-section override + bridge inheritance (§4/§9d, §M11) — a PURE
-// function, re-runnable on every reconfigure.
+// namespace + per-section override + default-interface inheritance (§4/§9d, §M11) —
+// a PURE function, re-runnable on every reconfigure.
 //
 // Resolution order:
 //  1. If the section carries an InterfaceProvider override with a non-empty Name,
 //     that name is the reference; otherwise the section inherits — fall through to
-//     the default Bridge interface.
+//     the namespace's default interface (DefaultInterface).
 //  2. The reference name is looked up in the Interfaces NAMESPACE: a matching entry
 //     (with its Kind/params) wins, so a port that names "ttyUSB-attic" gets the
 //     serial interface's device/baud, and one that names "br-lan" gets the bridge.
@@ -344,23 +340,62 @@ func (m *Model) EffectiveInterface(sectionKey string) InterfaceSection {
 	if s, ok := m.Sections[sectionKey]; ok {
 		return m.EffectiveInterfaceFor(s)
 	}
-	return m.ResolveInterface(m.Bridge)
+	return m.DefaultInterface()
+}
+
+// DefaultInterface returns the namespace's DEFAULT interface — the one a port
+// inherits when it names no iface of its own (§M11). It replaces the former
+// singleton Model.Bridge. Resolution:
+//
+//  1. the entry explicitly flagged Default (lowest name wins on a tie);
+//  2. else the sole bridge-kind entry, if there is exactly one;
+//  3. else the zero InterfaceSection (no default — an un-bound port runs on no
+//     interface, the same inert-but-routed degradation a nil opener gives).
+//
+// It is a pure function over Interfaces, re-runnable on every reconfigure.
+func (m *Model) DefaultInterface() InterfaceSection {
+	var flagged, bridge InterfaceSection
+	var bridgeCount int
+	// Iterate in name order so a (misconfigured) multi-default set resolves
+	// deterministically to the lowest name.
+	names := make([]string, 0, len(m.Interfaces))
+	for name := range m.Interfaces {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		iface := m.Interfaces[name]
+		if iface.Default && flagged.Name == "" {
+			flagged = iface
+		}
+		if iface.EffectiveKind() == IfaceKindBridge {
+			bridge = iface
+			bridgeCount++
+		}
+	}
+	if flagged.Name != "" {
+		return flagged
+	}
+	if bridgeCount == 1 {
+		return bridge
+	}
+	return InterfaceSection{}
 }
 
 // EffectiveInterfaceFor resolves the effective interface for a SPECIFIC section
 // value — the form a repeated transport INSTANCE needs, since instances live in
 // Model.Lists keyed by schema key (several share one key) and so cannot be found by
 // key alone. Resolution is identical to EffectiveInterface: the section's
-// InterfaceProvider override (its named iface) wins, else inherit the default
-// Bridge; the chosen reference is then resolved through the interface namespace.
+// InterfaceProvider override (its named iface) wins, else inherit the namespace's
+// default interface; the chosen reference is then resolved through the namespace.
 func (m *Model) EffectiveInterfaceFor(s Section) InterfaceSection {
-	ref := m.Bridge
 	if ip, ok := s.(InterfaceProvider); ok {
 		if ov := ip.Interface(); ov.Name != "" {
-			ref = ov
+			return m.ResolveInterface(ov)
 		}
 	}
-	return m.ResolveInterface(ref)
+	// No override: inherit the namespace's default interface.
+	return m.DefaultInterface()
 }
 
 // ResolveInterface resolves a partial interface reference (typically just a Name)
@@ -377,6 +412,33 @@ func (m *Model) ResolveInterface(ref InterfaceSection) InterfaceSection {
 		}
 	}
 	return ref
+}
+
+// MigrateLegacyBridge folds a pre-M11 singleton [bridge] section into the interface
+// namespace as a default entry, so an old config keeps working after the singleton
+// Model.Bridge was removed. It is a no-op when the legacy section is empty (Name and
+// Device both unset) or when a namespace entry of the same name already exists (the
+// new-form [[interface]] wins — no clobbering an explicit modern config). The
+// migrated entry is flagged Default and, lacking any other kind, typed as a bridge,
+// preserving the old "un-bound ports inherit the bridge" behaviour. Codecs call this
+// from Unmarshal after reading both the legacy block and the namespace.
+func (m *Model) MigrateLegacyBridge(legacy InterfaceSection) {
+	if legacy.Name == "" && legacy.Device == "" && legacy.Addr == "" {
+		return // nothing configured in the legacy block
+	}
+	name := legacy.Name
+	if name == "" {
+		name = IfaceKindBridge // an unnamed legacy bridge takes the canonical name
+	}
+	if _, ok := m.Interface(name); ok {
+		return // a modern [[interface]] of this name already exists — do not clobber
+	}
+	legacy.Name = name
+	legacy.Default = true
+	if legacy.Kind == "" {
+		legacy.Kind = IfaceKindBridge
+	}
+	m.SetInterface(legacy)
 }
 
 // Interface returns the named namespace entry, if present.
@@ -406,14 +468,17 @@ type LoggingSection struct {
 	Level string // "debug"|"info"|"warn"|"error"
 }
 
-// RouterSection is the AppleTalk router config (zone defaults, seed ranges) and
-// — §3d/D8 — the EXPLICIT membership list naming which port instances join the
-// router. Membership is opt-IN by instance name: an enabled port NOT listed in
-// Members comes up standalone (sends/receives on its own segment, but no
-// RTMP/ZIP/forwarding). An empty Members means NONE join (D9) — this diverges
-// from the legacy "empty = bind every enabled transport"; the greenfield stance
-// is explicit-over-implicit, so first-run setup seeds Members rather than
-// defaulting to all.
+// RouterSection is the AppleTalk router config (default zone) and — §3d/D8 — the
+// EXPLICIT membership list naming which AppleTalk PORTS join the router. Members
+// are PORT instance names (which default to the transport schema key — "EtherTalk",
+// "LToUDP", "TashTalk" — unless a port sets its own Name). Each member port carries
+// its OWN seed zone + network range on its port Section (a seed is an RTMP property
+// of the seed-router port on that segment); the router does not store per-member
+// seed here. Membership is opt-IN by name: an enabled port NOT listed comes up
+// standalone (sends/receives on its own segment, but no RTMP/ZIP/forwarding). An
+// empty Members means NONE join (D9) — the greenfield stance is
+// explicit-over-implicit, so first-run setup seeds Members rather than defaulting
+// to every enabled transport.
 type RouterSection struct {
 	DefaultZone string   `toml:"default_zone"`
 	Members     []string `toml:"members"` // instance names of the ports that join this router
@@ -436,51 +501,62 @@ func (s RouterSection) IsMember(instance string) bool {
 
 // Interface kinds (Model.Interfaces / InterfaceSection.Kind). A port references an
 // interface by name; the interface's KIND — not the port type — selects which link
-// opener the compose layer uses (pcap for nic, adapter/serial for serial, the bridge
-// decorator for bridge). An empty Kind on a NIC is the historical default and is
-// treated as IfaceKindNIC.
+// opener the compose layer uses (pcap for nic, adapter/serial for serial). An empty
+// Kind on a NIC is the historical default and is treated as IfaceKindNIC.
 const (
 	IfaceKindNIC    = "nic"    // a network interface (eth0); opened via pcap/rawsock/tap
 	IfaceKindSerial = "serial" // a UART/serial device (COM3, /dev/ttyUSB0); opened via adapter/serial
-	IfaceKindBridge = "bridge" // a virtual interface aggregating member NICs (the shared Bridge)
 	IfaceKindWifi   = "wifi"   // a wireless interface; opened via wifi driver
+	IfaceKindBridge = "bridge" // a virtual interface aggregating member NICs (the former singleton Bridge)
+	// IfaceKindMulticast is the LToUDP segment's interface: it rides UDP multicast
+	// (239.192.76.84:1954) rather than binding a specific device, so its "device" is
+	// the host itself — there is no NIC/serial to pick. The runtime joins the group
+	// on every multicast-capable interface; the namespace entry exists only so the
+	// UI can present LToUDP alongside the other segments.
+	IfaceKindMulticast = "multicast"
 )
 
 // InterfaceSection names an interface a component binds to. It is a SUPERSET across
 // kinds (the same "placeholder accepts anything" stance the port Section takes): a
-// nic reads Name/Addr, a serial reads Device/Baud, a bridge reads Members; each
-// ignores the fields that do not apply to its Kind.
+// nic reads Name/Addr, a serial reads Device/Baud, a wifi reads SSID/Key; each
+// ignores the fields that do not apply to its Kind. Every field is omitempty so a
+// given kind's config emits only the fields it uses. (Aggregating "members" is a
+// property of the AppleTalk router — RouterSection.Members — not of an interface.)
 type InterfaceSection struct {
-	Name string // namespace key the interface is referenced by ("eth0", "br-lan", "ttyUSB-attic"); "" = unset
-	Kind string // "" / "nic" / "serial" / "bridge" / "wifi" (see IfaceKind*); "" == nic
-	Addr string // nic: optional pinned address
+	Name string `toml:"name,omitempty"` // namespace key the interface is referenced by ("eth0", "ttyUSB-attic"); "" = unset
+	Kind string `toml:"kind,omitempty"` // "" / "nic" / "serial" / "wifi" (see IfaceKind*); "" == nic
+	Addr string `toml:"addr,omitempty"` // nic: optional pinned address
+	// Default marks this entry the namespace's DEFAULT interface: the one a port
+	// inherits when it names no iface of its own (§M11). It replaces the former
+	// singleton Model.Bridge — a bridge is now just an ordinary namespace entry, and
+	// the one flagged Default is the shared interface un-bound ports fall through to.
+	// At most one entry should carry it; Model.DefaultInterface resolves ties by name
+	// order and falls back to a lone bridge entry when none is flagged.
+	Default bool `toml:"default,omitempty"`
 	// Backend selects the LINK IMPLEMENTATION used to open a kind=nic interface:
 	// "pcap" (libpcap/Npcap raw capture — the default and only backend wired today),
 	// "tap" (an L2 TAP virtual device), or "tun" (an L3 TUN device). It is meaningful
-	// only for nic interfaces; serial/bridge ignore it. Empty defaults to pcap (the
+	// only for nic interfaces; serial ignores it. Empty defaults to pcap (the
 	// historical behaviour). The cmd-edge opener dispatches on it; an unimplemented
 	// backend falls back to inert-but-routed, the same graceful degradation as a nil
 	// opener (see IfaceBackend*).
-	Backend string `toml:"backend"`
+	Backend string `toml:"backend,omitempty"`
 
 	// Embedded network configuration (IP configuration)
-	Proto      string // "dhcp" or "static"
-	Controller string // ethernet: "lan8720" or "w5500"
-	IP         string // static IP address (e.g. "192.168.1.200")
-	Netmask    string // subnet mask (e.g. "255.255.255.0")
-	Gateway    string // gateway address (e.g. "192.168.1.1")
-	DNS        string // DNS server address (e.g. "8.8.8.8")
+	Proto      string `toml:"proto,omitempty"`      // "dhcp" or "static"
+	Controller string `toml:"controller,omitempty"` // ethernet: "lan8720" or "w5500"
+	IP         string `toml:"ip,omitempty"`         // static IP address (e.g. "192.168.1.200")
+	Netmask    string `toml:"netmask,omitempty"`    // subnet mask (e.g. "255.255.255.0")
+	Gateway    string `toml:"gateway,omitempty"`    // gateway address (e.g. "192.168.1.1")
+	DNS        string `toml:"dns,omitempty"`        // DNS server address (e.g. "8.8.8.8")
 
 	// Wireless (SSID/Key) parameters.
-	SSID string // WiFi SSID
-	Key  string // WiFi Key/Password
+	SSID string `toml:"ssid,omitempty"` // WiFi SSID
+	Key  string `toml:"key,omitempty"`  // WiFi Key/Password
 
 	// Serial-kind parameters.
-	Device string // serial: OS device path ("COM3", "/dev/ttyUSB0")
-	Baud   int    // serial: line speed (0 → adapter default)
-
-	// Bridge-kind parameters.
-	Members []string // bridge: the member interface names it aggregates
+	Device string `toml:"device,omitempty"` // serial: OS device path ("COM3", "/dev/ttyUSB0")
+	Baud   int    `toml:"baud,omitempty"`   // serial: line speed (0 → adapter default)
 }
 
 // NIC link-backend identifiers (InterfaceSection.Backend, kind=nic). pcap is the only
@@ -509,13 +585,22 @@ func (s InterfaceSection) EffectiveKind() string {
 	return s.Kind
 }
 
-// Clone returns a deep copy (Members is the only reference-typed field).
-func (s InterfaceSection) Clone() InterfaceSection {
-	cp := s
-	if s.Members != nil {
-		cp.Members = append([]string(nil), s.Members...)
+// PcapDevice returns the string libpcap/Npcap must be handed to open this nic
+// interface: the explicit Device when set, otherwise the namespace Name. On Linux
+// the friendly name IS the pcap device (Name = "eth0"), so Device is left empty and
+// this falls through to Name; on Windows Npcap wants the "\Device\NPF_{GUID}" string,
+// which does not match any friendly name, so it is stored in Device and returned here.
+// This is the nic analogue of serial reading Device for the OS path.
+func (s InterfaceSection) PcapDevice() string {
+	if s.Device != "" {
+		return s.Device
 	}
-	return cp
+	return s.Name
+}
+
+// Clone returns a copy. All fields are value types, so a plain struct copy suffices.
+func (s InterfaceSection) Clone() InterfaceSection {
+	return s
 }
 
 // InterfaceProvider is the optional capability a component Section implements when it can

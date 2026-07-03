@@ -17,6 +17,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -126,10 +127,9 @@ func Run(ctx context.Context, args []string, v Version) error {
 	// Build the supervised runtime. The pcap opener + serial opener are injected here
 	// so compose/runtime pulls in no cgo/libpcap; under the pcap tag they open real
 	// device links, otherwise their stubs return ErrUnavailable and ports come up
-	// inert-but-routed. When [Capture] names a pcap file for an interface, the opener is
-	// wrapped so that interface's frames are tee'd to the file (link.Capture decorator).
-	opener := captureOpener(pcapOpener, &m.Capture)
-	rt, err := runtime.Build(runtime.Options{Model: m, Telemetry: telemetry, Opener: opener, Serial: serialOpener, InterfaceEnumerator: interfaceEnumerator, MacIPEgress: macipEgressOpener})
+	// inert-but-routed. Per-port wire capture is now a port property (Section.Capture),
+	// wrapped inside the compose registry openers, so no capture decoration is needed here.
+	rt, err := runtime.Build(runtime.Options{Model: m, Telemetry: telemetry, Opener: pcapOpener, Serial: serialOpener, InterfaceEnumerator: interfaceEnumerator, MacIPEgress: macipEgressOpener})
 	if err != nil {
 		return fmt.Errorf("build runtime: %w", err)
 	}
@@ -197,10 +197,20 @@ func pickCodec(configPath string) config.Codec {
 
 // pcapOpener is the runtime's LinkOpener: open a raw Ethernet FrameLink for a port's
 // interface via libpcap (the low-latency EtherTalk profile). Under the pcap tag this
-// is a real capture handle; without it the stub returns pcap.ErrUnavailable and the
-// port stays inert. Called per Start so a reopened port gets a fresh handle.
+// is a real capture handle. WITHOUT the tag the stub returns pcap.ErrUnavailable —
+// which we map to (nil, nil) here so the port comes up INERT-BUT-ROUTED rather than
+// failing Start and aborting the whole runtime. This is the documented degradation
+// (runport.Start treats a nil link as a successful inert start): a build with no
+// libpcap should still boot its other transports/services, not crash because one
+// EtherTalk port has no backend. A genuine open error (device busy / no permission on
+// a pcap build) is still propagated. Called per Start so a reopened port gets a fresh
+// handle.
 var pcapOpener registry.LinkOpener = func(iface string) (link.FrameLink, error) {
-	return pcap.Open(pcap.DefaultEtherTalkConfig(iface))
+	fl, err := pcap.Open(pcap.DefaultEtherTalkConfig(iface))
+	if errors.Is(err, pcap.ErrUnavailable) {
+		return nil, nil // no pcap backend in this build → inert, not fatal
+	}
+	return fl, err
 }
 
 // serialOpener is the runtime's SerialOpener: open a serial byte stream for a
@@ -228,11 +238,11 @@ func interfaceEnumerator() ([]control.InterfaceInfo, error) {
 		if len(d.Addresses) > 0 {
 			addr = d.Addresses[0]
 		}
-		name := d.Name
-		if d.Description != "" {
-			name = d.Name + " (" + d.Description + ")"
-		}
-		out = append(out, control.InterfaceInfo{Name: name, Addr: addr})
+		// Name stays the RAW pcap device (what a config must store); the friendly
+		// adaptor description goes in a separate field the picker shows as a label but
+		// never stores — otherwise "\Device\NPF_{GUID} (Realtek …)" gets saved as the
+		// device and pcap cannot open it.
+		out = append(out, control.InterfaceInfo{Name: d.Name, Description: d.Description, Addr: addr})
 	}
 	return out, nil
 }

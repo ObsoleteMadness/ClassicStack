@@ -28,11 +28,15 @@ type Config struct {
 	Promiscuous   bool
 	ReadTimeout   time.Duration
 	ImmediateMode bool
+	Filter        string
 }
+
+// EtherTalkBPFFilter mirrors the tagged build's AppleTalk (DDP + AARP) capture filter.
+const EtherTalkBPFFilter = "atalk or aarp"
 
 // DefaultEtherTalkConfig mirrors the tagged build's constructor.
 func DefaultEtherTalkConfig(iface string) Config {
-	return Config{Interface: iface, SnapLen: 65535, Promiscuous: true, ReadTimeout: 250 * time.Millisecond, ImmediateMode: true}
+	return Config{Interface: iface, SnapLen: 65535, Promiscuous: true, ReadTimeout: 250 * time.Millisecond, ImmediateMode: true, Filter: EtherTalkBPFFilter}
 }
 
 // DefaultMacIPConfig mirrors the tagged build's constructor.

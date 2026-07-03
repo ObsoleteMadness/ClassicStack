@@ -8,19 +8,19 @@ import (
 )
 
 // TestSectionInterfaceOverride proves a port Section is a config.InterfaceProvider
-// so it participates in bridge inheritance: a set Iface overrides the shared Bridge,
-// an empty Iface falls through to it.
+// so it participates in default-interface inheritance: a set Iface overrides the
+// shared default, an empty Iface falls through to it.
 func TestSectionInterfaceOverride(t *testing.T) {
 	m := config.NewModel()
-	m.Bridge = config.InterfaceSection{Name: "br0"}
+	m.SetInterface(config.InterfaceSection{Name: "br0", Kind: config.IfaceKindBridge, Default: true})
 
 	m.Set(&Section{SKey: "EtherTalk", Iface: ""})
 	if got := m.EffectiveInterface("EtherTalk").Name; got != "br0" {
-		t.Fatalf("empty iface should inherit bridge, got %q want br0", got)
+		t.Fatalf("empty iface should inherit the default interface, got %q want br0", got)
 	}
 	m.Set(&Section{SKey: "EtherTalk", Iface: "eth9"})
 	if got := m.EffectiveInterface("EtherTalk").Name; got != "eth9" {
-		t.Fatalf("set iface should override bridge, got %q want eth9", got)
+		t.Fatalf("set iface should override the default, got %q want eth9", got)
 	}
 }
 

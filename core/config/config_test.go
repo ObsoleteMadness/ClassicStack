@@ -114,12 +114,14 @@ func TestCloneIsIndependent(t *testing.T) {
 
 func TestEffectiveInterface(t *testing.T) {
 	m := NewModel()
-	m.Bridge = InterfaceSection{Name: "br-lan"}
+	// The default interface is now a namespace entry flagged Default (the former
+	// singleton Bridge).
+	m.SetInterface(InterfaceSection{Name: "br-lan", Kind: IfaceKindBridge, Default: true})
 
-	// No override → inherits the bridge.
+	// No override → inherits the default interface.
 	m.Set(&barSection{})
 	if got := m.EffectiveInterface("Bar"); got.Name != "br-lan" {
-		t.Fatalf("Bar should inherit bridge, got %q", got.Name)
+		t.Fatalf("Bar should inherit the default interface, got %q", got.Name)
 	}
 
 	// Per-section override wins.
@@ -128,21 +130,79 @@ func TestEffectiveInterface(t *testing.T) {
 		t.Fatalf("Foo override should win, got %q", got.Name)
 	}
 
-	// Empty override falls back to the bridge.
+	// Empty override falls back to the default interface.
 	m.Set(&fooSection{Iface: InterfaceSection{}})
 	if got := m.EffectiveInterface("Foo"); got.Name != "br-lan" {
-		t.Fatalf("empty Foo override should fall back to bridge, got %q", got.Name)
+		t.Fatalf("empty Foo override should fall back to the default interface, got %q", got.Name)
+	}
+}
+
+func TestDefaultInterface(t *testing.T) {
+	// A lone bridge entry is the default even without the flag.
+	m := NewModel()
+	m.SetInterface(InterfaceSection{Name: "br0", Kind: IfaceKindBridge})
+	if got := m.DefaultInterface(); got.Name != "br0" {
+		t.Fatalf("lone bridge should be the default, got %q", got.Name)
+	}
+
+	// An explicit Default flag wins over a bridge.
+	m.SetInterface(InterfaceSection{Name: "eth0", Kind: IfaceKindNIC, Default: true})
+	if got := m.DefaultInterface(); got.Name != "eth0" {
+		t.Fatalf("flagged entry should win, got %q", got.Name)
+	}
+
+	// With multiple bridges and no flag, there is no default (ambiguous).
+	m2 := NewModel()
+	m2.SetInterface(InterfaceSection{Name: "br0", Kind: IfaceKindBridge})
+	m2.SetInterface(InterfaceSection{Name: "br1", Kind: IfaceKindBridge})
+	if got := m2.DefaultInterface(); got.Name != "" {
+		t.Fatalf("ambiguous bridges should yield no default, got %q", got.Name)
+	}
+}
+
+func TestMigrateLegacyBridge(t *testing.T) {
+	// A legacy [bridge] block becomes a default bridge entry in the namespace.
+	m := NewModel()
+	m.MigrateLegacyBridge(InterfaceSection{Name: "br-lan", Addr: "10.0.0.1"})
+	got, ok := m.Interface("br-lan")
+	if !ok {
+		t.Fatal("legacy bridge was not migrated into the namespace")
+	}
+	if !got.Default || got.EffectiveKind() != IfaceKindBridge || got.Addr != "10.0.0.1" {
+		t.Fatalf("migrated entry wrong: %+v", got)
+	}
+
+	// An unnamed legacy bridge takes the canonical "bridge" name.
+	m2 := NewModel()
+	m2.MigrateLegacyBridge(InterfaceSection{Device: `\Device\NPF_{X}`})
+	if _, ok := m2.Interface(IfaceKindBridge); !ok {
+		t.Fatal("unnamed legacy bridge should take the canonical name")
+	}
+
+	// A modern [[interface]] of the same name is not clobbered.
+	m3 := NewModel()
+	m3.SetInterface(InterfaceSection{Name: "br-lan", Kind: IfaceKindNIC, Addr: "modern"})
+	m3.MigrateLegacyBridge(InterfaceSection{Name: "br-lan", Addr: "legacy"})
+	if got, _ := m3.Interface("br-lan"); got.Addr != "modern" {
+		t.Fatalf("modern entry should win over legacy, got Addr %q", got.Addr)
+	}
+
+	// An empty legacy block is a no-op.
+	m4 := NewModel()
+	m4.MigrateLegacyBridge(InterfaceSection{})
+	if len(m4.Interfaces) != 0 {
+		t.Fatalf("empty legacy block should not create an entry, got %d", len(m4.Interfaces))
 	}
 }
 
 // TestEffectiveInterface_ResolvesNamespace proves a port's named interface is
 // resolved against the Interfaces namespace: a port that names a serial interface
-// gets that entry's Kind/Device/Baud, one that names a bridge gets its Members, and
-// a bare undeclared name resolves to a plain nic.
+// gets that entry's Kind/Device/Baud, one that names a nic gets its Addr, and a bare
+// undeclared name resolves to a plain nic.
 func TestEffectiveInterface_ResolvesNamespace(t *testing.T) {
 	m := NewModel()
 	m.SetInterface(InterfaceSection{Name: "ttyUSB-attic", Kind: IfaceKindSerial, Device: "/dev/ttyUSB0", Baud: 1000000})
-	m.SetInterface(InterfaceSection{Name: "br-lan", Kind: IfaceKindBridge, Members: []string{"eth0", "eth1"}})
+	m.SetInterface(InterfaceSection{Name: "eth0", Kind: IfaceKindNIC, Addr: "10.0.0.2"})
 
 	// Names a serial interface → full serial entry.
 	m.Set(&fooSection{Iface: InterfaceSection{Name: "ttyUSB-attic"}})
@@ -151,11 +211,11 @@ func TestEffectiveInterface_ResolvesNamespace(t *testing.T) {
 		t.Fatalf("serial ref should resolve to the namespace entry, got %+v", got)
 	}
 
-	// Names a bridge interface → bridge entry with members.
-	m.Set(&fooSection{Iface: InterfaceSection{Name: "br-lan"}})
+	// Names a declared nic interface → nic entry with its pinned Addr.
+	m.Set(&fooSection{Iface: InterfaceSection{Name: "eth0"}})
 	got = m.EffectiveInterface("Foo")
-	if got.EffectiveKind() != IfaceKindBridge || len(got.Members) != 2 {
-		t.Fatalf("bridge ref should resolve to the namespace entry, got %+v", got)
+	if got.EffectiveKind() != IfaceKindNIC || got.Addr != "10.0.0.2" {
+		t.Fatalf("nic ref should resolve to the namespace entry, got %+v", got)
 	}
 
 	// A bare, undeclared name is a plain nic (no [[Interface]] block required).
@@ -169,22 +229,23 @@ func TestEffectiveInterface_ResolvesNamespace(t *testing.T) {
 // TestInterfaceNamespaceAccessors covers Set/Interface/Clone of the namespace.
 func TestInterfaceNamespaceAccessors(t *testing.T) {
 	m := NewModel()
-	m.SetInterface(InterfaceSection{Name: "br-lan", Kind: IfaceKindBridge, Members: []string{"eth0"}})
+	m.SetInterface(InterfaceSection{Name: "eth0", Kind: IfaceKindNIC, Addr: "10.0.0.2"})
 	m.SetInterface(InterfaceSection{}) // empty name is ignored
 	if _, ok := m.Interface(""); ok {
 		t.Fatal("empty-name interface should not be stored")
 	}
-	got, ok := m.Interface("br-lan")
-	if !ok || len(got.Members) != 1 {
-		t.Fatalf("Interface(br-lan) = %+v, %v", got, ok)
+	got, ok := m.Interface("eth0")
+	if !ok || got.Addr != "10.0.0.2" {
+		t.Fatalf("Interface(eth0) = %+v, %v", got, ok)
 	}
 
-	// Clone must deep-copy Members so a mutation does not leak across the clone.
+	// Clone must copy the namespace entry so a mutation does not leak across the clone.
 	c := m.Clone()
-	got.Members[0] = "MUTATED"
-	cl, _ := c.Interface("br-lan")
-	if cl.Members[0] == "MUTATED" {
-		t.Fatal("Clone shares the Members slice with the original")
+	got.Addr = "MUTATED"
+	m.SetInterface(got)
+	cl, _ := c.Interface("eth0")
+	if cl.Addr == "MUTATED" {
+		t.Fatal("Clone shares the interface namespace with the original")
 	}
 }
 

@@ -29,6 +29,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/control"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/router"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/macip"
 )
@@ -120,6 +121,11 @@ type Options struct {
 	// MacIP section names an interface. nil (or a build error) leaves MacIP
 	// AppleTalk-only. Kept out of compose/runtime so this package stays cgo-free.
 	MacIPEgress MacIPEgressOpener
+	// LogSinks are extra log sinks installed on every component logger, threaded into
+	// each factory's BuildContext (in addition to the stderr sink built at the
+	// configured [Logging] Level). Injected at the cmd edge — e.g. the web-UI ring
+	// buffer feeding the log viewer. nil keeps components stderr-only.
+	LogSinks []log.Sink
 	// source enumerates/builds components. nil → the global compose/registry. Set
 	// only by tests (kept unexported so the production API is the registry path).
 	source componentSource
@@ -191,6 +197,7 @@ func Build(opts Options) (*Runtime, error) {
 		Telemetry: opts.Telemetry,
 		Opener:    opts.Opener,
 		Serial:    opts.Serial,
+		LogSinks:  opts.LogSinks,
 	}
 
 	// First pass: build the components, recording which names actually exist so the

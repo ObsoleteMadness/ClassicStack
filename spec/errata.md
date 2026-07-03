@@ -184,3 +184,25 @@ A volume whose backend does **not** advertise `Capabilities().CatSearch` (or doe
 **What we do:** the `short`/`medium` name engines fold case for both the forward and reverse metastore keys (so `Report.txt` and `REPORT.TXT` share one binding, and two genuinely distinct names that fold equal collide and get a `~N`/`-N` suffix) while storing the original-case long name as the value (so medium names round-trip in their stored case). One generator runs identically on Windows, macOS, and Linux — the engine never consults the host's case rules — so a volume served from any host presents the same names.
 
 **Where:** `core/fs/name.go` (`fwdKey`/`revKey` case-folding, `deriveMedium`/`derive83`).
+
+## Config model — section ownership
+
+### NBT (:139) listen address lives on [NetBIOS], not [SMB]
+
+**No spec:** this is a ClassicStack config-model decision, not a wire deviation.
+
+**Observed:** NBT is NetBIOS-over-TCP (a NetBIOS transport), but ClassicStack physically shares the `:139` session listener between NBT and SMB's direct-TCP transport because they share framing. The NBT listen address (`nbt_addr`) was originally carried on the `[SMB]` server section next to `tcp_addr`, which put a NetBIOS-owned setting under SMB (the web UI showed "NBT listen address" on the SMB panel — a model/UI mismatch).
+
+**What we do:** `nbt_addr` lives on the `[NetBIOS]` section (`netbios.Section.NBTAddr`), alongside the `nbt` transport binding. The compose cross-wire (`wireSMBTCP`) reads the address from the NetBIOS service (§B) when the nbt binding is on; SMB owns only the direct-TCP (`:445`) address. Neither auto-defaults to its conventional port (Windows owns `:139`/`:445`, Unix guards them as privileged) — an empty address leaves that listener inert.
+
+**Where:** `core/service/netbios/section.go` (`NBTAddr`), `core/service/netbios/netbios.go` (`SetNBTListenAddr`/`NBTListenAddr`), `compose/registry/reg_netbios.go` (wire from section), `compose/runtime/transports.go` (`wireSMBTCP`); `core/service/smb/serversection.go`+`smb.go` (SMB now carries only the direct-TCP address).
+
+### The only interface is the uplink bridge; a port owns its own binding
+
+**No spec:** this is a ClassicStack config-model decision, not a wire deviation.
+
+**Observed:** the interface namespace originally modelled three interface KINDS — bridge (pcap/tap/raw), serial (TashTalk), and multicast (LToUDP) — and a TashTalk port resolved its serial device/baud from a named `kind=serial` interface (the earlier §3b/D7 move: "the interface owns the device parameters"). Operationally this confused the layering: an operator thinks of the bridge as the only "interface" (the uplink), while a TashTalk is a port that owns its own tty and an LToUDP is a host-wide multicast port.
+
+**What we do:** an INTERFACE is now only the uplink bridge (pcap/tap/raw over a host NIC). Serial and multicast are no longer interface objects. A TashTalk port carries its serial `Device`/`Baud` on the PORT section (`port.Section.Device`/`Baud`); the TashTalk factory reads them directly (falling back to `Iface` as the device path for an older section). An LToUDP port rides host-wide multicast, with `Iface` an optional bind address. This REVERSES the §3b/D7 serial-as-interface move. The web UI reflects it: the Interfaces tab manages only bridge/uplink entries; the TashTalk port editor shows a serial-port dropdown + baud; EtherTalk/IPX/NetBEUI show a bridge dropdown; LToUDP shows neither.
+
+**Where:** `core/port/section.go` (`Device`/`Baud`), `compose/registry/reg_localtalk.go` (`tashtalkLinkOpener` reads the port section; `effectiveSerialInterface` removed from `compose/registry/dispatch.go`), `adapter/control/http/spa/app.js` (`instanceForm`/`openInstanceModal` model-aware port widgets; `openInterfaceModal` bridge-only).

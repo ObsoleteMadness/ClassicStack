@@ -4,7 +4,6 @@ package registry
 
 import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
-	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/ncp"
 )
 
@@ -16,7 +15,7 @@ func init() {
 
 	Register(ncp.Name, func(ctx *BuildContext) (component.Component, error) {
 		m := ctx.Model
-		logger := log.New(ncp.Name, log.NewStderrSink(log.NewLevelVar(log.Info)))
+		logger := ctx.Logger(ncp.Name)
 		svc := ncp.New(logger)
 		// Server identity is the shared §4-bis Identity hostname/description (the NCP
 		// SAP advertisement and Get Server Info report it), upper-cased to a NetWare

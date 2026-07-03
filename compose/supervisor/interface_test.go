@@ -78,7 +78,7 @@ func TestSetInterfaceSkipsUnrelatedPort(t *testing.T) {
 // TestRemoveInterface drops the entry and reconciles the referencing port.
 func TestRemoveInterface(t *testing.T) {
 	m := config.NewModel()
-	m.SetInterface(config.InterfaceSection{Name: "br-lan", Kind: config.IfaceKindBridge})
+	m.SetInterface(config.InterfaceSection{Name: "br-lan", Kind: config.IfaceKindNIC})
 	m.Set(ifaceSection{key: "port", iface: config.InterfaceSection{Name: "br-lan"}})
 
 	s := New(m, nil)

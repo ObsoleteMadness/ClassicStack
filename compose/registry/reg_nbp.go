@@ -4,7 +4,6 @@ package registry
 
 import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
-	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/nbp"
 )
 
@@ -14,7 +13,7 @@ func init() {
 	// IPXGW) register their advertised names here so Macs discover them. It rides the
 	// shared router; crossWireRouter registers its socket. Gated on the router tag.
 	Register(nbp.Name, func(ctx *BuildContext) (component.Component, error) {
-		logger := log.New(nbp.Name, log.NewStderrSink(log.NewLevelVar(log.Info)))
+		logger := ctx.Logger(nbp.Name)
 		return nbp.New(routerFor(ctx), logger), nil
 	})
 }

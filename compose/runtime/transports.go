@@ -100,7 +100,7 @@ func crossWireTransports(comps map[string]component.Component, egressOpener MacI
 	// adapter listener built inert in the registry; wire its SMB consumer + address
 	// here when SMB is present and the tcp binding is on. Direct-TCP needs only SMB
 	// (NetBIOS-less); NBT (gated by the SMB nbt binding) shares the same framing.
-	wireSMBTCP(sm, comps)
+	wireSMBTCP(sm, nb, comps)
 
 	// Browse-list provider (§3-ter, M8a compose wiring): when both SMB and the browser
 	// were built, install the browser as SMB's BrowseProvider so the IPC$ \PIPE\LANMAN
@@ -327,7 +327,7 @@ func wireIPX(nb *netbios.Service, sm *smb.Service, comps map[string]component.Co
 // NetBIOS session consumer, for the direct-TCP path. NBT (:139) shares the same
 // transport and framing; when only the nbt binding is on, the :139 address is used.
 // With no SMB service, or with both tcp+nbt bindings off, the transport stays inert.
-func wireSMBTCP(sm *smb.Service, comps map[string]component.Component) {
+func wireSMBTCP(sm *smb.Service, nb *netbios.Service, comps map[string]component.Component) {
 	if sm == nil {
 		return
 	}
@@ -352,9 +352,12 @@ func wireSMBTCP(sm *smb.Service, comps map[string]component.Component) {
 	// the direct-TCP address; use the NBT address when only nbt is bound. An empty
 	// address (the default) leaves the transport inert, so a config that lists the tcp
 	// binding but sets no tcp_addr does not collide with the OS SMB server.
+	//
+	// NBT (:139) is a NetBIOS transport, so its address is the NetBIOS section's NBTAddr,
+	// read from the NetBIOS service (§B). Direct-TCP (:445) is SMB's own.
 	addr := sm.DirectTCPListenAddr()
-	if addr == "" && nbtOn {
-		addr = sm.NBTListenAddr()
+	if addr == "" && nbtOn && nb != nil {
+		addr = nb.NBTListenAddr()
 	}
 	if addr == "" {
 		return // transport requested but no address configured — stay inert

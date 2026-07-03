@@ -4,7 +4,6 @@ package registry
 
 import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
-	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/smb"
 )
 
@@ -20,7 +19,7 @@ func init() {
 
 	Register(smb.Name, func(ctx *BuildContext) (component.Component, error) {
 		m := ctx.Model
-		logger := log.New(smb.Name, log.NewStderrSink(log.NewLevelVar(log.Info)))
+		logger := ctx.Logger(smb.Name)
 		// Build one Share per configured share section. A model with no shares
 		// yields a service with none (the historical zero-config default); a bad
 		// spec (invalid fs_type×fork×codec triple or missing required param) fails
@@ -40,7 +39,9 @@ func init() {
 		// every built transport (back-compat); empty addr = do not bind that address.
 		smbSec := smb.ServerSectionFromModel(m)
 		svc.SetBoundTransports(smbSec.Transports)
-		svc.SetTCPListenAddrs(smbSec.DirectTCPAddr(), smbSec.NBTListenAddr())
+		// Only the direct-TCP (:445) address is an SMB concern; NBT (:139) is a NetBIOS
+		// transport whose address lives on the NetBIOS service (see reg_netbios.go).
+		svc.SetDirectTCPListenAddr(smbSec.DirectTCPAddr())
 		// §10d: build each share over the shared FS-mutation bus for its host path, so
 		// a same-host-path AFP volume sees this share's mutations (and vice-versa). Set
 		// BEFORE the shares are built so the initial set gets the shared bus too.

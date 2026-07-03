@@ -125,7 +125,12 @@ type Unit struct {
 	Props     map[string]string
 }
 
-type InterfaceInfo struct{ Name, Addr string }
+// InterfaceInfo is the management view of one host NIC for the UI's device picker.
+// Name is the RAW pcap device string a config stores (on Windows the
+// "\Device\NPF_{GUID}", on Linux "eth0"); Description is the human-friendly label the
+// picker shows (e.g. the adaptor model) — display only, never stored. Addr is the
+// device's first address, if any.
+type InterfaceInfo struct{ Name, Description, Addr string }
 
 // ParamInfo is the management view of one fs_type config param (the JSON-friendly
 // mirror of fs.Param): the option key, whether it is required, whether it is a Secret
@@ -323,7 +328,7 @@ func (p *plane) Stop(ctx context.Context, name string) error    { return p.sup.S
 func (p *plane) Restart(ctx context.Context, name string) error { return p.sup.Restart(ctx, name) }
 
 func (p *plane) Status() []Unit                           { return p.sup.Status() }
-func (p *plane) HostInfo() (hostinfo.HostInfo, error)      { return hostinfo.Get(), nil }
+func (p *plane) HostInfo() (hostinfo.HostInfo, error)     { return hostinfo.Get(), nil }
 func (p *plane) HostnameConstraints() []string            { return p.sup.HostnameConstraints() }
 func (p *plane) ListInterfaces() ([]InterfaceInfo, error) { return p.sup.ListInterfaces() }
 

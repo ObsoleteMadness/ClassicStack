@@ -145,24 +145,19 @@ func TestTashTalkFactory_GoesLive(t *testing.T) {
 	}
 }
 
-// TestTashTalkFactory_ResolvesSerialInterface proves the M11.c/D7 dispatch: a
-// TashTalk instance whose iface NAMES a kind=serial interface in the namespace opens
-// the DEVICE and BAUD declared on that interface — not the raw section iface. This is
-// the §3b move (the interface, not the port, owns the device parameters).
-func TestTashTalkFactory_ResolvesSerialInterface(t *testing.T) {
+// TestTashTalkFactory_ReadsDeviceAndBaudFromPort proves a TashTalk port owns its own
+// serial line: the DEVICE and BAUD come from the PORT section (Section.Device/Baud),
+// not from a named serial interface. This is the reversal of the earlier §3b/D7
+// serial-as-interface move — serial is a port property now ("one interface = the
+// uplink bridge").
+func TestTashTalkFactory_ReadsDeviceAndBaudFromPort(t *testing.T) {
 	var openedDev atomic.Value
 	var openedBaud atomic.Uint64
 	swapTashtalkFrame(t, func(io.ReadWriteCloser) (link.FrameLink, error) { return &idleFrameLink{}, nil })
 
 	m := config.NewModel()
-	m.SetInterface(config.InterfaceSection{
-		Name:   "ttyUSB-attic",
-		Kind:   config.IfaceKindSerial,
-		Device: "/dev/ttyUSB0",
-		Baud:   57600,
-	})
-	// The port references the interface by NAME; the device/baud come from the iface.
-	m.AddInstance(&port.Section{SKey: localtalk.NameTashTalk, Name: "tt-attic", Iface: "ttyUSB-attic", IsEnabled: true})
+	// The port carries its own device/baud — no serial interface in the namespace.
+	m.AddInstance(&port.Section{SKey: localtalk.NameTashTalk, Name: "tt-attic", Device: "/dev/ttyUSB0", Baud: 57600, IsEnabled: true})
 
 	serial := func(device string, baud uint) (io.ReadWriteCloser, error) {
 		openedDev.Store(device)
@@ -179,10 +174,10 @@ func TestTashTalkFactory_ResolvesSerialInterface(t *testing.T) {
 	}
 	defer c.Stop(ctx)
 	if got := openedDev.Load(); got != "/dev/ttyUSB0" {
-		t.Fatalf("opened device %v, want /dev/ttyUSB0 (from the named serial interface)", got)
+		t.Fatalf("opened device %v, want /dev/ttyUSB0 (from the port section)", got)
 	}
 	if got := openedBaud.Load(); got != 57600 {
-		t.Fatalf("opened baud %d, want 57600 (from the named serial interface)", got)
+		t.Fatalf("opened baud %d, want 57600 (from the port section)", got)
 	}
 }
 
@@ -230,7 +225,7 @@ func TestLToUDPFactory_IgnoresBridge(t *testing.T) {
 		return &idleFrameLink{}, nil
 	})
 	m := config.NewModel()
-	m.Bridge = config.InterfaceSection{Name: "br0"}
+	m.SetInterface(config.InterfaceSection{Name: "br0", Kind: config.IfaceKindBridge, Default: true})
 	m.Set(&port.Section{SKey: localtalk.NameLToUDP, Iface: "", IsEnabled: true})
 
 	c, ok, err := Build(localtalk.NameLToUDP, &BuildContext{Model: m, Opener: anyOpener()})

@@ -19,7 +19,7 @@ func TestUCICodec_RoundTrip(t *testing.T) {
 	m.Identity = config.Identity{Hostname: "CLASSICSTACK", Workgroup: "ETHERGRP", Description: "uci test server"}
 	m.Logging = config.LoggingSection{Level: "info"}
 	m.Router = config.RouterSection{DefaultZone: "EtherZone", Members: []string{"et-lab", "et-dmz"}}
-	m.Bridge = config.InterfaceSection{Name: "br-lan", Addr: "192.168.1.1"}
+	m.SetInterface(config.InterfaceSection{Name: "br-lan", Kind: config.IfaceKindBridge, Addr: "192.168.1.1", Default: true})
 	m.Set(&port.Section{SKey: "EtherTalk", Iface: "eth0", IsEnabled: true})
 
 	codec := New()
@@ -42,8 +42,8 @@ func TestUCICodec_RoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(got.Router, m.Router) {
 		t.Errorf("Router: got %+v want %+v", got.Router, m.Router)
 	}
-	if !reflect.DeepEqual(got.Bridge, m.Bridge) {
-		t.Errorf("Bridge: got %+v want %+v", got.Bridge, m.Bridge)
+	if !reflect.DeepEqual(got.Interfaces, m.Interfaces) {
+		t.Errorf("Interfaces: got %+v want %+v", got.Interfaces, m.Interfaces)
 	}
 
 	wantSec, _ := m.Get("EtherTalk")
@@ -58,12 +58,12 @@ func TestUCICodec_RoundTrip(t *testing.T) {
 }
 
 // TestUCICodec_InterfaceNamespaceRoundTrip proves the named interface namespace
-// survives a UCI `config interface '<name>'` round-trip (nic, serial, bridge).
+// survives a UCI `config interface '<name>'` round-trip (nic, serial, wifi).
 func TestUCICodec_InterfaceNamespaceRoundTrip(t *testing.T) {
 	m := config.NewModel()
 	m.SetInterface(config.InterfaceSection{Name: "eth0", Kind: config.IfaceKindNIC, Addr: "10.0.0.2"})
 	m.SetInterface(config.InterfaceSection{Name: "ttyUSB-attic", Kind: config.IfaceKindSerial, Device: "/dev/ttyUSB0", Baud: 1000000})
-	m.SetInterface(config.InterfaceSection{Name: "br-lan", Kind: config.IfaceKindBridge, Members: []string{"eth0", "eth1"}})
+	m.SetInterface(config.InterfaceSection{Name: "wlan0", Kind: config.IfaceKindWifi, SSID: "AppleNet", Key: "secret"})
 
 	codec := New()
 	data, err := codec.Marshal(m)

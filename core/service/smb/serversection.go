@@ -36,11 +36,6 @@ const (
 // the UI's placeholder, nothing more.
 const DefaultDirectTCPAddr = ":445"
 
-// DefaultNBTAddr is the conventional NetBIOS-over-TCP session-service port (:139).
-// Like DefaultDirectTCPAddr it is a documented convention, not an automatic default —
-// nbt_addr must be set explicitly to bind it.
-const DefaultNBTAddr = ":139"
-
 // ServerSection is SMB's singleton server config: which transports to bind. It is a
 // flat, codec-friendly view satisfying config.Section so the model round-trips it.
 type ServerSection struct {
@@ -51,8 +46,6 @@ type ServerSection struct {
 	Transports []string `toml:"transports"`
 	// TCPAddr overrides the direct-TCP (:445) listen address. Empty = DefaultDirectTCPAddr.
 	TCPAddr string `toml:"tcp_addr"`
-	// NBTAddr overrides the NBT (:139) listen address. Empty = DefaultNBTAddr.
-	NBTAddr string `toml:"nbt_addr"`
 }
 
 // DirectTCPAddr returns the configured direct-TCP listen address, or "" when none is
@@ -60,10 +53,6 @@ type ServerSection struct {
 // guards as privileged) — an empty result means "do not bind direct-TCP", so the
 // transport stays inert unless the operator names an address explicitly.
 func (s *ServerSection) DirectTCPAddr() string { return s.TCPAddr }
-
-// NBTListenAddr returns the configured NBT listen address, or "" when none is set. Like
-// DirectTCPAddr it does not auto-default to :139.
-func (s *ServerSection) NBTListenAddr() string { return s.NBTAddr }
 
 // Key returns the section key.
 func (s *ServerSection) Key() string { return ServerKey }

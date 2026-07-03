@@ -10,6 +10,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/port"
 	"github.com/ObsoleteMadness/ClassicStack/core/router"
 )
@@ -99,6 +100,12 @@ type BuildContext struct {
 	// singleton/default instance (a non-port factory, or a port config that still
 	// uses a single section), so existing factories keep working unchanged.
 	Instance string
+	// LogSinks are EXTRA log sinks the cmd edge installs on every component logger
+	// (in addition to the stderr sink BuildContext.Logger builds at the configured
+	// level) — e.g. the web-UI in-memory ring buffer that feeds the log viewer. nil
+	// (the default) means stderr only. The per-component threshold still comes from
+	// [Logging] Level via LevelFor; each extra sink enforces its own Min().
+	LogSinks []log.Sink
 }
 
 // Factory builds a fully-wired component from its BuildContext. Returns the

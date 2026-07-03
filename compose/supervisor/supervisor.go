@@ -651,9 +651,9 @@ func (s *Supervisor) RemoveInterface(ctx context.Context, name string) error {
 }
 
 // reconcileInterfaceRefsLocked reconfigures every built component whose section
-// resolves its effective interface to the named entry (or, for the default Bridge
-// inheritance, matches the bridge name), so an interface edit propagates to the ports
-// using it without a whole-stack restart. Caller holds mu. Best-effort: a component
+// resolves its effective interface to the named entry (or, for default-interface
+// inheritance, matches the namespace default's name), so an interface edit propagates
+// to the ports using it without a whole-stack restart. Caller holds mu. Best-effort: a component
 // with no model section, or one that is not interface-bound, is skipped. The first
 // reconfigure error is returned (later ports are not attempted), matching the addressed
 // reconfigure semantics.
@@ -668,10 +668,11 @@ func (s *Supervisor) reconcileInterfaceRefsLocked(ctx context.Context, name stri
 			continue
 		}
 		// A port references the changed interface either explicitly (its override names
-		// it) or implicitly via the default Bridge inheritance when the changed name is
-		// the bridge's. Match either so a bridge edit reaches its inheritors.
+		// it) or implicitly via default-interface inheritance when the changed name is
+		// the namespace's default. Match either so a default-interface edit reaches its
+		// inheritors.
 		ref := ip.Interface().Name
-		if ref != name && !(ref == "" && s.model.Bridge.Name == name) {
+		if ref != name && !(ref == "" && s.model.DefaultInterface().Name == name) {
 			continue
 		}
 		if err := s.reconfigureLocked(ctx, compName, sec); err != nil {

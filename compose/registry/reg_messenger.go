@@ -4,14 +4,13 @@ package registry
 
 import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
-	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/messenger"
 )
 
 func init() {
 	Register(messenger.Name, func(ctx *BuildContext) (component.Component, error) {
 		m := ctx.Model
-		logger := log.New(messenger.Name, log.NewStderrSink(log.NewLevelVar(log.Info)))
+		logger := ctx.Logger(messenger.Name)
 		// The messenger receives "net send" pop-ups for the shared server identity
 		// (§4-bis hostname/workgroup) and publishes them on the telemetry bus for the
 		// UI. Like the browser it is built with NO mailslot sink — the runtime

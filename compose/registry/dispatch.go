@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"github.com/ObsoleteMadness/ClassicStack/adapter/capture/pcapfile"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 	"github.com/ObsoleteMadness/ClassicStack/core/port"
@@ -8,12 +9,16 @@ import (
 
 // nicLinkOpener binds a NIC interface name to a per-Start FrameLink opener over the
 // injected BuildContext.Opener (pcap at the cmd edge). It is the kind=nic / kind=bridge
-// branch of the opener dispatch (M11.c/D6): a NIC-bound transport (EtherTalk, and —
-// when their device-link injection lands — IPX/NetBEUI) resolves its effective
-// interface and opens it through this. A nil ctx.Opener yields a nil opener, the
-// caller's signal to build the inert-but-routed form. iface is the resolved interface
-// NAME (the pcap opener takes a name).
-func nicLinkOpener(ctx *BuildContext, iface config.InterfaceSection) func() (link.FrameLink, error) {
+// branch of the opener dispatch (M11.c/D6): a NIC-bound transport (EtherTalk, IPX,
+// NetBEUI, EtherDFS) resolves its effective interface and opens it through this. A nil
+// ctx.Opener yields a nil opener, the caller's signal to build the inert-but-routed
+// form. The pcap opener is handed the interface's PcapDevice (Device when set, else Name).
+//
+// sec is the port section, consulted only for its Capture path: every NIC transport's
+// frames are Ethernet (DLT_EN10MB), so a configured Section.Capture tees them to a pcap
+// file uniformly for EtherTalk/IPX/NetBEUI/EtherDFS. A nil sec (or empty Capture) opens
+// undecorated.
+func nicLinkOpener(ctx *BuildContext, sec *port.Section, iface config.InterfaceSection) func() (link.FrameLink, error) {
 	if ctx.Opener == nil {
 		return nil
 	}
@@ -25,8 +30,12 @@ func nicLinkOpener(ctx *BuildContext, iface config.InterfaceSection) func() (lin
 		return nil
 	}
 	open := ctx.Opener
-	name := iface.Name
-	return func() (link.FrameLink, error) { return open(name) }
+	// pcap/Npcap opens by DEVICE, not friendly name: on Windows the device is the
+	// "\Device\NPF_{GUID}" string in iface.Device; on Linux Device is empty and the
+	// friendly Name ("eth0") is itself the pcap device. PcapDevice picks the right one.
+	device := iface.PcapDevice()
+	base := func() (link.FrameLink, error) { return open(device) }
+	return captureOpener(sec, pcapfile.LinkTypeEthernet, base)
 }
 
 // serialLinkOpener binds a serial interface (device path + baud) to a per-Start
@@ -56,18 +65,4 @@ func serialLinkOpener(ctx *BuildContext, iface config.InterfaceSection, framer S
 		}
 		return fl, nil
 	}
-}
-
-// effectiveSerialInterface resolves a port instance's effective interface and, when
-// it is a serial-kind interface, returns it. It lets a serial transport factory read
-// the device/baud from the named interface namespace rather than from the port
-// section (the §3b/D7 move: the interface owns the device parameters). ok is false
-// when the resolved interface is not serial (the caller then falls back to its own
-// transport, e.g. LToUDP's multicast open).
-func effectiveSerialInterface(m *config.Model, sec *port.Section) (config.InterfaceSection, bool) {
-	iface := m.EffectiveInterfaceFor(sec)
-	if iface.EffectiveKind() != config.IfaceKindSerial {
-		return config.InterfaceSection{}, false
-	}
-	return iface, true
 }

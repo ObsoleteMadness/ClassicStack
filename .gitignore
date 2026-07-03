@@ -48,5 +48,11 @@ go.work.sum
 .captures/
 captures/
 
+# Wire-capture output (per-port Section.Capture pcap files) — runtime artifacts.
+*.pcap
+
+# Auth store (SQLite users DB) — runtime state.
+users.db
+
 server.toml.[0-9]*
 

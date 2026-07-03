@@ -2,9 +2,11 @@
 // It lives in the ADAPTER ring, so it may use reflection-based marshalling
 // (go-toml) — the no-reflection rule binds core/, not adapters.
 //
-// Round-trip is schema-driven: well-known sections (Logging/Router/Bridge) are
-// fixed fields; component sections are (un)marshalled via the config schema
-// registry, so a new component round-trips without editing this codec.
+// Round-trip is schema-driven: well-known sections (Logging/Router/Capture) are
+// fixed fields, the interface namespace is an [[interface]] array-of-tables, and
+// component sections are (un)marshalled via the config schema registry, so a new
+// component round-trips without editing this codec. A pre-M11 [bridge] block is
+// read for back-compat and migrated into the namespace, but never re-emitted.
 package toml
 
 import (
@@ -28,12 +30,14 @@ var _ config.Codec = (*Codec)(nil)
 // wellKnown mirrors the typed Model fields for TOML (un)marshalling. Component
 // sections are handled separately via the schema registry.
 type wellKnown struct {
-	Identity  config.Identity         `toml:"identity"`
-	AdminAuth config.AdminAuth        `toml:"adminauth"`
-	Logging   config.LoggingSection   `toml:"logging"`
-	Router    config.RouterSection    `toml:"router"`
-	Bridge    config.InterfaceSection `toml:"bridge"`
-	Capture   config.CaptureSection   `toml:"capture"`
+	Identity  config.Identity       `toml:"identity"`
+	AdminAuth config.AdminAuth      `toml:"adminauth"`
+	Logging   config.LoggingSection `toml:"logging"`
+	Router    config.RouterSection  `toml:"router"`
+	// Bridge is the LEGACY singleton [bridge] block (pre-M11). It is read only for
+	// back-compat migration — Unmarshal folds it into the interface namespace as a
+	// default bridge entry — and is NEVER emitted (Marshal writes [[interface]]).
+	Bridge config.InterfaceSection `toml:"bridge"`
 	// Interfaces is the [[interface]] array-of-tables: the named interface
 	// namespace (§M11). Marshal builds it separately (sorted) so this field is read
 	// only on Unmarshal.
@@ -48,17 +52,11 @@ func (c *Codec) Marshal(m *config.Model) ([]byte, error) {
 		"identity": m.Identity,
 		"logging":  m.Logging,
 		"router":   m.Router,
-		"bridge":   m.Bridge,
 	}
 	// Only emit [adminauth] once an admin is configured, so a fresh server.toml has
 	// no empty credential block (and first-run detection stays unambiguous).
 	if m.AdminAuth.Configured() {
 		top["adminauth"] = m.AdminAuth
-	}
-	// Only emit [capture] when something is configured, so a default server.toml stays
-	// free of an empty block.
-	if m.Capture.Any() || m.Capture.Snaplen != 0 {
-		top["capture"] = m.Capture
 	}
 	// The named interface namespace (§M11) renders as an array-of-tables under
 	// [[interface]], one table per entry, sorted by name for deterministic output.
@@ -101,11 +99,12 @@ func (c *Codec) Unmarshal(data []byte, m *config.Model) error {
 	m.AdminAuth = wk.AdminAuth
 	m.Logging = wk.Logging
 	m.Router = wk.Router
-	m.Bridge = normalizeIface(wk.Bridge)
-	m.Capture = wk.Capture
 	for _, iface := range wk.Interfaces {
-		m.SetInterface(normalizeIface(iface))
+		m.SetInterface(iface)
 	}
+	// A pre-M11 [bridge] block is migrated into the namespace as a default entry
+	// (no-op when absent or when a modern [[interface]] of that name exists).
+	m.MigrateLegacyBridge(wk.Bridge)
 
 	// Decode the raw document so we can re-marshal each component sub-table and
 	// feed it into its typed section (allocated from the schema registry).
@@ -142,17 +141,6 @@ func (c *Codec) Unmarshal(data []byte, m *config.Model) error {
 		m.Sections[schema.Key] = sec
 	}
 	return nil
-}
-
-// normalizeIface canonicalises a decoded InterfaceSection so a round-trip is
-// value-equal to the source: gotoml decodes an absent/empty list as a non-nil
-// empty slice, which would differ from a source nil. Collapse an empty Members
-// back to nil.
-func normalizeIface(s config.InterfaceSection) config.InterfaceSection {
-	if len(s.Members) == 0 {
-		s.Members = nil
-	}
-	return s
 }
 
 // unmarshalRepeated decodes a repeated schema's array-of-tables (keyed by the

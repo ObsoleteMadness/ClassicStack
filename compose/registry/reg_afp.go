@@ -23,7 +23,7 @@ func init() {
 
 	Register(afp.Name, func(ctx *BuildContext) (component.Component, error) {
 		m := ctx.Model
-		logger := log.New(afp.Name, log.NewStderrSink(log.NewLevelVar(log.Info)))
+		logger := ctx.Logger(afp.Name)
 		// extMapCache memoises parsed extension maps by file path so several volumes
 		// sharing one extmap file (the common case) read+parse it once per resolve. A
 		// bad/missing file logs and yields no map (defaulting simply does not apply) —

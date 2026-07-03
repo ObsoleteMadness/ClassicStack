@@ -4,13 +4,12 @@ package registry
 
 import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
-	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/ipxdiag"
 )
 
 func init() {
 	Register(ipxdiag.Name, func(ctx *BuildContext) (component.Component, error) {
-		logger := log.New(ipxdiag.Name, log.NewStderrSink(log.NewLevelVar(log.Info)))
+		logger := ctx.Logger(ipxdiag.Name)
 		// Built with NO sender and a zero node: the IPX mini-router that carries the
 		// reply egress is stood up during the transport cross-wire (crossWireTransports),
 		// which then injects the sender via SetSender, sets the station node via SetNode,

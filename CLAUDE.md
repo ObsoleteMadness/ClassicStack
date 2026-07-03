@@ -105,3 +105,7 @@ Copy `server.toml.example` to `server.toml`. Format is TOML (parsed via `knadh/k
 ### Protocol Specifications
 
 The `spec/` directory contains markdown documents describing the internal protocol design (e.g. `spec/17-ncp.md` for the Novell NCP file service). Start with `spec/00-overview.md` for DDP socket assignments and service interface contracts before modifying router or service code.
+
+
+### Bridge
+Bridge in this project represents the up-link interface for the clients. It's the bridge between our internal network stack and the outside world. It's members are ClassicStack and the specified interface. 

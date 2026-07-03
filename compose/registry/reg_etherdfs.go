@@ -4,7 +4,6 @@ package registry
 
 import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
-	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	etherport "github.com/ObsoleteMadness/ClassicStack/core/port/etherdfs"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/etherdfs"
 )
@@ -24,7 +23,7 @@ func init() {
 	// it.
 	Register(etherdfs.Name, func(ctx *BuildContext) (component.Component, error) {
 		m := ctx.Model
-		logger := log.New(etherdfs.Name, log.NewStderrSink(log.NewLevelVar(log.Info)))
+		logger := ctx.Logger(etherdfs.Name)
 
 		// Resolve the wire binding from the singleton server section and project it
 		// onto a port.Section the NIC opener / EtherDFS port consume.
@@ -35,7 +34,7 @@ func init() {
 		// the injected opener (nil → inert-but-configured). A disabled section yields a
 		// nil port → the service is nil → (nil, nil) so the supervisor skips it, exactly
 		// as a disabled transport does.
-		open := nicLinkOpener(ctx, m.EffectiveInterfaceFor(sec))
+		open := nicLinkOpener(ctx, sec, m.EffectiveInterfaceFor(sec))
 		p, err := etherport.NewInstanceFromOpener(sec, open, sectionMACFor(sec), logger)
 		if err != nil {
 			return nil, err

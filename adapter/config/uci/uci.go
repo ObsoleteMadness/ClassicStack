@@ -53,10 +53,8 @@ func (c *Codec) Marshal(m *config.Model) ([]byte, error) {
 	if err := c.marshalSection(&buf, "router", "", m.Router); err != nil {
 		return nil, err
 	}
-	// Marshal well-known bridge section
-	if err := c.marshalSection(&buf, "bridge", "", m.Bridge); err != nil {
-		return nil, err
-	}
+	// The legacy singleton `config bridge` block is no longer emitted (pre-M11):
+	// a bridge is now an ordinary namespace entry below (kind=bridge, default=1).
 
 	// Marshal the named interface namespace (§M11): one `config interface '<name>'`
 	// block per entry, sorted by name for deterministic output.
@@ -193,6 +191,11 @@ func (c *Codec) Unmarshal(data []byte, m *config.Model) error {
 	m.Sections = make(map[string]config.Section)
 	m.Lists = make(map[string][]config.Section)
 
+	// A pre-M11 `config bridge` block is captured here and migrated into the
+	// interface namespace AFTER the loop, so a modern [[interface]] of the same name
+	// (read in the same pass) takes precedence over the legacy block.
+	var legacyBridge config.InterfaceSection
+
 	for _, sec := range sections {
 		switch sec.Type {
 		case "identity":
@@ -212,9 +215,11 @@ func (c *Codec) Unmarshal(data []byte, m *config.Model) error {
 				return err
 			}
 		case "bridge":
-			if err := unmarshalStruct(sec, &m.Bridge); err != nil {
+			// Legacy pre-M11 singleton; captured for migration after the loop.
+			if err := unmarshalStruct(sec, &legacyBridge); err != nil {
 				return err
 			}
+			legacyBridge.Name = sec.Name
 		case "interface":
 			// One named interface-namespace entry (§M11). The UCI block name is the
 			// authoritative interface name.
@@ -247,6 +252,10 @@ func (c *Codec) Unmarshal(data []byte, m *config.Model) error {
 			}
 		}
 	}
+
+	// Fold a captured pre-M11 bridge into the namespace (no-op when absent or when a
+	// modern [[interface]] of that name was read above).
+	m.MigrateLegacyBridge(legacyBridge)
 
 	return nil
 }

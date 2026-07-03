@@ -23,6 +23,12 @@ const (
 	TransportNBT     = "nbt"     // NetBIOS over TCP/IP (ports 137-139)
 )
 
+// DefaultNBTAddr is the conventional NetBIOS-over-TCP session-service port (:139). Like
+// SMB's direct-TCP address it is a documented convention, NOT an automatic default —
+// nbt_addr must be set explicitly to bind it (on Windows the native server owns :139 and
+// on Unix it is privileged), so an empty NBTAddr leaves the NBT listener inert.
+const DefaultNBTAddr = ":139"
+
 // Section is the NetBIOS singleton config: the transports it binds and the NetBIOS
 // scope id. Server name is NOT here — it is the shared config.Identity.Hostname
 // (§4-bis), upper-cased to the NetBIOS name. Satisfies config.Section so the model
@@ -36,7 +42,18 @@ type Section struct {
 	// ScopeID is the NetBIOS scope identifier appended to names (rarely used; empty is
 	// the universal default scope).
 	ScopeID string `toml:"scope_id"`
+	// NBTAddr overrides the NBT (:139) NetBIOS-over-TCP session-service listen address.
+	// Empty = do not bind NBT (never an implicit :139). NBT is a NetBIOS transport, so
+	// its address lives here even though the :139 session LISTENER is physically shared
+	// with SMB's direct-TCP transport (they share framing); the compose cross-wire reads
+	// this address when the nbt binding is on.
+	NBTAddr string `toml:"nbt_addr"`
 }
+
+// NBTListenAddr returns the configured NBT (:139) listen address, or "" when none is
+// set. It does not auto-default to :139 (Windows' native server owns it, Unix guards it
+// as privileged) — empty means "do not bind NBT".
+func (s *Section) NBTListenAddr() string { return s.NBTAddr }
 
 // Key returns the section key.
 func (s *Section) Key() string { return SectionKey }

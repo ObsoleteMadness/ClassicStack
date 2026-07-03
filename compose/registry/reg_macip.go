@@ -4,7 +4,6 @@ package registry
 
 import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
-	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/macip"
 )
 
@@ -30,7 +29,7 @@ func init() {
 			cfg = sec.ToConfig()
 			enabled = sec.Enabled
 		}
-		logger := log.New(macip.Name, log.NewStderrSink(log.NewLevelVar(log.Info)))
+		logger := ctx.Logger(macip.Name)
 		// Always build a valid component (the conformance contract); routerFor supplies
 		// an on-demand router when ctx.Router is nil (a standalone Build / the harness).
 		// The Enabled flag rides on the service (component.Enableable) so a disabled

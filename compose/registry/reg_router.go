@@ -4,7 +4,6 @@ package registry
 
 import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
-	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/router"
 )
 
@@ -18,7 +17,7 @@ func init() {
 		if ctx.Router != nil {
 			return ctx.Router, nil
 		}
-		logger := log.New(router.Name, log.NewStderrSink(log.NewLevelVar(log.Info)))
+		logger := ctx.Logger(router.Name)
 		return router.New(logger), nil
 	})
 }

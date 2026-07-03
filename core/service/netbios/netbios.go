@@ -155,6 +155,12 @@ type Service struct {
 	// compose root asks the service instead of re-reading the model. Empty = bind every
 	// built transport (back-compat), matching Section.Binds.
 	bound []string
+
+	// nbtAddr is the explicit NBT (:139) listen address the operator configured on the
+	// NetBIOS section. "" = do not bind NBT (never an implicit :139). The compose
+	// cross-wire reads it when the nbt binding is on; the :139 listener is physically
+	// shared with SMB's direct-TCP transport (shared framing).
+	nbtAddr string
 }
 
 // circuitCloser is the per-transport session engine surface the service holds for
@@ -348,6 +354,25 @@ func (s *Service) BoundTransports() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.bound...)
+}
+
+// SetNBTListenAddr records the explicit NBT (:139) listen address from the NetBIOS
+// section, so the service DECLARES its own NBT address (§B) and the compose cross-wire
+// asks the service rather than re-reading the section. "" = do not bind NBT (never an
+// implicit :139). The compose root sets this once at build time; idempotent, safe before
+// Start.
+func (s *Service) SetNBTListenAddr(addr string) {
+	s.mu.Lock()
+	s.nbtAddr = addr
+	s.mu.Unlock()
+}
+
+// NBTListenAddr returns the explicit NBT (:139) listen address the operator configured,
+// or "" when none is set (the NBT listener then stays inert — no implicit :139).
+func (s *Service) NBTListenAddr() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.nbtAddr
 }
 
 // HostnameConstraint declares that NetBIOS imposes the ≤15-byte NetBIOS-name rule on the
