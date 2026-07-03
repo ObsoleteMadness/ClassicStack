@@ -78,7 +78,16 @@ func init() {
 		// default); an empty Transports list binds all built transports (back-compat).
 		srv := afp.ServerSectionFromModel(m)
 		svc.SetServerName(srv.EffectiveServerName(m.Identity.Hostname))
-		svc.SetZone(srv.Zone)
+		// Advertised zone: the AFP section's own zone, falling back to the router's
+		// configured default_zone. Resolving it from CONFIG (not the live ZIT) makes the
+		// NBP registration independent of startup ordering — AFP.Start runs before the
+		// router's member ports attach and seed their zones, so a live-ZIT lookup would be
+		// empty at that moment and AFP would register into no zone (invisible in Chooser).
+		zone := srv.Zone
+		if zone == "" {
+			zone = m.Router.DefaultZone
+		}
+		svc.SetZone(zone)
 		svc.SetTransports(srv.Transports)
 		// Bind the shared AppleTalk router so the AFP/ASP service replies and the
 		// runtime root can RegisterService it on its DDP socket. nil (a standalone

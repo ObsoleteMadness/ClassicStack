@@ -139,6 +139,12 @@ func wireMacIP(comps map[string]component.Component, egressOpener MacIPEgressOpe
 		if gw := ipxgwService(comps); gw != nil {
 			gw.SetNBP(names)
 		}
+		// AFP advertises its server name (serverName:AFPServer@zone) via NBP so it appears
+		// in the Chooser; without this wiring the file server is reachable by address but
+		// invisible to name discovery — the "zone shows but no server" symptom.
+		if af := afpService(comps); af != nil {
+			af.SetNBP(names)
+		}
 	}
 
 	// Build + inject the IP-side egress when the MacIP SERVICE declares an egress intent

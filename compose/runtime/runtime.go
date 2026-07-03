@@ -337,6 +337,43 @@ func crossWireRouter(rtr *router.RouterImpl, comps map[string]component.Componen
 	return members
 }
 
+// zoneSeeder is the optional port capability the runtime reads at attach: a seed port
+// reports the zone name it asserts on its segment (runport.SeedZone). A port that does
+// not implement it (or reports "") seeds no zone — it is a non-seed segment that learns
+// its zone via ZIP from a neighbouring router instead.
+type zoneSeeder interface{ SeedZone() string }
+
+// seedZone installs a freshly-attached member port's directly-connected network range
+// into the router's Zone Information Table under the port's configured seed zone. This is
+// the missing half of seed-router bring-up: Attach installs the ROUTE (from the port's
+// seed-preloaded NetworkMin/Max), and this installs the ZONE for that same range — so a
+// self-contained seed router (no upstream router to learn zones from) has a zone to serve
+// over ZIP, which is what makes the server + its zone appear in the Chooser. A port with
+// no seed zone, or no seed range yet, is left to learn its zone via ZIP as before.
+func seedZone(rtr *router.RouterImpl, p router.RoutedPort) {
+	zs, ok := p.(zoneSeeder)
+	if !ok {
+		return
+	}
+	zone := zs.SeedZone()
+	if zone == "" {
+		return
+	}
+	nmin, nmax := p.NetworkMin(), p.NetworkMax()
+	if nmin == 0 {
+		return // non-seed / range not yet asserted; ZIP will learn the zone
+	}
+	if nmax == 0 {
+		nmax = nmin
+	}
+	if err := rtr.Zones().AddNetworksToZone([]byte(zone), nmin, &nmax); err != nil {
+		// A duplicate/overlap (e.g. a re-Attach after Stop→Start) is benign — the zone is
+		// already known; only surface genuinely unexpected failures at debug level via the
+		// router's own logging is not reachable here, so we simply ignore the idempotent case.
+		_ = err
+	}
+}
+
 // builtDeps returns name's hard dependencies, dropping any whose target was not
 // built in this configuration (so a minimal build omits the edge instead of
 // failing the topo sort on a missing node).
@@ -390,6 +427,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 			if err := r.rtr.Attach(p); err != nil {
 				return fmt.Errorf("runtime: attach router member %q: %w", p.Name(), err)
 			}
+			seedZone(r.rtr, p)
 		}
 	}
 	// Begin the telemetry stats flush once the stack is up: it polls every Statful

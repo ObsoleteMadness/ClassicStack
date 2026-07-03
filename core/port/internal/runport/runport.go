@@ -70,7 +70,24 @@ type Port struct {
 // port MUST call SetOwner(self) after construction so the router sees the outer
 // component (which alone satisfies the full router.RoutedPort).
 func New(sec *port.Section, open LinkFactory, rtr router.Router, logger log.Logger) *Port {
-	return &Port{sec: sec, open: open, router: rtr, logger: logger}
+	p := &Port{sec: sec, open: open, router: rtr, logger: logger}
+	// A SEED port asserts its configured network range from the start: it does not wait
+	// to learn a range from a neighbour, so pre-load netMin/netMax (and network) from the
+	// seed config. This is what lets the router install this port's directly-connected
+	// route at Attach — BEFORE the async node-claim lands — so a self-contained seed
+	// router advertises its own network/zone immediately instead of only after (or, for a
+	// lone seed with no neighbour to claim against, never). SeedNetworkEnd 0 is a
+	// single-network range (== SeedNetwork). A non-seed port (SeedNetwork 0) stays zero
+	// and learns its range via RTMP / node-claim as before.
+	if sec != nil && sec.SeedNetwork != 0 {
+		p.netMin = sec.SeedNetwork
+		p.netMax = sec.SeedNetworkEnd
+		if p.netMax == 0 {
+			p.netMax = sec.SeedNetwork
+		}
+		p.network = sec.SeedNetwork
+	}
+	return p
 }
 
 // SetOwner records the rx-port identity passed to router.Inbound. An embedding
@@ -261,6 +278,16 @@ func (p *Port) SetAddress(network uint16, node uint8, netMin, netMax uint16) {
 	p.netMin = netMin
 	p.netMax = netMax
 	p.mu.Unlock()
+}
+
+// SeedZone reports the zone name this port seeds ("" = non-seed / inherit). The compose
+// layer reads it when a member port attaches to install the port's directly-connected
+// network range into the router's Zone Information Table, so a self-contained seed router
+// has a zone to advertise over ZIP (and hence a name to show in Chooser).
+func (p *Port) SeedZone() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.sec.SeedZone
 }
 
 // Enabled reports the configured-enabled flag (≠ running). Capability: Enableable.

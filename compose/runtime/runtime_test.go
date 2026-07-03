@@ -422,3 +422,55 @@ func TestBuild_RouterMembersAttachesAllListed(t *testing.T) {
 		t.Errorf("both listed ports should be attached, got %v", got)
 	}
 }
+
+// fakeSeedPort is a member port that asserts a seed network range + zone, like a real
+// seed EtherTalk/LToUDP port after its range is pre-loaded from config.
+type fakeSeedPort struct {
+	fakeRoutedPort
+	nmin, nmax uint16
+	zone       string
+}
+
+func (p *fakeSeedPort) NetworkMin() uint16 { return p.nmin }
+func (p *fakeSeedPort) NetworkMax() uint16 { return p.nmax }
+func (p *fakeSeedPort) SeedZone() string   { return p.zone }
+
+// TestStart_SeedsMemberZoneIntoZIT is the regression guard for the empty-Chooser bug:
+// when a seed member port attaches, the runtime must install its network range into the
+// router's Zone Information Table under the port's seed zone, so a self-contained seed
+// router has a zone to advertise over ZIP (previously nothing seeded the ZIT and Chooser
+// showed no zones/server).
+func TestStart_SeedsMemberZoneIntoZIT(t *testing.T) {
+	m := config.NewModel()
+	m.Router = config.RouterSection{Members: []string{"lt0"}}
+	src := fakeSource{
+		router.Name: func(*registry.BuildContext) (component.Component, error) {
+			return router.New(log.New(router.Name)), nil
+		},
+		"lt0": func(*registry.BuildContext) (component.Component, error) {
+			return &fakeSeedPort{
+				fakeRoutedPort: fakeRoutedPort{name: "lt0"},
+				nmin:           1, nmax: 2, zone: "LToUDP Network",
+			}, nil
+		},
+	}
+	rt, err := Build(Options{Model: m, source: src})
+	if err != nil {
+		t.Fatalf("Build = %v", err)
+	}
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	t.Cleanup(func() { rt.Stop(context.Background()) })
+
+	zones := rt.router().Zones().Zones()
+	found := false
+	for _, z := range zones {
+		if string(z) == "LToUDP Network" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("seed zone not installed into ZIT after attach; zones = %v", zones)
+	}
+}
