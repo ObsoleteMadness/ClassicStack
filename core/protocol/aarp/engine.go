@@ -193,6 +193,17 @@ func (e *Engine) Inbound(payload []byte, now int64) (replies [][]byte, claimConf
 		return nil, false
 	}
 
+	// Ignore our OWN transmissions reflected back to us. A promiscuous libpcap/Npcap
+	// capture loops the frames this station sends, so during a claim the read loop sees
+	// its own Probe (SrcHw == our MAC) — whose SrcProto equals the tentative address —
+	// and would otherwise flag it as a claim conflict, re-rolling forever and NEVER
+	// accepting an address. That is the "AARP on the wire but DDP never flows" failure:
+	// outbound DDP is dropped until a node is claimed. A real conflicting peer has a
+	// DIFFERENT hardware address, so dropping same-MAC packets is safe and correct.
+	if p.SrcHw == e.cfg.HardwareAddr {
+		return nil, false
+	}
+
 	// Claim conflict: another node uses or is probing our tentative address. (A Probe
 	// or any packet whose SOURCE is our tentative, or a Reply/Request targeting it.)
 	if e.state == claimProbing {

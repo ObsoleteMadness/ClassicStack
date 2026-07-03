@@ -80,6 +80,39 @@ func TestClaimConflictFromSimultaneousProbe(t *testing.T) {
 	}
 }
 
+// TestOwnProbeReflectionIsNotAConflict is the regression guard for the "AARP on the wire
+// but DDP never flows" bug: a promiscuous pcap/Npcap handle loops back this station's OWN
+// probe, whose SrcProto equals the tentative address. That must NOT count as a conflict
+// (it is our own frame, same MAC), or the claim re-rolls forever and never accepts — so
+// the node stays unclaimed and all outbound DDP is dropped. A same-MAC inbound packet is
+// ignored; the claim then accepts unopposed.
+func TestOwnProbeReflectionIsNotAConflict(t *testing.T) {
+	selfMAC := mac(0x00, 0x11, 0x22, 0x33, 0x44, 0x55) // == newTestEngine's HardwareAddr
+	e := newTestEngine()
+	tent := ProtoAddr{Network: 0xFE01, Node: 0x42}
+	e.BeginProbe(tent)
+	e.NextProbe() // send one probe
+
+	// The very probe we just sent is reflected back to us (same MAC, SrcProto == tentative).
+	ownProbe := Probe(selfMAC, tent)
+	if _, conflict := e.Inbound(ownProbe.Encode(nil), 0); conflict {
+		t.Fatal("our own reflected probe was treated as a claim conflict")
+	}
+	if e.Conflicted() {
+		t.Fatal("Conflicted() true after seeing only our own reflected probe")
+	}
+
+	// Drain the remaining probes and accept — the claim must succeed unopposed.
+	for {
+		if _, ok := e.NextProbe(); !ok {
+			break
+		}
+	}
+	if got, ok := e.AcceptTentative(); !ok || got != tent {
+		t.Fatalf("AcceptTentative = %v ok=%v, want %v (claim must complete)", got, ok, tent)
+	}
+}
+
 // TestResolveHitVsMiss proves Resolve returns an AMT hit, and a miss drives StartResolve
 // to emit a Request which is satisfied by a Reply (filling the AMT).
 func TestResolveHitVsMiss(t *testing.T) {
