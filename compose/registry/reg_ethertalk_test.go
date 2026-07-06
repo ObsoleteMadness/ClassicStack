@@ -40,7 +40,7 @@ func enabledEtherTalkModel(mac string) *config.Model {
 func TestEtherTalkFactory_OpenerGoesLive(t *testing.T) {
 	var openedIface atomic.Value
 	fl := &idleFrameLink{}
-	opener := func(iface string) (link.FrameLink, error) {
+	opener := func(iface, _ string) (link.FrameLink, error) {
 		openedIface.Store(iface)
 		return fl, nil
 	}
@@ -78,9 +78,10 @@ func TestEtherTalkFactory_OpenerGoesLive(t *testing.T) {
 func TestEtherTalkFactory_InheritsBridgeInterface(t *testing.T) {
 	check := func(t *testing.T, sectionIface, bridge, want string) {
 		t.Helper()
-		var openedIface atomic.Value
-		opener := func(iface string) (link.FrameLink, error) {
+		var openedIface, openedBPF atomic.Value
+		opener := func(iface, bpf string) (link.FrameLink, error) {
 			openedIface.Store(iface)
+			openedBPF.Store(bpf)
 			return &idleFrameLink{}, nil
 		}
 		m := config.NewModel()
@@ -100,6 +101,12 @@ func TestEtherTalkFactory_InheritsBridgeInterface(t *testing.T) {
 		defer c.Stop(ctx)
 		if got := openedIface.Load(); got != want {
 			t.Fatalf("opened iface = %v, want %v", got, want)
+		}
+		// The port must program ITS OWN capture filter onto the handle — a shared
+		// EtherTalk filter across all NIC ports is exactly the regression that starved
+		// NetBEUI/IPX of their traffic. EtherTalk's is the AppleTalk (DDP+AARP) set.
+		if got := openedBPF.Load(); got != ethertalk.BPFFilter {
+			t.Fatalf("opened bpf = %v, want %v", got, ethertalk.BPFFilter)
 		}
 	}
 	t.Run("inherits default interface when iface empty", func(t *testing.T) {
@@ -137,7 +144,7 @@ func TestEtherTalkFactory_NilOpenerInert(t *testing.T) {
 func TestEtherTalkFactory_OpenerReopensOnRestart(t *testing.T) {
 	var calls atomic.Int32
 	links := []*idleFrameLink{{}, {}}
-	opener := func(string) (link.FrameLink, error) {
+	opener := func(string, string) (link.FrameLink, error) {
 		n := calls.Add(1)
 		return links[n-1], nil
 	}
@@ -191,7 +198,7 @@ func TestEtherTalkInstances_MultipleNamed(t *testing.T) {
 			continue
 		}
 		var iface atomic.Value
-		opener := func(i string) (link.FrameLink, error) { iface.Store(i); return &idleFrameLink{}, nil }
+		opener := func(i, _ string) (link.FrameLink, error) { iface.Store(i); return &idleFrameLink{}, nil }
 		c, ok, err := Build(id.Key, &BuildContext{Model: m, Instance: id.Instance, Opener: opener})
 		if err != nil || !ok || c == nil {
 			t.Fatalf("Build(%s/%s) = (%v, %v, %v)", id.Key, id.Instance, c, ok, err)

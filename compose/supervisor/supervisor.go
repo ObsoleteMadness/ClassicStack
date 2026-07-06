@@ -33,6 +33,27 @@ var ErrUnknownComponent = errors.New("supervisor: unknown component")
 // is not config-derived, e.g. Phase 1 placeholders).
 type Rebuilder func(m *config.Model) (component.Component, error)
 
+// InstanceBuilder constructs a fresh supervised component for one repeated-section
+// instance from the (already-updated) model: ownerKey is the schema/registry key
+// ("NetBEUI", "EtherTalk", "IPX"), instanceName is the new instance's name (== the node
+// name). It returns (nil, nil) when the key is not a buildable component in this build,
+// or when the instance is disabled — the same graceful "nothing to build" shape as the
+// runtime's first-pass Build. The runtime injects it (it owns the registry); the
+// supervisor stays free of a compose/registry import. Used by AddInstance to stand up
+// the FIRST instance of a repeated port that had no node at startup (§M11 config-builder).
+type InstanceBuilder func(m *config.Model, ownerKey, instanceName string) (component.Component, []string, error)
+
+// TransportAttacher joins a freshly-built repeated-port component to whatever
+// transport mini-router carries its family (IPX → the IPX mini-router, NetBEUI → the
+// NetBEUI mini-router), so a port added at runtime immediately carries NBF/NBIPX traffic
+// up to SMB instead of coming up as a dark supervised link that only wires in on the next
+// Save+restart. It is the runtime's compose seam (the runtime owns the mini-routers built
+// during cross-wiring); the supervisor stays free of that knowledge and only invokes it
+// on the node it just built. A component of neither transport family is a no-op. The
+// runtime injects it via SetTransportAttacher; a nil attacher (the default, or a build
+// with no NetBIOS transports) skips the step — the pre-seam behaviour.
+type TransportAttacher func(c component.Component)
+
 // node is one managed component plus its hard dependency edges and current run state.
 type node struct {
 	c         component.Component
@@ -55,6 +76,8 @@ type Supervisor struct {
 	order      []string                                // insertion order, the tie-breaker in topo sort
 	users      auth.UserStore                          // wired user store; nil = no user administration available
 	enumIfaces func() ([]control.InterfaceInfo, error) // injected host-NIC enumerator (cmd edge); nil = none
+	buildInst  InstanceBuilder                         // injected per-instance builder (runtime owns registry); nil = none
+	attachPort TransportAttacher                       // injected runtime seam joining a new port to its mini-router; nil = none
 
 	statsMu   sync.Mutex
 	statsStop chan struct{} // closed to stop the periodic stats flush; nil when not running
@@ -454,10 +477,86 @@ func (s *Supervisor) AddInstance(ctx context.Context, owner string, section conf
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.model.AddInstance(section)
+
+	// Two shapes of owner (§M11):
+	//
+	//   - A file service (AFP/SMB): the owner is a long-lived singleton NODE that owns a
+	//     LIST of volumes/shares. Adding one reconciles that existing node — the historical
+	//     path below.
+	//   - A repeated PORT (EtherTalk/IPX/NetBEUI): each instance is ITS OWN node, addressed
+	//     by instance name. Adding the first instance of a port type that had none at startup
+	//     means there is no node to reconcile — we must BUILD a new supervised node. Its node
+	//     name is the section's instance name (or the owner key when unnamed, mirroring
+	//     registry.Instances).
+	//
+	// The two shapes are told apart by whether the OWNER is the section's own schema key:
+	//
+	//   - Port: owner == section.Key() (both "NetBEUI"/"IPX"/"EtherTalk") — the instance is
+	//     its own node. A file service's list, by contrast, has owner="AFP" but
+	//     section.Key()="AFPVolumes" (owner ≠ key), so it never takes this branch.
+	//
+	// For a port whose new instance has no live node yet, build one via the injected builder.
+	// (An owner with no matching node and no builder falls through to reconfigureLocked, which
+	// returns ErrUnknownComponent — the pre-seam behaviour for an unknown component.)
+	if owner == section.Key() {
+		nodeName := section.InstanceName()
+		if nodeName == "" {
+			nodeName = owner
+		}
+		if _, exists := s.nodes[nodeName]; !exists && s.buildInst != nil {
+			return s.addInstanceNodeLocked(ctx, owner, nodeName)
+		}
+	}
+
 	// Notify the owner with nil so a Configurable owner re-resolves the whole set from
 	// the model (the volume/share reconcile path), matching the dependent-cascade
 	// convention in reconfigureLocked.
 	return s.reconfigureLocked(ctx, owner, nil)
+}
+
+// addInstanceNodeLocked builds a fresh supervised node for a newly-added repeated-port
+// instance via the injected InstanceBuilder, registers it (with its filtered dependency
+// edges), and starts it so it goes live immediately — the operator added a port and
+// expects it up without a whole-stack restart. Caller holds mu. A builder that returns
+// (nil, …) — the key is not buildable in this build, or the instance is disabled — leaves
+// the model updated but supervises nothing (the graceful "nothing to build" contract), so
+// the port comes up the next time the process (re)builds from the model if later enabled.
+func (s *Supervisor) addInstanceNodeLocked(ctx context.Context, ownerKey, nodeName string) error {
+	c, deps, err := s.buildInst(s.model, ownerKey, nodeName)
+	if err != nil {
+		return fmt.Errorf("build instance %s: %w", nodeName, err)
+	}
+	if c == nil {
+		return nil // not buildable in this build, or disabled — nothing to supervise
+	}
+	// Register under the built component's own reported name (== nodeName) with its
+	// dependency edges — filtered to edges whose target is an EXISTING supervised node, so a
+	// dangling dependency (a peer not built in this configuration) never breaks a later topo
+	// sort (§ built-both-ends, mirroring runtime.builtDeps). Then start it. Add appends to
+	// s.order for topo tie-breaking.
+	edges := make([]string, 0, len(deps))
+	for _, d := range deps {
+		if _, ok := s.nodes[d]; ok {
+			edges = append(edges, d)
+		}
+	}
+	if _, exists := s.nodes[c.Name()]; !exists {
+		s.order = append(s.order, c.Name())
+	}
+	s.nodes[c.Name()] = &node{c: c, dependsOn: edges}
+	if err := s.startNodeLocked(ctx, c.Name()); err != nil {
+		return err
+	}
+	// Join the freshly-started port to its transport mini-router (IPX/NetBEUI) so it
+	// carries NBF/NBIPX traffic to SMB immediately — the runtime-wiring half that makes a
+	// port added from the config-builder UI more than an inert supervised link. A component
+	// of neither transport family, or a build with no attacher wired, is a no-op. Attaching
+	// after Start is safe: AddPort only installs the delivery callback + send port, which the
+	// already-running read loop picks up atomically.
+	if s.attachPort != nil {
+		s.attachPort(c)
+	}
+	return nil
 }
 
 // RemoveInstance drops the named repeated-section instance under key from the model,
@@ -604,6 +703,31 @@ func (s *Supervisor) Status() []control.Unit {
 func (s *Supervisor) SetInterfaceEnumerator(fn func() ([]control.InterfaceInfo, error)) {
 	s.mu.Lock()
 	s.enumIfaces = fn
+	s.mu.Unlock()
+}
+
+// SetInstanceBuilder installs the per-instance component builder used by AddInstance to
+// stand up the FIRST instance of a repeated port that had no supervised node at startup
+// (e.g. the operator adds the first NetBEUI/IPX port from the config-builder UI). The
+// runtime injects it because it owns the component registry; the supervisor stays free of
+// that import. A nil builder (the default) makes AddInstance fall back to the reconcile
+// path, which errors ErrUnknownComponent for an owner with no node — the pre-seam behaviour.
+func (s *Supervisor) SetInstanceBuilder(fn InstanceBuilder) {
+	s.mu.Lock()
+	s.buildInst = fn
+	s.mu.Unlock()
+}
+
+// SetTransportAttacher installs the runtime seam that joins a newly-built repeated PORT
+// to its transport mini-router (IPX/NetBEUI), so a port the operator adds at runtime
+// carries NBF/NBIPX traffic up to SMB without a whole-stack rebuild. It is paired with
+// SetInstanceBuilder: the builder stands the port up, this attaches it to the live
+// dispatch. The runtime injects it because it owns the mini-routers (built during
+// cross-wiring); a nil attacher (the default) leaves a runtime-added port supervised but
+// unattached — the pre-seam behaviour that only wired in on the next Save+restart.
+func (s *Supervisor) SetTransportAttacher(fn TransportAttacher) {
+	s.mu.Lock()
+	s.attachPort = fn
 	s.mu.Unlock()
 }
 

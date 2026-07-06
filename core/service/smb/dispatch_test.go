@@ -157,15 +157,15 @@ func TestDispatch_TreeDisconnectReleasesTID(t *testing.T) {
 }
 
 // TestDispatch_FilesystemCommandNotSupported proves a recognised-but-unimplemented
-// command (LOCKING_ANDX — the byte-range lock path is deliberately out of M7
-// scope) is answered with STATUS_NOT_SUPPORTED rather than dropped or panicked.
+// command (NT_CANCEL — no dispatch entry) is answered with STATUS_NOT_SUPPORTED
+// rather than dropped or panicked.
 func TestDispatch_FilesystemCommandNotSupported(t *testing.T) {
 	svc, sess := newDispatchService(t)
-	req := smbReq(protocol.CommandLockingAndX, protocol.Flags2NTStatus, 1, 1, make([]byte, 16), nil)
+	req := smbReq(protocol.CommandNtCancel, protocol.Flags2NTStatus, 1, 1, make([]byte, 16), nil)
 	reply := svc.Dispatch(sess, req)
 	h := respHeader(t, reply)
 	if h.Status != statusNotSupported {
-		t.Fatalf("LockingAndX status = %#x, want STATUS_NOT_SUPPORTED", h.Status)
+		t.Fatalf("NtCancel status = %#x, want STATUS_NOT_SUPPORTED", h.Status)
 	}
 }
 

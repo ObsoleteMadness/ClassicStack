@@ -35,6 +35,13 @@ const (
 	statusNoMoreFiles         uint32 = 0x80000006 // STATUS_NO_MORE_FILES (informational)
 	statusInvalidHandle       uint32 = 0xC0000008 // STATUS_INVALID_HANDLE
 	statusUnsuccessful        uint32 = 0xC0000001 // STATUS_UNSUCCESSFUL (generic)
+
+	// statusUseStandard is a legacy CORE-dialect sentinel (no NTSTATUS equivalent):
+	// it tells the client to fall back from the multiplexed / raw transfer commands
+	// (READ_MPX / WRITE_MPX / WRITE_RAW) to plain SMB_COM_READ / SMB_COM_WRITE. It
+	// is never sent to an NT-status client (those never issue the MPX/raw commands);
+	// toWireStatus maps it to ERRSRV/ERRuseSTD.
+	statusUseStandard uint32 = 0x00FB0002
 )
 
 // windowsFiletimeEpoch is the 100-ns interval count between the FILETIME epoch

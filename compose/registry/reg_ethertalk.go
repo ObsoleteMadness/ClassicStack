@@ -37,7 +37,8 @@ func init() {
 		// nil per-Start opener → the inert-but-routed form, the same graceful
 		// degradation as before: the port satisfies the lifecycle and is attached to
 		// the router, but moves no frames until a backend exists.
-		opener := nicLinkOpener(ctx, sec, ctx.Model.EffectiveInterfaceFor(sec))
+		iface := ctx.Model.EffectiveInterfaceFor(sec)
+		opener := nicLinkOpener(ctx, sec, iface, ethertalk.BPFFilter)
 		if opener == nil {
 			return ethertalk.NewInstance(sec, nil, nil, ctx.Router, logger)
 		}
@@ -49,7 +50,7 @@ func init() {
 		// the plain Ethernet/SNAP DDP framer (broadcast-only, pre-AARP behaviour).
 		// NewInstanceFromOpener reopens the device on every Start (a closed libpcap
 		// handle is terminal), so the port survives a UI Stop→Start.
-		framer, claimWiring := etherTalkFramer(sec)
+		framer, claimWiring := etherTalkFramer(sec, iface)
 		comp, err := ethertalk.NewInstanceFromOpener(sec, opener, framer, ctx.Router, logger)
 		if err != nil || comp == nil {
 			return comp, err
@@ -74,13 +75,18 @@ func init() {
 	})
 }
 
-// etherTalkFramer builds the EtherTalk framer from the section. With a configured station
-// MAC it returns the AARP-aware framer (*EtherTalkAARP) plus a handle the caller uses to
-// wire OnClaimed once the port exists; without a MAC it returns the plain broadcast-only
-// DDP framer (and a nil handle).
-func etherTalkFramer(sec *port.Section) (link.Framer, *framing.EtherTalkAARP) {
-	mac, err := port.ParseMAC(sec.MAC)
-	if err != nil || sec.MAC == "" {
+// etherTalkFramer builds the EtherTalk framer from the section, resolving the station MAC
+// as the section's own mac, or — when empty — the bound interface's shared hw_address (so
+// an EtherTalk port bound to a bridge that carries one identity inherits it, matching the
+// NetBEUI/IPX inheritance). With a station MAC it returns the AARP-aware framer
+// (*EtherTalkAARP) plus a handle the caller uses to wire OnClaimed once the port exists;
+// with no MAC at all it returns the plain broadcast-only DDP framer (and a nil handle).
+func etherTalkFramer(sec *port.Section, iface config.InterfaceSection) (link.Framer, *framing.EtherTalkAARP) {
+	mac, ok := parseMAC6(sec.MAC)
+	if !ok {
+		mac, ok = parseMAC6(iface.HWAddress)
+	}
+	if !ok {
 		return &framing.EtherTalk{}, nil // no station identity → plain broadcast framer
 	}
 	f := &framing.EtherTalkAARP{

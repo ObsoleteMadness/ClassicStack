@@ -8,6 +8,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 	"github.com/ObsoleteMadness/ClassicStack/core/port"
+	"github.com/ObsoleteMadness/ClassicStack/core/port/ethertalk"
 )
 
 func init() {
@@ -62,7 +63,9 @@ func proxyAARPSideOpener(ctx *BuildContext, ifaceName string) bridge.LinkOpener 
 	iface := ctx.Model.ResolveInterface(config.InterfaceSection{Name: ifaceName})
 	// The proxy-AARP bridge sides are not ports with a config Section, so they carry no
 	// per-port capture (nil sec); a bridge-side capture would be its own config if wanted.
-	open := nicLinkOpener(ctx, nil, iface)
+	// The bridge sides forward AppleTalk (rewriting AARP Replies), so they capture the
+	// EtherTalk traffic set — DDP + AARP — the same filter the EtherTalk port uses.
+	open := nicLinkOpener(ctx, nil, iface, ethertalk.BPFFilter)
 	if open == nil {
 		return nil
 	}

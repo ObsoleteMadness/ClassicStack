@@ -83,6 +83,21 @@ func (s *Service) Dispatch(sess *smbSession, req []byte) []byte {
 		return s.handleClose(sess, h, req)
 	case protocol.CommandFlush:
 		return s.handleFlush(sess, h, req)
+	case protocol.CommandSeek:
+		return s.handleSeek(sess, h, req)
+
+	// --- multiplexed / raw transfer: WRITE_MPX served; READ_MPX / WRITE_RAW
+	// answer the fall-back forms that steer the client to plain READ / WRITE ---
+	case protocol.CommandWriteMPX:
+		return s.handleWriteMPX(sess, h, req)
+	case protocol.CommandReadMPX:
+		return s.handleReadMPX(sess, h, req)
+	case protocol.CommandWriteRaw:
+		return s.handleWriteRaw(sess, h, req)
+
+	// --- byte-range locking (Excel / Access / DOS databases) ---
+	case protocol.CommandLockingAndX:
+		return s.handleLockingAndX(sess, h, req)
 
 	// --- FS command engine: path operations ---
 	case protocol.CommandDelete:
@@ -99,6 +114,10 @@ func (s *Service) Dispatch(sess *smbSession, req []byte) []byte {
 		return s.handleQueryInformation(sess, h, req)
 	case protocol.CommandQueryInformationDisk:
 		return s.handleQueryInformationDisk(sess, h, req)
+
+	// --- CORE-dialect directory browse (MS-DOS LAN Manager / WfW 3.11) ---
+	case protocol.CommandSearch:
+		return s.handleSearch(sess, h, req)
 
 	case protocol.CommandNtCreateAndX:
 		return s.handleNtCreateAndX(sess, h, req)

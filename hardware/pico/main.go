@@ -107,8 +107,10 @@ func main() {
 	// 4. Setup Custom Openers for the Supervisor
 	telemetry := bus.New(32)
 
-	// Custom LinkOpener selecting the controller at runtime
-	opener := func(iface string) (link.FrameLink, error) {
+	// Custom LinkOpener selecting the controller at runtime. The BPF filter arg is
+	// ignored — an embedded SPI/PIO Ethernet link has no kernel filter; the port read
+	// loops demux in userland (the empty/unsupported-filter degradation path).
+	opener := func(iface, _ string) (link.FrameLink, error) {
 		if ethernetController == "w5500" {
 			println("Opening SPI-based W5500 Ethernet FrameLink for interface:", iface)
 			return OpenW5500Ethernet()

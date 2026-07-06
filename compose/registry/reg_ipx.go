@@ -29,7 +29,10 @@ func init() {
 		// mini-router, not the AppleTalk router (so no ctx.Router and no [Router]
 		// membership — that lands when the IPX mini-router itself joins compose). A
 		// nil opener (no NIC backend) yields the inert-but-configured form.
-		open := nicLinkOpener(ctx, sec, ctx.Model.EffectiveInterfaceFor(sec))
-		return ipx.NewInstanceFromOpener(sec, open, sectionMACFor(sec), logger)
+		iface := ctx.Model.EffectiveInterfaceFor(sec)
+		open := nicLinkOpener(ctx, sec, iface, ipx.BPFFilter)
+		// An empty section mac inherits the bound interface's hw_address so IPX frames
+		// carry a real Ethernet source (else they go out as 00:00:00:00:00:00).
+		return ipx.NewInstanceFromOpener(sec, open, sectionMACFor(sec, iface), logger)
 	})
 }

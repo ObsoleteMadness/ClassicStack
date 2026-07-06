@@ -34,15 +34,21 @@ func BuildUserStore(m *config.Model) (auth.UserStore, error) {
 	return userStoreBuilder(m)
 }
 
-// LinkOpener opens a raw L2 FrameLink for a NIC by name. It is the seam by which a
-// port factory obtains a real device link WITHOUT core/ or this registry importing
-// the pcap/cgo adapter: the compose runtime root selects the concrete opener (libpcap
-// under the `pcap` tag, a stub otherwise) at the cmd edge and injects it here —
-// exactly as the config Store/Codec are injected rather than imported. It is called
-// per Start (a fresh handle each time) so a reopened port gets a new link. nil means
-// no NIC backend in this build → NIC ports come up inert-but-routed (the
-// graceful-degradation contract of BuildContext).
-type LinkOpener func(iface string) (link.FrameLink, error)
+// LinkOpener opens a raw L2 FrameLink for a NIC by name, applying the caller-supplied
+// kernel BPF filter to the handle. It is the seam by which a port factory obtains a real
+// device link WITHOUT core/ or this registry importing the pcap/cgo adapter: the compose
+// runtime root selects the concrete opener (libpcap under the `pcap` tag, a stub
+// otherwise) at the cmd edge and injects it here — exactly as the config Store/Codec are
+// injected rather than imported. It is called per Start (a fresh handle each time) so a
+// reopened port gets a new link. nil means no NIC backend in this build → NIC ports come
+// up inert-but-routed (the graceful-degradation contract of BuildContext).
+//
+// bpf is the transport's own capture filter (each NIC transport owns one — EtherTalk
+// captures AppleTalk, NetBEUI captures NBF, IPX captures IPX): a promiscuous handle sees
+// ALL NIC traffic, so without a per-transport filter every port's read loop is fed every
+// other protocol's frames (and, historically, the EtherTalk filter starved NetBEUI/IPX
+// of their own traffic entirely). An empty bpf captures everything (userland demux only).
+type LinkOpener func(iface, bpf string) (link.FrameLink, error)
 
 // SerialOpener opens a serial device (by path + baud) and returns the raw byte
 // stream — NOT a FrameLink. The transport framer (tashtalk today) wraps the stream
@@ -204,20 +210,35 @@ func Instances(m *config.Model) []ComponentID {
 	return out
 }
 
-// sectionMACFor resolves a port instance's configured station MAC as a fixed
-// [6]byte (the form the frame-port constructors take, for repeated instances). An
-// absent or malformed MAC yields the zero address — the constructor then falls back
-// to the interface's own hardware address at open time. Shared by the IPX/NetBEUI
-// factories.
-func sectionMACFor(sec *port.Section) [6]byte {
-	if sec.MAC == "" {
-		return [6]byte{}
+// sectionMACFor resolves a port instance's station MAC as a fixed [6]byte (the form
+// the frame-port constructors take). The port's own section mac wins; when it is empty
+// the port INHERITS the bound interface's shared HWAddress (the successor to the legacy
+// [Bridge] hw_address), so a NetBEUI/IPX/EtherDFS port that names no mac of its own still
+// stamps a real Ethernet source instead of the all-zero address. Only when BOTH are
+// empty/malformed does it yield the zero MAC — the regression symptom this closes was
+// NBF frames going out with source 00:00:00:00:00:00 because the interface fallback was
+// never consulted. Shared by the IPX/NetBEUI/EtherDFS factories.
+func sectionMACFor(sec *port.Section, iface config.InterfaceSection) [6]byte {
+	if mac, ok := parseMAC6(sec.MAC); ok {
+		return mac
 	}
-	mac, err := port.ParseMAC(sec.MAC)
+	if mac, ok := parseMAC6(iface.HWAddress); ok {
+		return mac
+	}
+	return [6]byte{}
+}
+
+// parseMAC6 parses a colon/dash-separated MAC string into a fixed [6]byte, reporting
+// ok=false for an empty or malformed value (so callers can chain fallbacks).
+func parseMAC6(s string) ([6]byte, bool) {
+	if s == "" {
+		return [6]byte{}, false
+	}
+	mac, err := port.ParseMAC(s)
 	if err != nil {
-		return [6]byte{}
+		return [6]byte{}, false
 	}
-	return mac
+	return mac, true
 }
 
 // Names returns the registered component names, sorted for deterministic iteration.

@@ -9,6 +9,7 @@
 //   GET  /config                       masked config.Model
 //   POST /save                         persist the live model → {revision}
 //   GET  /list_fs_types                fs-type names
+//   GET  /schemas                      sections this build can configure {singleton,repeated}
 //   GET  /params_for?fs_type=…         per-type param schema (secret → password field)
 //   GET  /list_interfaces              enumerable host NICs (picker)
 //   POST /set_interface|/remove_interface   interface NAMESPACE CRUD (Model.Interfaces)
@@ -72,6 +73,15 @@ const api = {
   async fsTypes() {
     const r = await fetch("list_fs_types");
     return r.ok ? r.json() : [];
+  },
+  // schemas reports the config sections registered in THIS build ({singleton:[], repeated:[]}).
+  // Registration is build-tag gated, so the repeated keys are the transports/services this
+  // binary can configure — the config-builder shows an Add editor for each even with zero
+  // instances. A missing endpoint (older server) yields empty lists → falls back to the
+  // instances-only behaviour.
+  async schemas() {
+    const r = await fetch("schemas");
+    return r.ok ? r.json() : { singleton: [], repeated: [] };
   },
   async paramsFor(t) {
     const r = await fetch("params_for?fs_type=" + encodeURIComponent(t));
@@ -1189,6 +1199,10 @@ class CsConfigBase extends HTMLElement {
       // Status tells us which components were actually built, so the share/volume
       // editors and binding panels show even when their lists are still empty.
       this.units = await api.status().catch(() => []);
+      // Schemas tell us which sections this BUILD can configure (build-tag gated), so a
+      // config-builder editor is offered for every registered transport/service even
+      // when the model has zero instances of it (e.g. IPX/NetBEUI before any is added).
+      this.schemas = await api.schemas().catch(() => ({ singleton: [], repeated: [] }));
     } catch (e) {
       this.replaceChildren(el("div", { class: "panel err" }, [e.message]));
       return;
@@ -1197,6 +1211,13 @@ class CsConfigBase extends HTMLElement {
   }
   hasComponent(name) {
     return (this.units || []).some((u) => u.Name === name);
+  }
+  // buildHasSchema reports whether the running build registered a repeated (named-instance)
+  // section for this key — i.e. this binary can configure that transport/service. Unlike
+  // hasComponent (a live built instance), this is true even with zero instances, so the
+  // config-builder can offer the first Add. Falls back to false when /schemas is absent.
+  buildHasSchema(key) {
+    return ((this.schemas && this.schemas.repeated) || []).includes(key);
   }
   // saveBar is the shared Save-to-disk / Download-server.toml row every config tab
   // carries: a change applied live on any tab is persisted for the WHOLE model here.
@@ -1275,10 +1296,12 @@ class CsConfigBase extends HTMLElement {
   // portEditor returns the Add/Edit/Delete table for a transport-port schema key
   // (EtherTalk / LToUDP / TashTalk / IPX / NetBEUI). Port instances live in Model.Lists
   // keyed by the component name; the owner IS that component (each instance reconciles
-  // itself). Shown when the component is built or an instance exists.
+  // itself). Shown when the build registered this transport's schema (so the operator can
+  // add the first instance — the config-builder intent), when a live instance is built, or
+  // when an instance already exists in the model.
   portEditor(key) {
     const lists = this.model.Lists || {};
-    if (!this.hasComponent(key) && !lists[key]) return null;
+    if (!this.buildHasSchema(key) && !this.hasComponent(key) && !lists[key]) return null;
     return new CsInstanceEditor(key, key, lists[key] || [], () => this.activate(), this.model);
   }
 }

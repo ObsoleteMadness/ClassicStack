@@ -29,10 +29,11 @@ func (l *nbIdleLink) Close() error           { l.closed.Store(true); return nil 
 // when the BuildContext carries a NIC Opener (M11 device-link injection): Start opens
 // the configured interface and Stop closes the opened link.
 func TestNetBEUIFactory_OpenerGoesLive(t *testing.T) {
-	var openedIface atomic.Value
+	var openedIface, openedBPF atomic.Value
 	fl := &nbIdleLink{}
-	opener := func(iface string) (link.FrameLink, error) {
+	opener := func(iface, bpf string) (link.FrameLink, error) {
 		openedIface.Store(iface)
+		openedBPF.Store(bpf)
 		return fl, nil
 	}
 	m := config.NewModel()
@@ -49,6 +50,12 @@ func TestNetBEUIFactory_OpenerGoesLive(t *testing.T) {
 	}
 	if got := openedIface.Load(); got != "eth0" {
 		t.Fatalf("opener called with iface %v, want eth0 (port did not go live)", got)
+	}
+	// The NetBEUI port must program the NBF capture filter — NOT the shared EtherTalk
+	// filter, which dropped every NBF frame at the kernel so the read loop saw nothing
+	// (the reported "netbeui can't see any frames" regression).
+	if got := openedBPF.Load(); got != netbeui.BPFFilter {
+		t.Fatalf("opener called with bpf %v, want %v", got, netbeui.BPFFilter)
 	}
 	if err := c.Stop(ctx); err != nil {
 		t.Fatalf("Stop: %v", err)
@@ -81,7 +88,7 @@ func TestNetBEUIFactory_NilOpenerInert(t *testing.T) {
 func TestNetBEUIFactory_OpenerReopensOnRestart(t *testing.T) {
 	var calls atomic.Int32
 	links := []*nbIdleLink{{}, {}}
-	opener := func(string) (link.FrameLink, error) {
+	opener := func(string, string) (link.FrameLink, error) {
 		n := calls.Add(1)
 		return links[n-1], nil
 	}

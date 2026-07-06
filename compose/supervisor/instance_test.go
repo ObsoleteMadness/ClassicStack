@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 )
 
@@ -53,6 +54,85 @@ func TestAddInstanceStagesAndReconfiguresOwner(t *testing.T) {
 	// The owner must have been reconfigured (re-resolved from the model).
 	if owner.applied != 1 {
 		t.Fatalf("owner ApplyConfig called %d times, want 1", owner.applied)
+	}
+}
+
+// TestAddInstanceBuildsFirstPortNode asserts that adding the FIRST instance of a repeated
+// PORT (owner == section key, no live node yet) BUILDS a new supervised node via the
+// injected InstanceBuilder and starts it — the config-builder path for a transport that had
+// zero instances at startup (the "unknown component: NetBEUI" fix). It must NOT go through
+// the owner-reconcile path (there is no owner node to reconcile).
+func TestAddInstanceBuildsFirstPortNode(t *testing.T) {
+	log := &orderLog{}
+	m := config.NewModel()
+	s := New(m, nil)
+
+	built := &configurableComp{name: "NetBEUI", log: log}
+	var buildCalls int
+	s.SetInstanceBuilder(func(_ *config.Model, ownerKey, instanceName string) (component.Component, []string, error) {
+		buildCalls++
+		if ownerKey != "NetBEUI" || instanceName != "NetBEUI" {
+			t.Errorf("builder got owner=%q instance=%q, want NetBEUI/NetBEUI", ownerKey, instanceName)
+		}
+		return built, nil, nil
+	})
+
+	// A port instance whose owner == its schema key, with an empty name → node name defaults
+	// to the key (mirrors registry.Instances: an unnamed instance is addressed by the key).
+	sec := namedSection{key: "NetBEUI", name: ""}
+	if err := s.AddInstance(context.Background(), "NetBEUI", sec); err != nil {
+		t.Fatalf("AddInstance: %v", err)
+	}
+	if buildCalls != 1 {
+		t.Fatalf("InstanceBuilder called %d times, want 1", buildCalls)
+	}
+	// The new node must be supervised, running, and started exactly once.
+	if _, ok := s.nodes["NetBEUI"]; !ok {
+		t.Fatalf("new port node not registered with the supervisor")
+	}
+	if !s.nodes["NetBEUI"].running {
+		t.Fatalf("new port node was not started")
+	}
+	starts := 0
+	for _, e := range log.seq {
+		if e == "start:NetBEUI" {
+			starts++
+		}
+	}
+	if starts != 1 {
+		t.Fatalf("start:NetBEUI logged %d times, want 1", starts)
+	}
+	if built.applied != 0 {
+		t.Fatalf("new port node was reconfigured (applied=%d), want a fresh build", built.applied)
+	}
+}
+
+// TestAddInstanceAttachesBuiltPortToTransport asserts that after AddInstance builds and
+// starts a repeated-port node, the supervisor invokes the injected TransportAttacher on
+// that exact component — the seam that joins a runtime-added IPX/NetBEUI port to its
+// mini-router so it carries traffic immediately (not on the next Save+restart).
+func TestAddInstanceAttachesBuiltPortToTransport(t *testing.T) {
+	log := &orderLog{}
+	m := config.NewModel()
+	s := New(m, nil)
+
+	built := &configurableComp{name: "IPX", log: log}
+	s.SetInstanceBuilder(func(_ *config.Model, _, _ string) (component.Component, []string, error) {
+		return built, nil, nil
+	})
+	var attached []component.Component
+	s.SetTransportAttacher(func(c component.Component) { attached = append(attached, c) })
+
+	sec := namedSection{key: "IPX", name: ""}
+	if err := s.AddInstance(context.Background(), "IPX", sec); err != nil {
+		t.Fatalf("AddInstance: %v", err)
+	}
+	if len(attached) != 1 || attached[0] != built {
+		t.Fatalf("TransportAttacher called with %v, want exactly the built node once", attached)
+	}
+	// It must run AFTER the node started (a dark port would be attached before it can carry).
+	if !s.nodes["IPX"].running {
+		t.Fatalf("port node not running when attached")
 	}
 }
 

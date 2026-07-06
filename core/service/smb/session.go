@@ -27,6 +27,7 @@ type smbSession struct {
 	trees    map[uint16]*treeConnect
 	fids     map[uint16]*fileHandle
 	searches map[uint16]*searchHandle
+	locks    map[string]*lockTable // byte-range locks, keyed by lower-cased store path
 	nextTID  uint16
 	nextFID  uint16
 	nextSID  uint16
@@ -78,6 +79,7 @@ type fileHandle struct {
 	path     string // store path ('/'-separated), for re-Stat
 	writable bool
 	isDir    bool
+	mpxAccum uint32 // accumulated WRITE_MPX RequestMask for the in-progress sequence; guarded by sess.mu
 }
 
 // searchHandle is one in-progress directory enumeration (TRANS2 FIND_FIRST2 /
@@ -107,6 +109,7 @@ func newSession() *smbSession {
 		trees:    make(map[uint16]*treeConnect),
 		fids:     make(map[uint16]*fileHandle),
 		searches: make(map[uint16]*searchHandle),
+		locks:    make(map[string]*lockTable),
 	}
 }
 
@@ -184,6 +187,7 @@ func (sess *smbSession) closeFID(fid uint16) {
 	sess.mu.Lock()
 	h, ok := sess.fids[fid]
 	delete(sess.fids, fid)
+	sess.releaseLocksForFIDLocked(fid)
 	sess.mu.Unlock()
 	if ok && h != nil && h.file != nil {
 		_ = h.file.Close()

@@ -29,7 +29,10 @@ func init() {
 		// feeding its own NetBEUI mini-router, not the AppleTalk router (no ctx.Router,
 		// no [Router] membership — that lands when the mini-router joins compose). A
 		// nil opener yields the inert-but-configured form.
-		open := nicLinkOpener(ctx, sec, ctx.Model.EffectiveInterfaceFor(sec))
-		return netbeui.NewInstanceFromOpener(sec, open, sectionMACFor(sec), logger)
+		iface := ctx.Model.EffectiveInterfaceFor(sec)
+		open := nicLinkOpener(ctx, sec, iface, netbeui.BPFFilter)
+		// An empty section mac inherits the bound interface's hw_address so NBF frames
+		// carry a real Ethernet source (else they go out as 00:00:00:00:00:00).
+		return netbeui.NewInstanceFromOpener(sec, open, sectionMACFor(sec, iface), logger)
 	})
 }

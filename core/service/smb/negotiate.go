@@ -85,6 +85,8 @@ func toWireStatus(reqFlags2 uint16, status uint32) uint32 {
 		return 0x00010012 // ERRDOS/ERRnofiles
 	case statusUnsuccessful:
 		return 0x00010001 // ERRDOS/ERRbadfunc
+	case statusUseStandard:
+		return 0x00FB0002 // ERRSRV/ERRuseSTD — already DOS class/code form
 	default:
 		return status
 	}

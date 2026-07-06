@@ -52,6 +52,44 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/service/smb"
 )
 
+// transportWiring is the retained result of crossWireTransports: the IPX/NetBEUI
+// mini-routers (each nil when its family was not wired) plus the MacIP IP-side egress.
+// The runtime keeps it so a port instance ADDED AT RUNTIME (via the config-builder UI,
+// supervisor.AddInstance) can be attached to the already-running mini-router — the
+// mini-routers have no lifecycle of their own and are built once here, so without
+// retaining them a late port would come up supervised but never carry NBF/NBIPX
+// traffic until a Save+restart rebuilt the stack. AttachPort is the seam the supervisor
+// calls after it builds+starts the new port node (§M11 dynamic transport wiring).
+type transportWiring struct {
+	ipx     *ipxrouter.Router     // IPX mini-router (nil when the IPX family was not wired)
+	netbeui *netbeuirouter.Router // NetBEUI mini-router (nil when the NetBEUI family was not wired)
+	egress  MacIPEgress           // MacIP IP-side egress (nil when AppleTalk-only)
+}
+
+// AttachPort attaches a newly-built port component to whichever mini-router carries its
+// family, so a port added at runtime immediately joins the live NBF/NBIPX dispatch (the
+// engines + SMB consumer were registered once at build). It is best-effort by type
+// assertion, mirroring wireIPX/wireNetBEUI: a component that is neither an IPX nor a
+// NetBEUI port (or a family whose router was not wired — the service absent or its
+// binding off) is left alone. Safe to call with a nil receiver (a build that wired no
+// transports). A port may satisfy BOTH interfaces only in principle; in practice each
+// port type rides one family, and AddPort on the non-matching router simply never fires.
+func (w *transportWiring) AttachPort(c component.Component) {
+	if w == nil || c == nil {
+		return
+	}
+	if w.ipx != nil {
+		if p, ok := c.(ipxrouter.Port); ok {
+			w.ipx.AddPort(p)
+		}
+	}
+	if w.netbeui != nil {
+		if p, ok := c.(netbeuirouter.Port); ok {
+			w.netbeui.AddPort(p)
+		}
+	}
+}
+
 // crossWireTransports stands up the NetBIOS-transport mini-routers and wires the
 // IPX/NetBEUI ports through the NetBIOS session engines to SMB. It is best-effort by
 // type assertion: a component that is not a NetBIOS port, the NetBIOS service, or
@@ -59,9 +97,15 @@ import (
 // nothing (the transports have nothing to feed); with NetBIOS but no SMB the session
 // engines run but drop session data after reassembly (no consumer), exactly the
 // graceful-degradation contract the seams already document.
-func crossWireTransports(comps map[string]component.Component, egressOpener MacIPEgressOpener) MacIPEgress {
+//
+// It returns a transportWiring retaining the built mini-routers so the runtime can
+// attach ports added later at runtime (AttachPort). The mini-routers are built whenever
+// their consuming service exists (even with ZERO ports at startup), so the first port of
+// a family added from the config-builder UI has a live router to join.
+func crossWireTransports(comps map[string]component.Component, egressOpener MacIPEgressOpener) *transportWiring {
 	nb := netbiosService(comps)
 	sm := smbService(comps)
+	w := &transportWiring{}
 
 	// Explicit transport bindings (§smb-transport-families / netbios-transport-bindings):
 	// which transport families each service wants bound is the SERVICE's own intent — the
@@ -76,7 +120,7 @@ func crossWireTransports(comps map[string]component.Component, egressOpener MacI
 	// gated by the NetBIOS transport binding (NBF rides NetBEUI).
 	if nb != nil {
 		if nb.Binds(netbios.TransportNetBEUI) {
-			wireNetBEUI(nb, comps)
+			w.netbeui = wireNetBEUI(nb, comps)
 		}
 		wireMailslot(nb, comps)
 		// Install SMB as the upper-layer session consumer: every circuit the NBF/NBIPX
@@ -94,7 +138,7 @@ func crossWireTransports(comps map[string]component.Component, egressOpener MacI
 	// by the NetBIOS ipx binding, the direct-hosted leg by the SMB ipx binding.
 	nbIPXBound := nb != nil && nb.Binds(netbios.TransportIPX)
 	smbIPXBound := sm != nil && sm.Binds(smb.TransportIPX)
-	wireIPX(nb, sm, comps, nbIPXBound, smbIPXBound)
+	w.ipx = wireIPX(nb, sm, comps, nbIPXBound, smbIPXBound)
 
 	// The TCP family (direct-hosted SMB over :445; NBT over :139) is a supervised
 	// adapter listener built inert in the registry; wire its SMB consumer + address
@@ -120,7 +164,8 @@ func crossWireTransports(comps map[string]component.Component, egressOpener MacI
 	// the DDP-service analogue of installing SMB as the NetBIOS session consumer. The
 	// IP-side egress adapter, when one exists, is injected the same way; until then
 	// MacIP runs AppleTalk-only (assignment + discovery work, IP data does not).
-	return wireMacIP(comps, egressOpener)
+	w.egress = wireMacIP(comps, egressOpener)
+	return w
 }
 
 // wireMacIP injects the NBP service into the AppleTalk gateway services (MacIP's
@@ -206,24 +251,23 @@ func afpService(comps map[string]component.Component) *afp.Service {
 	return nil
 }
 
-// wireNetBEUI builds the NetBEUI mini-router (when any NetBEUI port was built),
-// attaches every NetBEUI port instance to it, and registers the NetBIOS NBF session
-// engine as the router's session/broadcast/name handlers. A build with no NetBEUI
-// port does nothing.
-func wireNetBEUI(nb *netbios.Service, comps map[string]component.Component) {
-	var ports []netbeuirouter.Port
+// wireNetBEUI builds the NetBEUI mini-router, attaches every NetBEUI port instance
+// present at build time, and registers the NetBIOS NBF session engine as the router's
+// session/broadcast/name handlers. It returns the router so the runtime can attach
+// ports added LATER at runtime (transportWiring.AttachPort).
+//
+// The router is built even when NO NetBEUI port exists yet: a port added from the
+// config-builder UI after startup must have a live, engine-bound router to join, and an
+// empty router with no ports is harmless (its Send returns "no ports attached" until one
+// joins). This mirrors the AppleTalk router, which is likewise built independent of its
+// members. The engine + name registrations depend only on the NetBIOS service, not on any
+// port, so they are installed once here regardless of the current port count.
+func wireNetBEUI(nb *netbios.Service, comps map[string]component.Component) *netbeuirouter.Router {
+	r := netbeuirouter.NewRouter(nil)
 	for _, c := range comps {
 		if p, ok := c.(netbeuirouter.Port); ok {
-			ports = append(ports, p)
+			r.AddPort(p)
 		}
-	}
-	if len(ports) == 0 {
-		return
-	}
-
-	r := netbeuirouter.NewRouter(nil)
-	for _, p := range ports {
-		r.AddPort(p)
 	}
 
 	eng := nb.NewNBFEngine(r)
@@ -236,11 +280,12 @@ func wireNetBEUI(nb *netbios.Service, comps map[string]component.Component) {
 	for _, n := range nb.LocalNames() {
 		_ = r.RegisterName([16]byte(n), eng)
 	}
+	return r
 }
 
-// wireIPX builds the IPX mini-router (when any IPX port was built AND at least one
-// IPX consumer exists), attaches every IPX port instance, and registers the two
-// independent IPX session transports on their sockets:
+// wireIPX builds the IPX mini-router (when at least one IPX consumer exists), attaches
+// every IPX port instance present at build time, and registers the two independent IPX
+// session transports on their sockets:
 //
 //   - NB-IPX (NetBIOS-over-IPX / NWLink) session traffic on socket 0x0455, when the
 //     NetBIOS service is present (nb != nil).
@@ -248,11 +293,16 @@ func wireNetBEUI(nb *netbios.Service, comps map[string]component.Component) {
 //     0x0550, when the SMB service is present (sm != nil) — this path needs no
 //     NetBIOS layer, so it is wired even in a NetBIOS-free build.
 //
-// With no IPX port, or with neither consumer, it does nothing (no router is built).
+// It returns the router so the runtime can attach ports added LATER at runtime
+// (transportWiring.AttachPort). The router is built whenever ANY consumer wants it
+// (NB-IPX, direct-SMB, NCP, the MacIPX gateway, or the diagnostic responder) — even with
+// NO IPX port yet, so the first port added from the config-builder UI has a live,
+// socket-bound router to join (mirroring the AppleTalk router, built independent of its
+// members). With no consumer at all it returns nil (nothing would drive the router).
 // nbIPXBound / smbIPXBound gate the two IPX legs by the operator's transport bindings:
 // the NB-IPX session leg by NetBIOS's ipx binding, the direct-hosted-SMB leg by SMB's
 // ipx binding. A leg whose service is present but whose binding is off is not wired.
-func wireIPX(nb *netbios.Service, sm *smb.Service, comps map[string]component.Component, nbIPXBound, smbIPXBound bool) {
+func wireIPX(nb *netbios.Service, sm *smb.Service, comps map[string]component.Component, nbIPXBound, smbIPXBound bool) *ipxrouter.Router {
 	// Resolve the effective consumers after applying bindings: a service whose ipx
 	// binding is off contributes nothing to the IPX mini-router.
 	if nb != nil && !nbIPXBound {
@@ -262,22 +312,24 @@ func wireIPX(nb *netbios.Service, sm *smb.Service, comps map[string]component.Co
 		sm = nil
 	}
 	// NCP is its own file service (not a sub-transport of SMB/NetBIOS), so it has no
-	// transport-binding gate: it is wired whenever it was built and an IPX port exists.
+	// transport-binding gate: it is wired whenever it was built.
 	nc := ncpService(comps)
+	gw := ipxgwService(comps)
+	rd := ipxDiagResponder(comps)
 
-	var ports []ipxrouter.Port
-	for _, c := range comps {
-		if p, ok := c.(ipxrouter.Port); ok {
-			ports = append(ports, p)
-		}
-	}
-	if len(ports) == 0 || (nb == nil && sm == nil && nc == nil) {
-		return
+	// Build the router when SOMETHING will consume IPX. Ports are no longer part of this
+	// gate: a zero-port build still builds the router so a runtime-added first port has a
+	// live target — the ports are the mini-router's link layer, the consumers are its
+	// reason to exist. With no consumer at all there is nothing to wire.
+	if nb == nil && sm == nil && nc == nil && gw == nil && rd == nil {
+		return nil
 	}
 
 	r := ipxrouter.NewRouter(nil)
-	for _, p := range ports {
-		r.AddPort(p)
+	for _, c := range comps {
+		if p, ok := c.(ipxrouter.Port); ok {
+			r.AddPort(p)
+		}
 	}
 
 	if nb != nil {
@@ -306,19 +358,20 @@ func wireIPX(nb *netbios.Service, sm *smb.Service, comps map[string]component.Co
 	// same mini-router (and routes native IPX replies back over DDP). It is an AppleTalk
 	// DDP service, so its component lives under the router cross-wire; here we just hand
 	// it the mini-router. Without an IPX port it stays log-only (no router to forward to).
-	if gw := ipxgwService(comps); gw != nil {
+	if gw != nil {
 		gw.SetIPXRouter(r)
 	}
 	// The IPX Diagnostic Responder (IPXPING reachability, socket 0x0456) rides the
 	// same mini-router but needs neither NetBIOS nor SMB — it answers any station
-	// probing the segment. Wire it whenever the responder component was built and an
-	// IPX port exists: hand it the router as its reply egress and the router's node
-	// for the self-exclusion check, then register it on the diagnostic socket.
-	if rd := ipxDiagResponder(comps); rd != nil {
+	// probing the segment. Wire it whenever the responder component was built: hand it
+	// the router as its reply egress and the router's node for the self-exclusion check,
+	// then register it on the diagnostic socket.
+	if rd != nil {
 		rd.SetSender(r)
 		rd.SetNode(r.Node())
 		_ = r.RegisterSocket(diagproto.Socket, rd)
 	}
+	return r
 }
 
 // wireSMBTCP injects the SMB session consumer and listen address into the built

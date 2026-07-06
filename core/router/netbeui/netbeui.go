@@ -4,12 +4,13 @@
 // not ride the DDP router. It is fed by the M3 NetBEUI frame port via a delivery callback and
 // sends through it.
 //
-// Scope (M4) is the UI-frame name dispatch: route a decoded non-session NBF frame to the
-// handler registered for its destination NetBIOS name, with a broadcast handler for the
-// name-claim / datagram-group frames addressed to no single registered name. The LLC Type-2
-// session connection machine (SABME/UA/I-frame/DISC) is NetBIOS-service logic and lands in M7;
-// session-command frames are dispatched to a session handler if one is registered, else
-// dropped.
+// Scope is name dispatch: route a decoded non-session NBF frame to the handler registered for
+// its destination NetBIOS name, with a broadcast handler for the name-claim / datagram-group
+// frames addressed to no single registered name. Session-command frames (Command 0x14–0x1F,
+// which the port delivers out of LLC Type-2 I-frames) are dispatched to a session handler if
+// one is registered, else dropped. The LLC Type-2 connection machine itself (SABME/UA/RR/
+// I-frame/DISC) lives in the port (core/port/netbeui); by the time a session command reaches
+// this router the connection state has already been handled.
 //
 // Ring: CORE (stdlib only). Modelled on the IPX mini-router; uses core/log (no netlog).
 package netbeui
@@ -39,8 +40,9 @@ type NameHandler interface {
 	HandleFrame(srcMAC, dstMAC [6]byte, frame *nbf.Frame)
 }
 
-// SessionHandler receives session-command NBF frames (Command 0x14–0x1F). The LLC Type-2
-// connection machine that consumes these lives in the NetBIOS service (M7); until one is
+// SessionHandler receives session-command NBF frames (Command 0x14–0x1F) that the port has
+// already extracted from LLC Type-2 I-frames. The NBF session lifecycle (SESSION_INITIALIZE →
+// SESSION_CONFIRM, DATA_*, SESSION_END) lives in the NetBIOS service; until a handler is
 // registered, session frames are dropped.
 type SessionHandler interface {
 	HandleSessionFrame(srcMAC, dstMAC [6]byte, frame *nbf.Frame)

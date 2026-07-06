@@ -34,8 +34,11 @@ func init() {
 		// the injected opener (nil → inert-but-configured). A disabled section yields a
 		// nil port → the service is nil → (nil, nil) so the supervisor skips it, exactly
 		// as a disabled transport does.
-		open := nicLinkOpener(ctx, sec, m.EffectiveInterfaceFor(sec))
-		p, err := etherport.NewInstanceFromOpener(sec, open, sectionMACFor(sec), logger)
+		iface := m.EffectiveInterfaceFor(sec)
+		open := nicLinkOpener(ctx, sec, iface, etherport.BPFFilter)
+		// An empty section mac inherits the bound interface's hw_address so EtherDFS
+		// frames carry a real Ethernet source (else 00:00:00:00:00:00).
+		p, err := etherport.NewInstanceFromOpener(sec, open, sectionMACFor(sec, iface), logger)
 		if err != nil {
 			return nil, err
 		}

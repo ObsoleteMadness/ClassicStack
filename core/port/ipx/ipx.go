@@ -24,6 +24,13 @@ import (
 // Name is the component/section key for the IPX port.
 const Name = "IPX"
 
+// BPFFilter is the kernel capture filter for the IPX port: libpcap's "ipx" primitive,
+// which matches all three legacy IPX framings (Ethernet II 0x8137, raw 802.3, and 802.2
+// LLC with DSAP=SSAP=0xE0). Applied at the pcap handle so the read loop is not fed the
+// AppleTalk/IPv4/etc. background a promiscuous handle would otherwise surface. Each NIC
+// transport owns its filter (§ ports-open-their-own-filters); this is IPX's.
+const BPFFilter = "ipx"
+
 // etherTypeIPX is the Ethernet II type for IPX (0x8137). For 802.3 length-typed
 // frames the type field is the length (≤ 0x05DC) and the encapsulation is told
 // apart by the body's first bytes.

@@ -26,6 +26,13 @@ import (
 // EtherDFS is a single component whose port half lives here).
 const Name = "EtherDFS"
 
+// BPFFilter is the kernel capture filter for the EtherDFS port: Ethernet II frames with
+// the custom EtherDFS EtherType 0xEDF5. Applied at the pcap handle so the read loop is
+// not fed the AppleTalk/IPv4/etc. background a promiscuous handle would otherwise
+// surface; the onFrame path re-validates the EtherType regardless. Each NIC transport
+// owns its filter; this is EtherDFS's.
+const BPFFilter = "ether proto 0xedf5"
+
 // Handler processes one decoded inbound EtherDFS request frame and returns the
 // reply payload (the per-opcode body) to send back, or nil to send nothing. It
 // runs on the read goroutine: decode-and-respond, do not block. srcMAC is the

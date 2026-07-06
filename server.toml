@@ -1,112 +1,148 @@
-[Logging]
-level = 'debug'
-parse_packets = true
-log_traffic = false
-
-[Router]
-
-[Bridge]
-mode = 'pcap'
-device = '\Device\NPF_{9354BA7F-DE41-4A33-88F4-408A0F4A3C02}'
-hw_address = 'DE:AD:BE:EF:CA:FE'
-bridge_mode = 'auto'
-
-[LToUdp]
-enabled = true
-interface = '0.0.0.0'
-seed_network = 1
-seed_zone = 'LToUDP Network'
-
-[TashTalk]
-port = ''
-seed_network = 2
-seed_zone = 'TashTalk Network'
-
-[EtherTalk]
-seed_network_min = 3
-seed_network_max = 5
-seed_zone = 'EtherTalk Network'
-desired_network = 3
-desired_node = 253
-
-[Capture]
-localtalk = './captures/afp-localtalk.pcap'
-ethertalk = './captures/afp-ethertalk.pcap'
-ipx = './captures/ipx.pcap'
-netbeui = './captures/netbeui.pcap'
-snaplen = 65535
+[AFP]
+server_name = 'ClassicStack'
+zone = ''
+transports = ['ddp']
+tcp_addr = ''
 
 [MacIP]
 enabled = true
-mode = 'pcap'
-nat_subnet = '192.168.100.0/24'
-lease_file = 'leases.txt'
+mode = 'bridge'
+zone = ''
+gateway_ip = ''
+network = ''
+nameserver = ''
+broadcast = ''
+subnet_mask = ''
+host_count = 0
+interface = 'br-lan'
+host_mac = ''
+host_ip = ''
+default_gateway = ''
 dhcp_relay = true
-nameserver = '1.1.1.1'
-
-[IPX]
-enabled = true
-framing = 'ethernet_ii'
-
-[IPXGW]
-enabled = true
-bindings = ['ClassicStack:EtherTalk Network']
-
-[NetBEUI]
-enabled = true
 
 [NetBIOS]
-enabled = true
-transports = ['ipx', 'netbeui']
+transports = ['netbeui', 'ipx']
+scope_id = ''
+nbt_addr = ''
 
 [SMB]
-enabled = true
-nbt_binding = ':139'
-server_name = 'ClassicStack'
-workgroup = 'WORKGROUP'
+transports = ['netbeui', 'ipx', 'nbt']
+tcp_addr = ''
 
-[SMB.Volumes]
-[SMB.Volumes.Public]
-name = 'Public'
-path = 'C:\Mac'
-fs_type = 'local_fs'
+[adminauth]
+user = 'admin'
+salt = '0023bfac16cdcddbbcbcae1779d9fa18'
+hash = 'ff05b74ea38440edef8ea1d7034f118b6fe706bce44ef37e1a9c0c1728b2a74c'
 
-[AFP]
-enabled = true
-name = 'ClassicStack'
-zone = 'EtherTalk Network'
-protocols = 'ddp,tcp'
-binding = ':548'
-extension_map = 'extmap.conf'
-cnid_backend = 'sqlite'
-use_decomposed_names = true
-appledouble_mode = 'modern'
-
-[AFP.Volumes]
-[AFP.Volumes.Default]
-name = 'Welcome'
-path = './dist/Sample Volume'
-read_only = true
-
-[AFP.Volumes.MacGarden]
-name = 'Mac Garden'
-fs_type = 'macgarden'
-
-[AFP.Volumes.TestVolume]
+[[afpvolumes]]
 name = 'Test Volume'
-path = 'C:\Mac\Test'
-appledouble_mode = 'modern'
+fs_type = 'local_fs'
+fork_backend = ''
+filename_codec = ''
+name_engine = ''
+metastore = ''
+dos_attr_backend = ''
+path = 'C:\mac'
+read_only = false
+allowed_users = []
+options = []
+extmap_path = ''
 
-[AFP.Volumes.Volume68k]
-name = 'Volume 68K'
-path = 'C:\Mac\Volume68K'
-appledouble_mode = 'legacy'
-
-[Shortname]
-windows_shortnames = true
-backend = 'memory'
-
-[WebUI]
+[[ethertalk]]
+name = ''
+iface = 'br-lan'
 enabled = true
-bind = '127.0.0.1:8089'
-tls = true
+mac = 'DE:AD:BE:EF:CA:FE'
+seed_network = 3
+seed_network_end = 5
+seed_zone = 'EtherTalk Network'
+device = ''
+baud = 0
+capture = 'ethertalk.pcap'
+capture_snaplen = 0
+
+[identity]
+hostname = 'classicstack'
+workgroup = 'WORKGROUP'
+description = 'ClassicStack file server'
+
+[[interface]]
+name = 'br-lan'
+kind = 'bridge'
+default = true
+backend = 'pcap'
+hw_address = 'DE:AD:BE:EF:CA:FE'
+device = '\Device\NPF_{B7D4E073-2185-4912-BBE8-3948C6636D02}'
+
+[[ipx]]
+name = ''
+iface = 'br-lan'
+enabled = true
+mac = ''
+seed_network = 0
+seed_network_end = 0
+seed_zone = ''
+device = ''
+baud = 0
+capture = 'ipx.pcap'
+capture_snaplen = 0
+
+[logging]
+Level = 'debug'
+
+[[ltoudp]]
+name = ''
+iface = ''
+enabled = true
+mac = ''
+seed_network = 1
+seed_network_end = 2
+seed_zone = 'LToUDP Network'
+device = ''
+baud = 0
+capture = 'ltoudp.pcap'
+capture_snaplen = 0
+
+[[ncpvolumes]]
+name = 'Foo'
+fs_type = 'local_fs'
+fork_backend = ''
+filename_codec = ''
+name_engine = ''
+metastore = ''
+dos_attr_backend = ''
+path = 'c:\mac\food'
+read_only = false
+allowed_users = []
+options = []
+
+[[netbeui]]
+name = ''
+iface = 'br-lan'
+enabled = true
+mac = ''
+seed_network = 0
+seed_network_end = 0
+seed_zone = ''
+device = ''
+baud = 0
+capture = 'netbeui.pcap'
+capture_snaplen = 0
+
+[router]
+default_zone = 'EtherTalk Network'
+members = ['EtherTalk', 'LToUDP']
+
+[[smbshares]]
+name = 'Foo'
+description = 'Test share'
+fs_type = 'local_fs'
+fork_backend = ''
+filename_codec = ''
+name_engine = ''
+metastore = ''
+dos_attr_backend = ''
+path = 'C:\mac\food'
+read_only = false
+allowed_users = []
+options = []

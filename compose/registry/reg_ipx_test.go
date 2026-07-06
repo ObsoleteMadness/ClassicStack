@@ -32,10 +32,11 @@ func (l *ipxIdleLink) Close() error           { l.closed.Store(true); return nil
 // configured interface via the opener (so a real device would be captured) and Stop
 // closes the opened link.
 func TestIPXFactory_OpenerGoesLive(t *testing.T) {
-	var openedIface atomic.Value
+	var openedIface, openedBPF atomic.Value
 	fl := &ipxIdleLink{}
-	opener := func(iface string) (link.FrameLink, error) {
+	opener := func(iface, bpf string) (link.FrameLink, error) {
 		openedIface.Store(iface)
+		openedBPF.Store(bpf)
 		return fl, nil
 	}
 	m := config.NewModel()
@@ -52,6 +53,11 @@ func TestIPXFactory_OpenerGoesLive(t *testing.T) {
 	}
 	if got := openedIface.Load(); got != "eth0" {
 		t.Fatalf("opener called with iface %v, want eth0 (port did not go live)", got)
+	}
+	// The IPX port must program the IPX capture filter — not the shared EtherTalk
+	// filter that previously dropped every IPX frame before the read loop saw it.
+	if got := openedBPF.Load(); got != ipx.BPFFilter {
+		t.Fatalf("opener called with bpf %v, want %v", got, ipx.BPFFilter)
 	}
 	if err := c.Stop(ctx); err != nil {
 		t.Fatalf("Stop: %v", err)
@@ -86,7 +92,7 @@ func TestIPXFactory_NilOpenerInert(t *testing.T) {
 func TestIPXFactory_OpenerReopensOnRestart(t *testing.T) {
 	var calls atomic.Int32
 	links := []*ipxIdleLink{{}, {}}
-	opener := func(string) (link.FrameLink, error) {
+	opener := func(string, string) (link.FrameLink, error) {
 		n := calls.Add(1)
 		return links[n-1], nil
 	}
@@ -131,7 +137,7 @@ func TestIPXInstances_MultipleNamed(t *testing.T) {
 			continue
 		}
 		var iface atomic.Value
-		opener := func(i string) (link.FrameLink, error) { iface.Store(i); return &ipxIdleLink{}, nil }
+		opener := func(i, _ string) (link.FrameLink, error) { iface.Store(i); return &ipxIdleLink{}, nil }
 		c, ok, err := Build(id.Key, &BuildContext{Model: m, Instance: id.Instance, Opener: opener})
 		if err != nil || !ok || c == nil {
 			t.Fatalf("Build(%s/%s) = (%v, %v, %v)", id.Key, id.Instance, c, ok, err)

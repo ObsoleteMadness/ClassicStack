@@ -32,6 +32,19 @@ import (
 // Name is the component/section key for the EtherTalk port.
 const Name = "EtherTalk"
 
+// BPFFilter is the kernel capture filter for the EtherTalk port (ported verbatim from
+// main's etherTalkBPFFilter). It selects EtherTalk Phase 2 frames carried as 802.3
+// length + LLC/SNAP payloads:
+//   - AppleTalk DDP: DSAP/SSAP/CTL=AA AA 03, OUI+PID=08 00 07 80 9B
+//   - AARP:          DSAP/SSAP/CTL=AA AA 03, OUI+PID=00 00 00 80 F3
+//
+// The naive Ethernet II filter ("ether proto 0x809b or ether proto 0x80f3") does NOT
+// match this framing and drops discovery/routing traffic; the tcpdump keyword "atalk or
+// aarp" is looser than this byte-precise form. Each NIC transport owns its filter (kept
+// here so the registry threads it without importing the pcap/cgo adapter); this is
+// EtherTalk's.
+const BPFFilter = "(ether[12:2] <= 1500) and (ether[14:2] = 0xaaaa) and (ether[16] = 0x03) and ((ether[17:4] = 0x08000780 and ether[21] = 0x9b) or (ether[17:4] = 0x00000080 and ether[21] = 0xf3))"
+
 // Port is the real EtherTalk port. It embeds the runport base (lifecycle, read
 // loop, metering, RoutedPort data half) and adds the EtherTalk framing.
 type Port struct {

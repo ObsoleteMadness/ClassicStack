@@ -423,7 +423,7 @@ func (m *Model) ResolveInterface(ref InterfaceSection) InterfaceSection {
 // preserving the old "un-bound ports inherit the bridge" behaviour. Codecs call this
 // from Unmarshal after reading both the legacy block and the namespace.
 func (m *Model) MigrateLegacyBridge(legacy InterfaceSection) {
-	if legacy.Name == "" && legacy.Device == "" && legacy.Addr == "" {
+	if legacy.Name == "" && legacy.Device == "" && legacy.Addr == "" && legacy.HWAddress == "" {
 		return // nothing configured in the legacy block
 	}
 	name := legacy.Name
@@ -541,6 +541,16 @@ type InterfaceSection struct {
 	// backend falls back to inert-but-routed, the same graceful degradation as a nil
 	// opener (see IfaceBackend*).
 	Backend string `toml:"backend,omitempty"`
+
+	// HWAddress is the station hardware (MAC) address shared by every port bound to
+	// this interface that does not pin its own MAC. It is the successor to the legacy
+	// [Bridge] hw_address: a NIC-bound transport (NetBEUI, IPX, EtherDFS, EtherTalk)
+	// stamps it as the Ethernet source when its own section's mac is empty, so a
+	// bridge/interface can carry one identity for all its raw-link consumers. Empty =
+	// no shared MAC (a port that also leaves its own mac empty then has no source
+	// identity — the caller decides whether that is fatal). Six hex octets,
+	// colon/dash-separated (e.g. "DE:AD:BE:EF:CA:FE").
+	HWAddress string `toml:"hw_address,omitempty"`
 
 	// Embedded network configuration (IP configuration)
 	Proto      string `toml:"proto,omitempty"`      // "dhcp" or "static"

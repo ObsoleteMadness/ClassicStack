@@ -95,8 +95,10 @@ func main() {
 	// 4. Setup Custom Openers for the Supervisor
 	telemetry := bus.New(32)
 
-	// Custom LinkOpener to return the raw L2 EMAC FrameLink
-	opener := func(iface string) (link.FrameLink, error) {
+	// Custom LinkOpener to return the raw L2 EMAC FrameLink. The BPF filter arg is
+	// ignored — an embedded EMAC link has no kernel filter; the port read loops demux
+	// in userland (the graceful-degradation path an empty/unsupported filter takes).
+	opener := func(iface, _ string) (link.FrameLink, error) {
 		println("Opening EMAC raw L2 FrameLink for interface:", iface)
 		return OpenEMAC(PHY_MDC, PHY_MDIO, PHY_POWER, PHY_ADDR)
 	}

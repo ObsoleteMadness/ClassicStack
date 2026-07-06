@@ -196,17 +196,24 @@ func pickCodec(configPath string) config.Codec {
 }
 
 // pcapOpener is the runtime's LinkOpener: open a raw Ethernet FrameLink for a port's
-// interface via libpcap (the low-latency EtherTalk profile). Under the pcap tag this
-// is a real capture handle. WITHOUT the tag the stub returns pcap.ErrUnavailable —
-// which we map to (nil, nil) here so the port comes up INERT-BUT-ROUTED rather than
-// failing Start and aborting the whole runtime. This is the documented degradation
-// (runport.Start treats a nil link as a successful inert start): a build with no
-// libpcap should still boot its other transports/services, not crash because one
-// EtherTalk port has no backend. A genuine open error (device busy / no permission on
-// a pcap build) is still propagated. Called per Start so a reopened port gets a fresh
-// handle.
-var pcapOpener registry.LinkOpener = func(iface string) (link.FrameLink, error) {
-	fl, err := pcap.Open(pcap.DefaultEtherTalkConfig(iface))
+// interface via libpcap, programming the caller-supplied BPF filter onto the handle.
+// The transport picks the filter (bpf) — EtherTalk captures AppleTalk, NetBEUI captures
+// NBF, IPX captures IPX — so a promiscuous handle surfaces only that transport's frames
+// to its read loop; a shared filter here previously starved NetBEUI/IPX of their own
+// traffic. The low-latency profile (promiscuous, immediate mode, 250ms timeout) suits
+// every NIC transport, so we reuse the EtherTalk shape and only swap the filter.
+//
+// Under the pcap tag this is a real capture handle. WITHOUT the tag the stub returns
+// pcap.ErrUnavailable — which we map to (nil, nil) here so the port comes up
+// INERT-BUT-ROUTED rather than failing Start and aborting the whole runtime. This is the
+// documented degradation (runport.Start treats a nil link as a successful inert start): a
+// build with no libpcap should still boot its other transports/services, not crash
+// because one port has no backend. A genuine open error (device busy / no permission on a
+// pcap build) is still propagated. Called per Start so a reopened port gets a fresh handle.
+var pcapOpener registry.LinkOpener = func(iface, bpf string) (link.FrameLink, error) {
+	cfg := pcap.DefaultEtherTalkConfig(iface)
+	cfg.Filter = bpf
+	fl, err := pcap.Open(cfg)
 	if errors.Is(err, pcap.ErrUnavailable) {
 		return nil, nil // no pcap backend in this build → inert, not fatal
 	}

@@ -8,17 +8,24 @@ import (
 )
 
 // nicLinkOpener binds a NIC interface name to a per-Start FrameLink opener over the
-// injected BuildContext.Opener (pcap at the cmd edge). It is the kind=nic / kind=bridge
-// branch of the opener dispatch (M11.c/D6): a NIC-bound transport (EtherTalk, IPX,
-// NetBEUI, EtherDFS) resolves its effective interface and opens it through this. A nil
-// ctx.Opener yields a nil opener, the caller's signal to build the inert-but-routed
-// form. The pcap opener is handed the interface's PcapDevice (Device when set, else Name).
+// injected BuildContext.Opener (pcap at the cmd edge), programming the transport's own
+// BPF filter onto the handle. It is the kind=nic / kind=bridge branch of the opener
+// dispatch (M11.c/D6): a NIC-bound transport (EtherTalk, IPX, NetBEUI, EtherDFS) resolves
+// its effective interface and opens it through this. A nil ctx.Opener yields a nil opener,
+// the caller's signal to build the inert-but-routed form. The pcap opener is handed the
+// interface's PcapDevice (Device when set, else Name).
+//
+// bpf is the caller's per-transport capture filter (each NIC transport owns one; see the
+// port packages' BPFFilter const). A promiscuous handle sees ALL NIC traffic, so a shared
+// filter is wrong: historically every NIC port opened with the EtherTalk filter, which
+// dropped every NBF/IPX frame before the NetBEUI/IPX read loops saw it. An empty bpf
+// captures everything and demuxes in userland.
 //
 // sec is the port section, consulted only for its Capture path: every NIC transport's
 // frames are Ethernet (DLT_EN10MB), so a configured Section.Capture tees them to a pcap
 // file uniformly for EtherTalk/IPX/NetBEUI/EtherDFS. A nil sec (or empty Capture) opens
 // undecorated.
-func nicLinkOpener(ctx *BuildContext, sec *port.Section, iface config.InterfaceSection) func() (link.FrameLink, error) {
+func nicLinkOpener(ctx *BuildContext, sec *port.Section, iface config.InterfaceSection, bpf string) func() (link.FrameLink, error) {
 	if ctx.Opener == nil {
 		return nil
 	}
@@ -34,7 +41,7 @@ func nicLinkOpener(ctx *BuildContext, sec *port.Section, iface config.InterfaceS
 	// "\Device\NPF_{GUID}" string in iface.Device; on Linux Device is empty and the
 	// friendly Name ("eth0") is itself the pcap device. PcapDevice picks the right one.
 	device := iface.PcapDevice()
-	base := func() (link.FrameLink, error) { return open(device) }
+	base := func() (link.FrameLink, error) { return open(device, bpf) }
 	return captureOpener(sec, pcapfile.LinkTypeEthernet, base)
 }
 

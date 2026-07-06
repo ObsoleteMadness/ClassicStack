@@ -52,7 +52,7 @@ func (nopStream) Close() error                { return nil }
 // LIVE path. A LocalTalk segment does NOT call this opener (LToUDP opens its own
 // transport; TashTalk uses ctx.Serial) — it is only the "NIC backend enabled" switch.
 func anyOpener() LinkOpener {
-	return func(string) (link.FrameLink, error) { return &idleFrameLink{}, nil }
+	return func(string, string) (link.FrameLink, error) { return &idleFrameLink{}, nil }
 }
 
 // serialOpenerRecording returns a SerialOpener that records the device it was asked

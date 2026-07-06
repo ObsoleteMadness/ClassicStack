@@ -136,14 +136,14 @@ type Options struct {
 // control plane binds to. The entry points call Start/Stop and, for the control
 // plane, reach Supervisor()/Model().
 type Runtime struct {
-	sup         *supervisor.Supervisor
-	model       *config.Model
-	telemetry   bus.Bus
-	rtr         *router.RouterImpl             // the shared router (nil if none built); cross-wire target
-	members     []router.RoutedPort            // ports declared in [Router].members, attached after the router starts (§3d)
-	built       []string                       // names actually constructed (diagnostics)
-	macipEgress MacIPEgress                    // IP-side MacIP egress (nil if none); started/closed with the runtime
-	comps       map[string]component.Component // built components by name, for compose-edge lookups (diagnostics wiring)
+	sup        *supervisor.Supervisor
+	model      *config.Model
+	telemetry  bus.Bus
+	rtr        *router.RouterImpl             // the shared router (nil if none built); cross-wire target
+	members    []router.RoutedPort            // ports declared in [Router].members, attached after the router starts (§3d)
+	built      []string                       // names actually constructed (diagnostics)
+	transports *transportWiring               // retained IPX/NetBEUI mini-routers + MacIP egress; drives runtime port attach + egress lifecycle
+	comps      map[string]component.Component // built components by name, for compose-edge lookups (diagnostics wiring)
 }
 
 // Load builds a config.Model from a Store + Codec. A missing store file yields the
@@ -253,8 +253,10 @@ func Build(opts Options) (*Runtime, error) {
 	// install SMB as the upper-layer session consumer. Unlike the AppleTalk router
 	// these mini-routers have no lifecycle of their own (the ports own start/stop),
 	// so they are built here rather than supervised. A build without the NetBIOS
-	// service is a no-op.
-	macipEgress := crossWireTransports(comps, opts.MacIPEgress)
+	// service is a no-op. The returned wiring is retained so a port added at RUNTIME
+	// can be attached to its mini-router (SetTransportAttacher, below) and so the
+	// MacIP egress lifecycle can be driven from Start/Stop.
+	transports := crossWireTransports(comps, opts.MacIPEgress)
 
 	// Wire the user store (§4): build the configured store once and hand it to the
 	// supervisor (the web UI's user CRUD surface) AND to every built file service as
@@ -277,15 +279,42 @@ func Build(opts Options) (*Runtime, error) {
 		sup.Add(comps[name], deps)
 	}
 
+	// Inject the per-instance builder so the supervisor can stand up the FIRST instance of
+	// a repeated port the operator adds at runtime (e.g. the first NetBEUI/IPX port from the
+	// config-builder UI) — a port key that had no instance at startup has no supervised node,
+	// so AddInstance must BUILD one. It reuses the same build context (router, openers, log
+	// sinks) as the startup pass, with Instance set to the new instance's name; the supervisor
+	// filters the returned deps against its live nodes. A nil/disabled build yields (nil,nil).
+	baseCtx := *ctx
+	sup.SetInstanceBuilder(func(m *config.Model, ownerKey, instanceName string) (component.Component, []string, error) {
+		ictx := baseCtx
+		ictx.Model = m
+		ictx.Instance = instanceName
+		c, ok, err := src.Build(ownerKey, &ictx)
+		if err != nil || !ok || c == nil {
+			return nil, nil, err
+		}
+		return c, declaredDeps(ownerKey, map[string]component.Component{ownerKey: c}), nil
+	})
+
+	// Inject the transport attacher so a repeated PORT the supervisor builds at runtime
+	// (the InstanceBuilder above) is also joined to its NBF/NBIPX mini-router — the seam
+	// that carries the port's traffic up to SMB. Without this, a runtime-added IPX/NetBEUI
+	// port came up as a live supervised link but stayed dark to the NetBIOS engines until a
+	// Save+restart rebuilt the whole stack (the boundary this slice removes). The mini-
+	// routers were retained by crossWireTransports; AttachPort is a no-op for a component
+	// of neither family, and for a build that wired no transports (nil wiring).
+	sup.SetTransportAttacher(transports.AttachPort)
+
 	return &Runtime{
-		sup:         sup,
-		model:       opts.Model,
-		telemetry:   opts.Telemetry,
-		rtr:         rtr,
-		members:     members,
-		built:       order,
-		macipEgress: macipEgress,
-		comps:       comps,
+		sup:        sup,
+		model:      opts.Model,
+		telemetry:  opts.Telemetry,
+		rtr:        rtr,
+		members:    members,
+		built:      order,
+		transports: transports,
+		comps:      comps,
 	}, nil
 }
 
@@ -293,6 +322,16 @@ func Build(opts Options) (*Runtime, error) {
 // is the cross-wire target, surfaced for tests; the control plane reaches routing
 // through the supervisor/diagnostics, not this.
 func (r *Runtime) router() *router.RouterImpl { return r.rtr }
+
+// egress returns the MacIP IP-side egress the transport wiring built, or nil when the
+// stack is AppleTalk-only (or wired no transports). Nil-safe so Start/Stop can call it
+// without guarding the wiring pointer.
+func (r *Runtime) egress() MacIPEgress {
+	if r.transports == nil {
+		return nil
+	}
+	return r.transports.egress
+}
 
 // buildRouter constructs the Router component (if registered) up-front so it can be
 // shared via the BuildContext. It is built with a context carrying no router (the
@@ -426,8 +465,8 @@ func (r *Runtime) Start(ctx context.Context) error {
 	// Bring the MacIP IP-side egress up once the stack is running (the MacIP service's
 	// Start has wired the egress inbound callback). Not a supervised component — the
 	// runtime owns its lifecycle. A nil egress (AppleTalk-only) is a no-op.
-	if r.macipEgress != nil {
-		r.macipEgress.Start()
+	if eg := r.egress(); eg != nil {
+		eg.Start()
 	}
 	if r.rtr != nil {
 		for _, p := range r.members {
@@ -449,8 +488,8 @@ func (r *Runtime) Start(ctx context.Context) error {
 // already withdrawn (e.g. by an individual Stop) must not block shutdown.
 func (r *Runtime) Stop(ctx context.Context) error {
 	r.sup.StopStatsFlush()
-	if r.macipEgress != nil {
-		_ = r.macipEgress.Close()
+	if eg := r.egress(); eg != nil {
+		_ = eg.Close()
 	}
 	if r.rtr != nil {
 		for _, p := range r.members {

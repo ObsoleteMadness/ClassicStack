@@ -146,6 +146,88 @@ func TestCrossWireTransports_DirectIPXWithoutNetBIOS(t *testing.T) {
 	}
 }
 
+// TestTransportWiring_AttachPortNetBEUILate proves the dynamic-wiring seam: a NetBEUI
+// mini-router is stood up even when NO NetBEUI port existed at build time, and a port
+// added LATER (transportWiring.AttachPort — the runtime path for a port added from the
+// config-builder UI) is joined to the live, engine-bound router and immediately carries a
+// CALL through to a NAME_RECOGNIZED reply. This is the boundary the slice removes: before,
+// a runtime-added port stayed dark until a Save+restart rebuilt the stack.
+func TestTransportWiring_AttachPortNetBEUILate(t *testing.T) {
+	nb := netbios.NewService(nil, "CLASSICSTACK")
+	sm := smb.New(nil)
+
+	// No NetBEUI port in the build — only the services. The mini-router must still be
+	// built (engine + names registered) so a late port has somewhere to attach.
+	comps := map[string]component.Component{
+		netbios.Name: nb,
+		smb.Name:     sm,
+	}
+	w := crossWireTransports(comps, nil)
+	if w.netbeui == nil {
+		t.Fatal("NetBEUI mini-router was not built with zero ports — a late port would have nowhere to attach")
+	}
+
+	// Now the operator adds the first NetBEUI port at runtime. AttachPort must join it to
+	// the existing router (installing the delivery callback).
+	port := &recordingNetBEUIPort{}
+	w.AttachPort(port)
+	if port.cb == nil {
+		t.Fatal("AttachPort did not attach the late NetBEUI port (no delivery callback)")
+	}
+
+	// The already-registered engine must answer a CALL for our name on the late port,
+	// proving the port carries live traffic without any rebuild.
+	name := nbproto.NewName("CLASSICSTACK", nbproto.NameTypeFileServer)
+	clientName := nbproto.NewName("CLIENT", nbproto.NameTypeWorkstation)
+	nq := &nbf.Frame{Command: nbf.CmdNameQuery, Data2: 5, RspCorrelator: 0x1234}
+	copy(nq.DestinationName[:], name[:])
+	copy(nq.SourceName[:], clientName[:])
+	port.cb([6]byte{0x02, 0, 0, 0, 0, 0x01}, nbf.NetBIOSMulticastMAC, nq)
+
+	if port.lastSent(nbf.CmdNameRecognized) == nil {
+		t.Fatal("late-attached port did not carry the CALL to a NAME_RECOGNIZED reply — engine not bound to the retained router")
+	}
+}
+
+// TestTransportWiring_AttachPortIPXLate is the IPX analogue: the IPX mini-router is built
+// off the SMB consumer alone with zero IPX ports, and a port added later via AttachPort is
+// joined to it (delivery callback installed), so direct-hosted SMB-over-IPX reaches a
+// runtime-added port.
+func TestTransportWiring_AttachPortIPXLate(t *testing.T) {
+	sm := smb.New(nil)
+	comps := map[string]component.Component{smb.Name: sm}
+
+	w := crossWireTransports(comps, nil)
+	if w.ipx == nil {
+		t.Fatal("IPX mini-router was not built off the SMB consumer with zero ports")
+	}
+
+	port := &recordingIPXPort{}
+	w.AttachPort(port)
+	if port.cb == nil {
+		t.Fatal("AttachPort did not attach the late IPX port (no delivery callback)")
+	}
+}
+
+// TestTransportWiring_AttachPortNoRouters proves AttachPort is a safe no-op when no
+// transport was wired (no NetBIOS/SMB consumer): the wiring holds nil mini-routers, so a
+// late port is simply left alone rather than attached to a phantom router.
+func TestTransportWiring_AttachPortNoRouters(t *testing.T) {
+	w := crossWireTransports(map[string]component.Component{}, nil)
+	if w.ipx != nil || w.netbeui != nil {
+		t.Fatal("mini-routers built with no consumer to drive them")
+	}
+	// Must not panic and must not attach.
+	port := &recordingNetBEUIPort{}
+	w.AttachPort(port)
+	if port.cb != nil {
+		t.Fatal("AttachPort attached a port with no mini-router wired")
+	}
+	// A nil wiring is also safe (the pre-seam / no-transports build).
+	var nilw *transportWiring
+	nilw.AttachPort(port)
+}
+
 // TestSMBBrowseBridge_Forwards proves the browser→SMB BrowseProvider adapter copies
 // the browse list field-for-field and forwards Available, so SMB's IPC$ NetServerEnum2
 // answers from the live browser. A freshly built browser is a potential browser
