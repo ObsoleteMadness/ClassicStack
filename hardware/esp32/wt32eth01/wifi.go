@@ -50,7 +50,7 @@ static int connect_wifi_sta(const char* ssid, const char* key, int use_dhcp, con
 
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
-    
+
     // 6. Start WiFi
     if (esp_wifi_start() != ESP_OK) {
         return -1;

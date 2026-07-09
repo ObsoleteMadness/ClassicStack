@@ -14,6 +14,9 @@ package netbios
 // via SetSessionConsumer) and routes every established circuit's traffic to it.
 
 import (
+	"context"
+	"time"
+
 	nbf "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbeui"
 	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbios"
 )
@@ -27,9 +30,38 @@ type frameType = nbf.Frame
 // service is the consumer; a future named-pipe or other session service could be
 // another. NewConn is called once per session by the NBF session engine.
 type SessionConsumer interface {
-	// NewConn opens a virtual circuit. The engine serves each reassembled
-	// message through the returned SessionCircuit and closes it on teardown.
-	NewConn() SessionCircuit
+	// NewConn opens a virtual circuit for the transport remote-endpoint label
+	// client (the requesting NetBIOS node's wire address; "" when unknown). The
+	// engine serves each reassembled message through the returned SessionCircuit
+	// and closes it on teardown.
+	NewConn(client string) SessionCircuit
+}
+
+// nbfClientLabel formats an NBF (NetBEUI) circuit's source MAC as the
+// "xx:xx:xx:xx:xx:xx" client label the SMB management view groups sessions under.
+func nbfClientLabel(mac [6]byte) string { return hexColon(mac[:]) }
+
+// nbipxClientLabel formats an NB-IPX circuit's remote node + socket as the
+// "xx:xx:xx:xx:xx:xx.ssss" client label (socket suffix distinguishes it from the
+// direct-hosted 0x0550 transport and from NBF).
+func nbipxClientLabel(node [6]byte, sock [2]byte) string {
+	const hexdigits = "0123456789abcdef"
+	suffix := []byte{'.', hexdigits[sock[0]>>4], hexdigits[sock[0]&0x0f], hexdigits[sock[1]>>4], hexdigits[sock[1]&0x0f]}
+	return hexColon(node[:]) + string(suffix)
+}
+
+// hexColon renders bytes as lower-case hex separated by colons (reflection-free,
+// no fmt — this package is on the core stdlib-only ring).
+func hexColon(b []byte) string {
+	const hexdigits = "0123456789abcdef"
+	out := make([]byte, 0, len(b)*3)
+	for i, x := range b {
+		if i > 0 {
+			out = append(out, ':')
+		}
+		out = append(out, hexdigits[x>>4], hexdigits[x&0x0f])
+	}
+	return string(out)
 }
 
 // SessionCircuit is one open virtual circuit: serve a reassembled message
@@ -44,15 +76,35 @@ type SessionCircuit interface {
 	Close()
 }
 
+// DatagramEndpoint identifies the transport-level remote a directed NetBIOS
+// datagram reply is sent back to. It is transport-tagged (Transport is one of the
+// TransportNetBEUI/TransportIPX/TransportNBT family strings) so a reply is emitted
+// only by the transport the request arrived on, and carries that transport's wire
+// address: for NB-IPX the Network/Node/Socket tuple, for NBF the source MAC in the
+// first 6 bytes of Node. The consumer treats it as an opaque token — it never reads
+// the wire fields, only echoes the endpoint back on the reply Datagram — so the §3
+// transport-agnostic contract holds.
+type DatagramEndpoint struct {
+	Transport string  // transport family (TransportIPX / TransportNetBEUI / …)
+	Network   [4]byte // IPX network (NB-IPX)
+	Node      [6]byte // IPX node (NB-IPX) or source MAC (NBF)
+	Socket    [2]byte // IPX socket (NB-IPX)
+}
+
 // Datagram is one connectionless NetBIOS datagram delivered to a DatagramConsumer:
 // the source and destination NetBIOS names and the application payload (a browser
-// announcement / mailslot write). It carries no transport addressing — the
-// consumer is transport-agnostic, exactly like SessionCircuit.
+// announcement / mailslot write). ReplyTo, when non-nil, is the transport endpoint
+// the datagram arrived from: a consumer that wants to answer a specific requester
+// (a browser GetBackupList / AnnouncementRequest) echoes it back on the reply
+// Datagram so the reply is sent *directed* to that node rather than broadcast. It is
+// nil for a broadcast the consumer only observes. The consumer stays
+// transport-agnostic: it never inspects ReplyTo, only carries it.
 type Datagram struct {
 	Source      protocol.Name
 	Destination protocol.Name
 	Payload     []byte
-	Broadcast   bool // true for a group/broadcast datagram (DATAGRAM_BROADCAST)
+	Broadcast   bool              // true for a group/broadcast datagram (DATAGRAM_BROADCAST)
+	ReplyTo     *DatagramEndpoint // inbound: where it came from; outbound: send directed here (nil = broadcast)
 }
 
 // DatagramConsumer receives connectionless NetBIOS datagrams (mailslot / browser
@@ -109,6 +161,24 @@ func (s *Service) localNames() []protocol.Name {
 	return append([]protocol.Name(nil), s.names...)
 }
 
+// SetWorkgroup records the configured workgroup, stamped into the NB-IPX
+// NAME_RECOGNIZED reply prefix a Win98 NWLink client validates before opening a
+// session. Compose sets it from Identity.Workgroup; safe before Start.
+func (s *Service) SetWorkgroup(workgroup string) {
+	s.mu.Lock()
+	s.workgroup = workgroup
+	s.mu.Unlock()
+}
+
+// workgroupName returns the configured workgroup under the service lock, read live by
+// the NBIPX engine through a callback so a workgroup set after the engine is built is
+// honoured.
+func (s *Service) workgroupName() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.workgroup
+}
+
 // LocalNames is the exported snapshot of the local NetBIOS name set, for compose:
 // when wiring the NBF engine onto the NetBEUI mini-router, the cross-wire registers
 // the engine as the per-name NameHandler for each local name (the session-
@@ -160,16 +230,23 @@ func (g *Engine) closeCircuits() { g.e.closeAll() }
 // (the browser's HostAnnounce / election / backup-list traffic) as an NBF UI frame.
 func (g *Engine) emitDatagram(d Datagram) error { return g.e.emitDatagram(d) }
 
+// transportFamily implements datagramEgress: this engine is the NetBEUI (NBF)
+// transport, so a directed reply tagged TransportNetBEUI is emitted here.
+func (g *Engine) transportFamily() string { return TransportNetBEUI }
+
 // NewIPXEngine builds the NBIPX (NetBIOS-over-IPX) session state machine bound to
 // sender (the core/router/ipx mini-router, which it sends replies through).
 // Compose registers the returned engine on the mini-router as the SocketHandler
-// for the NB-IPX session socket (0x0455). The engine reads the live consumer
-// through the service, so SMB attaching late is honoured. The service tracks the
-// engine (as a circuitCloser) so Stop tears down its circuits. NB-IPX answers
-// NAME_QUERY at the name layer, so unlike NewNBFEngine this engine needs no name
-// set — it is purely the session-data path.
+// for the NB-IPX session socket (0x0455), the NMPI name-query socket (0x0551), and
+// the NB-IPX datagram socket (0x0553), so the engine carries SMB sessions, answers
+// the client's name query for our server name (NMPI Query-name / NBIPX Find-name),
+// AND delivers inbound browser mailslot datagrams (NMPI MailslotSend) to the
+// datagram consumer. The engine reads the live session consumer, datagram consumer
+// and name set through the service, so SMB and the browser attaching late and names
+// registered later are all honoured. The service tracks the engine (as a
+// circuitCloser) so Stop tears down its circuits.
 func (s *Service) NewIPXEngine(sender DatagramSender) *IPXEngine {
-	eng := &IPXEngine{e: newIPXSessionEngine(s.logger, sender, s.sessionConsumer)}
+	eng := &IPXEngine{e: newIPXSessionEngine(s.logger, sender, s.sessionConsumer, s.datagramConsumer, s.localNames, s.workgroupName)}
 	s.mu.Lock()
 	s.closers = append(s.closers, eng)
 	s.egresses = append(s.egresses, eng)
@@ -191,7 +268,20 @@ func (g *IPXEngine) HandleDatagram(d *ipxDatagramType) { g.e.HandleDatagram(d) }
 // closeCircuits tears down every open circuit (called from Stop).
 func (g *IPXEngine) closeCircuits() { g.e.closeAll() }
 
+// ClaimName broadcasts a name-claim for name on the segment and reports whether it was
+// uncontested (nil) or another node objected (error). self is our own IPX node so a
+// looped-back self-broadcast is not mistaken for a conflict. Compose calls this on
+// start, once per local name, to detect a conflict and (on success) gate the SAP
+// advertisement — matching the legacy over_ipx claim-then-advertise ordering.
+func (g *IPXEngine) ClaimName(ctx context.Context, self [6]byte, name protocol.Name, retries int, interval time.Duration) error {
+	return g.e.ClaimName(ctx, self, name, retries, interval)
+}
+
 // emitDatagram implements datagramEgress: send a connectionless NetBIOS datagram
 // (the browser's HostAnnounce / election / backup-list traffic) over NB-IPX as an
 // NMPI mailslot send.
 func (g *IPXEngine) emitDatagram(d Datagram) error { return g.e.emitDatagram(d) }
+
+// transportFamily implements datagramEgress: this engine is the NB-IPX transport, so
+// a directed reply tagged TransportIPX is emitted here.
+func (g *IPXEngine) transportFamily() string { return TransportIPX }

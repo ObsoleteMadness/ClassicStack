@@ -136,3 +136,83 @@ func TestCaptureReplay_NBIPXMailslot(t *testing.T) {
 		t.Fatalf("re-encode not byte-identical:\n got % x\nwant % x", got, captureNMPIMailslotFrame14)
 	}
 }
+
+// captureSessionHeaderFrame25 is the 18-byte NB-IPX session header from ipx.pcap
+// frame #25 (a WIN98 client's SMB negotiate on socket 0x0455): ConnCtrlFlag 0x10
+// (EOM), DataStreamType 0x06 (DATA), SourceConnID 2, DestConnID 14 (both LE),
+// SendSeq 1, TotalDataLen/DataLen 0x009a (154 — the SMB payload length, LE),
+// Offset 0, RecvSeq 0, BytesReceived 3. It proves the header is 18 bytes with
+// little-endian fields and that SMB (0xff 'S' 'M' 'B') begins immediately after —
+// the errata this codec was corrected to (see spec/errata.md and nbipx.go).
+var captureSessionHeaderFrame25 = []byte{
+	0x10,       // ConnCtrlFlag = EOM
+	0x06,       // DataStreamType = DATA
+	0x02, 0x00, // SourceConnID = 2 (LE)
+	0x0e, 0x00, // DestConnID = 14 (LE)
+	0x01, 0x00, // SendSeq = 1
+	0x9a, 0x00, // TotalDataLen = 154
+	0x00, 0x00, // Offset = 0
+	0x9a, 0x00, // DataLen = 154
+	0x00, 0x00, // RecvSeq = 0
+	0x03, 0x00, // BytesReceived = 3
+}
+
+// captureSessionHeaderFrame26 is the 18-byte session header from ipx.pcap frame
+// #26 (the server's negotiate reply): the connection ids are swapped relative to
+// the request (SourceConnID 14, DestConnID 2), TotalDataLen/DataLen 0x004d (77),
+// RecvSeq 2, BytesReceived 5 — the reply-side accounting.
+var captureSessionHeaderFrame26 = []byte{
+	0x10,       // ConnCtrlFlag = EOM
+	0x06,       // DataStreamType = DATA
+	0x0e, 0x00, // SourceConnID = 14 (server, LE)
+	0x02, 0x00, // DestConnID = 2 (echoes the client's, LE)
+	0x00, 0x00, // SendSeq = 0
+	0x4d, 0x00, // TotalDataLen = 77
+	0x00, 0x00, // Offset = 0
+	0x4d, 0x00, // DataLen = 77
+	0x02, 0x00, // RecvSeq = 2
+	0x05, 0x00, // BytesReceived = 5
+}
+
+// TestCaptureReplay_NBIPXSessionHeader proves the 18-byte little-endian session
+// header from ipx.pcap frames #25/#26 decodes to the observed field values and
+// re-encodes byte-identically. This is the regression guard for the errata that
+// the header is 18 bytes (not 16) and little-endian (not big-endian): getting it
+// wrong offset the SMB payload by two bytes and truncated replies, so no NB-IPX
+// session ever negotiated.
+func TestCaptureReplay_NBIPXSessionHeader(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		wire       []byte
+		srcID      uint16
+		dstID      uint16
+		total, dat uint16
+	}{
+		{"frame25-request", captureSessionHeaderFrame25, 2, 14, 154, 154},
+		{"frame26-reply", captureSessionHeaderFrame26, 14, 2, 77, 77},
+	} {
+		if len(tc.wire) != NBIPXSessionHeaderLen {
+			t.Fatalf("%s: vector is %d bytes, want NBIPXSessionHeaderLen=%d", tc.name, len(tc.wire), NBIPXSessionHeaderLen)
+		}
+		h, err := DecodeSessionHeader(tc.wire)
+		if err != nil {
+			t.Fatalf("%s: DecodeSessionHeader: %v", tc.name, err)
+		}
+		if h.ConnCtrlFlag != NBIPXConnFlagEOM {
+			t.Errorf("%s: ConnCtrlFlag = %#x, want EOM(%#x)", tc.name, h.ConnCtrlFlag, NBIPXConnFlagEOM)
+		}
+		if h.DataStreamType != NBIPXSessionData {
+			t.Errorf("%s: DataStreamType = %#x, want DATA(%#x)", tc.name, h.DataStreamType, NBIPXSessionData)
+		}
+		if h.SourceConnID != tc.srcID || h.DestConnID != tc.dstID {
+			t.Errorf("%s: conn ids src=%d dst=%d, want src=%d dst=%d", tc.name, h.SourceConnID, h.DestConnID, tc.srcID, tc.dstID)
+		}
+		if h.TotalDataLen != tc.total || h.DataLen != tc.dat {
+			t.Errorf("%s: lengths total=%d data=%d, want total=%d data=%d", tc.name, h.TotalDataLen, h.DataLen, tc.total, tc.dat)
+		}
+		if got := EncodeSessionHeader(h); !bytes.Equal(got, tc.wire) {
+			t.Fatalf("%s: re-encode not byte-identical:\n got % x\nwant % x", tc.name, got, tc.wire)
+		}
+	}
+}

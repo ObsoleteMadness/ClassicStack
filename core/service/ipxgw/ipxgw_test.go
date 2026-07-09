@@ -90,6 +90,9 @@ type fakeIPXPort struct {
 }
 
 func (p *fakeIPXPort) SetDeliveryCallback(cb portipx.DeliveryCallback) { p.cb = cb }
+func (p *fakeIPXPort) SrcMAC() [6]byte {
+	return [6]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
+}
 func (p *fakeIPXPort) Send(_ [6]byte, d *protoipx.Datagram) error {
 	p.mu.Lock()
 	p.sent = append(p.sent, d)

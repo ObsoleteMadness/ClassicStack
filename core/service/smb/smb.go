@@ -47,6 +47,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
@@ -215,6 +216,31 @@ func (s *Service) ReactorDelivered() uint64 {
 		return 0
 	}
 	return s.reactor.Delivered()
+}
+
+// SessionInfo is a point-in-time snapshot of one live SMB circuit for the
+// management/diagnostics view: which client (transport remote endpoint) opened it,
+// the authenticated identity ("" = guest), the SMB dialect it negotiated, when it
+// negotiated, and how many trees/files it currently holds open.
+type SessionInfo struct {
+	Client       string    // transport remote-endpoint label; "" when the transport supplied none
+	User         string    // authenticated identity from SESSION_SETUP; "" = guest
+	Dialect      string    // negotiated SMB dialect string; "" before NEGOTIATE
+	NegotiatedAt time.Time // when NEGOTIATE completed; zero before then
+	OpenTrees    int       // bound tree connects (TREE_CONNECT)
+	OpenFiles    int       // open file handles (FID)
+}
+
+// Sessions snapshots every live SMB circuit for the management view, grouped
+// implicitly by SessionInfo.Client (a client with two circuits appears twice, one
+// per circuit). Order is unspecified (map iteration).
+func (s *Service) Sessions() []SessionInfo {
+	sessions := s.liveSessions()
+	out := make([]SessionInfo, 0, len(sessions))
+	for _, sess := range sessions {
+		out = append(out, sess.info())
+	}
+	return out
 }
 
 // registerSession adds a live circuit's session to the push set (called from

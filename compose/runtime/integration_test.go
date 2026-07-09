@@ -231,10 +231,11 @@ func TestIntegration_DirectIPXNegotiateOverInmemLink(t *testing.T) {
 	}
 	defer comp.Stop(ctx)
 
-	// Address the NEGOTIATE to the IPX router (default identity: network 0, node 0 →
-	// accepted by acceptsDest) on the direct-SMB socket, IPX packet type 4 (PEP).
+	// Address the NEGOTIATE to the IPX router (effective identity: network 0, node testServerMAC)
+	// on the direct-SMB socket, IPX packet type 4 (PEP).
 	dg := &ipxproto.Datagram{
 		Type:    0x04,
+		DstNode: testServerMAC,
 		DstSock: smb.DirectSMBSocket,
 		SrcNode: testClientMAC,
 		SrcSock: [2]byte{0x40, 0x00},

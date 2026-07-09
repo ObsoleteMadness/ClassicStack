@@ -821,6 +821,7 @@ const FIELD_META = {
   SeedNetwork: { label: "Seed network start", desc: "First AppleTalk network number this port asserts. 0 = non-seed (learn from a peer router)." },
   SeedNetworkEnd: { label: "Seed network end", desc: "Last network number of the seed range. 0 = a single number (== start)." },
   SeedZone: { label: "Seed zone", desc: "Default zone name this port seeds. Empty = non-seed / inherit." },
+  IPXFrameType: { label: "Frame type", desc: "IPX outbound Ethernet encapsulation: ethernet_ii (default, MacIPX) · 802.3 · 802.2. Inbound accepts all." },
   // Interface namespace
   Kind: { label: "Kind", desc: "nic · serial · bridge." },
   Addr: { label: "Address", desc: "Optional pinned address for a NIC interface." },
@@ -1123,6 +1124,8 @@ function formOptionsFor(name, model) {
     //   EtherTalk / IPX / NetBEUI → an interface (bridge/uplink) dropdown + MAC.
     //   TashTalk                  → its own serial line (Device dropdown + Baud), no iface.
     //   LToUDP                    → host-wide multicast; Iface is an optional bind address.
+    // Frame type is IPX-only; the IPX branch below re-adds it as a dropdown.
+    if (name !== "IPX") opts.hide.add("IPXFrameType");
     if (name === "TashTalk") {
       // Serial line lives on the port: the Device dropdown is injected by openInstanceModal
       // (it needs the async serial-port list); here we just hide the fields that do not
@@ -1140,6 +1143,13 @@ function formOptionsFor(name, model) {
       opts.overrides.Iface = (v) => dropdown("Interface — the uplink this port binds to",
         interfaceChoices(model), v, "Empty inherits the default interface.");
       opts.hide.add("Device").add("Baud");
+      if (name === "IPX") {
+        // IPX picks its OUTBOUND Ethernet encapsulation (Novell frame type); blank
+        // defaults to Ethernet II, which MacIPX speaks. Inbound accepts all framings.
+        opts.overrides.IPXFrameType = (v) => dropdown("Frame type — outbound Ethernet encapsulation",
+          ["ethernet_ii", "802.3", "802.2"], v || "ethernet_ii",
+          "ethernet_ii (DIX 0x8137, MacIPX-compatible) · 802.3 (raw Novell) · 802.2 (IEEE LLC).");
+      }
       if (NON_AT_TRANSPORTS.includes(name)) {
         // IPX / NetBEUI carry no AppleTalk seed; hide the AppleTalk-only fields.
         opts.hide.add("SeedNetwork").add("SeedNetworkEnd").add("SeedZone").add("MAC");
@@ -1508,6 +1518,7 @@ class CsInstanceEditor extends HTMLElement {
       return {
         Name: "", Iface: "", IsEnabled: true, MAC: "",
         SeedNetwork: 0, SeedNetworkEnd: 0, SeedZone: "", Device: "", Baud: 0,
+        IPXFrameType: "",
       };
     }
     const nameKey = this.key === "SMBShares" ? "SName" : this.key === "EtherDFSDrives" ? "DName" : "VName";

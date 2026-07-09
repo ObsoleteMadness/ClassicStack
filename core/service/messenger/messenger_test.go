@@ -30,6 +30,10 @@ func (r *recordingSink) SendMailslot(name string, src, dest nbproto.Name, body [
 	return nil
 }
 
+func (r *recordingSink) SendMailslotTo(name string, src, dest nbproto.Name, body []byte, broadcast bool, _ *netbios.DatagramEndpoint) error {
+	return r.SendMailslot(name, src, dest, body, broadcast)
+}
+
 func clientName(s string) nbproto.Name {
 	return nbproto.NewName(s, nbproto.NameTypeWorkstation)
 }
@@ -42,7 +46,7 @@ func TestHandleMailslotPublishesAndLogs(t *testing.T) {
 	svc := New(nil, pub, nil, "CLASSICSTACK", "WORKGROUP")
 
 	body := msframe.Message{From: "ALICE", To: "CLASSICSTACK", Text: "ping"}.Marshal()
-	svc.HandleMailslot(mswire.NameMessenger, clientName("ALICE"), clientName("CLASSICSTACK"), body)
+	svc.HandleMailslot(mswire.NameMessenger, clientName("ALICE"), clientName("CLASSICSTACK"), body, nil)
 
 	if len(pub.events) != 1 {
 		t.Fatalf("published %d events, want 1", len(pub.events))
@@ -64,7 +68,7 @@ func TestHandleMailslotPublishesAndLogs(t *testing.T) {
 func TestHandleMailslotDropsNonMessenger(t *testing.T) {
 	pub := &recordingPub{}
 	svc := New(nil, pub, nil, "CLASSICSTACK", "")
-	svc.HandleMailslot(mswire.NameMessenger, clientName("X"), clientName("CLASSICSTACK"), []byte{0xD0, 'a', 0})
+	svc.HandleMailslot(mswire.NameMessenger, clientName("X"), clientName("CLASSICSTACK"), []byte{0xD0, 'a', 0}, nil)
 	if len(pub.events) != 0 {
 		t.Errorf("published %d events on a non-messenger datagram, want 0", len(pub.events))
 	}
@@ -75,7 +79,7 @@ func TestHandleMailslotDropsNonMessenger(t *testing.T) {
 func TestHandleMailslotNilPublisher(t *testing.T) {
 	svc := New(nil, nil, nil, "CLASSICSTACK", "")
 	body := msframe.Message{From: "A", To: "CLASSICSTACK", Text: "hi"}.Marshal()
-	svc.HandleMailslot(mswire.NameMessenger, clientName("A"), clientName("CLASSICSTACK"), body)
+	svc.HandleMailslot(mswire.NameMessenger, clientName("A"), clientName("CLASSICSTACK"), body, nil)
 }
 
 // TestSendMessageWraps proves SendMessage writes a single-block messenger datagram

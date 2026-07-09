@@ -4,9 +4,10 @@
 // decodes/encodes the Ethernet encapsulation here.
 //
 // Inbound, all three legacy framings are accepted (Ethernet II 0x8137, raw
-// 802.3, and 802.2 LLC with DSAP=SSAP=0xE0); outbound uses Ethernet II by
-// default. Decoded datagrams are handed to an installed DeliveryCallback (the
-// IPX mini-router wires this in M4).
+// 802.3, and 802.2 LLC with DSAP=SSAP=0xE0) regardless of configuration. Outbound
+// uses the section's ipx_frame_type (Ethernet II by default, for MacIPX
+// compatibility — see frametype.go). Decoded datagrams are handed to an installed
+// DeliveryCallback (the IPX mini-router wires this in M4).
 package ipx
 
 import (
@@ -50,8 +51,9 @@ type DeliveryCallback func(d *ipxproto.Datagram)
 type Port struct {
 	*frameport.Port
 
-	srcMAC [6]byte
-	cb     atomicCallback
+	srcMAC    [6]byte
+	frameType FrameType // outbound Ethernet encapsulation (§ ipx_frame_type)
+	cb        atomicCallback
 }
 
 // New builds the real IPX port. frame is the Ethernet FrameLink (nil → inert
@@ -89,7 +91,11 @@ func NewInstanceFromOpener(sec *port.Section, open func() (link.FrameLink, error
 	if open == nil {
 		open = func() (link.FrameLink, error) { return nil, nil }
 	}
-	p := &Port{srcMAC: srcMAC}
+	ft, err := ParseFrameType(sec.IPXFrameType)
+	if err != nil {
+		return nil, err
+	}
+	p := &Port{srcMAC: srcMAC, frameType: ft}
 	p.Port = frameport.New(sec, open, p.onFrame, logger)
 	return p, nil
 }
@@ -97,6 +103,9 @@ func NewInstanceFromOpener(sec *port.Section, open func() (link.FrameLink, error
 // SetDeliveryCallback installs the inbound delivery callback. May be called
 // before or after Start.
 func (p *Port) SetDeliveryCallback(cb DeliveryCallback) { p.cb.store(cb) }
+
+// SrcMAC returns the station hardware address used as the Ethernet source.
+func (p *Port) SrcMAC() [6]byte { return p.srcMAC }
 
 // onFrame is the frameport FrameSink: demux the Ethernet encapsulation, decode
 // the IPX datagram, and deliver it.
@@ -142,21 +151,17 @@ func stripEncapsulation(frame link.Frame) ([]byte, bool) {
 	return nil, false
 }
 
-// Send encapsulates and transmits an IPX datagram as an Ethernet II frame to
-// dstMAC. The IPX dst node is NOT consulted for the Ethernet dest here — the
-// caller (mini-router, M4) supplies the resolved MAC; pass the broadcast MAC
-// for broadcast traffic.
+// Send encapsulates and transmits an IPX datagram to dstMAC using this port's
+// configured frame type (Ethernet II by default; see ipx_frame_type / ParseFrameType).
+// The IPX dst node is NOT consulted for the Ethernet dest here — the caller
+// (mini-router, M4) supplies the resolved MAC; pass the broadcast MAC for
+// broadcast traffic.
 func (p *Port) Send(dstMAC [6]byte, d *ipxproto.Datagram) error {
 	ipxBytes, err := d.Encode(nil)
 	if err != nil {
 		return err
 	}
-	frame := make([]byte, 0, ethHdrLen+len(ipxBytes))
-	frame = append(frame, dstMAC[:]...)
-	frame = append(frame, p.srcMAC[:]...)
-	frame = append(frame, byte(etherTypeIPX>>8), byte(etherTypeIPX&0xFF))
-	frame = append(frame, ipxBytes...)
-	return p.Port.Send(frame)
+	return p.Port.Send(p.frameType.encapsulate(dstMAC, p.srcMAC, ipxBytes))
 }
 
 // atomicCallback is a tiny lock-protected DeliveryCallback holder (atomic.Value

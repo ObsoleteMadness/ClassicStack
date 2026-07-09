@@ -166,7 +166,7 @@ func (t *Transport) serve(conn net.Conn) {
 		t.mu.Unlock()
 	}()
 
-	circuit := t.consumer.NewConn()
+	circuit := t.consumer.NewConn(conn.RemoteAddr().String())
 	defer circuit.Close()
 
 	// A server-push writer lets asynchronous completions (NOTIFY_CHANGE) reach this

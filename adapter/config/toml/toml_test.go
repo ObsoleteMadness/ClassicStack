@@ -79,6 +79,44 @@ func TestTashTalkSerialRoundTrip(t *testing.T) {
 	}
 }
 
+// TestIPXFrameTypeRoundTrip proves an [[ipx]] port's frame-type selection
+// (Section.IPXFrameType) survives the TOML cycle, so ipx_frame_type in server.toml
+// decodes back to the same section the IPX port factory reads.
+func TestIPXFrameTypeRoundTrip(t *testing.T) {
+	config.Register(config.SectionSchema{
+		Key:      "IPX",
+		New:      func() config.Section { return &port.Section{SKey: "IPX"} },
+		Repeated: true,
+	})
+
+	m := config.NewModel()
+	want := &port.Section{
+		SKey: "IPX", Name: "ipx-lab", Iface: "br-lan", IsEnabled: true,
+		IPXFrameType: "802.3",
+	}
+	m.AddInstance(want)
+
+	c := New()
+	data, err := c.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(data), "ipx_frame_type = '802.3'") {
+		t.Errorf("marshalled TOML should carry ipx_frame_type; got:\n%s", data)
+	}
+	var got config.Model
+	if err := c.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	sec, ok := got.Instance("IPX", "ipx-lab")
+	if !ok {
+		t.Fatal("IPX instance missing after round-trip")
+	}
+	if !reflect.DeepEqual(sec, want) {
+		t.Fatalf("IPX frame-type round-trip: got %+v want %+v", sec, want)
+	}
+}
+
 // fakeSection is a registered component section for the round-trip test.
 type fakeSection struct {
 	SKey  string `toml:"-"`

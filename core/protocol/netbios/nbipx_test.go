@@ -30,15 +30,15 @@ func TestNewNameTruncates(t *testing.T) {
 func TestSessionHeaderRoundTrip(t *testing.T) {
 	want := &NBIPXSessionHeader{
 		ConnCtrlFlag:   NBIPXConnFlagSYS | NBIPXConnFlagACK,
-		DataStreamType: NBIPXSessionInit,
+		DataStreamType: NBIPXSessionData,
 		SourceConnID:   0x1234,
-		DestConnID:     0xFFFF, // unassigned during session init
+		DestConnID:     0xFFFF, // unassigned during session request
 		SendSeq:        1,
 		TotalDataLen:   0,
 		Offset:         0,
 		DataLen:        0,
-		ConnCtrlByte:   0,
-		Reserved:       0,
+		RecvSeq:        7,
+		BytesReceived:  5,
 	}
 	wire := EncodeSessionHeader(want)
 	if len(wire) != NBIPXSessionHeaderLen {

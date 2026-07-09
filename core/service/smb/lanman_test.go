@@ -50,7 +50,7 @@ func ipcSession(t *testing.T, p BrowseProvider) (*Service, *smbSession, uint16) 
 	t.Helper()
 	svc := &Service{shares: []*Share{newTestShare(t)}}
 	svc.SetBrowseProvider(p)
-	sess := newSession()
+	sess := newSession("")
 	tid := sess.allocTID(&treeConnect{ipc: true})
 	return svc, sess, tid
 }
@@ -127,7 +127,7 @@ func TestNetServerEnum2NoProvider(t *testing.T) {
 	svc := &Service{shares: []*Share{newTestShare(t)}}
 	svc.SetServerName("MYSERVER")
 	svc.SetDescription("the test server")
-	sess := newSession()
+	sess := newSession("")
 	tid := sess.allocTID(&treeConnect{ipc: true})
 	reply := svc.Dispatch(sess, lanmanReq(tid, rapNetServerEnum2, 0))
 	status, returned, _ := rapParams(t, reply)
@@ -141,7 +141,7 @@ func TestNetServerEnum2NoProvider(t *testing.T) {
 func TestTransactionOnNonIPCRefused(t *testing.T) {
 	svc := &Service{shares: []*Share{newTestShare(t)}}
 	svc.SetBrowseProvider(&fakeBrowseProvider{available: true})
-	sess := newSession()
+	sess := newSession("")
 	tid := sess.allocTID(&treeConnect{share: svc.shares[0]}) // disk tree, not IPC$
 	reply := svc.Dispatch(sess, lanmanReq(tid, rapNetServerEnum2, 0))
 	h := respHeader(t, reply)
@@ -155,7 +155,7 @@ func TestTransactionOnNonIPCRefused(t *testing.T) {
 // packed in the data block. NetShareEnum needs no browser.
 func TestNetShareEnumListsSharesAndIPC(t *testing.T) {
 	svc := &Service{shares: []*Share{newTestShare(t)}} // one share named PUBLIC
-	sess := newSession()
+	sess := newSession("")
 	tid := sess.allocTID(&treeConnect{ipc: true})
 
 	reply := svc.Dispatch(sess, lanmanReq(tid, rapNetShareEnum, 0))
@@ -185,6 +185,165 @@ func TestNetShareEnumListsSharesAndIPC(t *testing.T) {
 	}
 	if types[0] != shareTypeDisktree {
 		t.Errorf("disk share type = %#x, want STYPE_DISKTREE", types[0])
+	}
+}
+
+// TestUnknownRAPFunctionEmptySuccess proves an unrecognised RAP function over IPC$ —
+// including NetServerGetInfo (0x000D), the call Win98 issues when opening \\server —
+// answers empty-success (SMB status SUCCESS, WCT=10, zero params/data), NOT
+// ERRDOS/ERRbadfunc and NOT a synthesized info record. Returning "Invalid function"
+// made the client abandon the server (refactor regression); returning a hand-built
+// SERVER_INFO_1 record bluescreened Win98. Empty-success is the legacy
+// buildSMBTransactionEmptySuccess behaviour the client tolerates. (captures/ipx.pcap.)
+//
+// NetWkstaGetInfo is deliberately NOT in this list: at level 10 it now returns a real
+// WKSTA_INFO_10 record (a NetBEUI client rejects the empty form — see
+// TestNetWkstaGetInfoReturnsIdentity). A NON-level-10 WkstaGetInfo still falls through
+// to empty-success, which lanmanReq (no level word) exercises via someOtherFn.
+func TestUnknownRAPFunctionEmptySuccess(t *testing.T) {
+	svc := &Service{shares: []*Share{newTestShare(t)}}
+	sess := newSession("")
+	tid := sess.allocTID(&treeConnect{ipc: true})
+
+	const (
+		rapNetServerGetInfo = 0x000D
+		someOtherFn         = 0x00FE
+	)
+	for _, fn := range []uint16{rapNetServerGetInfo, someOtherFn} {
+		reply := svc.Dispatch(sess, lanmanReq(tid, fn, 0))
+		h := respHeader(t, reply)
+		if h.Status != statusSuccess {
+			t.Fatalf("fn %#x: status = %#x, want SUCCESS (empty-success, not an error)", fn, h.Status)
+		}
+		if wct := reply[protocol.HeaderLen]; wct != 10 {
+			t.Errorf("fn %#x: WordCount = %d, want 10 (TRANSACTION response shape)", fn, wct)
+		}
+		// Empty-success carries no RAP params/data: ParameterCount and DataCount are 0.
+		wordsOff := protocol.HeaderLen + 1
+		if pc := bp.LE16(reply[wordsOff+6 : wordsOff+8]); pc != 0 {
+			t.Errorf("fn %#x: ParameterCount = %d, want 0 (no synthesized record)", fn, pc)
+		}
+		if dc := bp.LE16(reply[wordsOff+12 : wordsOff+14]); dc != 0 {
+			t.Errorf("fn %#x: DataCount = %d, want 0 (no synthesized record)", fn, dc)
+		}
+		// ...and ParameterOffset/DataOffset MUST also be 0, matching the legacy
+		// buildSMBTransactionEmptySuccess. A zero-count reply with a non-zero offset
+		// makes the Win98 RAP receive path compute a buffer past the frame end, reject
+		// the reply, and loop NetWkstaGetInfo forever without opening \\CLASSICSTACK
+		// (captures/ipx.pcap). The whole 20-byte word block must be zero.
+		if po := bp.LE16(reply[wordsOff+8 : wordsOff+10]); po != 0 {
+			t.Errorf("fn %#x: ParameterOffset = %d, want 0 (empty-success block must be all-zero)", fn, po)
+		}
+		if do := bp.LE16(reply[wordsOff+14 : wordsOff+16]); do != 0 {
+			t.Errorf("fn %#x: DataOffset = %d, want 0 (empty-success block must be all-zero)", fn, do)
+		}
+		if bcc := bp.LE16(reply[wordsOff+20 : wordsOff+22]); bcc != 0 {
+			t.Errorf("fn %#x: ByteCount = %d, want 0 (empty-success has no trailing bytes)", fn, bcc)
+		}
+	}
+}
+
+// wkstaGetInfoReq builds a RAP NetWkstaGetInfo request at the given detail level,
+// matching captures/netbeui.pcap: "\PIPE\LANMAN\0" + function(2) + ParamDesc "WrLh\0"
+// + ReturnDesc "zzzBBzz\0" + Level(2) + ReceiveBufferLength(2).
+func wkstaGetInfoReq(tid uint16, level uint16) []byte {
+	area := append([]byte("\\PIPE\\LANMAN"), 0)
+	fnb := make([]byte, 2)
+	bp.PutLE16(fnb, rapNetWkstaGetInfo)
+	area = append(area, fnb...)
+	area = append(area, []byte("WrLh")...) // ParamDesc
+	area = append(area, 0)
+	area = append(area, []byte("zzzBBzz")...) // ReturnDesc (WKSTA_INFO_10)
+	area = append(area, 0)
+	lvl := make([]byte, 2)
+	bp.PutLE16(lvl, level)
+	area = append(area, lvl...)
+	rb := make([]byte, 2)
+	bp.PutLE16(rb, 0x005B) // ReceiveBufferLength (91, as in the capture)
+	area = append(area, rb...)
+
+	words := make([]byte, 28)
+	return smbReq(protocol.CommandTransaction, protocol.Flags2NTStatus, tid, 1, words, area)
+}
+
+// TestNetWkstaGetInfoReturnsIdentity proves a level-10 NetWkstaGetInfo returns a real
+// WKSTA_INFO_10 record (not empty-success): a Win98/WfW NetBEUI client rejects the
+// empty form and loops the call forever, hanging Explorer (captures/netbeui.pcap
+// frames 128→363). The record carries the server's own computer name, the session
+// user, and the workgroup, packed as data-relative "z" string pointers.
+func TestNetWkstaGetInfoReturnsIdentity(t *testing.T) {
+	svc := &Service{shares: []*Share{newTestShare(t)}} // serverName→CLASSICSTACK, workgroup→WORKGROUP
+	sess := newSession("")
+	sess.user = "GUEST"
+	tid := sess.allocTID(&treeConnect{ipc: true})
+
+	reply := svc.Dispatch(sess, wkstaGetInfoReq(tid, wkstaInfoLevel10))
+	h := respHeader(t, reply)
+	if h.Status != statusSuccess {
+		t.Fatalf("status = %#x, want SUCCESS", h.Status)
+	}
+
+	wordsOff := protocol.HeaderLen + 1
+	if wct := reply[protocol.HeaderLen]; wct != 10 {
+		t.Fatalf("WordCount = %d, want 10", wct)
+	}
+	// Empty-success is the bug we're fixing: assert real params AND data came back.
+	pc := bp.LE16(reply[wordsOff+6 : wordsOff+8])
+	dc := bp.LE16(reply[wordsOff+12 : wordsOff+14])
+	po := bp.LE16(reply[wordsOff+8 : wordsOff+10])
+	do := bp.LE16(reply[wordsOff+14 : wordsOff+16])
+	if pc == 0 || dc == 0 {
+		t.Fatalf("ParameterCount=%d DataCount=%d, want both non-zero (WKSTA_INFO_10 record, not empty-success)", pc, dc)
+	}
+
+	// RAP status word must be success.
+	if status := bp.LE16(reply[int(po) : int(po)+2]); status != 0 {
+		t.Errorf("RAP status = %d, want 0", status)
+	}
+
+	// Walk the WKSTA_INFO_10 fixed part: three z-pointers (computername/username/
+	// langroup), ver_major/minor, then two more z-pointers. Each z is a 4-byte
+	// data-relative offset (low word used). Resolve the strings from the data block.
+	data := reply[int(do) : int(do)+int(dc)]
+	readZ := func(fieldOff int) string {
+		off := int(bp.LE16(data[fieldOff : fieldOff+2]))
+		if off < 0 || off >= len(data) {
+			t.Fatalf("z-pointer at %d = %d out of range (data len %d)", fieldOff, off, len(data))
+		}
+		end := indexByte(data[off:], 0)
+		if end < 0 {
+			t.Fatalf("unterminated string at data offset %d", off)
+		}
+		return string(data[off : off+end])
+	}
+	if got := readZ(0); got != "CLASSICSTACK" {
+		t.Errorf("wki10_computername = %q, want CLASSICSTACK", got)
+	}
+	if got := readZ(4); got != "GUEST" {
+		t.Errorf("wki10_username = %q, want GUEST", got)
+	}
+	if got := readZ(8); got != "WORKGROUP" {
+		t.Errorf("wki10_langroup = %q, want WORKGROUP", got)
+	}
+	if maj := data[16]; maj != smbVerMajor {
+		t.Errorf("wki10_ver_major = %d, want %d", maj, smbVerMajor)
+	}
+}
+
+// TestNetWkstaGetInfoNonLevel10EmptySuccess proves a WkstaGetInfo at any other detail
+// level still falls through to empty-success (we only synthesize the level-10 record).
+func TestNetWkstaGetInfoNonLevel10EmptySuccess(t *testing.T) {
+	svc := &Service{shares: []*Share{newTestShare(t)}}
+	sess := newSession("")
+	tid := sess.allocTID(&treeConnect{ipc: true})
+
+	reply := svc.Dispatch(sess, wkstaGetInfoReq(tid, 1)) // level 1, unsupported
+	wordsOff := protocol.HeaderLen + 1
+	if pc := bp.LE16(reply[wordsOff+6 : wordsOff+8]); pc != 0 {
+		t.Errorf("level-1 ParameterCount = %d, want 0 (empty-success)", pc)
+	}
+	if dc := bp.LE16(reply[wordsOff+12 : wordsOff+14]); dc != 0 {
+		t.Errorf("level-1 DataCount = %d, want 0 (empty-success)", dc)
 	}
 }
 

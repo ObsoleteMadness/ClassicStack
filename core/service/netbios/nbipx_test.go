@@ -27,6 +27,7 @@ func (p *recordingIPXPort) Send(_ [6]byte, d *ipxproto.Datagram) error {
 	p.sent = append(p.sent, d)
 	return nil
 }
+func (p *recordingIPXPort) SrcMAC() [6]byte { return [6]byte{} }
 
 // lastSentStream returns the most recent datagram whose NB-IPX session header
 // carries the given DataStreamType, with its decoded header, or nil.
@@ -69,8 +70,10 @@ func newWiredIPXEngine(t *testing.T) (*Service, *ipxrouter.Router, *recordingIPX
 	r.AddPort(port)
 
 	eng := svc.NewIPXEngine(r)
-	if err := r.RegisterSocket(NBIPXSessionSocket, eng); err != nil {
-		t.Fatalf("RegisterSocket: %v", err)
+	for _, sock := range [][2]byte{NBIPXSessionSocket, NBIPXNameQuerySocket, NBIPXDatagramSocket, NBIPXNameSocket} {
+		if err := r.RegisterSocket(sock, eng); err != nil {
+			t.Fatalf("RegisterSocket(%v): %v", sock, err)
+		}
 	}
 	return svc, r, port, consumer
 }
@@ -91,44 +94,77 @@ func sessionDatagram(hdr *protocol.NBIPXSessionHeader, body []byte) *ipxproto.Da
 	}
 }
 
-// establishIPXCircuit drives SESSION_INIT through the mini-router and returns the
-// remote connection ID used and the local ID the engine confirmed.
+// sessionRequestBody builds the [called-name || calling-name || trailer] payload a
+// client sends in its session-request DATA frame (ERRATA captures/ipx.pcap frame 23).
+func sessionRequestBody() []byte {
+	called := protocol.NewName("CLASSICSTACK", protocol.NameTypeFileServer)
+	calling := protocol.NewName("WIN98", protocol.NameTypeWorkstation)
+	body := make([]byte, 0, 2*protocol.NameLength+6)
+	body = append(body, called[:]...)
+	body = append(body, calling[:]...)
+	body = append(body, 0xa0, 0x05, 0x25, 0x00, 0x0d, 0x00) // observed capability trailer
+	return body
+}
+
+// establishIPXCircuit drives the NB-IPX session request (a DATA frame with the
+// unassigned-DestConnID sentinel) through the mini-router and returns the local
+// connection ID the engine assigned in its accept. (ERRATA: there is no separate
+// SESSION_INIT stream type — establishment rides DATA 0x06; see nbipx.go.)
 func establishIPXCircuit(t *testing.T, r *ipxrouter.Router, port *recordingIPXPort, remoteID uint16) (localID uint16) {
 	t.Helper()
-	init := &protocol.NBIPXSessionHeader{
-		ConnCtrlFlag:   protocol.NBIPXConnFlagSYS,
-		DataStreamType: protocol.NBIPXSessionInit,
+	body := sessionRequestBody()
+	req := &protocol.NBIPXSessionHeader{
+		ConnCtrlFlag:   protocol.NBIPXConnFlagACK | protocol.NBIPXConnFlagEOM,
+		DataStreamType: protocol.NBIPXSessionData,
 		SourceConnID:   remoteID,
+		DestConnID:     0xFFFF, // unassigned: this is a session request
+		TotalDataLen:   uint16(len(body)),
+		DataLen:        uint16(len(body)),
 	}
-	r.Inbound(sessionDatagram(init, nil))
+	r.Inbound(sessionDatagram(req, body))
 
-	dg, hdr := port.lastSentStream(protocol.NBIPXSessionConfirm)
+	dg, hdr := port.lastSentStream(protocol.NBIPXSessionData)
 	if dg == nil {
-		t.Fatal("no SESSION_CONFIRM sent after SESSION_INIT")
+		t.Fatal("no session-accept (DATA) sent after session request")
 	}
 	if hdr.DestConnID != remoteID {
-		t.Fatalf("SESSION_CONFIRM DestConnID = %#x, want %#x", hdr.DestConnID, remoteID)
+		t.Fatalf("accept DestConnID = %#x, want %#x", hdr.DestConnID, remoteID)
 	}
 	if hdr.SourceConnID == 0 {
-		t.Fatal("SESSION_CONFIRM carried local connection ID 0")
+		t.Fatal("accept carried local connection ID 0")
+	}
+	// The accept is the NBIPX SESSION_CONFIRM: a Win98/WfW client only advances to
+	// SMB when it carries ConnCtrlFlag SYS|CONFIRM and RecvSeq 1 (captures/ipx.pcap
+	// frame 367). A bare-SYS/RecvSeq-0 accept is treated as unconfirmed and the
+	// client retransmits SESSION_INITIALIZE forever (frames 331-340).
+	if hdr.ConnCtrlFlag&protocol.NBIPXConnFlagCONFIRM == 0 {
+		t.Fatalf("accept ConnCtrlFlag = %#x, missing CONFIRM bit (%#x)", hdr.ConnCtrlFlag, protocol.NBIPXConnFlagCONFIRM)
+	}
+	if hdr.ConnCtrlFlag&protocol.NBIPXConnFlagSYS == 0 {
+		t.Fatalf("accept ConnCtrlFlag = %#x, missing SYS bit", hdr.ConnCtrlFlag)
+	}
+	if hdr.RecvSeq != protocol.NBIPXSessionAcceptRecvSeq {
+		t.Fatalf("accept RecvSeq = %d, want %d", hdr.RecvSeq, protocol.NBIPXSessionAcceptRecvSeq)
 	}
 	// The reply must be addressed back to the peer.
 	if dg.DstNode != testPeerNode || dg.DstSock != testPeerSock {
-		t.Fatalf("SESSION_CONFIRM addressed to %x:%v, want peer %x:%v", dg.DstNode, dg.DstSock, testPeerNode, testPeerSock)
+		t.Fatalf("accept addressed to %x:%v, want peer %x:%v", dg.DstNode, dg.DstSock, testPeerNode, testPeerSock)
 	}
 	return hdr.SourceConnID
 }
 
-// dataDatagram builds a DATA frame (DATA_ONLY_LAST + EOM by default) on the circuit.
-func dataDatagram(remoteID uint16, streamType uint8, eom bool, body []byte) *ipxproto.Datagram {
-	var flag uint8
+// dataDatagram builds a DATA frame (stream 0x06, EOM per the flag) on an open
+// circuit, carrying an SMB message body.
+func dataDatagram(remoteID uint16, eom bool, body []byte) *ipxproto.Datagram {
+	flag := uint8(0)
 	if eom {
 		flag = protocol.NBIPXConnFlagEOM
 	}
 	hdr := &protocol.NBIPXSessionHeader{
 		ConnCtrlFlag:   flag,
-		DataStreamType: streamType,
+		DataStreamType: protocol.NBIPXSessionData,
 		SourceConnID:   remoteID,
+		DestConnID:     1, // a real (assigned) DestConnID marks this a message, not a request
 		TotalDataLen:   uint16(len(body)),
 		DataLen:        uint16(len(body)),
 	}
@@ -140,6 +176,35 @@ func dataDatagram(remoteID uint16, streamType uint8, eom bool, body []byte) *ipx
 func TestNBIPX_InitEstablishesCircuit(t *testing.T) {
 	_, r, port, _ := newWiredIPXEngine(t)
 	establishIPXCircuit(t, r, port, 0x0042)
+}
+
+// TestNBIPX_AcceptHeaderMatchesCapture pins the SESSION_CONFIRM header the engine
+// emits to the working WFW-IPX server's accept (captures/ipx.pcap frame 367). With
+// the client's SourceConnID = 0x0a and the engine's first allocated local ID = 1,
+// the 18-byte header must be SYS|CONFIRM (0x81), DATA (0x06), SourceConnID 1,
+// DestConnID 0x0a, TotalDataLen/DataLen = the swapped-name accept length, RecvSeq 1.
+// (Frame 367's own IDs were 9/0x0a; only the local-ID value differs by allocation.)
+func TestNBIPX_AcceptHeaderMatchesCapture(t *testing.T) {
+	_, r, port, _ := newWiredIPXEngine(t)
+	localID := establishIPXCircuit(t, r, port, 0x000a)
+
+	_, hdr := port.lastSentStream(protocol.NBIPXSessionData)
+	if hdr.ConnCtrlFlag != protocol.NBIPXConnFlagSYS|protocol.NBIPXConnFlagCONFIRM {
+		t.Fatalf("accept ConnCtrlFlag = %#x, want %#x (SYS|CONFIRM, cf. frame 367 = 0x81)",
+			hdr.ConnCtrlFlag, protocol.NBIPXConnFlagSYS|protocol.NBIPXConnFlagCONFIRM)
+	}
+	if hdr.DataStreamType != protocol.NBIPXSessionData {
+		t.Fatalf("accept DataStreamType = %#x, want DATA %#x", hdr.DataStreamType, protocol.NBIPXSessionData)
+	}
+	if hdr.SourceConnID != localID {
+		t.Fatalf("accept SourceConnID = %#x, want assigned local ID %#x", hdr.SourceConnID, localID)
+	}
+	if hdr.DestConnID != 0x000a {
+		t.Fatalf("accept DestConnID = %#x, want echoed remote ID 0x0a", hdr.DestConnID)
+	}
+	if hdr.RecvSeq != protocol.NBIPXSessionAcceptRecvSeq {
+		t.Fatalf("accept RecvSeq = %d, want %d (frame 367)", hdr.RecvSeq, protocol.NBIPXSessionAcceptRecvSeq)
+	}
 }
 
 // TestNBIPX_NonPEPIgnored proves a datagram that is not IPX type 4 (PEP) produces
@@ -163,7 +228,7 @@ func TestNBIPX_DataDeliversToConsumerAndReplies(t *testing.T) {
 	establishIPXCircuit(t, r, port, remoteID)
 
 	msg := []byte("SMBhello")
-	r.Inbound(dataDatagram(remoteID, protocol.NBIPXDataOnlyLast, true, msg))
+	r.Inbound(dataDatagram(remoteID, true, msg))
 
 	if consumer.opened != 1 {
 		t.Fatalf("consumer opened %d circuits, want 1", consumer.opened)
@@ -171,7 +236,8 @@ func TestNBIPX_DataDeliversToConsumerAndReplies(t *testing.T) {
 	if string(consumer.last) != "SMBhello" {
 		t.Fatalf("consumer saw %q, want %q", consumer.last, "SMBhello")
 	}
-	dg, hdr := port.lastSentStream(protocol.NBIPXDataOnlyLast)
+	// The accept and the data reply both use stream 0x06; take the last one.
+	dg, hdr := port.lastSentStream(protocol.NBIPXSessionData)
 	if dg == nil {
 		t.Fatal("no DATA reply sent")
 	}
@@ -191,9 +257,9 @@ func TestNBIPX_SegmentedMessageReassembled(t *testing.T) {
 	remoteID := uint16(0x0011)
 	establishIPXCircuit(t, r, port, remoteID)
 
-	r.Inbound(dataDatagram(remoteID, protocol.NBIPXDataFirstMiddle, false, []byte("AAAA")))
-	r.Inbound(dataDatagram(remoteID, protocol.NBIPXDataFirstMiddle, false, []byte("BBBB")))
-	r.Inbound(dataDatagram(remoteID, protocol.NBIPXDataOnlyLast, true, []byte("CCCC")))
+	r.Inbound(dataDatagram(remoteID, false, []byte("AAAA")))
+	r.Inbound(dataDatagram(remoteID, false, []byte("BBBB")))
+	r.Inbound(dataDatagram(remoteID, true, []byte("CCCC")))
 
 	if string(consumer.last) != "AAAABBBBCCCC" {
 		t.Fatalf("reassembled message = %q, want %q", consumer.last, "AAAABBBBCCCC")
@@ -207,7 +273,7 @@ func TestNBIPX_SessionEndClosesConn(t *testing.T) {
 	remoteID := uint16(0x00aa)
 	establishIPXCircuit(t, r, port, remoteID)
 	// Carry one message so a conn is opened.
-	r.Inbound(dataDatagram(remoteID, protocol.NBIPXDataOnlyLast, true, []byte("x")))
+	r.Inbound(dataDatagram(remoteID, true, []byte("x")))
 	if consumer.opened != 1 {
 		t.Fatalf("consumer opened %d, want 1", consumer.opened)
 	}
@@ -236,7 +302,7 @@ func TestNBIPX_StopTearsDownCircuits(t *testing.T) {
 	}
 	remoteID := uint16(0x00bb)
 	establishIPXCircuit(t, r, port, remoteID)
-	r.Inbound(dataDatagram(remoteID, protocol.NBIPXDataOnlyLast, true, []byte("y")))
+	r.Inbound(dataDatagram(remoteID, true, []byte("y")))
 	if consumer.opened != 1 {
 		t.Fatalf("consumer opened %d, want 1", consumer.opened)
 	}

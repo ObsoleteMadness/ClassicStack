@@ -101,8 +101,11 @@ func (e *sessionEngine) buildStatusPayload(requestedBufLen uint16) (payload []by
 // destination names plus payload and hands it to the installed DatagramConsumer (a
 // browser / mailslot service). With no consumer wired the datagram is dropped after
 // decode — the listening file server has no use for it, but the path is complete so
-// a browser service can plug in without touching the transport.
-func (e *sessionEngine) handleDatagram(frame *proto.Frame, broadcast bool) {
+// a browser service can plug in without touching the transport. ReplyTo carries the
+// sender's MAC (in the Node field) so a consumer answering a specific requester
+// (GetBackupList / AnnouncementRequest) can reply *directed* to that station rather
+// than broadcast.
+func (e *sessionEngine) handleDatagram(srcMAC [6]byte, frame *proto.Frame, broadcast bool) {
 	consumer := e.dgram()
 	if consumer == nil {
 		return
@@ -112,5 +115,6 @@ func (e *sessionEngine) handleDatagram(frame *proto.Frame, broadcast bool) {
 		Destination: nbf.Name(frame.DestinationName),
 		Payload:     append([]byte(nil), frame.Payload...),
 		Broadcast:   broadcast,
+		ReplyTo:     &DatagramEndpoint{Transport: TransportNetBEUI, Node: srcMAC},
 	})
 }

@@ -11,11 +11,11 @@ import (
 )
 
 type picoEthernet struct {
-	rxPin      machine.Pin
-	txPin      machine.Pin
-	refClkPin  machine.Pin
-	recvCh     chan []byte
-	closed     bool
+	rxPin     machine.Pin
+	txPin     machine.Pin
+	refClkPin machine.Pin
+	recvCh    chan []byte
+	closed    bool
 }
 
 // Compile-time assertion: *picoEthernet satisfies link.FrameLink.

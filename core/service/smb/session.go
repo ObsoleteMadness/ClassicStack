@@ -2,6 +2,7 @@ package smb
 
 import (
 	"sync"
+	"time"
 
 	stdfs "io/fs"
 
@@ -21,9 +22,22 @@ import (
 // slice, so a share removed from the Manager mid-session rides out on the held
 // pointer until the tree disconnects (the RemoveShare contract).
 type smbSession struct {
-	mu       sync.Mutex
-	uid      uint16
-	user     string // authenticated identity from SESSION_SETUP; "" = guest
+	mu   sync.Mutex
+	uid  uint16
+	user string // authenticated identity from SESSION_SETUP; "" = guest
+
+	// client is the transport remote-endpoint label the circuit was opened for
+	// (e.g. an IPX node "00:00:d8:72:e9:a4.0552", a MAC, or a TCP addr), set once
+	// at NewConn; "" when the transport did not supply one. It is the key a
+	// management view groups sessions under.
+	client string
+	// dialect / dialectFamily record what THIS client negotiated (SMB_COM_NEGOTIATE),
+	// so later behaviour keys off the session's negotiated version rather than
+	// re-deriving from each request's Flags2. dialect is "" until NEGOTIATE succeeds.
+	dialect       string
+	dialectFamily int
+	negotiatedAt  time.Time // when NEGOTIATE completed; zero until then
+
 	trees    map[uint16]*treeConnect
 	fids     map[uint16]*fileHandle
 	searches map[uint16]*searchHandle
@@ -102,14 +116,42 @@ type findRow struct {
 	info      stdfs.FileInfo
 }
 
-// newSession builds an empty per-connection session. The UID is granted on
+// newSession builds an empty per-connection session for the given transport
+// remote-endpoint label (client, "" when unknown). The UID is granted on
 // SESSION_SETUP_ANDX; TIDs/FIDs/SIDs are allocated by their respective commands.
-func newSession() *smbSession {
+func newSession(client string) *smbSession {
 	return &smbSession{
+		client:   client,
 		trees:    make(map[uint16]*treeConnect),
 		fids:     make(map[uint16]*fileHandle),
 		searches: make(map[uint16]*searchHandle),
 		locks:    make(map[string]*lockTable),
+	}
+}
+
+// setNegotiated records the dialect this session negotiated (called from the
+// NEGOTIATE handler once a dialect is selected). Storing it on the session lets
+// later behaviour and the management view key off the session's negotiated
+// version rather than re-deriving it from each request.
+func (sess *smbSession) setNegotiated(dialect string, family int) {
+	sess.mu.Lock()
+	sess.dialect = dialect
+	sess.dialectFamily = family
+	sess.negotiatedAt = time.Now()
+	sess.mu.Unlock()
+}
+
+// info snapshots the session's client-visible state for the management view.
+func (sess *smbSession) info() SessionInfo {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return SessionInfo{
+		Client:       sess.client,
+		User:         sess.user,
+		Dialect:      sess.dialect,
+		NegotiatedAt: sess.negotiatedAt,
+		OpenTrees:    len(sess.trees),
+		OpenFiles:    len(sess.fids),
 	}
 }
 

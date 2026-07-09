@@ -98,6 +98,10 @@ default = true
 #   mac              EtherTalk: station MAC (blank = use the bridge NIC's own)
 #   device / baud    TashTalk: the host serial tty + line speed (serial is a PORT
 #                    property, not an interface)
+#   ipx_frame_type   IPX: Ethernet encapsulation for OUTBOUND frames — one of
+#                    "ethernet_ii" (DIX 0x8137), "802.3" (raw Novell), or "802.2"
+#                    (IEEE LLC). Blank defaults to ethernet_ii, which MacIPX speaks.
+#                    Inbound frames are accepted in every framing regardless.
 #   capture          pcap file to tee this port's wire traffic to (blank = off).
 #                    Capture is a property of the port that owns the segment; it is
 #                    written with the transport's data-link type (Ethernet for
@@ -138,6 +142,8 @@ seed_zone = "TashTalk Network"
 [[ipx]]
 iface = "br-lan"
 enabled = false
+# ethernet_ii (default, MacIPX-compatible) | 802.3 | 802.2
+ipx_frame_type = "ethernet_ii"
 
 # NetBEUI — NBF over 802.2 LLC (a NetBIOS/SMB transport; build tag `netbeui`).
 [[netbeui]]

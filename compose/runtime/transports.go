@@ -30,6 +30,9 @@ package runtime
 // identical but distinct interfaces, so neither package imports the other).
 
 import (
+	"context"
+	"time"
+
 	"github.com/ObsoleteMadness/ClassicStack/adapter/smbtcp"
 	mailslotwire "github.com/ObsoleteMadness/ClassicStack/core/protocol/mailslot"
 	ipxrouter "github.com/ObsoleteMadness/ClassicStack/core/router/ipx"
@@ -39,6 +42,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	diagproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx/diag"
 	ncpproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ncp"
+	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbios"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/afp"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/browser"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/ipxdiag"
@@ -49,6 +53,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/service/nbp"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/ncp"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/netbios"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/sap"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/smb"
 )
 
@@ -326,33 +331,95 @@ func wireIPX(nb *netbios.Service, sm *smb.Service, comps map[string]component.Co
 	}
 
 	r := ipxrouter.NewRouter(nil)
+	var node [6]byte
 	for _, c := range comps {
 		if p, ok := c.(ipxrouter.Port); ok {
 			r.AddPort(p)
+			if node == ([6]byte{}) {
+				node = p.SrcMAC()
+			}
 		}
+	}
+	if node != ([6]byte{}) {
+		r.SetIdentity(r.Network(), node)
+	}
+
+	// One SHARED SAP advertiser (socket 0x0452) serves every IPX-discoverable service:
+	// the router allows a single handler per socket, so NCP and NB-IPX both register
+	// their SAP entry through this one advertiser rather than each owning 0x0452. Built
+	// lazily on the first registration below; started + socket-registered afterwards.
+	var sapAdv *sap.Advertiser
+	sapReg := func(e ncpproto.SAPEntry) {
+		if sapAdv == nil {
+			sapAdv = sap.New(r)
+			sapAdv.SetIdentity(r.Network(), r.Node())
+		}
+		sapAdv.Register(e)
 	}
 
 	if nb != nil {
 		eng := nb.NewIPXEngine(r)
+		// The engine serves the session socket (0x0455, SESSION_*/DATA and the IPX
+		// type-20 NBIPX Find-name broadcast), the NMPI name-query socket (0x0551, the
+		// "where is CLASSICSTACK?" query a Win9x/WfW client broadcasts before opening a
+		// session), and the NB-IPX datagram socket (0x0553, the NMPI mailslot sends that
+		// carry browser HostAnnounce / AnnouncementRequest / GetBackupList). Without
+		// 0x0551 the name query is dropped and the client never finds the server; without
+		// 0x0553 the browser never sees the client's browse traffic and ClassicStack does
+		// not appear in "net view".
 		_ = r.RegisterSocket(netbios.NBIPXSessionSocket, eng)
+		_ = r.RegisterSocket(netbios.NBIPXNameQuerySocket, eng)
+		_ = r.RegisterSocket(netbios.NBIPXDatagramSocket, eng)
+		// 0x0554: the alternative name-service socket some stacks use for name
+		// claim/query instead of the session socket's type-20 broadcast. The
+		// legacy over_ipx transport claimed all four sockets; register it too so
+		// those name-service packets are delivered.
+		_ = r.RegisterSocket(netbios.NBIPXNameSocket, eng)
+		// Claim our NetBIOS server name on the segment (type-20 Find-name + NMPI
+		// ClaimName, 6×500ms), then — if uncontested — advertise it via SAP under the
+		// NetBIOS type (0x0640) pointing at the session socket (0x0455), so a
+		// SAP-browsing NWLink station discovers us. This mirrors the legacy over_ipx
+		// claim-then-advertise. The claim blocks ~3s, so run it off the wiring path.
+		for _, n := range nb.LocalNames() {
+			if n.Type() != protocol.NameTypeFileServer {
+				continue // advertise the <20> file-server identity, one entry
+			}
+			name := n
+			serverName := name.String()
+			self := r.Node()
+			go func() {
+				if err := eng.ClaimName(context.Background(), self, name, 6, 500*time.Millisecond); err != nil {
+					return // name in use on the segment — do not advertise it
+				}
+				sapReg(ncpproto.SAPEntry{
+					Type:   ncpproto.SAPServerTypeNetBIOS,
+					Name:   serverName,
+					Socket: netbios.NBIPXSessionSocket,
+					Hops:   1,
+				})
+			}()
+		}
 	}
 	if sm != nil {
 		direct := sm.NewDirectIPX(r)
 		_ = r.RegisterSocket(smb.DirectSMBSocket, direct)
 	}
-	// NCP file service over IPX (socket 0x0451) plus its SAP advertiser (socket
-	// 0x0452): the NCP transport drives the command engine; the SAP advertiser makes
-	// the server discoverable to NETx/VLM. Both ride this mini-router — the SAP
-	// advertiser takes the router as egress and the router's network/node as the
-	// advertised IPX identity, mirroring the IPX diagnostic responder's wiring.
+	// NCP file service over IPX (socket 0x0451): the transport drives the command
+	// engine; its SAP entry (File Server 0x0004 @ 0x0451) is registered with the shared
+	// advertiser so NETx/VLM discover it. The transport holds the advertiser handle for
+	// its "sap: advertising" dashboard prop and to stop it on teardown.
 	if nc != nil {
 		t := nc.NewOverIPX(r)
 		_ = r.RegisterSocket(ncpproto.NCPSocket, t)
-		sap := nc.NewSAP(r)
-		sap.SetIdentity(r.Network(), r.Node())
-		t.SetSAP(sap)
-		sap.Start()
-		_ = r.RegisterSocket(ncpproto.SAPSocket, sap)
+		sapReg(nc.SAPEntry())
+		t.SetSAP(sapAdv)
+	}
+	// Start the shared advertiser and register it on the SAP socket once any service
+	// registered an entry. (The NB-IPX entry may register later, from the async claim
+	// goroutine — the advertiser picks it up live.)
+	if sapAdv != nil {
+		sapAdv.Start()
+		_ = r.RegisterSocket(ncpproto.SAPSocket, sapAdv)
 	}
 	// The IPX gateway (MacIPX) forwards encapsulated IPX from MacIPX clients onto this
 	// same mini-router (and routes native IPX replies back over DDP). It is an AppleTalk
@@ -539,9 +606,10 @@ func ipxgwService(comps map[string]component.Component) *ipxgw.Service {
 // re-wraps it behind the netbios.SessionCircuit interface.
 type smbSessionBridge struct{ adapter smb.SessionConsumer }
 
-// NewConn opens an SMB circuit and presents it as a netbios.SessionCircuit.
-func (b smbSessionBridge) NewConn() netbios.SessionCircuit {
-	return smbCircuitBridge{c: b.adapter.NewConn()}
+// NewConn opens an SMB circuit for the transport remote-endpoint label client and
+// presents it as a netbios.SessionCircuit.
+func (b smbSessionBridge) NewConn(client string) netbios.SessionCircuit {
+	return smbCircuitBridge{c: b.adapter.NewConn(client)}
 }
 
 // smbCircuitBridge re-types an smb.SessionCircuit as a netbios.SessionCircuit. The

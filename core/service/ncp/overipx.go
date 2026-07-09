@@ -48,9 +48,19 @@ type OverIPX struct {
 	mu    sync.Mutex
 	conns map[endpoint]*Conn
 
-	// sap is the optional SAP advertiser (set by SetSAP); it makes the server
-	// discoverable. Held here so Props can report SAP state and Stop can halt it.
-	sap *sapAdvertiser
+	// sap is the optional SAP advertiser handle (set by SetSAP); it makes the server
+	// discoverable. Held here so Props can report SAP state and Stop can halt it. It
+	// is the SHARED core/service/sap advertiser (one per runtime, on socket 0x0452),
+	// through which NCP and NB-IPX both advertise — the transport keeps only the handle
+	// so it never owns the SAP socket.
+	sap sapHandle
+}
+
+// sapHandle is the minimal SAP-advertiser surface the NCP transport needs: stop it on
+// teardown. The shared core/service/sap.Advertiser satisfies it (Stop). Keeping it an
+// interface lets the transport hold the shared advertiser without importing it.
+type sapHandle interface {
+	Stop()
 }
 
 // NewOverIPX builds the transport bound to svc (the NCP command core) and sender
@@ -197,14 +207,15 @@ func (t *OverIPX) closeCircuits() {
 	sap := t.sap
 	t.mu.Unlock()
 	if sap != nil {
-		sap.stop()
+		sap.Stop()
 	}
 }
 
-// SetSAP installs the SAP advertiser the transport runs (set during compose
-// cross-wiring). It enables the dashboard's "sap: advertising" prop and the
-// periodic broadcast / query answers.
-func (t *OverIPX) SetSAP(sap *sapAdvertiser) {
+// SetSAP installs the shared SAP advertiser handle the transport reports/stops (set
+// during compose cross-wiring). It enables the dashboard's "sap: advertising" prop;
+// the shared advertiser (core/service/sap) does the periodic broadcast / query answers
+// for this server's registered entry.
+func (t *OverIPX) SetSAP(sap sapHandle) {
 	t.mu.Lock()
 	t.sap = sap
 	t.mu.Unlock()

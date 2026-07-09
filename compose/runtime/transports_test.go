@@ -120,6 +120,9 @@ func (p *recordingIPXPort) Stop(context.Context) error  { return nil }
 func (p *recordingIPXPort) SetDeliveryCallback(cb portipx.DeliveryCallback) {
 	p.cb = cb
 }
+func (p *recordingIPXPort) SrcMAC() [6]byte {
+	return [6]byte{0x02, 0, 0, 0, 0, 0x02}
+}
 func (p *recordingIPXPort) Send(_ [6]byte, d *ipxproto.Datagram) error {
 	p.sent = append(p.sent, d)
 	return nil

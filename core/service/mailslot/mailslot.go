@@ -24,10 +24,14 @@ import (
 )
 
 // Consumer receives the body written to the mailslot it registered for, with the
-// source and destination NetBIOS names. A browser registers for \MAILSLOT\BROWSE,
-// a messenger for \MAILSLOT\MESSNGR; neither sees the SMB_COM_TRANSACTION envelope.
+// source and destination NetBIOS names and the transport reply endpoint (replyTo,
+// nil for a broadcast the consumer only observes). A browser registers for
+// \MAILSLOT\BROWSE, a messenger for \MAILSLOT\MESSNGR; neither sees the
+// SMB_COM_TRANSACTION envelope. A consumer that answers a specific requester echoes
+// replyTo back to SendMailslotTo; it treats it as opaque (the §3 transport-agnostic
+// contract).
 type Consumer interface {
-	HandleMailslot(name string, src, dest nbproto.Name, body []byte)
+	HandleMailslot(name string, src, dest nbproto.Name, body []byte, replyTo *netbios.DatagramEndpoint)
 }
 
 // DatagramSink is the NetBIOS outbound seam the router sends through. The NetBIOS
@@ -85,7 +89,7 @@ func (r *Router) HandleDatagram(d netbios.Datagram) {
 	if c == nil {
 		return
 	}
-	c.HandleMailslot(w.Name, d.Source, d.Destination, w.Body)
+	c.HandleMailslot(w.Name, d.Source, d.Destination, w.Body, d.ReplyTo)
 }
 
 // SendMailslot wraps body in the \MAILSLOT\* envelope for the named mailslot and
@@ -93,12 +97,22 @@ func (r *Router) HandleDatagram(d netbios.Datagram) {
 // datagram (the announcement case); a directed reply sets broadcast false. The
 // transports do the per-protocol wire framing.
 func (r *Router) SendMailslot(name string, src, dest nbproto.Name, body []byte, broadcast bool) error {
+	return r.SendMailslotTo(name, src, dest, body, broadcast, nil)
+}
+
+// SendMailslotTo is SendMailslot with an explicit transport reply endpoint: when
+// replyTo is non-nil the datagram is sent *directed* to that node by the one
+// transport it names (a browser answering a specific GetBackupList / Announcement-
+// Request requester); when nil it is a normal broadcast/named send fanned to every
+// transport. replyTo is the token the consumer received on HandleMailslot.
+func (r *Router) SendMailslotTo(name string, src, dest nbproto.Name, body []byte, broadcast bool, replyTo *netbios.DatagramEndpoint) error {
 	payload := wire.Write{Name: name, Body: body}.Marshal()
 	return r.sink.SendDatagram(netbios.Datagram{
 		Source:      src,
 		Destination: dest,
 		Payload:     payload,
 		Broadcast:   broadcast,
+		ReplyTo:     replyTo,
 	})
 }
 

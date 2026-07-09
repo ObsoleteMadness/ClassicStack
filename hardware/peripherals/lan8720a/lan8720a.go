@@ -10,10 +10,10 @@ import (
 
 // Registers
 const (
-	RegBCR = 0  // Basic Control Register
-	RegBSR = 1  // Basic Status Register
-	RegPHY1 = 2 // PHY Identifier 1
-	RegPHY2 = 3 // PHY Identifier 2
+	RegBCR  = 0  // Basic Control Register
+	RegBSR  = 1  // Basic Status Register
+	RegPHY1 = 2  // PHY Identifier 1
+	RegPHY2 = 3  // PHY Identifier 2
 	RegSCSR = 31 // Special Control/Status Register (LAN8720A specific)
 )
 
@@ -37,9 +37,9 @@ const (
 
 // Special Control/Status Register bits (Register 31)
 const (
-	SCSRSpeedMask   = 0x001C
-	SCSRSpeed10Half = 0x0004
-	SCSRSpeed10Full = 0x0014
+	SCSRSpeedMask    = 0x001C
+	SCSRSpeed10Half  = 0x0004
+	SCSRSpeed10Full  = 0x0014
 	SCSRSpeed100Half = 0x0008
 	SCSRSpeed100Full = 0x0018
 )
@@ -66,7 +66,7 @@ func (d *Driver) Init() error {
 	// Configure pins
 	d.mdc.Configure(machine.PinConfig{Mode: machine.PinOutput})
 	d.mdio.Configure(machine.PinConfig{Mode: machine.PinOutput})
-	
+
 	if d.power != machine.NoPin {
 		d.power.Configure(machine.PinConfig{Mode: machine.PinOutput})
 		// Power cycle PHY (active high)
@@ -89,7 +89,7 @@ func (d *Driver) Init() error {
 // Reset triggers a software reset on the PHY and waits for it to complete.
 func (d *Driver) Reset() error {
 	d.writeReg(RegBCR, BCRReset)
-	
+
 	// Wait for reset bit to clear (up to 500ms)
 	for i := 0; i < 50; i++ {
 		time.Sleep(10 * time.Millisecond)
@@ -167,7 +167,7 @@ func (d *Driver) readBit() bool {
 
 func (d *Driver) writeReg(reg uint8, value uint16) {
 	d.mdio.Configure(machine.PinConfig{Mode: machine.PinOutput})
-	
+
 	// Preamble: 32 ones
 	for i := 0; i < 32; i++ {
 		d.writeBit(true)
@@ -180,27 +180,27 @@ func (d *Driver) writeReg(reg uint8, value uint16) {
 	d.writeBit(true)
 	// PHYAD: 5 bits
 	for i := 4; i >= 0; i-- {
-		d.writeBit((d.phyAddr >> i) & 1 == 1)
+		d.writeBit((d.phyAddr>>i)&1 == 1)
 	}
 	// REGAD: 5 bits
 	for i := 4; i >= 0; i-- {
-		d.writeBit((reg >> i) & 1 == 1)
+		d.writeBit((reg>>i)&1 == 1)
 	}
 	// TA: Turnaround (10)
 	d.writeBit(true)
 	d.writeBit(false)
 	// DATA: 16 bits
 	for i := 15; i >= 0; i-- {
-		d.writeBit((value >> i) & 1 == 1)
+		d.writeBit((value>>i)&1 == 1)
 	}
-	
+
 	// Release MDIO line
 	d.mdio.Configure(machine.PinConfig{Mode: machine.PinInput})
 }
 
 func (d *Driver) readReg(reg uint8) uint16 {
 	d.mdio.Configure(machine.PinConfig{Mode: machine.PinOutput})
-	
+
 	// Preamble: 32 ones
 	for i := 0; i < 32; i++ {
 		d.writeBit(true)
@@ -213,11 +213,11 @@ func (d *Driver) readReg(reg uint8) uint16 {
 	d.writeBit(false)
 	// PHYAD: 5 bits
 	for i := 4; i >= 0; i-- {
-		d.writeBit((d.phyAddr >> i) & 1 == 1)
+		d.writeBit((d.phyAddr>>i)&1 == 1)
 	}
 	// REGAD: 5 bits
 	for i := 4; i >= 0; i-- {
-		d.writeBit((reg >> i) & 1 == 1)
+		d.writeBit((reg>>i)&1 == 1)
 	}
 	// TA: Turnaround (Z0)
 	d.mdio.Configure(machine.PinConfig{Mode: machine.PinInput})
@@ -225,7 +225,7 @@ func (d *Driver) readReg(reg uint8) uint16 {
 	time.Sleep(1 * time.Microsecond)
 	d.mdc.Low()
 	time.Sleep(1 * time.Microsecond)
-	
+
 	// DATA: 16 bits
 	var val uint16
 	for i := 15; i >= 0; i-- {

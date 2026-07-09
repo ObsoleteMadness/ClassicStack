@@ -28,11 +28,13 @@ type Conn struct {
 	sess *smbSession
 }
 
-// NewConn opens an SMB virtual circuit on the service. The transport calls this
-// once per established NetBIOS session; the returned Conn is fed each reassembled
-// SMB message via ServeMessage and released via Close.
-func (s *Service) NewConn() *Conn {
-	sess := newSession()
+// NewConn opens an SMB virtual circuit on the service for the transport
+// remote-endpoint label client (e.g. an IPX node.socket, a MAC, or a TCP addr; ""
+// when the transport supplies none). The transport calls this once per established
+// session; the returned Conn is fed each reassembled SMB message via ServeMessage
+// and released via Close. The client label keys the session in the management view.
+func (s *Service) NewConn(client string) *Conn {
+	sess := newSession(client)
 	s.registerSession(sess) // §10d: track the circuit so async NOTIFY_CHANGE can reach it
 	return &Conn{svc: s, sess: sess}
 }
@@ -70,7 +72,11 @@ func (c *Conn) Close() {
 // engine behind one small interface, so neither side imports the other's internals
 // (the §3-bis command-core / session-transport split).
 type SessionConsumer interface {
-	NewConn() SessionCircuit
+	// NewConn opens a circuit for the transport remote-endpoint label client ("" when
+	// the transport supplies none). The transport passes its own natural endpoint
+	// string (IPX node.socket, MAC, TCP addr) so the service can group sessions per
+	// client in the management view.
+	NewConn(client string) SessionCircuit
 }
 
 // SessionCircuit is one open SMB virtual circuit as the NetBIOS transport sees
@@ -88,8 +94,11 @@ type SessionCircuit interface {
 // on the small SessionConsumer/SessionCircuit interfaces rather than *smb.Service.
 type ConsumerAdapter struct{ Service *Service }
 
-// NewConn opens a circuit, returned through the SessionCircuit interface.
-func (a ConsumerAdapter) NewConn() SessionCircuit { return a.Service.NewConn() }
+// NewConn opens a circuit for the transport remote-endpoint label client, returned
+// through the SessionCircuit interface.
+func (a ConsumerAdapter) NewConn(client string) SessionCircuit {
+	return a.Service.NewConn(client)
+}
 
 // compile-time assertions: the concrete types satisfy the seam interfaces.
 var (

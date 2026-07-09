@@ -52,10 +52,33 @@ func responseHeader(h protocol.Header, status uint32) protocol.Header {
 	return h
 }
 
+// DOS-form status words the wire carries for CORE/LANMAN clients that did NOT set
+// SMB_FLAGS2_NT_STATUS. The header Status field for such clients is a
+// {ErrorClass(1), reserved(1), ErrorCode(2 LE)} triple ([MS-CIFS] 2.2.3.1); packed
+// little-endian a value 0x00CCcccc puts ErrorClass in byte 0 and ErrorCode in bytes
+// 2-3. Class ERRDOS=0x01, ERRSRV=0x02 ([smb6.0] 4603-4604). These mirror the
+// field-validated legacy service/smb table (server.go smbStatusErr*).
+const (
+	dosErrBadFunc     = 0x00010001 // ERRDOS/ERRbadfunc (code 1)
+	dosErrBadFile     = 0x00020001 // ERRDOS/ERRbadfile (code 2)
+	dosErrBadPath     = 0x00030001 // ERRDOS/ERRbadpath (code 3)
+	dosErrNoAccess    = 0x00050001 // ERRDOS/ERRnoaccess (code 5)
+	dosErrBadFid      = 0x00060001 // ERRDOS/ERRbadfid (code 6)
+	dosErrNoFiles     = 0x00120001 // ERRDOS/ERRnofiles (code 18)
+	dosErrInvNetName  = 0x00430001 // ERRDOS/ERRinvnetname (code 67)
+	dosErrBadTID      = 0x00050002 // ERRSRV/ERRinvtid (code 5)
+	dosErrBadPw       = 0x00020002 // ERRSRV/ERRbadpw (code 2) — [smb6.0] 4652
+	dosErrSrvError    = 0x00010002 // ERRSRV/ERRerror (code 1) — generic server error
+	dosErrUseStandard = 0x00FB0002 // ERRSRV/ERRuseSTD (code 251)
+)
+
 // toWireStatus maps an NTSTATUS to the value to put on the wire: the NTSTATUS
 // itself when the request set SMB_FLAGS2_NT_STATUS, otherwise the equivalent DOS
-// class/code (the form CORE-dialect clients expect). Only the spine's statuses
-// are mapped; the FS engine extends this in its slice.
+// class/code (the form CORE-dialect clients expect). This mirrors the legacy
+// service/smb toWireErrorStatus exactly — an unmapped NTSTATUS (high byte set) with
+// the NT-status bit clear collapses to ERRSRV/ERRerror rather than leaking a raw
+// NTSTATUS a CORE client would mis-read (the 0xC000006D → bogus class 0x6d symptom
+// in captures/ipx.pcap).
 func toWireStatus(reqFlags2 uint16, status uint32) uint32 {
 	if reqFlags2&protocol.Flags2NTStatus != 0 {
 		return status
@@ -63,32 +86,38 @@ func toWireStatus(reqFlags2 uint16, status uint32) uint32 {
 	switch status {
 	case statusSuccess:
 		return statusSuccess
-	case statusBadNetworkName:
-		return 0x00060001 // ERRSRV/ERRinvnetname
-	case statusAccessDenied:
-		return 0x00050001 // ERRSRV/ERRaccess
-	case statusNotSupported:
-		return 0x00010001 // ERRDOS/ERRbadfunc
 	case statusSMBBadTID:
-		return 0x00050002 // ERRSRV/ERRinvtid (already DOS-form)
-	case statusObjectNameNotFound, statusObjectPathNotFound:
-		return 0x00020001 // ERRDOS/ERRbadfile
-	case statusObjectNameCollision:
-		return 0x00050001 // ERRSRV/ERRaccess (file exists → access-denied for CORE clients)
-	case statusObjectNameInvalid:
-		return 0x0002000C // ERRDOS/ERRbadpath
-	case statusFileIsADirectory, statusNotADirectory, statusDirectoryNotEmpty:
-		return 0x00050001 // ERRSRV/ERRaccess
-	case statusInvalidHandle:
-		return 0x00010006 // ERRDOS/ERRbadfid
-	case statusNoMoreFiles:
-		return 0x00010012 // ERRDOS/ERRnofiles
-	case statusUnsuccessful:
-		return 0x00010001 // ERRDOS/ERRbadfunc
+		return dosErrBadTID // already DOS-form
 	case statusUseStandard:
-		return 0x00FB0002 // ERRSRV/ERRuseSTD — already DOS class/code form
+		return dosErrUseStandard // already DOS-form
+	case statusBadNetworkName:
+		return dosErrInvNetName
+	case statusAccessDenied, statusObjectNameCollision, statusDirectoryNotEmpty:
+		return dosErrNoAccess
+	case statusNotSupported:
+		return dosErrBadFunc
+	case statusObjectNameNotFound:
+		return dosErrBadFile
+	case statusObjectPathNotFound, statusObjectNameInvalid, statusFileIsADirectory, statusNotADirectory:
+		return dosErrBadPath
+	case statusInvalidHandle:
+		return dosErrBadFid
+	case statusNoMoreFiles:
+		return dosErrNoFiles
+	case statusLogonFailure:
+		// [smb6.0] 4652: a bad name/password pair in a Tree Connect or Session
+		// Setup is ERRSRV(class 2)/ERRbadpw(code 2). Without this a DOS-codes
+		// client receives the raw NTSTATUS 0xC000006D whose low byte 0x6d it
+		// decodes as a bogus error class ("unknown error class 0x6d").
+		return dosErrBadPw
 	default:
-		return status
+		// Any unmapped code: pass through already-DOS-form values (high byte
+		// clear); collapse a raw NTSTATUS to a generic ERRSRV/ERRerror so a CORE
+		// client never sees an NTSTATUS in its DOS-form Status field.
+		if status&0xFF000000 == 0 {
+			return status
+		}
+		return dosErrSrvError
 	}
 }
 
@@ -102,59 +131,169 @@ func buildErrorResponse(h protocol.Header, req []byte, status uint32) []byte {
 	return out
 }
 
-// handleNegotiate answers SMB_COM_NEGOTIATE, accepting the NT LM 0.12 dialect
-// (WCT=17). SecurityMode is user-level with no challenge so a client may send
-// plain-text credentials we accept as a guest session. The response advertises
-// the conservative capability/buffer set tuned for vintage clients.
-func (s *Service) handleNegotiate(h protocol.Header, req []byte) []byte {
-	dialectIdx := findNegotiateDialect(req, protocol.DialectNTLM)
-	if dialectIdx < 0 {
-		dialectIdx = 0
+// handleNegotiate answers SMB_COM_NEGOTIATE. It selects the most-recent dialect the
+// client offered and replies in the wire format that dialect mandates — the response
+// WordCount MUST match the selected dialect family ([MS-CIFS] 2.2.4.52.2): Core →
+// WCT=1, LANMAN 1.0..2.1 / WfW 3.1a → WCT=13, NT LM 0.12 → WCT=17. Emitting the wrong
+// word count for the selected dialect yields a malformed reply a client may reject.
+//
+// SecurityMode is user-level, plaintext, no challenge (we accept credentials as a
+// guest session; authentication is handled — or not — by SESSION_SETUP, out of scope
+// here). The response header echoes the request header (reply flag + SUCCESS status);
+// it does NOT stamp SMB_FLAGS2_KNOWS_LONG_NAMES the way the generic responseHeader
+// helper does — NEGOTIATE preserves the client's Flags2.
+func (s *Service) handleNegotiate(sess *smbSession, h protocol.Header, req []byte) []byte {
+	idx, name, family := protocol.SelectDialect(parseNegotiateDialects(req))
+
+	// Record what this client negotiated on the session, so later behaviour and the
+	// management view key off the session's negotiated version. An unmatched list
+	// still records the (empty) outcome — the session is Core by default.
+	sess.setNegotiated(name, int(family))
+
+	switch family {
+	case protocol.DialectFamilyNT:
+		return s.buildNegotiateNT(h, idx)
+	case protocol.DialectFamilyLanMan:
+		return s.buildNegotiateLanMan(h, idx, name)
+	case protocol.DialectFamilyUnknown:
+		// None of the offered dialects is supported: core-shape reply with 0xFFFF.
+		return buildNegotiateCore(h, 0xFFFF)
+	default: // DialectFamilyCore
+		return buildNegotiateCore(h, idx)
 	}
+}
+
+// negotiateResponseHeader builds the NEGOTIATE reply header: the request header with
+// the reply flag and SUCCESS status set, Flags2 preserved exactly as the client sent
+// it. Mid/Pid/etc. are carried through. Unlike responseHeader it does NOT add
+// SMB_FLAGS2_KNOWS_LONG_NAMES ([smb6.0]: the server must return the same Mid/Pid; the
+// legacy server copies the request header verbatim for NEGOTIATE).
+func negotiateResponseHeader(h protocol.Header) protocol.Header {
+	h.Flags |= protocol.FlagReply
+	h.Status = statusSuccess
+	return h
+}
+
+// buildNegotiateCore emits the Core / "PC NETWORK PROGRAM 1.0" response
+// ([MS-CIFS] 2.2.4.52.2; [smb6.0]): WCT=1 (DialectIndex only), ByteCount=0. Also used
+// for the no-supported-dialect case (index 0xFFFF).
+func buildNegotiateCore(h protocol.Header, dialectIdx uint16) []byte {
+	out := negotiateResponseHeader(h).Encode(nil)
+	out = append(out, 1) // WordCount = 1
+	w := make([]byte, 2)
+	bp.PutLE16(w[0:2], dialectIdx) // DialectIndex
+	out = append(out, w...)
+	out = append(out, 0, 0) // ByteCount = 0
+	return out
+}
+
+// buildNegotiateLanMan emits the LANMAN 1.0..2.1 response ([MS-CIFS] 2.2.4.52.2;
+// [smb6.0]): WCT=13. Note SecurityMode and MaxBufferSize are 16-bit here (they are
+// 8-bit / 32-bit in the NT form), there is no Capabilities field, and the timestamp is
+// the DOS SMB_TIME/SMB_DATE pair.
+//
+// The PrimaryDomain is included in the byte area ONLY when the negotiated dialect is
+// DOS LANMAN2.1 or LANMAN2.1 ([smb6.0] 1127); for every earlier LANMAN-family dialect
+// (MICROSOFT NETWORKS 3.0, LANMAN1.0, LM1.2X002, DOS LM1.2X002, Windows for Workgroups
+// 3.1a) the byte area is empty (ByteCount=0). Appending it for those dialects yields
+// trailing "Unknown Data" a client does not parse (observed in captures/ipx.pcap for a
+// WfW 3.1a selection).
+func (s *Service) buildNegotiateLanMan(h protocol.Header, dialectIdx uint16, dialect string) []byte {
+	out := negotiateResponseHeader(h).Encode(nil)
+	out = append(out, 13) // WordCount = 13
+
+	w := make([]byte, 26)                              // 13 words
+	bp.PutLE16(w[0:2], dialectIdx)                     // DialectIndex
+	bp.PutLE16(w[2:4], negotiateSecurityMode)          // SecurityMode (16-bit)
+	bp.PutLE16(w[4:6], uint16(negotiateMaxBufferSize)) // MaxBufferSize (16-bit)
+	bp.PutLE16(w[6:8], negotiateMaxMpxCount)           // MaxMpxCount
+	bp.PutLE16(w[8:10], negotiateMaxNumberVcs)         // MaxNumberVcs
+	bp.PutLE16(w[10:12], uint16(negotiateMaxRawSize))  // RawMode
+	bp.PutLE32(w[12:16], 0)                            // SessionKey
+	tm, dt := smbServerTimeDate(time.Now().UTC())
+	bp.PutLE16(w[16:18], tm) // ServerTime (SMB_TIME)
+	bp.PutLE16(w[18:20], dt) // ServerDate (SMB_DATE)
+	bp.PutLE16(w[20:22], 0)  // ServerTimeZone
+	bp.PutLE16(w[22:24], 0)  // EncryptionKeyLength = 0 (plaintext, no challenge)
+	bp.PutLE16(w[24:26], 0)  // Reserved (MBZ)
+	out = append(out, w...)
+
+	// Byte area: EncryptionKey (empty) + PrimaryDomain (only for LANMAN2.1 dialects).
+	var area []byte
+	if dialect == protocol.DialectDOSLANMAN2 || dialect == protocol.DialectLANMAN21 {
+		area = append([]byte(normalizeName(s.workgroup())), 0)
+	}
+	bcc := make([]byte, 2)
+	bp.PutLE16(bcc, uint16(len(area)))
+	out = append(out, bcc...)
+	out = append(out, area...)
+	return out
+}
+
+// buildNegotiateNT emits the NT LM 0.12 response ([MS-CIFS] 2.2.4.52.2; [smb6.0]):
+// WCT=17, 8-bit SecurityMode, 32-bit MaxBufferSize, a Capabilities field, and a 64-bit
+// FILETIME. ByteArea = Challenge (none) + DomainName.
+func (s *Service) buildNegotiateNT(h protocol.Header, dialectIdx uint16) []byte {
 	domain := normalizeName(s.workgroup())
 	domainBytes := append([]byte(domain), 0)
 
-	rh := responseHeader(h, statusSuccess)
-	out := rh.Encode(nil)
-	out = append(out, 17) // WordCount
+	out := negotiateResponseHeader(h).Encode(nil)
+	out = append(out, 17) // WordCount = 17
 
-	w := make([]byte, 34) // 17 words
-	bp.PutLE16(w[0:2], uint16(dialectIdx))
-	w[2] = negotiateSecurityMode
+	w := make([]byte, 34)          // 17 words
+	bp.PutLE16(w[0:2], dialectIdx) // DialectIndex
+	w[2] = negotiateSecurityMode   // SecurityMode (8-bit)
 	bp.PutLE16(w[3:5], negotiateMaxMpxCount)
 	bp.PutLE16(w[5:7], negotiateMaxNumberVcs)
-	bp.PutLE32(w[7:11], negotiateMaxBufferSize)
+	bp.PutLE32(w[7:11], negotiateMaxBufferSize) // MaxBufferSize (32-bit)
 	bp.PutLE32(w[11:15], negotiateMaxRawSize)
-	bp.PutLE32(w[15:19], 0) // SessionKey
-	bp.PutLE32(w[19:23], negotiateCapabilities)
+	bp.PutLE32(w[15:19], 0)                     // SessionKey
+	bp.PutLE32(w[19:23], negotiateCapabilities) // Capabilities
 	ft := uint64(time.Now().UTC().UnixNano()/100) + windowsFiletimeOffset
 	bp.PutLE32(w[23:27], uint32(ft))     // SystemTimeLow
 	bp.PutLE32(w[27:31], uint32(ft>>32)) // SystemTimeHigh
 	bp.PutLE16(w[31:33], 0)              // ServerTimeZone
-	w[33] = 0                            // EncryptionKeyLength = 0 (no challenge)
+	w[33] = 0                            // ChallengeLength = 0 (no challenge)
 	out = append(out, w...)
 
 	bcc := make([]byte, 2)
 	bp.PutLE16(bcc, uint16(len(domainBytes)))
 	out = append(out, bcc...)
-	out = append(out, domainBytes...)
+	out = append(out, domainBytes...) // Challenge (empty) + DomainName
 	return out
+}
+
+// smbServerTimeDate packs a UTC time into the DOS SMB_TIME / SMB_DATE 16-bit fields the
+// LANMAN NEGOTIATE response carries ([MS-DTYP] SMB_DATE/SMB_TIME): SMB_TIME =
+// seconds/2(0-4) | minutes(5-10) | hours(11-15); SMB_DATE = day(0-4) | month(5-8) |
+// (year-1980)(9-15).
+func smbServerTimeDate(t time.Time) (smbTime, smbDate uint16) {
+	smbTime = uint16(t.Second()/2) | uint16(t.Minute())<<5 | uint16(t.Hour())<<11
+	smbDate = uint16(t.Day()) | uint16(t.Month())<<5 | uint16(t.Year()-1980)<<9
+	return smbTime, smbDate
 }
 
 // statusLogonFailure is STATUS_LOGON_FAILURE — the named account/password did not
 // validate against the wired user store.
 const statusLogonFailure uint32 = 0xC000006D
 
-// handleSessionSetup answers SMB_COM_SESSION_SETUP_ANDX. With no user store wired
-// (or an anonymous/guest attempt) it grants a guest session as before (UID=1,
-// Action=0x0001 guest logon). With a store wired and a non-empty AccountName, it
-// validates the cleartext password against the store: success grants a named,
-// non-guest session (Action=0x0000); failure returns STATUS_LOGON_FAILURE.
+// handleSessionSetup answers SMB_COM_SESSION_SETUP_ANDX. It grants a guest session
+// (UID=1, Action=0x0001) unless a store is wired and the client presented a NON-EMPTY
+// cleartext password for a named account, in which case it validates the pair against
+// the store: success grants a named, non-guest session (Action=0x0000); failure returns
+// STATUS_LOGON_FAILURE.
+//
+// A credential-less setup (empty password) is ALWAYS granted as guest, even with a
+// store wired: [smb6.0] 289-291 requires a user-level server to admit a client that
+// sends no password (the "implicit user logon" path), and the legacy service always
+// did so. Authenticating an empty password and returning STATUS_LOGON_FAILURE was the
+// captures/ipx.pcap regression (WIN98USER, ANSI+Unicode PasswordLength 0 → frame 111).
 //
 // We can only validate a CLEARTEXT password — a legacy client sending an LM/NTLM
 // hash cannot be reversed, so a hashed credential is accepted AS GUEST (it still
 // only sees guest-open shares). See spec/errata.md "SMB hashed-credential
-// accept-as-guest". WCT=3: AndXCommand/AndXReserved/AndXOffset + Action.
+// accept-as-guest". WCT=3: AndXCommand/AndXReserved/AndXOffset + Action; the byte area
+// carries NativeOS / NativeLanMan (server name) + PrimaryDomain (workgroup).
 func (s *Service) handleSessionSetup(sess *smbSession, h protocol.Header, req []byte) []byte {
 	user, pass, hashed := parseSessionSetup(req, h.Flags2)
 
@@ -164,7 +303,10 @@ func (s *Service) handleSessionSetup(sess *smbSession, h protocol.Header, req []
 
 	action := uint16(0x0001) // guest logon by default
 	identity := ""
-	if authn != nil && user != "" && !hashed {
+	// Only authenticate when the client actually presented a credential: a named
+	// account WITH a non-empty cleartext password. An empty password is the
+	// credential-less guest path ([smb6.0] 289), never a failed authentication.
+	if authn != nil && user != "" && pass != "" && !hashed {
 		ok, err := authn.Authenticate(user, pass)
 		if err != nil {
 			s.logf("SESSION_SETUP authenticate error")
@@ -194,8 +336,40 @@ func (s *Service) handleSessionSetup(sess *smbSession, h protocol.Header, req []
 	bp.PutLE16(w[4:6], action)           // Action (0=user, 1=guest)
 	out = append(out, w...)
 
-	out = append(out, 2, 0)       // ByteCount = 2
-	out = append(out, 0x00, 0x00) // NativeOS="" NativeLM="" (two NULs)
+	// Byte area: NativeOS, NativeLanMan, PrimaryDomain. Win9x/WfW expect the
+	// server identity here; two bare NULs (the earlier stub) left NativeLanMan
+	// blank, which some clients log as an anonymous server.
+	area := sessionSetupTrailer(s.serverName(), s.workgroup(), h.Flags2&protocol.Flags2Unicode != 0)
+	bcc := make([]byte, 2)
+	bp.PutLE16(bcc, uint16(len(area)))
+	out = append(out, bcc...)
+	out = append(out, area...)
+	return out
+}
+
+// sessionSetupTrailer builds the SESSION_SETUP_ANDX response byte area: the
+// NUL-terminated NativeOS, NativeLanMan and PrimaryDomain strings. We report the
+// server name for both NativeOS and NativeLanMan (a compatibility server has no
+// real OS/LANMAN version to advertise) and the workgroup as PrimaryDomain. When the
+// client negotiated Unicode the strings are UTF-16LE and a single pad byte precedes
+// them so the 16-bit strings start word-aligned within the SMB.
+func sessionSetupTrailer(serverName, workgroup string, unicode bool) []byte {
+	fields := []string{serverName, serverName, workgroup}
+	if !unicode {
+		var out []byte
+		for _, f := range fields {
+			out = append(out, []byte(f)...)
+			out = append(out, 0)
+		}
+		return out
+	}
+	out := []byte{0x00} // pad byte to word-align the UTF-16LE strings
+	for _, f := range fields {
+		for _, r := range f {
+			out = append(out, byte(r), byte(r>>8))
+		}
+		out = append(out, 0x00, 0x00)
+	}
 	return out
 }
 
@@ -435,20 +609,21 @@ func (s *Service) handleEcho(h protocol.Header, req []byte) []byte {
 
 // --- request parsing helpers ---
 
-// findNegotiateDialect returns the 0-based index of the named dialect in a
-// NEGOTIATE request's dialect list, or -1 if absent. Each dialect is a 0x02
-// buffer-format byte then a NUL-terminated ASCII string.
-func findNegotiateDialect(req []byte, name string) int {
+// parseNegotiateDialects returns the ordered list of dialect strings offered in a
+// NEGOTIATE request byte area. Each entry is a 0x02 buffer-format byte followed by a
+// NUL-terminated ASCII string ([MS-CIFS] 2.2.4.52.1). The returned slice preserves the
+// request order so its indices are the DialectIndex values the response selects from.
+func parseNegotiateDialects(req []byte) []string {
 	if len(req) < protocol.HeaderLen+3 {
-		return -1
+		return nil
 	}
 	bcc := int(bp.LE16(req[protocol.HeaderLen+1 : protocol.HeaderLen+3]))
 	start := protocol.HeaderLen + 3
 	if len(req) < start+bcc {
-		return -1
+		return nil
 	}
 	rest := req[start : start+bcc]
-	idx := 0
+	var out []string
 	for len(rest) >= 2 {
 		if rest[0] != 0x02 {
 			break
@@ -458,13 +633,10 @@ func findNegotiateDialect(req []byte, name string) int {
 		if nul < 0 {
 			break
 		}
-		if string(rest[:nul]) == name {
-			return idx
-		}
+		out = append(out, string(rest[:nul]))
 		rest = rest[nul+1:]
-		idx++
 	}
-	return -1
+	return out
 }
 
 // parseTreeConnectShareName extracts the share leaf from a TREE_CONNECT[_ANDX]

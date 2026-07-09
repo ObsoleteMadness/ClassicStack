@@ -66,7 +66,7 @@ func TestParseNtTransactSetup(t *testing.T) {
 // completion frame over the circuit.
 func TestNotifyChangeHeldThenCompleted(t *testing.T) {
 	svc := &Service{shares: []*Share{newNamedTestShare(t, "PUBLIC")}, sessions: map[*smbSession]struct{}{}}
-	conn := svc.NewConn()
+	conn := svc.NewConn("")
 	var pushed [][]byte
 	conn.SetPushWriter(func(b []byte) { pushed = append(pushed, b) })
 	sess := conn.sess
@@ -90,7 +90,7 @@ func TestNotifyChangeHeldThenCompleted(t *testing.T) {
 // nothing until the client re-arms.
 func TestNotifyChangeOneShot(t *testing.T) {
 	svc := &Service{shares: []*Share{newNamedTestShare(t, "PUBLIC")}, sessions: map[*smbSession]struct{}{}}
-	conn := svc.NewConn()
+	conn := svc.NewConn("")
 	var pushed [][]byte
 	conn.SetPushWriter(func(b []byte) { pushed = append(pushed, b) })
 	sess := conn.sess
@@ -107,7 +107,7 @@ func TestNotifyChangeOneShot(t *testing.T) {
 // TestNotifyChangeNoWatchNoPush: a change with no held watch pushes nothing.
 func TestNotifyChangeNoWatchNoPush(t *testing.T) {
 	svc := &Service{shares: []*Share{newNamedTestShare(t, "PUBLIC")}, sessions: map[*smbSession]struct{}{}}
-	conn := svc.NewConn()
+	conn := svc.NewConn("")
 	var pushed [][]byte
 	conn.SetPushWriter(func(b []byte) { pushed = append(pushed, b) })
 
@@ -121,7 +121,7 @@ func TestNotifyChangeNoWatchNoPush(t *testing.T) {
 // refused, not held — the client must not wait forever on a tree that cannot notify.
 func TestNotifyChangeOnIPCRefused(t *testing.T) {
 	svc := &Service{shares: []*Share{newNamedTestShare(t, "PUBLIC")}, sessions: map[*smbSession]struct{}{}}
-	sess := newSession()
+	sess := newSession("")
 	tid := sess.allocTID(&treeConnect{ipc: true})
 	reply := svc.Dispatch(sess, buildNotifyChangeRequest(tid, 1, 7, fileNotifyChangeModifiedFilter, 0, true))
 	if reply == nil {

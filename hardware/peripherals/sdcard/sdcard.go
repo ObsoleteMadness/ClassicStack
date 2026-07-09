@@ -131,7 +131,7 @@ func NewFileSystem(spec fs.ShareSpec, b bus.Bus, m metastore.Store) (fs.FileSyst
 		if err != nil {
 			return nil, errors.New("fatfs: failed to mount FAT filesystem")
 		}
-		
+
 		globalSPI = spi
 		globalCard = &card
 		globalFat = fat
@@ -146,7 +146,7 @@ func NewFileSystem(spec fs.ShareSpec, b bus.Bus, m metastore.Store) (fs.FileSyst
 func (f *fatFS) ReadDir(path string) ([]iofs.DirEntry, error) {
 	sdMutex.Lock()
 	defer sdMutex.Unlock()
-	
+
 	dir, err := f.fat.Open(path)
 	if err != nil {
 		return nil, err
@@ -172,7 +172,7 @@ func (f *fatFS) ReadDir(path string) ([]iofs.DirEntry, error) {
 func (f *fatFS) Stat(path string) (iofs.FileInfo, error) {
 	sdMutex.Lock()
 	defer sdMutex.Unlock()
-	
+
 	file, err := f.fat.Open(path)
 	if err != nil {
 		return nil, err
@@ -184,7 +184,7 @@ func (f *fatFS) Stat(path string) (iofs.FileInfo, error) {
 func (f *fatFS) DiskUsage(path string) (total, free uint64, err error) {
 	sdMutex.Lock()
 	defer sdMutex.Unlock()
-	
+
 	// Get free clusters and total sectors
 	freeClusters, totalSectors, err := f.fat.Free()
 	if err != nil {
@@ -208,7 +208,7 @@ func (f *fatFS) CreateFile(path string) (fs.File, error) {
 	}
 	sdMutex.Lock()
 	defer sdMutex.Unlock()
-	
+
 	// Open file with write/create flags
 	file, err := f.fat.OpenFile(path, fatfs.O_CREATE|fatfs.O_RDWR)
 	if err != nil {
@@ -220,7 +220,7 @@ func (f *fatFS) CreateFile(path string) (fs.File, error) {
 func (f *fatFS) OpenFile(path string, flag int) (fs.File, error) {
 	sdMutex.Lock()
 	defer sdMutex.Unlock()
-	
+
 	// Map flags to fatfs flags
 	fatFlag := fatfs.O_RDONLY
 	if flag&fs.O_WRONLY != 0 {
@@ -229,7 +229,7 @@ func (f *fatFS) OpenFile(path string, flag int) (fs.File, error) {
 	if flag&fs.O_RDWR != 0 {
 		fatFlag = fatfs.O_RDWR
 	}
-	
+
 	file, err := f.fat.OpenFile(path, fatFlag)
 	if err != nil {
 		return nil, err
@@ -275,10 +275,10 @@ func (f *fatFS) MediumName(path string) (string, error) {
 
 func (f *fatFS) Capabilities() fs.Capabilities {
 	return fs.Capabilities{
-		CatSearch:      false,
-		ChildCount:     true,
-		ReadDirRange:   false,
-		DirAttributes:  true,
-		ReadOnly:       f.readOnly,
+		CatSearch:     false,
+		ChildCount:    true,
+		ReadDirRange:  false,
+		DirAttributes: true,
+		ReadOnly:      f.readOnly,
 	}
 }

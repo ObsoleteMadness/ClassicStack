@@ -15,7 +15,7 @@ import (
 func TestConn_ServeMessageSharesSession(t *testing.T) {
 	sh := newTestShare(t) // share "PUBLIC"
 	svc := &Service{shares: []*Share{sh}}
-	conn := svc.NewConn()
+	conn := svc.NewConn("")
 
 	// SESSION_SETUP_ANDX grants a guest UID on the circuit.
 	setup := smbReq(protocol.CommandSessionSetupAndX, protocol.Flags2NTStatus, 0, 0, make([]byte, 26), nil)
@@ -48,7 +48,7 @@ func TestConn_ServeMessageSharesSession(t *testing.T) {
 func TestConn_CloseReleasesHandles(t *testing.T) {
 	sh := newTestShare(t)
 	svc := &Service{shares: []*Share{sh}}
-	conn := svc.NewConn()
+	conn := svc.NewConn("")
 
 	// Bind a tree directly and create a file, leaving its FID open.
 	tid := conn.sess.allocTID(&treeConnect{share: sh})
@@ -73,8 +73,48 @@ func TestConn_CloseReleasesHandles(t *testing.T) {
 func TestConn_NonSMBDropsSilently(t *testing.T) {
 	sh := newTestShare(t)
 	svc := &Service{shares: []*Share{sh}}
-	conn := svc.NewConn()
+	conn := svc.NewConn("")
 	if resp := conn.ServeMessage([]byte("garbage not smb ...............")); resp != nil {
 		t.Fatalf("non-SMB message produced a response: %x", resp)
+	}
+}
+
+// TestSessions_TracksClientAndNegotiatedDialect proves the service tracks one live
+// session per circuit keyed by the transport client label, and records the dialect
+// the client negotiated (SMB_COM_NEGOTIATE) so the management view reports the
+// per-client SMB version. Closing the circuit drops it from the tracked set.
+func TestSessions_TracksClientAndNegotiatedDialect(t *testing.T) {
+	sh := newTestShare(t)
+	svc := &Service{shares: []*Share{sh}}
+
+	conn := svc.NewConn("00:00:d8:72:e9:a4.0455")
+	// Before NEGOTIATE the session is tracked with no dialect.
+	if got := svc.Sessions(); len(got) != 1 || got[0].Client != "00:00:d8:72:e9:a4.0455" || got[0].Dialect != "" {
+		t.Fatalf("pre-negotiate Sessions() = %+v, want one client with empty dialect", got)
+	}
+
+	// A WfW client negotiates: the session records the selected LANMAN dialect.
+	neg := smbReq(protocol.CommandNegotiate, 0, 0, 0, nil,
+		dialectListBytes(protocol.DialectPCNetwork1, protocol.DialectWfW311))
+	conn.ServeMessage(neg)
+
+	got := svc.Sessions()
+	if len(got) != 1 {
+		t.Fatalf("Sessions() len = %d, want 1", len(got))
+	}
+	if got[0].Client != "00:00:d8:72:e9:a4.0455" {
+		t.Errorf("Client = %q, want the circuit's transport label", got[0].Client)
+	}
+	if got[0].Dialect != protocol.DialectWfW311 {
+		t.Errorf("Dialect = %q, want %q", got[0].Dialect, protocol.DialectWfW311)
+	}
+	if got[0].NegotiatedAt.IsZero() {
+		t.Error("NegotiatedAt is zero after a successful NEGOTIATE")
+	}
+
+	// Closing the circuit drops it from the tracked set.
+	conn.Close()
+	if got := svc.Sessions(); len(got) != 0 {
+		t.Fatalf("post-close Sessions() = %+v, want empty", got)
 	}
 }

@@ -64,6 +64,14 @@ type Section struct {
 	Device string `toml:"device"`
 	Baud   int    `toml:"baud"`
 
+	// IPXFrameType selects the Ethernet encapsulation an IPX port uses on OUTBOUND
+	// frames (Novell "frame type"). Recognised values are "ethernet_ii", "802.3"
+	// (raw / Novell-Ethernet), and "802.2" (IEEE 802.2 LLC). Empty defaults to
+	// Ethernet II, which is what a MacIPX client speaks — see the ipx port's
+	// ParseFrameType. Inbound frames are always accepted in every framing regardless
+	// of this setting. Ignored by non-IPX transports.
+	IPXFrameType string `toml:"ipx_frame_type"`
+
 	// Capture is a pcap file path for THIS port's wire traffic ("" = no capture).
 	// Capture is a property of the port that owns the segment (like Device/SeedZone),
 	// not a central table: every frame the port's link reads or writes is tee'd to

@@ -20,10 +20,12 @@ package netbios
 // node-status query (STATUS_QUERY → STATUS_RESPONSE, built from the local name
 // set) and the directed/broadcast datagram (decoded and routed to the optional
 // DatagramConsumer). The caller (CALL-out) side is not needed by a file server.
-// Flow control (NO_RECEIVE/RECEIVE_CONTINUE) and the I-frame retransmit machinery
-// the legacy transport carried are an adapter-altitude reliability concern; the
-// core engine delivers and replies, and the segment reassembly + DATA_ACK that
-// SMB-over-NBF actually depends on live here.
+// The transmit-side reliability the peer can drive — NO_RECEIVE/RECEIVE_CONTINUE
+// flow control and the RECEIVE_OUTSTANDING last-frame retransmit — is carried here
+// per-circuit, matching the legacy over_netbeui transport byte-for-byte on the wire:
+// a WfW/Win9x peer that closes its receive window mid-reply must be honoured or the
+// held frames are lost. The segment reassembly + DATA_ACK that SMB-over-NBF depends
+// on live here alongside it.
 
 import (
 	"slices"
@@ -68,6 +70,16 @@ type circuit struct {
 
 	frag []byte         // accumulated DATA_FIRST_MIDDLE payload
 	conn SessionCircuit // SMB virtual circuit (nil until consumer opens one)
+
+	// Transmit-side reliability (NBF flow control, [IBM SC30-3587] §5): a peer
+	// throttles the server mid-message with NO_RECEIVE and resumes with
+	// RECEIVE_CONTINUE, or asks for the last frame again with RECEIVE_OUTSTANDING.
+	// txBlocked holds our sends while the peer's receive window is closed;
+	// txPending queues the frames we could not send; txLast is the most recent
+	// frame sent, retained for a RECEIVE_OUTSTANDING retransmit request.
+	txBlocked bool
+	txPending []*nbf.Frame
+	txLast    *nbf.Frame
 }
 
 // sessionEngine is the NBF responder state machine. It owns the open circuits,
@@ -129,9 +141,9 @@ func (e *sessionEngine) HandleFrame(srcMAC, dstMAC [6]byte, frame *nbf.Frame) {
 	case nbf.CmdStatusQuery:
 		e.handleStatusQuery(srcMAC, frame)
 	case nbf.CmdDatagram:
-		e.handleDatagram(frame, false)
+		e.handleDatagram(srcMAC, frame, false)
 	case nbf.CmdDatagramBroadcast:
-		e.handleDatagram(frame, true)
+		e.handleDatagram(srcMAC, frame, true)
 	}
 }
 
@@ -148,38 +160,53 @@ func (e *sessionEngine) HandleSessionFrame(srcMAC, dstMAC [6]byte, frame *nbf.Fr
 		e.handleDataOnlyLast(srcMAC, frame)
 	case nbf.CmdDataFirstMiddle:
 		e.handleDataFirstMiddle(srcMAC, frame)
+	case nbf.CmdNoReceive:
+		e.handleNoReceive(srcMAC, frame)
+	case nbf.CmdReceiveContinue:
+		e.handleReceiveContinue(srcMAC, frame)
+	case nbf.CmdReceiveOutstanding:
+		e.handleReceiveOutstanding(srcMAC, frame)
 	case nbf.CmdSessionAlive, nbf.CmdDataAck:
 		// keepalive / our-data acknowledgements need no response.
 	}
 }
 
-// handleNameQuery answers a CALL (NAME_QUERY with a non-zero caller session
-// number in Data2) for one of our names by creating a circuit and replying
-// NAME_RECOGNIZED with the local session number. The caller then sends
-// SESSION_INITIALIZE to that number to bring the circuit up.
+// handleNameQuery answers a NAME_QUERY for one of our names with NAME_RECOGNIZED.
+// Windows drives a session open in two phases ([IBM SC30-3587] §5.6.8/§5.6.10,
+// confirmed against netbeui.pcap): first a broadcast locate carrying Local Session
+// No. 0 ("FIND.NAME request"), then a unicast CALL carrying a real session number,
+// followed by SESSION_INITIALIZE. Both phases expect a NAME_RECOGNIZED — answering
+// only the second (returning silently when the session number is 0) leaves the
+// client's initial locate unanswered, so it never learns the name exists and never
+// proceeds to the CALL. (This is why an NT 3.51 client could not see the server
+// while Win98, whose own server answers the session-0 locate, could.)
+//
+// For a real CALL (ss != 0) we allocate a circuit and reply with the local session
+// number in Data2/RspCorrelator, so the caller's SESSION_INITIALIZE can bring it up.
+// For a locate (ss == 0) no circuit is created: we reply with Data2 ss = 0 ("no
+// LISTEN pending / FIND.NAME response", spec §5.6.10 Data2).
 func (e *sessionEngine) handleNameQuery(srcMAC [6]byte, frame *nbf.Frame) {
 	if !e.ownsName(protocol.Name(frame.DestinationName)) {
 		return
 	}
-	callerSession := uint8(frame.Data2 & 0xFF)
-	if callerSession == 0 {
-		return // FIND.NAME, not a CALL — no session to set up
-	}
 
-	e.mu.Lock()
-	localNum := e.allocLocalNumLocked()
-	e.circuits[circuitKey{srcMAC, localNum}] = &circuit{
-		mac:       srcMAC,
-		localNum:  localNum,
-		remoteNum: callerSession,
+	var localNum uint8
+	if callerSession := uint8(frame.Data2 & 0xFF); callerSession != 0 {
+		e.mu.Lock()
+		localNum = e.allocLocalNumLocked()
+		e.circuits[circuitKey{srcMAC, localNum}] = &circuit{
+			mac:       srcMAC,
+			localNum:  localNum,
+			remoteNum: callerSession,
+		}
+		e.mu.Unlock()
 	}
-	e.mu.Unlock()
 
 	resp := &nbf.Frame{
 		Command:        nbf.CmdNameRecognized,
 		XmitCorrelator: frame.RspCorrelator,
 		RspCorrelator:  uint16(localNum),
-		Data2:          uint16(localNum), // high byte 0 = unique name
+		Data2:          uint16(localNum), // high byte 0 = unique name; low byte = session no. (0 = FIND.NAME/no-session)
 	}
 	copy(resp.DestinationName[:], frame.SourceName[:])
 	copy(resp.SourceName[:], frame.DestinationName[:])
@@ -261,7 +288,7 @@ func (e *sessionEngine) handleDataOnlyLast(srcMAC [6]byte, frame *nbf.Frame) {
 	// carries data costs no consumer state.
 	if c.conn == nil {
 		if consumer := e.consumer(); consumer != nil {
-			c.conn = consumer.NewConn()
+			c.conn = consumer.NewConn(nbfClientLabel(c.mac))
 			// Install the server-push writer: a held NOTIFY_CHANGE completes
 			// asynchronously by framing SMB bytes onto this circuit's DATA frames,
 			// using the circuit's retained (MAC, localNum, remoteNum) addressing.
@@ -297,29 +324,104 @@ func (e *sessionEngine) handleDataOnlyLast(srcMAC [6]byte, frame *nbf.Frame) {
 
 // sendSessionData fragments resp onto DATA_FIRST_MIDDLE/DATA_ONLY_LAST frames at
 // the advertised max I-field and sends them in order. An empty payload still
-// sends one DATA_ONLY_LAST (an empty message is a valid SMB response framing).
+// sends one DATA_ONLY_LAST (an empty message is a valid SMB response framing). If
+// the circuit's receive window is closed (the peer sent NO_RECEIVE), the frames are
+// queued and flushed on RECEIVE_CONTINUE instead of being sent immediately.
 func (e *sessionEngine) sendSessionData(dstMAC [6]byte, localNum, remoteNum uint8, payload []byte) {
 	max := int(ethernetMaxIField)
+	frames := make([]*nbf.Frame, 0, len(payload)/max+1)
 	if len(payload) == 0 {
-		e.send(dstMAC, &nbf.Frame{
+		frames = append(frames, &nbf.Frame{
 			Command:      nbf.CmdDataOnlyLast,
 			DestNumber:   remoteNum,
 			SourceNumber: localNum,
-		}, "session-send")
+		})
+	} else {
+		for off := 0; off < len(payload); off += max {
+			end := min(off+max, len(payload))
+			cmd := nbf.CmdDataFirstMiddle
+			if end == len(payload) {
+				cmd = nbf.CmdDataOnlyLast
+			}
+			frames = append(frames, &nbf.Frame{
+				Command:      cmd,
+				DestNumber:   remoteNum,
+				SourceNumber: localNum,
+				Payload:      append([]byte(nil), payload[off:end]...),
+			})
+		}
+	}
+
+	// Hold the frames if the peer's receive window is closed; otherwise send now.
+	e.mu.Lock()
+	c := e.circuits[circuitKey{dstMAC, localNum}]
+	if c != nil && c.txBlocked {
+		c.txPending = append(c.txPending, frames...)
+		e.mu.Unlock()
 		return
 	}
-	for off := 0; off < len(payload); off += max {
-		end := min(off+max, len(payload))
-		cmd := nbf.CmdDataFirstMiddle
-		if end == len(payload) {
-			cmd = nbf.CmdDataOnlyLast
+	e.mu.Unlock()
+	e.sendSessionFramesNow(dstMAC, localNum, frames)
+}
+
+// sendSessionFramesNow sends the given session frames in order and records the last
+// one on the circuit for a possible RECEIVE_OUTSTANDING retransmit. It bypasses the
+// blocked-window check (the caller has decided the frames may go out now).
+func (e *sessionEngine) sendSessionFramesNow(dstMAC [6]byte, localNum uint8, frames []*nbf.Frame) {
+	for _, f := range frames {
+		e.send(dstMAC, f, "session-send")
+		cp := *f
+		cp.Payload = append([]byte(nil), f.Payload...)
+		e.mu.Lock()
+		if c := e.circuits[circuitKey{dstMAC, localNum}]; c != nil {
+			c.txLast = &cp
 		}
-		e.send(dstMAC, &nbf.Frame{
-			Command:      cmd,
-			DestNumber:   remoteNum,
-			SourceNumber: localNum,
-			Payload:      append([]byte(nil), payload[off:end]...),
-		}, "session-send")
+		e.mu.Unlock()
+	}
+}
+
+// handleNoReceive marks the circuit's receive window closed: the peer has no RECEIVE
+// posted, so we hold further session data until it sends RECEIVE_CONTINUE. Mirrors the
+// legacy over_netbeui handleNoReceive.
+func (e *sessionEngine) handleNoReceive(srcMAC [6]byte, frame *nbf.Frame) {
+	e.mu.Lock()
+	if c := e.circuits[circuitKey{srcMAC, frame.DestNumber}]; c != nil && c.active {
+		c.txBlocked = true
+	}
+	e.mu.Unlock()
+}
+
+// handleReceiveContinue reopens the circuit's receive window and flushes any frames
+// queued while it was closed. Mirrors the legacy over_netbeui handleReceiveContinue.
+func (e *sessionEngine) handleReceiveContinue(srcMAC [6]byte, frame *nbf.Frame) {
+	e.mu.Lock()
+	c := e.circuits[circuitKey{srcMAC, frame.DestNumber}]
+	if c == nil || !c.active {
+		e.mu.Unlock()
+		return
+	}
+	c.txBlocked = false
+	pending := c.txPending
+	c.txPending = nil
+	e.mu.Unlock()
+	if len(pending) > 0 {
+		e.sendSessionFramesNow(srcMAC, frame.DestNumber, pending)
+	}
+}
+
+// handleReceiveOutstanding retransmits the last session frame we sent on the circuit,
+// which the peer is asking for again (it missed our last transmission). Mirrors the
+// legacy over_netbeui handleReceiveOutstanding.
+func (e *sessionEngine) handleReceiveOutstanding(srcMAC [6]byte, frame *nbf.Frame) {
+	e.mu.Lock()
+	c := e.circuits[circuitKey{srcMAC, frame.DestNumber}]
+	var last *nbf.Frame
+	if c != nil && c.active {
+		last = c.txLast
+	}
+	e.mu.Unlock()
+	if last != nil {
+		e.send(srcMAC, last, "receive-outstanding-retransmit")
 	}
 }
 
@@ -342,22 +444,25 @@ func (e *sessionEngine) closeAll() {
 
 // emitDatagram sends a connectionless NetBIOS datagram (a browser HostAnnounce /
 // election / backup-list frame) as an NBF UI frame carrying the source/destination
-// NetBIOS names and the payload. Both directed and broadcast browser datagrams go
-// to the NetBIOS multicast MAC: a directed reply names its destination so the
-// receiving node's mini-router dispatches it by name, while the engine has no
-// name→MAC binding for an out-of-band send. CmdDatagramBroadcast marks a group
-// broadcast, CmdDatagram a directed (named) datagram.
+// NetBIOS names and the payload. A broadcast (ReplyTo nil) goes to the NetBIOS
+// multicast MAC as a CmdDatagramBroadcast group frame. A directed reply (ReplyTo set
+// by the inbound datagram — a browser GetBackupList / AnnouncementRequest answer) is
+// sent as a CmdDatagram unicast to the requester's MAC (carried in ReplyTo.Node), so
+// the answer reaches the one station that asked. A directed reply with no usable MAC
+// falls back to the multicast send (the receiving node still dispatches it by name).
 func (e *sessionEngine) emitDatagram(d Datagram) error {
 	if e.sender == nil {
 		return nil
 	}
-	cmd := nbf.CmdDatagram
-	if d.Broadcast {
-		cmd = nbf.CmdDatagramBroadcast
-	}
-	frame := &nbf.Frame{Command: cmd, Payload: d.Payload}
+	frame := &nbf.Frame{Payload: d.Payload}
 	frame.DestinationName = [16]byte(d.Destination)
 	frame.SourceName = [16]byte(d.Source)
+
+	if r := d.ReplyTo; r != nil && r.Transport == TransportNetBEUI && r.Node != ([6]byte{}) {
+		frame.Command = nbf.CmdDatagram
+		return e.sender.Send(r.Node, frame)
+	}
+	frame.Command = nbf.CmdDatagramBroadcast
 	return e.sender.SendBroadcast(frame)
 }
 

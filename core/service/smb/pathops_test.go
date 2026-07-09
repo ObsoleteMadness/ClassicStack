@@ -127,7 +127,7 @@ func TestPathOps_QueryInformation(t *testing.T) {
 func TestPathOps_ReadOnlyShareDeniesMutation(t *testing.T) {
 	sh := newReadOnlyShare(t)
 	svc := &Service{shares: []*Share{sh}}
-	sess := newSession()
+	sess := newSession("")
 	tid := sess.allocTID(&treeConnect{share: sh})
 
 	mk := ntReq(protocol.CommandCreateDirectory, tid, nil, ansiPathArea("docs"))

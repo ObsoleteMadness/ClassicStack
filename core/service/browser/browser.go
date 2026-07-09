@@ -27,6 +27,7 @@ import (
 	proto "github.com/ObsoleteMadness/ClassicStack/core/protocol/browser"
 	nbproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbios"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/mailslot"
+	nbservice "github.com/ObsoleteMadness/ClassicStack/core/service/netbios"
 )
 
 // Name is the component name for the browser service.
@@ -34,6 +35,22 @@ const Name = "Browser"
 
 // hostAnnouncePeriod is how often the service re-announces itself.
 const hostAnnouncePeriod = 2 * time.Minute
+
+// masterDiscoveryDelay is how long the browser listens for an existing master
+// browser after Start before forcing its own election. On a segment where a real
+// Windows master already exists it announces within this window (LocalMaster
+// announcement or an election it wins), and we stay a potential browser. On a
+// segment with no master — the common ClassicStack-only IPX/NBIPX case — nothing
+// announces and we self-elect so clients can find us in "net view" ([MS-BRWS]
+// §3.2.5: a browser that hears no master within the discovery interval forces an
+// election). The reactive path (handleElection on an inbound RequestElection) is
+// unchanged; this only covers the segment where NO client ever requests one.
+const masterDiscoveryDelay = 30 * time.Second
+
+// announceUpdateCount is the UpdateCount stamped in our Host/LocalMaster
+// announcements. Windows browsers treat it as a change counter; the legacy service
+// sent 0x03 (the value field-validated against Win9x/WfW), so we match it.
+const announceUpdateCount uint8 = 0x03
 
 // Role is the browser's current standing in the workgroup ([MS-BRWS]).
 type Role uint8
@@ -45,12 +62,16 @@ const (
 )
 
 // MailslotSink is the outbound seam the browser sends through: write a body to a
-// named mailslot, sourced from src to dest. The mailslot router's SendMailslot
-// satisfies it structurally — the browser holds NO mailslot-envelope and NO
-// transport code; the router wraps the SMB_COM_TRANSACTION envelope and the NetBIOS
-// transports do the per-protocol wire framing.
+// named mailslot, sourced from src to dest. SendMailslot broadcasts (or sends by
+// name); SendMailslotTo answers a specific requester by echoing the replyTo endpoint
+// the browser received on HandleMailslot, so a GetBackupList / AnnouncementRequest
+// answer is unicast to that node. The mailslot router satisfies it structurally —
+// the browser holds NO mailslot-envelope and NO transport code; the router wraps the
+// SMB_COM_TRANSACTION envelope and the NetBIOS transports do the wire framing. The
+// replyTo endpoint is opaque to the browser (transport-agnostic §3 contract).
 type MailslotSink interface {
 	SendMailslot(name string, src, dest nbproto.Name, body []byte, broadcast bool) error
+	SendMailslotTo(name string, src, dest nbproto.Name, body []byte, broadcast bool, replyTo *nbservice.DatagramEndpoint) error
 }
 
 // serverRecord is one observed browser/server: its advertised type bits, the OS and
@@ -87,10 +108,19 @@ type Service struct {
 	started       time.Time
 	servers       map[string]serverRecord // browse list, keyed by normalised name
 	machineGroups map[string]string       // workgroup → local master name
+	// masterSeen records that some OTHER node has announced itself the local master
+	// (a LocalMasterAnnounce, or an election we lost). It suppresses the startup
+	// self-election so ClassicStack never fights a real Windows master browser for
+	// the role — we only force an election on a master-less segment.
+	masterSeen bool
 
 	// election timing, injectable for tests.
 	electionDelay func(Role) time.Duration
 	now           func() time.Time
+	// discoveryDelay is how long Start's discoverMaster watcher listens for an
+	// existing master before forcing an election; defaults to masterDiscoveryDelay,
+	// overridden in tests to avoid a real 30s sleep.
+	discoveryDelay time.Duration
 
 	cancel    context.CancelFunc
 	electGen  uint64
@@ -108,15 +138,16 @@ func New(logger log.Logger, sink MailslotSink, server, workgroup string) *Servic
 		workgroup = "WORKGROUP"
 	}
 	return &Service{
-		logger:        logger,
-		sink:          sink,
-		server:        proto.NormalizeName(server),
-		workgroup:     proto.NormalizeName(workgroup),
-		role:          RolePotential,
-		servers:       make(map[string]serverRecord),
-		machineGroups: make(map[string]string),
-		electionDelay: defaultElectionDelay,
-		now:           time.Now,
+		logger:         logger,
+		sink:           sink,
+		server:         proto.NormalizeName(server),
+		workgroup:      proto.NormalizeName(workgroup),
+		role:           RolePotential,
+		servers:        make(map[string]serverRecord),
+		machineGroups:  make(map[string]string),
+		electionDelay:  defaultElectionDelay,
+		now:            time.Now,
+		discoveryDelay: masterDiscoveryDelay,
 	}
 }
 
@@ -161,8 +192,41 @@ func (s *Service) Start(ctx context.Context) error {
 
 	s.sendHostAnnouncement()
 	go s.announceLoop(ctx, announceC)
+	go s.discoverMaster(ctx, announceC)
 	s.logf("browser started")
 	return nil
+}
+
+// discoverMaster waits masterDiscoveryDelay for an existing master browser to
+// announce itself; if none has (masterSeen is still false and we are still a
+// potential browser), it forces our own election so a master-less segment — the
+// ClassicStack-only IPX/NBIPX case where no client ever sends a RequestElection —
+// gains a master browser and ClassicStack appears in "net view". If a real master
+// announced within the window, or a client-driven election already promoted us,
+// this is a no-op: we never contest an existing master. done closes on Stop.
+func (s *Service) discoverMaster(ctx context.Context, done chan struct{}) {
+	delay := s.discoveryDelay
+	if delay <= 0 {
+		delay = masterDiscoveryDelay
+	}
+	select {
+	case <-ctx.Done():
+		return
+	case <-done:
+		return
+	case <-time.After(delay):
+	}
+
+	s.mu.Lock()
+	forceElection := !s.masterSeen && s.role == RolePotential && s.running
+	s.mu.Unlock()
+	if !forceElection {
+		return // a master exists, or a client-driven election already promoted us
+	}
+
+	s.logf("no master browser seen — forcing election")
+	s.startElection()
+	_ = s.emitElection(s.localElectionFrame())
 }
 
 // Stop brings the browser down, cancelling any election loop and the announce

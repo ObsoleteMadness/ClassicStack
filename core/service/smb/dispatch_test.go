@@ -2,6 +2,7 @@ package smb
 
 import (
 	"testing"
+	"time"
 
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 
@@ -29,7 +30,7 @@ func newDispatchService(t *testing.T) (*Service, *smbSession) {
 	t.Helper()
 	sh := newTestShare(t) // share name "PUBLIC"
 	svc := &Service{shares: []*Share{sh}}
-	return svc, newSession()
+	return svc, newSession("")
 }
 
 // respHeader decodes the reply header and fails if the reply flag is unset.
@@ -45,15 +46,24 @@ func respHeader(t *testing.T, reply []byte) protocol.Header {
 	return h
 }
 
-// TestDispatch_Negotiate proves NEGOTIATE accepts NT LM 0.12 and returns the
-// WCT=17 parameter block with the negotiated dialect index.
+// dialectListBytes builds a NEGOTIATE request dialect byte-area: for each name a
+// 0x02 buffer-format byte followed by the NUL-terminated ASCII string.
+func dialectListBytes(names ...string) []byte {
+	var out []byte
+	for _, n := range names {
+		out = append(out, 0x02)
+		out = append(out, []byte(n)...)
+		out = append(out, 0)
+	}
+	return out
+}
+
+// TestDispatch_Negotiate proves NEGOTIATE selects NT LM 0.12 when offered and returns
+// the NT-format WCT=17 parameter block with the negotiated dialect index.
 func TestDispatch_Negotiate(t *testing.T) {
 	svc, sess := newDispatchService(t)
 
-	// Dialect list: 0x02 + "NT LM 0.12\0".
-	dialects := append([]byte{0x02}, []byte(protocol.DialectNTLM)...)
-	dialects = append(dialects, 0)
-	req := smbReq(protocol.CommandNegotiate, 0, 0, 0, nil, dialects)
+	req := smbReq(protocol.CommandNegotiate, 0, 0, 0, nil, dialectListBytes(protocol.DialectNTLM))
 
 	reply := svc.Dispatch(sess, req)
 	if reply == nil {
@@ -67,10 +77,189 @@ func TestDispatch_Negotiate(t *testing.T) {
 	if wct != 17 {
 		t.Fatalf("Negotiate WCT = %d, want 17", wct)
 	}
-	// DialectIndex (first word) must be 0 (only dialect offered).
 	idx := bp.LE16(reply[protocol.HeaderLen+1 : protocol.HeaderLen+3])
 	if idx != 0 {
 		t.Fatalf("Negotiate DialectIndex = %d, want 0", idx)
+	}
+}
+
+// TestNegotiate_WordCountMatchesDialectFamily proves the response WordCount matches the
+// selected dialect family ([MS-CIFS] 2.2.4.52.2): Core → 1, LANMAN → 13, NT → 17, and
+// the selected DialectIndex is the most-recent dialect the client offered.
+func TestNegotiate_WordCountMatchesDialectFamily(t *testing.T) {
+	cases := []struct {
+		name    string
+		offered []string
+		wantWCT byte
+		wantIdx uint16
+	}{
+		{"core only", []string{protocol.DialectPCNetwork1}, 1, 0},
+		{"lanman WfW", []string{protocol.DialectPCNetwork1, protocol.DialectWfW311}, 13, 1},
+		{"lanman DOS 2.1", []string{protocol.DialectPCNetwork1, protocol.DialectMSNet30, protocol.DialectDOSLANMAN2}, 13, 2},
+		{"nt among many", []string{
+			protocol.DialectPCNetwork1, protocol.DialectMSNet30, protocol.DialectDOSLM12,
+			protocol.DialectDOSLANMAN2, protocol.DialectWfW311, protocol.DialectNTLM,
+		}, 17, 5},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			svc, sess := newDispatchService(t)
+			req := smbReq(protocol.CommandNegotiate, 0, 0, 0, nil, dialectListBytes(c.offered...))
+			reply := svc.Dispatch(sess, req)
+			h := respHeader(t, reply)
+			if h.Status != statusSuccess {
+				t.Fatalf("status = %#x, want success", h.Status)
+			}
+			if wct := reply[protocol.HeaderLen]; wct != c.wantWCT {
+				t.Fatalf("WCT = %d, want %d (dialect family mismatch)", wct, c.wantWCT)
+			}
+			if idx := bp.LE16(reply[protocol.HeaderLen+1 : protocol.HeaderLen+3]); idx != c.wantIdx {
+				t.Fatalf("DialectIndex = %d, want %d (most-recent selection)", idx, c.wantIdx)
+			}
+		})
+	}
+}
+
+// TestNegotiate_NoSupportedDialect proves an unrecognised dialect list yields the core
+// WCT=1 shape with DialectIndex 0xFFFF ([MS-CIFS] 2.2.4.52.2).
+func TestNegotiate_NoSupportedDialect(t *testing.T) {
+	svc, sess := newDispatchService(t)
+	req := smbReq(protocol.CommandNegotiate, 0, 0, 0, nil, dialectListBytes("SOMETHING WEIRD", "ANOTHER"))
+	reply := svc.Dispatch(sess, req)
+	h := respHeader(t, reply)
+	if h.Status != statusSuccess {
+		t.Fatalf("status = %#x, want success", h.Status)
+	}
+	if wct := reply[protocol.HeaderLen]; wct != 1 {
+		t.Fatalf("WCT = %d, want 1 (core shape for no match)", wct)
+	}
+	if idx := bp.LE16(reply[protocol.HeaderLen+1 : protocol.HeaderLen+3]); idx != 0xFFFF {
+		t.Fatalf("DialectIndex = %#x, want 0xFFFF", idx)
+	}
+}
+
+// TestNegotiate_PreservesRequestFlags2 proves the NEGOTIATE response echoes the
+// request's Flags2 unchanged — it does NOT stamp SMB_FLAGS2_KNOWS_LONG_NAMES (0x0001)
+// that the general responseHeader helper adds ([smb6.0]: same Mid/Pid; legacy copies
+// the request header). Verified for both the LANMAN and NT response paths.
+func TestNegotiate_PreservesRequestFlags2(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		offered []string
+	}{
+		{"lanman", []string{protocol.DialectPCNetwork1, protocol.DialectWfW311}},
+		{"nt", []string{protocol.DialectNTLM}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, sess := newDispatchService(t)
+			// Request Flags2 = 0x0000 (a CORE/DOS-error Win9x/WfW client).
+			req := smbReq(protocol.CommandNegotiate, 0x0000, 0, 0, nil, dialectListBytes(tc.offered...))
+			h := respHeader(t, svc.Dispatch(sess, req))
+			if h.Flags2 != 0x0000 {
+				t.Fatalf("response Flags2 = %#06x, want 0x0000 (must not add KNOWS_LONG_NAMES)", h.Flags2)
+			}
+		})
+	}
+}
+
+// TestNegotiate_LanManFieldWidths proves the LANMAN WCT=13 response uses 16-bit
+// SecurityMode and 16-bit MaxBufferSize (they are 8-bit / 32-bit in the NT form), and
+// carries the DOS SMB_TIME/SMB_DATE + EncryptionKeyLength=0 + a NUL-terminated
+// PrimaryDomain for a LANMAN2.1 dialect ([smb6.0] 1112-1127).
+func TestNegotiate_LanManFieldWidths(t *testing.T) {
+	svc, sess := newDispatchService(t)
+	svc.SetWorkgroup("WORKGROUP")
+	// DOS LANMAN2.1 is the one LANMAN-family dialect whose response includes the
+	// PrimaryDomain ([smb6.0] 1127).
+	req := smbReq(protocol.CommandNegotiate, 0, 0, 0, nil, dialectListBytes(protocol.DialectDOSLANMAN2))
+	reply := svc.Dispatch(sess, req)
+
+	w := reply[protocol.HeaderLen+1:] // word block starts after WCT byte
+	if sm := bp.LE16(w[2:4]); sm != negotiateSecurityMode {
+		t.Errorf("SecurityMode(16-bit) = %#x, want %#x", sm, negotiateSecurityMode)
+	}
+	if mb := bp.LE16(w[4:6]); mb != uint16(negotiateMaxBufferSize) {
+		t.Errorf("MaxBufferSize(16-bit) = %d, want %d", mb, negotiateMaxBufferSize)
+	}
+	if kl := bp.LE16(w[22:24]); kl != 0 {
+		t.Errorf("EncryptionKeyLength = %d, want 0", kl)
+	}
+	// ByteArea after WCT(1)+words(26)+BCC(2): the PrimaryDomain string.
+	bccOff := protocol.HeaderLen + 1 + 26
+	bcc := int(bp.LE16(reply[bccOff : bccOff+2]))
+	area := reply[bccOff+2 : bccOff+2+bcc]
+	if got := string(trimNul(area)); got != "WORKGROUP" {
+		t.Errorf("PrimaryDomain = %q, want WORKGROUP", got)
+	}
+}
+
+// TestNegotiate_LanManPrimaryDomainOnlyForLanMan21 proves the WCT=13 response includes
+// the PrimaryDomain ONLY for DOS LANMAN2.1 / LANMAN2.1 dialects ([smb6.0] 1127). For an
+// earlier LANMAN-family dialect (Windows for Workgroups 3.1a) the byte area MUST be
+// empty (ByteCount=0) — appending WORKGROUP\0 there is trailing "Unknown Data" a client
+// does not parse (captures/ipx.pcap frames 336-337, Win3.11 selecting WfW 3.1a).
+func TestNegotiate_LanManPrimaryDomainOnlyForLanMan21(t *testing.T) {
+	svc, sess := newDispatchService(t)
+	svc.SetWorkgroup("WORKGROUP")
+
+	bccOff := protocol.HeaderLen + 1 + 26 // WCT(1) + 13 words
+	cases := []struct {
+		name       string
+		offered    []string
+		wantDomain bool
+	}{
+		{"WfW 3.1a → no domain", []string{protocol.DialectPCNetwork1, protocol.DialectWfW311}, false},
+		{"MSNET 3.0 → no domain", []string{protocol.DialectPCNetwork1, protocol.DialectMSNet30}, false},
+		{"DOS LANMAN2.1 → domain", []string{protocol.DialectPCNetwork1, protocol.DialectDOSLANMAN2}, true},
+		{"LANMAN2.1 → domain", []string{protocol.DialectPCNetwork1, protocol.DialectLANMAN21}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := smbReq(protocol.CommandNegotiate, 0, 0, 0, nil, dialectListBytes(c.offered...))
+			reply := svc.Dispatch(sess, req)
+			if wct := reply[protocol.HeaderLen]; wct != 13 {
+				t.Fatalf("WordCount = %d, want 13", wct)
+			}
+			bcc := int(bp.LE16(reply[bccOff : bccOff+2]))
+			if c.wantDomain {
+				area := reply[bccOff+2 : bccOff+2+bcc]
+				if got := string(trimNul(area)); got != "WORKGROUP" {
+					t.Errorf("PrimaryDomain = %q, want WORKGROUP", got)
+				}
+			} else if bcc != 0 {
+				t.Errorf("ByteCount = %d, want 0 (no PrimaryDomain for this dialect)", bcc)
+			}
+		})
+	}
+}
+
+// TestNegotiate_NTFieldWidths proves the NT WCT=17 response uses an 8-bit SecurityMode
+// and 32-bit MaxBufferSize and includes the Capabilities field ([smb6.0] NT LM 0.12).
+func TestNegotiate_NTFieldWidths(t *testing.T) {
+	svc, sess := newDispatchService(t)
+	req := smbReq(protocol.CommandNegotiate, 0, 0, 0, nil, dialectListBytes(protocol.DialectNTLM))
+	reply := svc.Dispatch(sess, req)
+
+	w := reply[protocol.HeaderLen+1:]
+	if sm := w[2]; sm != negotiateSecurityMode { // SecurityMode is 1 byte here
+		t.Errorf("SecurityMode(8-bit) = %#x, want %#x", sm, negotiateSecurityMode)
+	}
+	if mb := bp.LE32(w[7:11]); mb != negotiateMaxBufferSize { // MaxBufferSize is 4 bytes here
+		t.Errorf("MaxBufferSize(32-bit) = %d, want %d", mb, negotiateMaxBufferSize)
+	}
+	if caps := bp.LE32(w[19:23]); caps != negotiateCapabilities {
+		t.Errorf("Capabilities = %#x, want %#x", caps, negotiateCapabilities)
+	}
+}
+
+// TestSMBServerTimeDate proves the SMB_TIME/SMB_DATE packer encodes a known timestamp
+// into the DOS 16-bit fields the LANMAN NEGOTIATE response carries.
+func TestSMBServerTimeDate(t *testing.T) {
+	tm, dt := smbServerTimeDate(time.Date(2021, 7, 8, 14, 30, 52, 0, time.UTC))
+	wantTime := uint16(26) | uint16(30)<<5 | uint16(14)<<11 // sec/2=26, min=30, hour=14
+	wantDate := uint16(8) | uint16(7)<<5 | uint16(41)<<9    // day=8, month=7, year-1980=41
+	if tm != wantTime || dt != wantDate {
+		t.Fatalf("smbServerTimeDate = (%#x,%#x), want (%#x,%#x)", tm, dt, wantTime, wantDate)
 	}
 }
 

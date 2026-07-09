@@ -24,6 +24,9 @@ type recordingIPXPort struct {
 }
 
 func (p *recordingIPXPort) SetDeliveryCallback(cb portipx.DeliveryCallback) { p.cb = cb }
+func (p *recordingIPXPort) SrcMAC() [6]byte {
+	return testRouterNode
+}
 func (p *recordingIPXPort) Send(_ [6]byte, d *ipxproto.Datagram) error {
 	p.sent = append(p.sent, d)
 	return nil

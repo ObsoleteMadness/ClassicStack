@@ -57,6 +57,22 @@ const (
 // so allocation starts at 1 and wraps before 0xFFFF.
 const cidReservedHi = 0xFFFF
 
+// directIPXClientLabel formats a remote IPX node as the "xx:xx:xx:xx:xx:xx.0550"
+// client label the management view groups sessions under (the .0550 socket suffix
+// marks the direct-hosted transport). Reflection-free (no fmt), core-ring safe.
+func directIPXClientLabel(node [6]byte) string {
+	const hexdigits = "0123456789abcdef"
+	b := make([]byte, 0, 6*3+4)
+	for i, x := range node {
+		if i > 0 {
+			b = append(b, ':')
+		}
+		b = append(b, hexdigits[x>>4], hexdigits[x&0x0f])
+	}
+	b = append(b, '.', '0', '5', '5', '0')
+	return string(b)
+}
+
 // DirectIPXSender is the IPX datagram egress the transport drives: fill source
 // addressing and write one datagram. The core/router/ipx mini-router's
 // Send(*ipxproto.Datagram) satisfies it exactly, so compose registers the
@@ -160,7 +176,7 @@ func (t *DirectIPX) connFor(network [4]byte, node [6]byte, allocate bool) (*Conn
 	defer t.mu.Unlock()
 	c := t.conns[key]
 	if c == nil {
-		c = &directIPXConn{conn: t.svc.NewConn()}
+		c = &directIPXConn{conn: t.svc.NewConn(directIPXClientLabel(node))}
 		if allocate {
 			c.cid = t.allocCIDLocked()
 		}

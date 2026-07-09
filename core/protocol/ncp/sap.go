@@ -31,6 +31,12 @@ const (
 // to.
 const SAPServerTypeFileServer uint16 = 0x0004
 
+// SAPServerTypeNetBIOS is the SAP service type for a NetBIOS-over-IPX name server
+// (0x0640). NB-IPX advertises the server's NetBIOS name under this type pointing at
+// the NB-IPX session socket (0x0455) so a SAP-browsing station discovers it. Matches
+// the legacy service/ipx SAPServiceTypeNetBIOS.
+const SAPServerTypeNetBIOS uint16 = 0x0640
+
 // SAPServerTypeWildcard matches any service type in a query.
 const SAPServerTypeWildcard uint16 = 0xFFFF
 

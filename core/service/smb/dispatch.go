@@ -50,7 +50,7 @@ func (s *Service) Dispatch(sess *smbSession, req []byte) []byte {
 
 	switch h.Command {
 	case protocol.CommandNegotiate:
-		return s.handleNegotiate(h, req)
+		return s.handleNegotiate(sess, h, req)
 	case protocol.CommandSessionSetupAndX:
 		return s.handleSessionSetup(sess, h, req)
 	case protocol.CommandTreeConnectAndX:

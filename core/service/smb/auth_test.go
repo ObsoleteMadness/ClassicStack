@@ -1,6 +1,7 @@
 package smb
 
 import (
+	"strings"
 	"testing"
 
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
@@ -28,6 +29,28 @@ func sessionSetupNT(user, pass string) []byte {
 	area = append(area, 0) // AccountName NUL
 	area = append(area, 0) // PrimaryDomain NUL
 	return smbReq(protocol.CommandSessionSetupAndX, protocol.Flags2NTStatus, 0, 0, words, area)
+}
+
+// sessionSetupDOS builds an NT LM 0.12 SESSION_SETUP_ANDX with the NT-status bit
+// CLEAR (Flags2=0), i.e. a CORE/DOS-error client such as Win9x/WfW, carrying a
+// cleartext case-insensitive password (len 0 = none) and an OEM AccountName —
+// the exact shape of the WIN98USER setup in captures/ipx.pcap.
+func sessionSetupDOS(user, pass string) []byte {
+	words := make([]byte, 26)
+	words[0] = protocol.CommandNoAndXCommand
+	if pass != "" {
+		bp.PutLE16(words[14:16], uint16(len(pass)+1)) // CaseInsensitivePasswordLength (incl NUL)
+	}
+	bp.PutLE16(words[16:18], 0) // CaseSensitivePasswordLength = 0 (cleartext)
+
+	var area []byte
+	if pass != "" {
+		area = append([]byte(pass), 0)
+	}
+	area = append(area, []byte(user)...)
+	area = append(area, 0) // AccountName NUL
+	area = append(area, 0) // PrimaryDomain NUL
+	return smbReq(protocol.CommandSessionSetupAndX, 0, 0, 0, words, area)
 }
 
 // treeConnectReq builds a TREE_CONNECT_ANDX for \\SERVER\<share>.
@@ -91,7 +114,7 @@ func TestSMBSessionSetup_AuthedAndDenied(t *testing.T) {
 	}
 
 	// Wrong password → STATUS_LOGON_FAILURE, no identity.
-	bad := newSession()
+	bad := newSession("")
 	hb := respHeader(t, svc.Dispatch(bad, sessionSetupNT("alice", "wrong")))
 	if hb.Status != statusLogonFailure {
 		t.Fatalf("bad-login status = %#x, want LOGON_FAILURE", hb.Status)
@@ -101,11 +124,54 @@ func TestSMBSessionSetup_AuthedAndDenied(t *testing.T) {
 	}
 }
 
+// TestSMBSessionSetup_NamedNoPasswordIsGuest reproduces captures/ipx.pcap: a
+// WfW/Win9x client (WIN98USER) sends its logon name with an EMPTY password to a
+// guest-open server. Even with a store wired this must NOT be treated as a failed
+// authentication — the client presented no credential — and must grant a guest
+// session (Action=0x0001), exactly as the legacy service always did. The refactor
+// had authenticated ""-password named setups and returned STATUS_LOGON_FAILURE.
+func TestSMBSessionSetup_NamedNoPasswordIsGuest(t *testing.T) {
+	svc, sess := newDispatchService(t)
+	svc.SetAuthenticator(fakeAuth{user: "alice", pass: "secret"})
+
+	resp := svc.Dispatch(sess, sessionSetupDOS("WIN98USER", ""))
+	h := respHeader(t, resp)
+	if h.Status != statusSuccess {
+		t.Fatalf("no-password setup status = %#x, want success (guest)", h.Status)
+	}
+	if action := bp.LE16(resp[protocol.HeaderLen+1+4 : protocol.HeaderLen+1+6]); action != 0x0001 {
+		t.Fatalf("no-password setup Action = %#x, want guest (0x0001)", action)
+	}
+	if sess.user != "" {
+		t.Fatalf("no-password setup identity = %q, want guest", sess.user)
+	}
+}
+
+// TestSMBSessionSetup_DOSClientLogonFailureWireForm proves a genuine logon
+// failure returned to a CORE/DOS-error client (Flags2 NT-status bit clear) is
+// encoded as a DOS class/code the client can parse (ERRSRV/ERRbadpw), NOT the raw
+// NTSTATUS 0xC000006D — which decodes as bogus error class 0x6d on the wire (the
+// captures/ipx.pcap symptom). The status field's low byte is the ErrorClass.
+func TestSMBSessionSetup_DOSClientLogonFailureWireForm(t *testing.T) {
+	svc, sess := newDispatchService(t)
+	svc.SetAuthenticator(fakeAuth{user: "alice", pass: "secret"})
+
+	resp := svc.Dispatch(sess, sessionSetupDOS("alice", "wrong"))
+	h := respHeader(t, resp)
+	// DOS wire form: ERRSRV(class 2)/ERRbadpw(code 2) = 0x00020002.
+	if h.Status != 0x00020002 {
+		t.Fatalf("DOS logon-failure status = %#x, want 0x00020002 (ERRSRV/ERRbadpw)", h.Status)
+	}
+	if h.Status&0xFF000000 != 0 {
+		t.Fatalf("status %#x is a raw NTSTATUS on a DOS-codes client", h.Status)
+	}
+}
+
 func TestSMBShareGatedByIdentity(t *testing.T) {
 	svc := restrictedService(t)
 
 	// Guest session: PRIVATE is hidden from NetShareEnum and refused at tree-connect.
-	guest := newSession()
+	guest := newSession("")
 	names := enumShareNames(svc, guest)
 	if !names["PUBLIC"] || names["PRIVATE"] {
 		t.Fatalf("guest share list = %v, want PUBLIC only", names)
@@ -115,7 +181,7 @@ func TestSMBShareGatedByIdentity(t *testing.T) {
 	}
 
 	// alice session: PRIVATE listed and bindable.
-	alice := newSession()
+	alice := newSession("")
 	alice.user = "alice"
 	names = enumShareNames(svc, alice)
 	if !names["PUBLIC"] || !names["PRIVATE"] {
@@ -135,4 +201,99 @@ func enumShareNames(svc *Service, sess *smbSession) map[string]bool {
 		}
 	}
 	return out
+}
+
+func TestSMBSessionSetup_UnicodeAndASCIIFields(t *testing.T) {
+	svc, sess := newDispatchService(t)
+	svc.SetServerName("MYSERVER")
+	svc.SetWorkgroup("MYWORKGROUP")
+
+	// 1. Test ASCII/OEM response (Flags2Unicode clear)
+	reqASCII := sessionSetupDOS("alice", "") // Flags2 = 0
+	respASCII := svc.Dispatch(sess, reqASCII)
+
+	hASCII := respHeader(t, respASCII)
+	if hASCII.Status != statusSuccess {
+		t.Fatalf("ASCII status = %#x, want success", hASCII.Status)
+	}
+
+	// Calculate offset of byte area
+	// HeaderLen(32) + 1 (WCT) + 6 (Words) = 39. BCC starts at 39 (2 bytes). Byte area starts at 41.
+	bccASCII := bp.LE16(respASCII[39:41])
+	byteAreaASCII := respASCII[41:]
+	if int(bccASCII) != len(byteAreaASCII) {
+		t.Fatalf("ASCII BCC mismatch: got %d, bytes area len %d", bccASCII, len(byteAreaASCII))
+	}
+
+	// Split ASCII byte area on NUL bytes
+	partsASCII := strings.Split(string(byteAreaASCII), "\x00")
+	if len(partsASCII) < 4 { // three strings + trailing empty part from final NUL
+		t.Fatalf("ASCII expected 3 NUL-terminated fields, got: %q", partsASCII)
+	}
+	if partsASCII[0] != "MYSERVER" || partsASCII[1] != "MYSERVER" || partsASCII[2] != "MYWORKGROUP" {
+		t.Fatalf("ASCII fields mismatch: got %q, want %q, %q, %q", partsASCII[:3], "MYSERVER", "MYSERVER", "MYWORKGROUP")
+	}
+
+	// 2. Test Unicode response (Flags2Unicode set)
+	reqUnicodeHeader := sessionSetupNT("alice", "")
+	// Header is 32 bytes. Flags2 is at offset 10 (2 bytes).
+	// Let's modify the Flags2 field of reqUnicodeHeader to set Flags2Unicode.
+	flags2 := bp.LE16(reqUnicodeHeader[10:12])
+	flags2 |= protocol.Flags2Unicode
+	bp.PutLE16(reqUnicodeHeader[10:12], flags2)
+
+	respUnicode := svc.Dispatch(sess, reqUnicodeHeader)
+	hUnicode := respHeader(t, respUnicode)
+	if hUnicode.Status != statusSuccess {
+		t.Fatalf("Unicode status = %#x, want success", hUnicode.Status)
+	}
+
+	bccUnicode := bp.LE16(respUnicode[39:41])
+	byteAreaUnicode := respUnicode[41:]
+	if int(bccUnicode) != len(byteAreaUnicode) {
+		t.Fatalf("Unicode BCC mismatch: got %d, bytes area len %d", bccUnicode, len(byteAreaUnicode))
+	}
+
+	// The first byte of the Unicode byte area must be a padding byte (0x00)
+	if byteAreaUnicode[0] != 0x00 {
+		t.Fatalf("Unicode expected padding byte 0x00 at start of byte area, got 0x%02x", byteAreaUnicode[0])
+	}
+
+	// Decode UTF-16LE strings from byte area after padding
+	decodeUTF16LE := func(b []byte) string {
+		var runes []rune
+		for i := 0; i+1 < len(b); i += 2 {
+			r := rune(b[i]) | rune(b[i+1])<<8
+			if r == 0 {
+				break
+			}
+			runes = append(runes, r)
+		}
+		return string(runes)
+	}
+
+	var decoded []string
+	rest := byteAreaUnicode[1:]
+	for len(rest) > 0 {
+		nulIdx := -1
+		for i := 0; i+1 < len(rest); i += 2 {
+			if rest[i] == 0 && rest[i+1] == 0 {
+				nulIdx = i
+				break
+			}
+		}
+		if nulIdx == -1 {
+			break
+		}
+		s := decodeUTF16LE(rest[:nulIdx])
+		decoded = append(decoded, s)
+		rest = rest[nulIdx+2:]
+	}
+
+	if len(decoded) < 3 {
+		t.Fatalf("Unicode expected at least 3 fields, got %d: %q", len(decoded), decoded)
+	}
+	if decoded[0] != "MYSERVER" || decoded[1] != "MYSERVER" || decoded[2] != "MYWORKGROUP" {
+		t.Fatalf("Unicode fields mismatch: got %q, want %q, %q, %q", decoded[:3], "MYSERVER", "MYSERVER", "MYWORKGROUP")
+	}
 }

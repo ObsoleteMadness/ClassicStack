@@ -23,12 +23,20 @@ package netbios
 // router-list / retransmit machinery are not needed by a listening file server.
 
 import (
+	"context"
+	"errors"
+	"slices"
 	"sync"
+	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	ipxproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx"
 	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbios"
 )
+
+// ErrNameInUse is returned by ClaimName when another node on the segment already
+// holds the name being claimed (a name-service conflict).
+var ErrNameInUse = errors.New("netbios: NB-IPX name already in use on segment")
 
 // ipxDatagramType aliases the IPX datagram the mini-router hands the engine, so
 // the exported IPXEngine method signature matches the core/router/ipx
@@ -36,19 +44,34 @@ import (
 // restating the import path.
 type ipxDatagramType = ipxproto.Datagram
 
-// NBIPXSessionSocket is the IPX socket NB-IPX session traffic uses (0x0455).
-// Compose registers the IPXEngine as the core/router/ipx SocketHandler for this
-// socket; it is the one source of truth for where the engine listens.
-var NBIPXSessionSocket = [2]byte{0x04, 0x55}
+// NB-IPX socket numbers. NetBIOS-over-IPX (NWLink) uses four sockets; compose
+// registers the IPXEngine as the core/router/ipx SocketHandler on each, and these
+// consts are the one source of truth for where the engine listens.
+//
+//	0x0455 — session + the type-20 NBIPX Find-name broadcast
+//	0x0550 — the NB-IPX server socket (our claim's source socket)
+//	0x0551 — NMPI name-query ("where is CLASSICSTACK?")
+//	0x0553 — NB-IPX datagram (NMPI mailslot sends: browser traffic)
+//	0x0554 — name service (alternative path some stacks use)
+var (
+	NBIPXSessionSocket   = [2]byte{0x04, 0x55}
+	NBIPXServerSocket    = [2]byte{0x05, 0x50}
+	NBIPXNameQuerySocket = [2]byte{0x05, 0x51}
+	NBIPXDatagramSocket  = [2]byte{0x05, 0x53}
+	NBIPXNameSocket      = [2]byte{0x05, 0x54}
+)
 
-// DatagramSender is the IPX datagram egress the NBIPX session engine drives: fill
-// source addressing and write one datagram. The core/router/ipx mini-router's
-// Send(*ipxproto.Datagram) satisfies it exactly, so compose registers the engine
-// on the mini-router (as a SocketHandler on socket 0x0455) and hands it the router
-// as the sender. The engine never imports the mini-router or a port — only this
-// seam.
+// DatagramSender is the IPX datagram egress the NBIPX engine drives: fill source
+// addressing and write one datagram, and report the router's own network/node so
+// the engine can drop self-looped broadcasts and address directed replies. The
+// core/router/ipx mini-router's Send/Network/Node satisfy it exactly, so compose
+// registers the engine on the mini-router (as a SocketHandler) and hands it the
+// router as the sender. The engine never imports the mini-router or a port — only
+// this seam.
 type DatagramSender interface {
 	Send(d *ipxproto.Datagram) error
+	Network() [4]byte
+	Node() [6]byte
 }
 
 // ipxCircuitKey identifies an NB-IPX virtual circuit by the peer's IPX address
@@ -82,26 +105,56 @@ type ipxCircuit struct {
 // consumer. Safe for concurrent inbound datagrams (the mini-router may deliver from
 // the port read loop).
 type ipxSessionEngine struct {
-	logger   log.Logger
-	sender   DatagramSender
-	consumer func() SessionConsumer // late-bound: the service installs it after wiring
+	logger    log.Logger
+	sender    DatagramSender
+	consumer  func() SessionConsumer  // late-bound: the service installs it after wiring
+	dgram     func() DatagramConsumer // late-bound connectionless-datagram sink (browser)
+	names     func() []protocol.Name  // local names, to answer the client's NB-IPX name query
+	workgroup func() string           // configured workgroup, for the NAME_RECOGNIZED reply prefix
 
 	mu       sync.Mutex
 	circuits map[ipxCircuitKey]*ipxCircuit
 	nextID   uint16
+
+	// Name-claim state (only live during ClaimName). claiming is the name we are
+	// broadcasting a claim for; a matching inbound name-service packet from another
+	// node signals objection so the claim aborts. claimSelf is our own IPX node, so a
+	// looped-back self-broadcast is not mistaken for a conflict. Guarded by claimMu.
+	claimMu   sync.Mutex
+	claiming  protocol.Name
+	claimSelf [6]byte
+	objection chan struct{}
 }
 
-// newIPXSessionEngine builds an NB-IPX session engine. consumer is a callback so
-// the engine reads the live consumer the service owns (it can be set after the
-// engine is constructed, e.g. SMB attaches late). NB-IPX answers NAME_QUERY at the
-// name layer, not here, so this engine takes no names callback.
-func newIPXSessionEngine(logger log.Logger, sender DatagramSender, consumer func() SessionConsumer) *ipxSessionEngine {
+// newIPXSessionEngine builds an NB-IPX session engine. consumer, dgram, names and
+// workgroup are callbacks so the engine reads the live consumer / datagram sink /
+// name set / workgroup the service owns (all can be set after the engine is
+// constructed, e.g. SMB and the browser attach late). NB-IPX answers the client's
+// name query (NMPI Query-name / NBIPX Find-name) from the name set here, stamping the
+// NAME_RECOGNIZED reply with our own name + workgroup, and delivers inbound browser
+// mailslot datagrams to the datagram consumer. A nil names callback answers no name
+// query; a nil workgroup callback yields an empty (space-filled) workgroup; a nil
+// dgram callback drops datagrams after decode.
+func newIPXSessionEngine(logger log.Logger, sender DatagramSender, consumer func() SessionConsumer, dgram func() DatagramConsumer, names func() []protocol.Name, workgroup func() string) *ipxSessionEngine {
 	return &ipxSessionEngine{
-		logger:   logger,
-		sender:   sender,
-		consumer: consumer,
-		circuits: make(map[ipxCircuitKey]*ipxCircuit),
+		logger:    logger,
+		sender:    sender,
+		consumer:  consumer,
+		dgram:     dgram,
+		names:     names,
+		workgroup: workgroup,
+		circuits:  make(map[ipxCircuitKey]*ipxCircuit),
 	}
+}
+
+// ownsName reports whether requested matches one of our local NetBIOS names, so a
+// name query for a foreign name is ignored (it is not addressed to us). A nil names
+// callback owns nothing.
+func (e *ipxSessionEngine) ownsName(requested protocol.Name) bool {
+	if e.names == nil {
+		return false
+	}
+	return slices.Contains(e.names(), requested)
 }
 
 // allocLocalIDLocked hands out the next non-zero local connection ID. ID 0 means
@@ -115,12 +168,63 @@ func (e *ipxSessionEngine) allocLocalIDLocked() uint16 {
 }
 
 // HandleDatagram is the core/router/ipx mini-router SocketHandler entry point: an
-// IPX datagram delivered to the NB-IPX session socket. The engine handles only the
-// PEP (type 4) session family — SESSION_INIT/END and DATA frames carrying the
-// 16-byte NB-IPX session header — and ignores everything else (name service,
-// mailslot datagrams) the name/datagram layers own.
+// IPX datagram delivered to one of the NB-IPX sockets (0x0455 session, 0x0551 name
+// query, 0x0553 datagram, 0x0554 name service). It dispatches by IPX packet-type
+// and socket, mirroring the legacy over_ipx transport's HandleDatagram:
+//
+//   - NMPI packets (0x0551 name query / 0x0553 mailslot) — a Query-name for our
+//     name is answered here, a MailslotSend (0xFC) is routed to the datagram
+//     consumer (the browser).
+//   - Type-20 (NetBIOS broadcast) name service — a name-claim conflict probe and
+//     the NBIPX Find-name path.
+//   - Type-4 (PEP) — the session family (SESSION_INIT/END and DATA frames) and the
+//     raw directed datagram (NBIPXDirectedDatagram).
+//
+// A self-looped broadcast (our own network+node) is dropped so a name claim does
+// not object to itself.
 func (e *ipxSessionEngine) HandleDatagram(d *ipxproto.Datagram) {
-	if d == nil || d.Type != protocol.IPXTypePEP {
+	if d == nil {
+		return
+	}
+	if e.sender != nil && d.SrcNet == e.sender.Network() && d.SrcNode == e.sender.Node() {
+		return // our own looped-back broadcast
+	}
+	// NMPI on the name-query / datagram sockets: a Query-name (0xF3) answered here,
+	// a MailslotSend (0xFC) routed to the datagram consumer.
+	if d.DstSock == NBIPXNameQuerySocket || d.DstSock == NBIPXDatagramSocket {
+		if e.handleNMPIPayload(d) {
+			return
+		}
+	}
+	switch d.Type {
+	case protocol.IPXTypeNetBIOS:
+		// A type-20 name-service packet: a Find-name (0x01) for one of our names is
+		// answered with a Name-recognized (0x02) reply — the resolution path a WfW/
+		// Win9x client that broadcasts on 0x0455 uses (as opposed to the NMPI Query
+		// on 0x0551, above). A Name-recognized/Name-in-use naming a name we are
+		// claiming signals a conflict that aborts the claim.
+		e.handleNameService(d)
+		return
+	case protocol.IPXTypePEP:
+		e.handlePEP(d)
+	}
+}
+
+// handlePEP dispatches a PEP (type-4) NB-IPX packet: a raw directed datagram
+// (NBIPXDirectedDatagram) on the datagram socket, or the session family on the
+// session socket. Mirrors the legacy over_ipx handlePEP.
+func (e *ipxSessionEngine) handlePEP(d *ipxproto.Datagram) {
+	if len(d.Payload) < 2 {
+		return
+	}
+	// A raw directed datagram on the datagram socket: a bare NetBIOS datagram
+	// (dest name, source name, payload) tagged NBIPXDirectedDatagram, routed to the
+	// consumer — the raw-datagram analogue of a mailslot send.
+	if d.DstSock == NBIPXDatagramSocket && d.Payload[1] == protocol.NBIPXDirectedDatagram {
+		e.deliverRawDatagram(d)
+		return
+	}
+	if d.DstSock != NBIPXSessionSocket {
 		return
 	}
 	hdr, err := protocol.DecodeSessionHeader(d.Payload)
@@ -128,16 +232,31 @@ func (e *ipxSessionEngine) HandleDatagram(d *ipxproto.Datagram) {
 		return
 	}
 	switch hdr.DataStreamType {
-	case protocol.NBIPXSessionInit:
-		e.handleSessionInit(d, hdr)
 	case protocol.NBIPXSessionEnd:
 		e.handleSessionEnd(d, hdr)
-	case protocol.NBIPXDataFirstMiddle, protocol.NBIPXDataOnlyLast:
+	case protocol.NBIPXSessionEndAck:
+		// our SESSION.END was acknowledged: nothing to do.
+	case protocol.NBIPXSessionData:
+		// DATA (0x06) carries both session-establishment and SMB messages. A frame
+		// whose DestConnID is the unassigned sentinel (0xFFFF, or 0 before a circuit
+		// exists) is a NetBIOS session request; anything else is an SMB message on an
+		// open circuit. (ERRATA captures/ipx.pcap: there is no distinct SESSION.INIT
+		// stream type — establishment rides DATA with the 0xFFFF sentinel.)
+		if hdr.DestConnID == nbipxUnassignedConnID {
+			e.handleSessionRequest(d, hdr)
+			return
+		}
 		e.handleData(d, hdr)
-	case protocol.NBIPXDataAck:
-		// our-data acknowledgement: nothing to do.
 	}
 }
+
+// nbipxUnassignedConnID is the DestConnID sentinel a client puts in its NetBIOS
+// session-request DATA frame before the server has assigned a connection id.
+const nbipxUnassignedConnID uint16 = 0xFFFF
+
+// nbipxSessionRequestNameLen is the two 16-byte NetBIOS names (called + calling)
+// that prefix a session-request / session-accept DATA payload on the wire.
+const nbipxSessionRequestNameLen = 2 * protocol.NameLength
 
 // keyFor builds the circuit key from an inbound datagram + its session header. The
 // remote's SourceConnID identifies the circuit within the peer's address.
@@ -145,12 +264,24 @@ func keyFor(d *ipxproto.Datagram, hdr *protocol.NBIPXSessionHeader) ipxCircuitKe
 	return ipxCircuitKey{net: d.SrcNet, node: d.SrcNode, sock: d.SrcSock, remote: hdr.SourceConnID}
 }
 
-// handleSessionInit completes establishment: allocate a local connection ID, open
-// the circuit keyed by the peer's address + SourceConnID, and reply SESSION_CONFIRM
-// carrying our ID. A repeated INIT for an existing circuit re-confirms with the
-// same local ID (idempotent retransmit handling). The circuit is now ready to carry
-// SMB messages.
-func (e *ipxSessionEngine) handleSessionInit(d *ipxproto.Datagram, hdr *protocol.NBIPXSessionHeader) {
+// handleSessionRequest completes NB-IPX session establishment. A client opens a
+// circuit with a DATA frame whose DestConnID is the unassigned sentinel (0xFFFF),
+// carrying a [called-name || calling-name || trailer] payload. The engine allocates
+// a local connection ID, opens the circuit keyed by the peer's address +
+// SourceConnID, and replies with a DATA frame that assigns our ID (SourceConnID) and
+// echoes the client's (DestConnID), swapping the two names (the wire's session-accept
+// form: [calling || called || trailer]). A repeated request for an existing circuit
+// re-accepts with the same local ID (idempotent retransmit handling). The circuit is
+// then ready to carry SMB messages. (ERRATA captures/ipx.pcap frames 23/24.)
+func (e *ipxSessionEngine) handleSessionRequest(d *ipxproto.Datagram, hdr *protocol.NBIPXSessionHeader) {
+	if len(d.Payload) < protocol.NBIPXSessionHeaderLen+nbipxSessionRequestNameLen {
+		return
+	}
+	names := d.Payload[protocol.NBIPXSessionHeaderLen : protocol.NBIPXSessionHeaderLen+nbipxSessionRequestNameLen]
+	called := names[:protocol.NameLength]
+	calling := names[protocol.NameLength:]
+	trailer := d.Payload[protocol.NBIPXSessionHeaderLen+nbipxSessionRequestNameLen:]
+
 	key := keyFor(d, hdr)
 	e.mu.Lock()
 	c := e.circuits[key]
@@ -167,8 +298,33 @@ func (e *ipxSessionEngine) handleSessionInit(d *ipxproto.Datagram, hdr *protocol
 	localID := c.localID
 	e.mu.Unlock()
 
-	e.sendControl(d, hdr, localID, protocol.NBIPXSessionConfirm)
+	// Session-accept payload: swap the called/calling names, preserve the trailer.
+	accept := make([]byte, 0, nbipxSessionRequestNameLen+len(trailer))
+	accept = append(accept, calling...)
+	accept = append(accept, called...)
+	accept = append(accept, trailer...)
+	e.sendSessionAccept(d, hdr, localID, accept)
 	e.logf("NBIPX circuit established")
+}
+
+// sendSessionAccept replies to a session request with a DATA frame that assigns our
+// connection id (SourceConnID) and echoes the client's (DestConnID), carrying the
+// swapped-name accept payload. This is the NBIPX SESSION_CONFIRM: ConnCtrlFlag is
+// SYS|CONFIRM and RecvSeq is 1, both of which a Win98/WfW NWLink client validates
+// before it will send its first SMB frame — an accept of bare SYS with RecvSeq 0 is
+// treated as unconfirmed and the client retransmits SESSION_INITIALIZE forever
+// (ERRATA captures/ipx.pcap frames 331-340 vs the working WFW server frame 367).
+func (e *ipxSessionEngine) sendSessionAccept(in *ipxproto.Datagram, inHdr *protocol.NBIPXSessionHeader, localID uint16, payload []byte) {
+	h := &protocol.NBIPXSessionHeader{
+		ConnCtrlFlag:   protocol.NBIPXConnFlagSYS | protocol.NBIPXConnFlagCONFIRM,
+		DataStreamType: protocol.NBIPXSessionData,
+		SourceConnID:   localID,
+		DestConnID:     inHdr.SourceConnID,
+		TotalDataLen:   uint16(len(payload)),
+		DataLen:        uint16(len(payload)),
+		RecvSeq:        protocol.NBIPXSessionAcceptRecvSeq,
+	}
+	e.send(in, append(protocol.EncodeSessionHeader(h), payload...), "session-accept")
 }
 
 // handleSessionEnd tears down a circuit: close its SMB conn (releasing handles),
@@ -203,7 +359,10 @@ func (e *ipxSessionEngine) handleData(d *ipxproto.Datagram, hdr *protocol.NBIPXS
 	body := d.Payload[protocol.NBIPXSessionHeaderLen : protocol.NBIPXSessionHeaderLen+int(hdr.DataLen)]
 
 	key := keyFor(d, hdr)
-	eom := hdr.DataStreamType == protocol.NBIPXDataOnlyLast || hdr.ConnCtrlFlag&protocol.NBIPXConnFlagEOM != 0
+	// A message is complete when the EOM bit is set in ConnCtrlFlag. A single-frame
+	// SMB reply (the common case) sets EOM on its one DATA frame; a fragmented
+	// message clears EOM on all but the last.
+	eom := hdr.ConnCtrlFlag&protocol.NBIPXConnFlagEOM != 0
 
 	e.mu.Lock()
 	c := e.circuits[key]
@@ -227,7 +386,7 @@ func (e *ipxSessionEngine) handleData(d *ipxproto.Datagram, hdr *protocol.NBIPXS
 	// carries data costs no consumer state.
 	if c.conn == nil {
 		if consumer := e.consumer(); consumer != nil {
-			c.conn = consumer.NewConn()
+			c.conn = consumer.NewConn(nbipxClientLabel(c.node, c.sock))
 			// Install the server-push writer for asynchronous completions
 			// (NOTIFY_CHANGE), framing SMB bytes onto a DATA_ONLY_LAST addressed
 			// from the circuit's retained peer address + connection ids.
@@ -262,32 +421,29 @@ func (e *ipxSessionEngine) sendControl(in *ipxproto.Datagram, inHdr *protocol.NB
 		SourceConnID:   localID,
 		DestConnID:     inHdr.SourceConnID,
 		SendSeq:        inHdr.SendSeq,
-		ConnCtrlByte:   inHdr.ConnCtrlByte,
 	}
 	e.send(in, protocol.EncodeSessionHeader(h), "session-control")
 }
 
-// sendData sends a reassembled response back as one EOM-flagged DATA_ONLY_LAST
-// frame (a file-server reply fits the IPX datagram; the legacy transport replied
-// the same way). An empty payload still sends one DATA_ONLY_LAST so an empty SMB
-// reply is framed.
+// sendData sends a reassembled response back as one EOM-flagged DATA (0x06) frame
+// (a file-server reply fits the IPX datagram; the legacy transport replied the same
+// way). An empty payload still sends one DATA frame so an empty SMB reply is framed.
 func (e *ipxSessionEngine) sendData(in *ipxproto.Datagram, inHdr *protocol.NBIPXSessionHeader, localID uint16, payload []byte) {
 	h := &protocol.NBIPXSessionHeader{
 		ConnCtrlFlag:   protocol.NBIPXConnFlagEOM,
-		DataStreamType: protocol.NBIPXDataOnlyLast,
+		DataStreamType: protocol.NBIPXSessionData,
 		SourceConnID:   localID,
 		DestConnID:     inHdr.SourceConnID,
 		SendSeq:        inHdr.SendSeq,
 		TotalDataLen:   uint16(len(payload)),
 		DataLen:        uint16(len(payload)),
-		ConnCtrlByte:   inHdr.ConnCtrlByte,
 	}
 	e.send(in, append(protocol.EncodeSessionHeader(h), payload...), "session-send")
 }
 
 // pushData sends a server-initiated reassembled message (an asynchronous
 // NOTIFY_CHANGE completion, §10d wire push) to the circuit's peer as one
-// EOM-flagged DATA_ONLY_LAST. Unlike sendData it has no inbound datagram to swap
+// EOM-flagged DATA (0x06). Unlike sendData it has no inbound datagram to swap
 // addressing from, so it addresses the peer directly from the circuit's retained
 // net/node/sock. A nil sender drops it.
 func (e *ipxSessionEngine) pushData(peerNet [4]byte, peerNode [6]byte, peerSock [2]byte, localID, remoteID uint16, payload []byte) {
@@ -296,7 +452,7 @@ func (e *ipxSessionEngine) pushData(peerNet [4]byte, peerNode [6]byte, peerSock 
 	}
 	h := &protocol.NBIPXSessionHeader{
 		ConnCtrlFlag:   protocol.NBIPXConnFlagEOM,
-		DataStreamType: protocol.NBIPXDataOnlyLast,
+		DataStreamType: protocol.NBIPXSessionData,
 		SourceConnID:   localID,
 		DestConnID:     remoteID,
 		TotalDataLen:   uint16(len(payload)),
@@ -335,21 +491,319 @@ func (e *ipxSessionEngine) send(in *ipxproto.Datagram, body []byte, reason strin
 	}
 }
 
-// nbipxDatagramSocket is the IPX socket NB-IPX connectionless datagrams (the
-// browser's NMPI mailslot traffic) ride (0x0553).
-var nbipxDatagramSocket = [2]byte{0x05, 0x53}
-
 // ipxBroadcastNode is the IPX node-ID broadcast address (all-ones); a browser
 // group datagram fans to it. Defined locally so the engine needs no router import.
 var ipxBroadcastNode = [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
+
+// handleNMPIPayload decodes an NMPI packet on the name-query (0x0551) or datagram
+// (0x0553) socket and dispatches it, reporting true when it consumed the datagram.
+// A non-NMPI payload returns false so the caller can try other paths. Mirrors the
+// legacy over_ipx handleNMPIPayload.
+func (e *ipxSessionEngine) handleNMPIPayload(d *ipxproto.Datagram) bool {
+	if len(d.Payload) < 2 {
+		return false
+	}
+	p, err := protocol.DecodeNMPIPacket(d.Payload)
+	if err != nil {
+		return false
+	}
+	e.handleNMPI(d, p)
+	return true
+}
+
+// handleNMPI dispatches a decoded NMPI packet. A Query-name (opcode 0xF3) for one
+// of our names is answered with a Name-found (0xF4) reply, echoing the message ID /
+// name type so the querier can correlate it, unicast back to the source — this is
+// how a WfW/Win9x client locates CLASSICSTACK before opening an NB-IPX session. A
+// MailslotSend (0xFC) — the wire form of a browser HostAnnounce / AnnouncementRequest
+// / GetBackupList over NB-IPX — is decoded to its inner NetBIOS datagram and routed
+// to the connectionless-datagram consumer (the browser), which is how ClassicStack
+// appears in an IPX client's browse list ("net view"). Mirrors the legacy over_ipx
+// handleNMPI.
+func (e *ipxSessionEngine) handleNMPI(d *ipxproto.Datagram, p *protocol.NMPIPacket) {
+	if p == nil {
+		return
+	}
+	switch p.Opcode {
+	case protocol.NMPIOpMailslotSend:
+		e.deliverMailslot(d, p)
+	case protocol.NMPIOpNameQuery:
+		if !e.ownsName(p.RequestedName) {
+			return
+		}
+		resp := protocol.EncodeNMPIPacket(&protocol.NMPIPacket{
+			Opcode:        protocol.NMPIOpNameFound,
+			NameType:      p.NameType,
+			MessageID:     p.MessageID,
+			RequestedName: p.RequestedName,
+			SourceName:    p.RequestedName,
+		})
+		e.sendNameReply(d, resp)
+		e.logf("NBIPX name-found " + p.RequestedName.String())
+	}
+}
+
+// deliverMailslot routes an NMPI MailslotSend's inner browser datagram to the
+// datagram consumer, tagging ReplyTo with the sender's IPX address so the consumer
+// (browser) can answer a specific requester (GetBackupList / AnnouncementRequest)
+// directed rather than broadcast. A nil consumer drops it after decode.
+func (e *ipxSessionEngine) deliverMailslot(d *ipxproto.Datagram, p *protocol.NMPIPacket) {
+	if e.dgram == nil {
+		return
+	}
+	consumer := e.dgram()
+	if consumer == nil {
+		return
+	}
+	consumer.HandleDatagram(Datagram{
+		Source:      p.SourceName,
+		Destination: p.RequestedName,
+		Payload:     append([]byte(nil), p.Payload...),
+		Broadcast:   p.RequestedName.Type() == protocol.NameTypeGroup || p.NameType == protocol.NMPINameTypeWorkgroup,
+		ReplyTo:     e.replyEndpoint(d),
+	})
+}
+
+// deliverRawDatagram routes a raw directed NB-IPX datagram (NBIPXDirectedDatagram, a
+// bare dest/source/payload NetBIOS datagram, NOT NMPI-wrapped) to the consumer, the
+// raw-datagram analogue of deliverMailslot. Mirrors the legacy over_ipx handlePEP
+// directed-datagram path.
+func (e *ipxSessionEngine) deliverRawDatagram(d *ipxproto.Datagram) {
+	if e.dgram == nil {
+		return
+	}
+	consumer := e.dgram()
+	if consumer == nil {
+		return
+	}
+	dg, err := protocol.DecodeDatagram(d.Payload[2:])
+	if err != nil {
+		return
+	}
+	consumer.HandleDatagram(Datagram{
+		Source:      dg.Source,
+		Destination: dg.Destination,
+		Payload:     dg.Payload,
+		Broadcast:   dg.Destination.Type() == protocol.NameTypeGroup,
+		ReplyTo:     e.replyEndpoint(d),
+	})
+}
+
+// replyEndpoint captures the inbound datagram's IPX address as a transport-tagged
+// DatagramEndpoint, so a consumer answering a specific requester replies directed to
+// that node (via SendDatagram → emitDatagram) rather than broadcasting.
+func (e *ipxSessionEngine) replyEndpoint(d *ipxproto.Datagram) *DatagramEndpoint {
+	return &DatagramEndpoint{
+		Transport: TransportIPX,
+		Network:   d.SrcNet,
+		Node:      d.SrcNode,
+		Socket:    d.SrcSock,
+	}
+}
+
+// handleNameService examines an inbound type-20 name-service packet. It has two
+// roles on a listening server:
+//
+//   - Find-name resolution: a WfW/Win9x NWLink client (e.g. WIN98-2 in
+//     captures/ipx.pcap) locates a server by broadcasting a type-20 Find-name
+//     (0x01) on socket 0x0455 — NOT the NMPI Query on 0x0551 (which a different
+//     client dialect uses). If the queried name is one of ours we must answer
+//     with a Name-recognized (0x02) reply, unicast to the querier; without it the
+//     client never resolves CLASSICSTACK and no SMB-over-IPX session opens.
+//     (ERRATA captures/ipx.pcap frame 21+: this is the sole name-resolution path
+//     WIN98-2 emits.)
+//   - Claim-conflict detection: while we are claiming a name, a positive reply
+//     (Name-recognized / Name-in-use) naming it from another node means the name
+//     is already in use, so we signal the objection to abort the claim. A bare
+//     Find-name query does not object to a claim (a query is not a claim).
+//
+// Mirrors the legacy over_ipx handleNameService, extended with the Find-name
+// responder observed on the wire.
+func (e *ipxSessionEngine) handleNameService(d *ipxproto.Datagram) {
+	pkt, err := protocol.DecodeNameService(d.Payload)
+	if err != nil {
+		return
+	}
+	switch pkt.DataStreamType {
+	case protocol.NBIPXFindName:
+		if e.ownsName(pkt.Name) {
+			e.replyNameRecognized(d, pkt.Name)
+		}
+	case protocol.NBIPXNameRecognized, protocol.NBIPXNameInUse:
+		e.noteClaimConflict(pkt.Name, d.SrcNode)
+	}
+}
+
+// replyNameRecognized answers a type-20 Find-name for one of our names with a
+// Name-recognized (0x02) name-service packet, unicast back to the querier's IPX
+// node/socket (the Find-name arrives broadcast; the reply is directed). This is
+// how a WfW/Win9x client that resolves via type-20 Find-name (rather than the
+// NMPI Query on 0x0551) locates CLASSICSTACK before opening an NB-IPX session.
+//
+// ERRATA (captures/ipx.pcap): the reply must (1) carry the self-identifying leading
+// prefix — our own name + workgroup + the 0x44 (In-use|Registered) status flag —
+// that the Win98 NWLink client validates, and (2) be sent as an IPX type-4 (PEP)
+// datagram, NOT type-20. An earlier zero-prefixed type-20 reply was ignored by the
+// client (it never followed up with SESSION_INITIALIZE / Session-data). See
+// EncodeNameRecognized and spec/errata.md.
+func (e *ipxSessionEngine) replyNameRecognized(in *ipxproto.Datagram, name protocol.Name) {
+	if e.sender == nil {
+		return
+	}
+	own := e.ownName()
+	body := protocol.EncodeNameRecognized(own, e.workgroupName(), name)
+	_ = e.sender.Send(&ipxproto.Datagram{
+		Type:    protocol.IPXTypePEP,
+		DstNet:  in.SrcNet,
+		DstNode: in.SrcNode,
+		DstSock: in.SrcSock,
+		SrcSock: in.DstSock,
+		Payload: body,
+	})
+	e.logf("NBIPX name-recognized " + name.String())
+}
+
+// ownName returns our own NetBIOS name in workstation form (suffix 0x00) for the
+// NAME_RECOGNIZED reply prefix, taken from the first local name (its base string).
+// Falls back to an empty name if none is registered.
+func (e *ipxSessionEngine) ownName() protocol.Name {
+	if e.names == nil {
+		return protocol.Name{}
+	}
+	names := e.names()
+	if len(names) == 0 {
+		return protocol.Name{}
+	}
+	return protocol.NewName(names[0].String(), protocol.NameTypeWorkstation)
+}
+
+// workgroupName returns the configured workgroup for the NAME_RECOGNIZED reply
+// prefix. A nil callback (or empty result) yields an empty workgroup, which the
+// encoder space-fills.
+func (e *ipxSessionEngine) workgroupName() string {
+	if e.workgroup == nil {
+		return ""
+	}
+	return e.workgroup()
+}
+
+// noteClaimConflict signals the claim goroutine that name is contested, when an
+// inbound name-service packet from a node other than ourselves names the name we are
+// currently claiming. A self-looped broadcast (claimSelf) is ignored.
+func (e *ipxSessionEngine) noteClaimConflict(name protocol.Name, srcNode [6]byte) {
+	e.claimMu.Lock()
+	claiming, self, obj := e.claiming, e.claimSelf, e.objection
+	e.claimMu.Unlock()
+	var zero protocol.Name
+	if obj == nil || claiming == zero || name != claiming || srcNode == self {
+		return
+	}
+	select {
+	case obj <- struct{}{}:
+	default:
+	}
+}
+
+// ClaimName broadcasts a name-claim for name on the segment (a type-20 Find-name plus
+// an NMPI ClaimName, retries × interval) and reports whether it was uncontested (nil)
+// or another node objected (ErrNameInUse). self is our own IPX node so a looped-back
+// self-broadcast is not mistaken for a conflict. Compose calls this on start, once per
+// local name, to gate the SAP advertisement — the legacy over_ipx claim-then-advertise
+// ordering.
+func (e *ipxSessionEngine) ClaimName(ctx context.Context, self [6]byte, name protocol.Name, retries int, interval time.Duration) error {
+	obj := make(chan struct{}, 1)
+	e.claimMu.Lock()
+	e.claiming, e.claimSelf, e.objection = name, self, obj
+	e.claimMu.Unlock()
+	defer func() {
+		e.claimMu.Lock()
+		e.claiming, e.objection = protocol.Name{}, nil
+		e.claimMu.Unlock()
+	}()
+
+	for range retries {
+		e.broadcastFindName(name)
+		e.broadcastNMPIClaim(name)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-obj:
+			return ErrNameInUse
+		case <-time.After(interval):
+		}
+	}
+	return nil
+}
+
+// broadcastFindName emits one IPX type-20 Find-name carrying name to every node on
+// the segment (the name-claim broadcast form). Mirrors the legacy over_ipx
+// broadcastFindName.
+func (e *ipxSessionEngine) broadcastFindName(name protocol.Name) {
+	if e.sender == nil {
+		return
+	}
+	body := protocol.EncodeNameService(&protocol.NBIPXNameServicePacket{
+		NameTypeFlag:   0x00,
+		DataStreamType: protocol.NBIPXFindName,
+		Name:           name,
+	})
+	_ = e.sender.Send(&ipxproto.Datagram{
+		Type:    protocol.IPXTypeNetBIOS,
+		DstNet:  e.sender.Network(),
+		DstNode: ipxBroadcastNode,
+		DstSock: NBIPXSessionSocket,
+		SrcSock: NBIPXSessionSocket,
+		Payload: body,
+	})
+}
+
+// broadcastNMPIClaim emits one NMPI ClaimName (opcode 0xF1) for name to the segment,
+// sourced from the server socket (0x0550) to the name-query socket (0x0551). Mirrors
+// the legacy over_ipx broadcastNMPIClaim.
+func (e *ipxSessionEngine) broadcastNMPIClaim(name protocol.Name) {
+	if e.sender == nil {
+		return
+	}
+	body := protocol.EncodeNMPIPacket(&protocol.NMPIPacket{
+		Opcode:        protocol.NMPIOpNameClaim,
+		NameType:      protocol.NMPINameTypeMachine,
+		RequestedName: name,
+		SourceName:    name,
+	})
+	_ = e.sender.Send(&ipxproto.Datagram{
+		Type:    protocol.IPXTypeNetBIOS,
+		DstNet:  e.sender.Network(),
+		DstNode: ipxBroadcastNode,
+		DstSock: NBIPXNameQuerySocket,
+		SrcSock: NBIPXServerSocket,
+		Payload: body,
+	})
+}
+
+// sendNameReply unicasts a name-resolution reply back to the querier as an IPX PEP
+// datagram (type 4), swapping source/destination sockets. A nil sender drops it.
+func (e *ipxSessionEngine) sendNameReply(in *ipxproto.Datagram, body []byte) {
+	if e.sender == nil {
+		return
+	}
+	_ = e.sender.Send(&ipxproto.Datagram{
+		Type:    protocol.IPXTypePEP,
+		DstNet:  in.SrcNet,
+		DstNode: in.SrcNode,
+		DstSock: in.SrcSock,
+		SrcSock: in.DstSock,
+		Payload: body,
+	})
+}
 
 // emitDatagram sends a connectionless NetBIOS datagram (a browser HostAnnounce /
 // election / backup-list frame) over NB-IPX as an NMPI MailslotSend (opcode 0xFC)
 // on the datagram socket (0x0553), IPX type 20. The browser's payload is the SMB
 // mailslot transaction; it rides the NMPI Payload field with the source/destination
-// NetBIOS names in the NMPI header. Both directed and broadcast browser datagrams
-// fan to the IPX broadcast node (the engine has no name→node binding for an
-// out-of-band send), matching the NBF egress.
+// NetBIOS names in the NMPI header. A broadcast (ReplyTo nil) fans to the IPX
+// broadcast node; a directed reply (ReplyTo set by the inbound datagram — a browser
+// GetBackupList / AnnouncementRequest answer tagged TransportIPX) is unicast to the
+// requester's IPX node/socket, so the answer reaches the one station that asked.
 func (e *ipxSessionEngine) emitDatagram(d Datagram) error {
 	if e.sender == nil {
 		return nil
@@ -361,13 +815,21 @@ func (e *ipxSessionEngine) emitDatagram(d Datagram) error {
 		SourceName:    d.Source,
 		Payload:       d.Payload,
 	})
-	return e.sender.Send(&ipxproto.Datagram{
+	out := &ipxproto.Datagram{
 		Type:    protocol.IPXTypeNetBIOS,
 		DstNode: ipxBroadcastNode,
-		DstSock: nbipxDatagramSocket,
-		SrcSock: nbipxDatagramSocket,
+		DstSock: NBIPXDatagramSocket,
+		SrcSock: NBIPXDatagramSocket,
 		Payload: body,
-	})
+	}
+	if r := d.ReplyTo; r != nil && r.Transport == TransportIPX && r.Node != ([6]byte{}) {
+		out.DstNet = r.Network
+		out.DstNode = r.Node
+		if r.Socket != ([2]byte{}) {
+			out.DstSock = r.Socket
+		}
+	}
+	return e.sender.Send(out)
 }
 
 // nmpiNameType maps a NetBIOS name to the NMPI name-type byte: a group name is a

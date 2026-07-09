@@ -140,6 +140,7 @@ var _ component.Attachable = (*binding)(nil)
 type Service struct {
 	logger     log.Logger
 	serverName string
+	workgroup  string
 
 	mu            sync.Mutex
 	running       bool
@@ -173,15 +174,20 @@ type circuitCloser interface{ closeCircuits() }
 // SendDatagram fans to every registered egress so one browser serves NetBEUI AND
 // IPX at once. The NBF engine satisfies it (a CmdDatagram[Broadcast] UI frame) and
 // the NBIPX engine does too (an NMPI MailslotSend IPX type-20 broadcast). It is the
-// outbound mirror of DatagramConsumer (the inbound seam).
+// outbound mirror of DatagramConsumer (the inbound seam). transportFamily reports
+// which TransportNetBEUI/TransportIPX/… family the egress is, so SendDatagram can
+// route a directed reply (Datagram.ReplyTo set) to only the transport it arrived on.
 type datagramEgress interface {
 	emitDatagram(d Datagram) error
+	transportFamily() string
 }
 
-// SendDatagram emits a connectionless NetBIOS datagram on every attached transport
-// that can carry one (the browser uses this for HostAnnounce / election / backup-
-// list traffic). A directed reply (Datagram.Broadcast false) and a group broadcast
-// (true) are distinguished by the transports. With no egress attached the datagram
+// SendDatagram emits a connectionless NetBIOS datagram. A broadcast (ReplyTo nil) is
+// fanned to every attached transport that can carry one, so one browser serves
+// NetBEUI AND IPX at once (HostAnnounce / election traffic). A directed reply
+// (ReplyTo set — a browser GetBackupList / AnnouncementRequest answer) is emitted by
+// ONLY the transport the request arrived on, so it is unicast to the requester's
+// node rather than re-broadcast on every wire. With no matching egress the datagram
 // is dropped. Errors from individual transports are collected but do not stop the
 // fan-out — a failing transport must not silence the others.
 func (s *Service) SendDatagram(d Datagram) error {
@@ -190,6 +196,10 @@ func (s *Service) SendDatagram(d Datagram) error {
 	s.mu.Unlock()
 	var firstErr error
 	for _, e := range egresses {
+		// A directed reply goes out the one transport that carried the request.
+		if d.ReplyTo != nil && d.ReplyTo.Transport != "" && e.transportFamily() != d.ReplyTo.Transport {
+			continue
+		}
 		if err := e.emitDatagram(d); err != nil && firstErr == nil {
 			firstErr = err
 		}

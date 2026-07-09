@@ -8,6 +8,7 @@ import (
 	proto "github.com/ObsoleteMadness/ClassicStack/core/protocol/browser"
 	mswire "github.com/ObsoleteMadness/ClassicStack/core/protocol/mailslot"
 	nbproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbios"
+	nbservice "github.com/ObsoleteMadness/ClassicStack/core/service/netbios"
 )
 
 // handle.go is the inbound mailslot dispatch + the announcement/election emitters.
@@ -22,7 +23,7 @@ import (
 // sent to group names the local stack also subscribes to, so our own broadcasts come
 // back to us — drop self-sourced frames to avoid an election/announce storm (the
 // loop observed in the legacy captures).
-func (s *Service) HandleMailslot(name string, src, dest nbproto.Name, body []byte) {
+func (s *Service) HandleMailslot(name string, src, dest nbproto.Name, body []byte, replyTo *nbservice.DatagramEndpoint) {
 	if s.isSelfSourced(src) {
 		return
 	}
@@ -38,9 +39,9 @@ func (s *Service) HandleMailslot(name string, src, dest nbproto.Name, body []byt
 	case proto.OpDomainAnnouncement:
 		s.observeDomain(frame)
 	case proto.OpAnnouncementRequest:
-		s.sendHostAnnouncement()
+		s.replyHostAnnouncement(replyTo)
 	case proto.OpGetBackupListReq:
-		s.handleGetBackupList(frame, src)
+		s.handleGetBackupList(frame, src, dest, replyTo)
 	case proto.OpRequestElection:
 		s.handleElection(frame)
 	}
@@ -68,6 +69,12 @@ func (s *Service) observeAnnouncement(frame []byte, extraType uint32) {
 		return
 	}
 	s.mu.Lock()
+	// A LocalMasterAnnounce (extraType carries the master bit) from any OTHER node
+	// means the segment already has a master — record it so the startup
+	// discoverMaster watcher does not force an election and fight the real master.
+	if extraType&proto.ServerTypeMasterBrowser != 0 && name != s.server {
+		s.masterSeen = true
+	}
 	s.servers[name] = serverRecord{
 		serverType: a.ServerType | extraType,
 		osMajor:    a.OSVersionMajor,
@@ -97,9 +104,14 @@ func (s *Service) observeDomain(frame []byte) {
 
 // handleGetBackupList answers a GetBackupList request, but only while we are the
 // local master (only the master owns the authoritative backup list). The response
-// echoes the request token, is sourced from our <1D> master-browser name, and is
-// directed back to the requester (not a broadcast).
-func (s *Service) handleGetBackupList(frame []byte, requester nbproto.Name) {
+// echoes the request token and is directed straight back to the requester's node
+// (replyTo, not a broadcast). requester is the request's source name (the reply's
+// NetBIOS destination); dest is the name the client addressed the request TO — the
+// reply source identity is chosen by backupListResponseSource so a client that asked
+// WORKGROUP<1D>/<00> gets the <1D> master-browser identity it expects (per [MS-BRWS]
+// §3.2.5.5); without it the client rejects the list and re-runs the election
+// (captures/ipx.pcap frames 161–189).
+func (s *Service) handleGetBackupList(frame []byte, requester, dest nbproto.Name, replyTo *nbservice.DatagramEndpoint) {
 	s.mu.Lock()
 	role := s.role
 	s.mu.Unlock()
@@ -114,13 +126,27 @@ func (s *Service) handleGetBackupList(frame []byte, requester nbproto.Name) {
 		Token:         req.Token,
 		BackupServers: s.BackupList(),
 	}.Marshal()
-	_ = s.sink.SendMailslot(
+	_ = s.sink.SendMailslotTo(
 		mswire.NameBrowse,
-		nbproto.NewName(s.server, proto.NameTypeMasterBrowser),
+		s.backupListResponseSource(dest),
 		requester,
 		body,
 		false,
+		replyTo,
 	)
+}
+
+// backupListResponseSource picks the NetBIOS name a GetBackupList response is
+// sourced from. A Win9x client addresses the request to <workgroup><1D> or
+// <workgroup><00>; in either case it expects the <workgroup><1D> master-browser
+// identity in the reply. Mirror that whenever the request's destination names our
+// workgroup; otherwise source from our own <20> file-server name. (Legacy
+// service/smb backupListResponseSource.)
+func (s *Service) backupListResponseSource(dest nbproto.Name) nbproto.Name {
+	if strings.EqualFold(strings.TrimSpace(dest.String()), s.workgroup) {
+		return nbproto.NewName(s.workgroup, proto.NameTypeMasterBrowser)
+	}
+	return nbproto.NewName(s.server, nbproto.NameTypeFileServer)
 }
 
 // handleElection runs the election decision ([MS-BRWS] §3.3): compare the
@@ -138,6 +164,7 @@ func (s *Service) handleElection(frame []byte) {
 		s.stopElection()
 		s.mu.Lock()
 		s.role = RolePotential
+		s.masterSeen = true // a stronger candidate exists — do not self-elect
 		s.mu.Unlock()
 		s.logf("election lost")
 		return
@@ -239,23 +266,60 @@ func (s *Service) sendLocalMasterAnnouncement() {
 	s.emitAnnouncement(proto.OpLocalMasterAnnounce)
 }
 
+// replyHostAnnouncement answers an AnnouncementRequest with a host announcement
+// directed back to the requester (replyTo), so a booting client that asked "who is
+// out there?" learns of us immediately without waiting for the periodic broadcast. A
+// nil replyTo falls back to a broadcast (the transport could not supply an endpoint).
+func (s *Service) replyHostAnnouncement(replyTo *nbservice.DatagramEndpoint) {
+	if s.sink == nil {
+		return
+	}
+	body := s.announcementBody(proto.OpHostAnnouncement)
+	_ = s.sink.SendMailslotTo(
+		mswire.NameBrowse,
+		nbproto.NewName(s.server, nbproto.NameTypeFileServer),
+		nbproto.NewName(s.workgroup, proto.NameTypeMasterBrowser),
+		body,
+		true,
+		replyTo,
+	)
+}
+
 // emitAnnouncement broadcasts a host or local-master announcement for our identity
 // to the workgroup master-browser group name.
 func (s *Service) emitAnnouncement(op uint8) {
 	if s.sink == nil {
 		return
 	}
-	body := proto.Announcement{
+	destType := proto.NameTypeMasterBrowser
+	if op == proto.OpLocalMasterAnnounce {
+		destType = nbproto.NameTypeGroup
+	}
+	_ = s.sendBrowseBroadcast(destType, s.announcementBody(op))
+}
+
+// announcementBody marshals a host (or local-master) announcement for our identity.
+// A local-master announcement MUST advertise the Master Browser type bit in addition
+// to our base workstation/server type, or the client does not accept us as the master
+// browser and keeps re-running the election / never lists us (the legacy service set
+// ServerType = Workstation|Master for the local-master frame; a plain workstation type
+// on a 0x0F announcement was a refactor regression — captures/ipx.pcap frame 201).
+func (s *Service) announcementBody(op uint8) []byte {
+	serverType := proto.ServerTypeWorkstationSet
+	if op == proto.OpLocalMasterAnnounce {
+		serverType |= proto.ServerTypeMasterBrowser
+	}
+	return proto.Announcement{
 		Op:             op,
-		UpdateCount:    0,
+		UpdateCount:    announceUpdateCount,
 		PeriodicityMS:  uint32(hostAnnouncePeriod / time.Millisecond),
 		ServerName:     s.server,
 		OSVersionMajor: 4,
-		ServerType:     proto.ServerTypeWorkstationSet,
+		ServerType:     serverType,
 		VersionMajor:   proto.AnnounceVersionMajor,
 		VersionMinor:   proto.AnnounceVersionMinor,
+		Comment:        s.desc,
 	}.Marshal()
-	_ = s.sendBrowseBroadcast(body)
 }
 
 // emitElection broadcasts an election frame for the given candidacy.
@@ -263,16 +327,16 @@ func (s *Service) emitElection(local proto.Election) error {
 	if s.sink == nil {
 		return nil
 	}
-	return s.sendBrowseBroadcast(local.Marshal())
+	return s.sendBrowseBroadcast(nbproto.NameTypeGroup, local.Marshal())
 }
 
-// sendBrowseBroadcast writes body to \MAILSLOT\BROWSE, sourced from our workstation
-// name to the workgroup<1D> master-browser group name, as a broadcast.
-func (s *Service) sendBrowseBroadcast(body []byte) error {
+// sendBrowseBroadcast writes body to \MAILSLOT\BROWSE, sourced from our file-server
+// name (<20>) to the workgroup destination name type (e.g. <1D> or <1E>) as a broadcast.
+func (s *Service) sendBrowseBroadcast(destType uint8, body []byte) error {
 	return s.sink.SendMailslot(
 		mswire.NameBrowse,
-		nbproto.NewName(s.server, nbproto.NameTypeWorkstation),
-		nbproto.NewName(s.workgroup, proto.NameTypeMasterBrowser),
+		nbproto.NewName(s.server, nbproto.NameTypeFileServer),
+		nbproto.NewName(s.workgroup, destType),
 		body,
 		true,
 	)

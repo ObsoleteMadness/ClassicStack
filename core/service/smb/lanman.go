@@ -19,12 +19,20 @@ import (
 //     share + the virtual IPC$ pipe), answered straight from SMB state with no
 //     browser involved.
 
-// RAP function codes ([MS-RAP]): NetShareEnum lists this server's shares,
-// NetServerEnum2 lists the servers the browser has observed.
+// RAP function codes ([MS-RAP]) we answer with real data: NetShareEnum lists this
+// server's shares, NetServerEnum2 lists the servers the browser has observed, and
+// NetWkstaGetInfo (level 10) reports this server's own workstation identity. Every
+// OTHER RAP function (NetServerGetInfo 0x000D, …) is answered with an empty-success
+// TRANSACTION reply rather than data — see handleTransaction.
 const (
-	rapNetShareEnum   uint16 = 0x0000
-	rapNetServerEnum2 uint16 = 0x0068
+	rapNetShareEnum    uint16 = 0x0000
+	rapNetServerEnum2  uint16 = 0x0068
+	rapNetWkstaGetInfo uint16 = 0x003F // NetWkstaGetInfo ([MS-RAP] 63) — workstation identity
 )
+
+// wkstaInfoLevel10 is the WKSTA_INFO detail level Win98/WfW requests when a user
+// opens \\server (ReturnDesc "zzzBBzz"). We answer this level with a real record.
+const wkstaInfoLevel10 uint16 = 10
 
 // SHARE_INFO_1 share-type bits ([MS-SRVS] STYPE_*): a disk tree vs the IPC$ pipe.
 const (
@@ -46,6 +54,14 @@ const (
 )
 
 const lanmanPipe = "\\PIPE\\LANMAN"
+
+// Version reported in RAP records (SERVER_INFO_1 sv1_version_* and WKSTA_INFO_10
+// wki10_ver_*). We present ourselves as a LAN Manager 4.x-era server, which is
+// what the browse list and \\server workstation query expect.
+const (
+	smbVerMajor byte = 4
+	smbVerMinor byte = 0
+)
 
 // BrowseServer is one browse-list row the BrowseProvider supplies: a server name,
 // its SV_TYPE_* bits, and an optional comment. It mirrors browser.ServerEntry so
@@ -107,8 +123,31 @@ func (s *Service) handleTransaction(sess *smbSession, h protocol.Header, req []b
 		return s.handleNetServerEnum2(h, area)
 	case rapNetShareEnum:
 		return s.handleNetShareEnum(h, sess.user)
+	case rapNetWkstaGetInfo:
+		// Win98/WfW issue this when a user opens \\server, and (over NetBEUI) will
+		// NOT accept an empty-success reply — they re-issue it forever, hanging
+		// Explorer (captures/netbeui.pcap frames 128→192, 339→363). Only the level-10
+		// WKSTA_INFO record is understood; any other level falls through to
+		// empty-success.
+		if lvl, ok := parseRAPDetailLevel(area); ok && lvl == wkstaInfoLevel10 {
+			return s.handleNetWkstaGetInfo(h, sess.user)
+		}
 	}
-	return errResponse(h, statusNotSupported)
+	// Any OTHER RAP call — including NetServerGetInfo (0x000D), which Win98 issues when
+	// opening \\server — gets an empty-success TRANSACTION reply (SMB status SUCCESS,
+	// WCT=10, zero params/data), NOT an error and NOT a synthesized info record:
+	//   - Returning ERRDOS/ERRbadfunc makes a CORE-dialect client (Win9x/WfW, Flags2=0)
+	//     abandon the server (it stops listing \\CLASSICSTACK). This was the refactor
+	//     regression: the handler answered STATUS_NOT_SUPPORTED for unknown functions.
+	//   - Returning a hand-built SERVER_INFO_1 record for NetServerGetInfo corrupts the
+	//     client: a Win98 redirector fed a non-empty NetServerGetInfo reply BLUESCREENS
+	//     (captures/ipx.pcap). So NetServerGetInfo stays empty-success.
+	// NOTE: NetWkstaGetInfo (0x003F) is handled ABOVE with a real WKSTA_INFO_10 record
+	// because a Win98/WfW NetBEUI client rejects the empty-success form and loops
+	// (captures/netbeui.pcap). The IPX-path BLUESCREEN warning above was recorded for
+	// NetServerGetInfo's record and (historically) applied to WKSTA too; re-verify the
+	// WKSTA_INFO_10 reply against a live Win98-over-IPX client — see spec/errata.md.
+	return buildTransactionResponse(h, nil, nil)
 }
 
 // transactionBytes returns the SMB_COM_TRANSACTION byte (data) area, regardless of
@@ -139,6 +178,30 @@ func parseLANMANFunction(area []byte) (uint16, bool) {
 		return 0, false
 	}
 	p := idx + len(marker)
+	if p+2 > len(area) {
+		return 0, false
+	}
+	return bp.LE16(area[p : p+2]), true
+}
+
+// parseRAPDetailLevel best-effort extracts the info-level word a RAP "GetInfo"
+// call requests. It sits after the function code, ParamDesc and ReturnDesc
+// (both NUL-terminated strings): \PIPE\LANMAN\0 Function(2) ParamDesc\0 ReturnDesc\0
+// Level(2). A parse miss returns (0, false).
+func parseRAPDetailLevel(area []byte) (uint16, bool) {
+	marker := lanmanPipe + "\x00"
+	idx := indexFold(area, marker)
+	if idx < 0 {
+		return 0, false
+	}
+	p := idx + len(marker) + 2 // past the function code
+	for range 2 {              // skip ParamDesc + ReturnDesc (NUL-terminated)
+		n := indexByte(area[p:], 0)
+		if n < 0 {
+			return 0, false
+		}
+		p += n + 1
+	}
 	if p+2 > len(area) {
 		return 0, false
 	}
@@ -231,6 +294,57 @@ func (s *Service) handleNetShareEnum(h protocol.Header, user string) []byte {
 	return buildNetShareEnumResponse(h, s.shareEntries(user))
 }
 
+// handleNetWkstaGetInfo answers a RAP NetWkstaGetInfo level-10 call with a
+// WKSTA_INFO_10 record describing this server's own workstation identity. Win98/WfW
+// over NetBEUI require a real record here — an empty-success reply is rejected and
+// re-issued forever, hanging Explorer (captures/netbeui.pcap).
+func (s *Service) handleNetWkstaGetInfo(h protocol.Header, user string) []byte {
+	return buildNetWkstaGetInfoResponse(h, s.serverName(), user, s.workgroup())
+}
+
+// buildNetWkstaGetInfoResponse packs a WKSTA_INFO_10 record (ReturnDesc "zzzBBzz")
+// into an SMB_COM_TRANSACTION response. The fixed part is
+// computername(z)+username(z)+langroup(z)+ver_major(B)+ver_minor(B)+logon_domain(z)+
+// oth_domains(z); each z is a 4-byte data-relative pointer (offset in the low word,
+// high word zero — the same convention as NetShareEnum's RemarkOff), and the strings
+// live in a NUL-terminated heap after the fixed part.
+func buildNetWkstaGetInfoResponse(h protocol.Header, computer, user, workgroup string) []byte {
+	const (
+		ptrSize   = 4             // a RAP "z" pointer
+		fixedSize = ptrSize*5 + 2 // 5 z-pointers + ver_major(1) + ver_minor(1)
+	)
+	// wki10_username is the logged-on user; a guest session ("") reports empty.
+	// wki10_oth_domains is empty (we advertise no other domains).
+	strs := []string{computer, user, workgroup, "", ""} // computername, username, langroup, logon_domain, oth_domains
+
+	// Lay out the heap and record each string's data-relative offset.
+	offsets := make([]int, len(strs))
+	heap := make([]byte, 0)
+	off := fixedSize
+	for i, str := range strs {
+		offsets[i] = off
+		heap = append(heap, []byte(str)...)
+		heap = append(heap, 0)
+		off += len(str) + 1
+	}
+
+	data := make([]byte, fixedSize+len(heap))
+	bp.PutLE16(data[0:2], uint16(offsets[0]))   // wki10_computername
+	bp.PutLE16(data[4:6], uint16(offsets[1]))   // wki10_username
+	bp.PutLE16(data[8:10], uint16(offsets[2]))  // wki10_langroup
+	data[16] = smbVerMajor                      // wki10_ver_major
+	data[17] = smbVerMinor                      // wki10_ver_minor
+	bp.PutLE16(data[18:20], uint16(offsets[3])) // wki10_logon_domain
+	bp.PutLE16(data[22:24], uint16(offsets[4])) // wki10_oth_domains
+	copy(data[fixedSize:], heap)
+
+	const paramLen = 4 // Status(2)+Converter(2) — no Entries* fields for a Get call
+	params := make([]byte, paramLen)
+	// params[0:2] Status = 0, params[2:4] Converter = 0.
+
+	return buildTransactionResponse(h, params, data)
+}
+
 // buildNetShareEnumResponse packs the share entries into a RAP NetShareEnum reply
 // (SHARE_INFO_1 records + a trailing remark heap) inside an SMB_COM_TRANSACTION
 // response. Each record is Name(13)+Pad(1)+Type(2)+RemarkOff(4) = 20 bytes; the
@@ -309,7 +423,8 @@ func buildNetServerEnum2Response(h protocol.Header, entries []BrowseServer) []by
 		base := i * entrySize
 		name := browserName(e.Name)
 		copy(data[base:base+16], name)
-		data[base+16] = 4 // sv1_version_major
+		data[base+16] = smbVerMajor // sv1_version_major
+		data[base+17] = smbVerMinor // sv1_version_minor
 		bp.PutLE32(data[base+18:base+22], e.Type)
 		bp.PutLE32(data[base+22:base+26], uint32(commentOffsets[i]))
 	}
@@ -320,22 +435,35 @@ func buildNetServerEnum2Response(h protocol.Header, entries []BrowseServer) []by
 
 // buildTransactionResponse assembles an SMB_COM_TRANSACTION response (WCT=10) with
 // the given RAP parameter and data blocks at their header-relative offsets.
+//
+// The empty-success case (no params AND no data — an unimplemented RAP function such
+// as NetWkstaGetInfo/NetServerGetInfo) is special: the 20-byte parameter block MUST be
+// left ALL ZERO, including ParameterOffset and DataOffset. This mirrors the legacy
+// buildSMBTransactionEmptySuccess byte-for-byte. A Win98 RAP client over IPC$ rejects a
+// zero-count reply whose ParameterOffset/DataOffset are non-zero (it computes a buffer
+// past the end of the frame and treats the transaction as incomplete), so it re-issues
+// NetWkstaGetInfo forever and never opens \\CLASSICSTACK — the loop seen in
+// captures/ipx.pcap. With the offsets zeroed the client accepts the empty reply and
+// proceeds. (Do NOT synthesize a WKSTA_INFO_10 record here — that bluescreens Win98;
+// see spec/errata.md.)
 func buildTransactionResponse(h protocol.Header, params, data []byte) []byte {
 	rh := responseHeader(h, statusSuccess)
 	out := rh.Encode(nil)
 	out = append(out, 10) // WordCount
 
-	// header(32) + WCT(1) + 10 words(20) + ByteCount(2).
-	paramOffset := protocol.HeaderLen + 1 + 20 + 2
-	dataOffset := paramOffset + len(params)
-
 	w := make([]byte, 20)
-	bp.PutLE16(w[0:2], uint16(len(params)))  // TotalParameterCount
-	bp.PutLE16(w[2:4], uint16(len(data)))    // TotalDataCount
-	bp.PutLE16(w[6:8], uint16(len(params)))  // ParameterCount
-	bp.PutLE16(w[8:10], uint16(paramOffset)) // ParameterOffset
-	bp.PutLE16(w[12:14], uint16(len(data)))  // DataCount
-	bp.PutLE16(w[14:16], uint16(dataOffset)) // DataOffset
+	if len(params) > 0 || len(data) > 0 {
+		// header(32) + WCT(1) + 10 words(20) + ByteCount(2).
+		paramOffset := protocol.HeaderLen + 1 + 20 + 2
+		dataOffset := paramOffset + len(params)
+		bp.PutLE16(w[0:2], uint16(len(params)))  // TotalParameterCount
+		bp.PutLE16(w[2:4], uint16(len(data)))    // TotalDataCount
+		bp.PutLE16(w[6:8], uint16(len(params)))  // ParameterCount
+		bp.PutLE16(w[8:10], uint16(paramOffset)) // ParameterOffset
+		bp.PutLE16(w[12:14], uint16(len(data)))  // DataCount
+		bp.PutLE16(w[14:16], uint16(dataOffset)) // DataOffset
+	}
+	// else: empty-success — the 20-byte block (offsets included) stays zero.
 	out = append(out, w...)
 
 	bcc := len(params) + len(data)

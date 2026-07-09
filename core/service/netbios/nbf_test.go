@@ -57,10 +57,11 @@ func (p *recordingPort) lastSent(cmd uint8) *nbf.Frame {
 // with a marker prefix, so a test can prove the reassembled SMB message reached
 // the consumer and the response travelled back over the circuit.
 type echoConsumer struct {
-	opened  int
-	closed  int
-	last    []byte
-	circuit *echoCircuit // the most recently opened circuit (for asserting server push)
+	opened     int
+	closed     int
+	last       []byte
+	lastClient string       // client label the most recent NewConn was opened with
+	circuit    *echoCircuit // the most recently opened circuit (for asserting server push)
 }
 
 type echoCircuit struct {
@@ -68,8 +69,9 @@ type echoCircuit struct {
 	push func([]byte) // captured server-push writer, for asserting async delivery
 }
 
-func (e *echoConsumer) NewConn() SessionCircuit {
+func (e *echoConsumer) NewConn(client string) SessionCircuit {
 	e.opened++
+	e.lastClient = client
 	ec := &echoCircuit{c: e}
 	e.circuit = ec
 	return ec
@@ -160,6 +162,39 @@ func TestNBF_CallForForeignNameIgnored(t *testing.T) {
 	}
 }
 
+// TestNBF_LocateQueryIsAnswered proves the broadcast-locate phase of a Windows CALL
+// — a NAME_QUERY carrying Local Session No. 0 ("FIND.NAME request") for our name —
+// is answered with a NAME_RECOGNIZED (Data2 ss = 0, no circuit allocated) rather than
+// dropped. This is the NT 3.51 netbeui.pcap regression: without this reply the client
+// never learns the name exists and never proceeds to the unicast CALL.
+func TestNBF_LocateQueryIsAnswered(t *testing.T) {
+	_, r, port, _ := newWiredEngine(t)
+	name := protocol.NewName("CLASSICSTACK", protocol.NameTypeFileServer)
+	client := protocol.NewName("CLIENT", protocol.NameTypeWorkstation)
+
+	nq := &nbf.Frame{Command: nbf.CmdNameQuery, Data2: 0, RspCorrelator: 0x000b}
+	copy(nq.DestinationName[:], name[:])
+	copy(nq.SourceName[:], client[:])
+	r.Inbound([6]byte{0x02, 0, 0, 0, 0, 0x01}, nbf.NetBIOSMulticastMAC, nq)
+
+	nr := port.lastSent(nbf.CmdNameRecognized)
+	if nr == nil {
+		t.Fatal("no NAME_RECOGNIZED sent for a session-0 locate query")
+	}
+	if nr.XmitCorrelator != nq.RspCorrelator {
+		t.Errorf("XmitCorrelator = %#04x, want the query's RspCorrelator %#04x", nr.XmitCorrelator, nq.RspCorrelator)
+	}
+	if nr.Data2&0xFF != 0 {
+		t.Errorf("locate NAME_RECOGNIZED Data2 ss = %d, want 0 (no session)", nr.Data2&0xFF)
+	}
+	if protocol.Name(nr.DestinationName) != client {
+		t.Errorf("NAME_RECOGNIZED dest = %q, want the querier %q", protocol.Name(nr.DestinationName).String(), client.String())
+	}
+	if protocol.Name(nr.SourceName) != name {
+		t.Errorf("NAME_RECOGNIZED source = %q, want our name %q", protocol.Name(nr.SourceName).String(), name.String())
+	}
+}
+
 // TestNBF_DataDeliversToConsumerAndReplies proves a DATA_ONLY_LAST message on an
 // established circuit is ACKed, served to the consumer, and the response sent
 // back as a DATA_ONLY_LAST.
@@ -177,6 +212,11 @@ func TestNBF_DataDeliversToConsumerAndReplies(t *testing.T) {
 	}
 	if string(consumer.last) != string(msg) {
 		t.Fatalf("consumer saw %q, want %q", consumer.last, msg)
+	}
+	// The circuit is opened with the requesting client's MAC as the label so the
+	// SMB session-tracking view can attribute the session to that client.
+	if want := nbfClientLabel(peer); consumer.lastClient != want {
+		t.Errorf("NewConn client label = %q, want %q", consumer.lastClient, want)
 	}
 	if port.lastSent(nbf.CmdDataAck) == nil {
 		t.Error("no DATA_ACK sent for DATA_ONLY_LAST")
@@ -281,6 +321,79 @@ func TestNBF_StopTearsDownCircuits(t *testing.T) {
 	}
 	if consumer.closed != 1 {
 		t.Fatalf("Stop closed %d circuits, want 1", consumer.closed)
+	}
+}
+
+// countSent returns how many directed frames of the given command were sent.
+func (p *recordingPort) countSent(cmd uint8) int {
+	n := 0
+	for _, s := range p.sent {
+		if s.frame.Command == cmd {
+			n++
+		}
+	}
+	return n
+}
+
+// TestNBF_NoReceiveHoldsReplyUntilContinue proves the NBF flow-control window: a peer
+// that sends NO_RECEIVE before our reply blocks the circuit, so the DATA_ONLY_LAST
+// response is held (only the DATA_ACK for the request goes out); RECEIVE_CONTINUE then
+// flushes the queued response. Matches the legacy over_netbeui transport.
+func TestNBF_NoReceiveHoldsReplyUntilContinue(t *testing.T) {
+	_, r, port, _ := newWiredEngine(t)
+	name := protocol.NewName("CLASSICSTACK", protocol.NameTypeFileServer)
+	localNum, remoteNum, peer := establishCircuit(t, r, port, name, 21)
+
+	// Peer closes its receive window before we would reply.
+	r.Inbound(peer, peer, &nbf.Frame{Command: nbf.CmdNoReceive, DestNumber: localNum, SourceNumber: remoteNum})
+
+	// A request arrives: it is ACKed, served, but the reply must be held.
+	msg := []byte("\xffSMBq")
+	r.Inbound(peer, peer, &nbf.Frame{Command: nbf.CmdDataOnlyLast, DestNumber: localNum, SourceNumber: remoteNum, Payload: msg})
+	if port.lastSent(nbf.CmdDataAck) == nil {
+		t.Fatal("no DATA_ACK sent for the request")
+	}
+	if port.countSent(nbf.CmdDataOnlyLast) != 0 {
+		t.Fatal("reply DATA_ONLY_LAST was sent while the receive window was closed")
+	}
+
+	// Window reopens: the held reply flushes.
+	r.Inbound(peer, peer, &nbf.Frame{Command: nbf.CmdReceiveContinue, DestNumber: localNum, SourceNumber: remoteNum})
+	reply := port.lastSent(nbf.CmdDataOnlyLast)
+	if reply == nil {
+		t.Fatal("RECEIVE_CONTINUE did not flush the held reply")
+	}
+	if want := append([]byte("R:"), msg...); string(reply.Payload) != string(want) {
+		t.Fatalf("flushed reply payload %q, want %q", reply.Payload, want)
+	}
+	if reply.DestNumber != remoteNum || reply.SourceNumber != localNum {
+		t.Errorf("flushed reply nums dst=%d src=%d, want dst=%d src=%d", reply.DestNumber, reply.SourceNumber, remoteNum, localNum)
+	}
+}
+
+// TestNBF_ReceiveOutstandingRetransmitsLast proves a RECEIVE_OUTSTANDING makes the
+// engine retransmit the last session frame it sent (the peer missed it). Matches the
+// legacy over_netbeui handleReceiveOutstanding.
+func TestNBF_ReceiveOutstandingRetransmitsLast(t *testing.T) {
+	_, r, port, _ := newWiredEngine(t)
+	name := protocol.NewName("CLASSICSTACK", protocol.NameTypeFileServer)
+	localNum, remoteNum, peer := establishCircuit(t, r, port, name, 23)
+
+	// Drive one request→reply so the engine records a last-sent frame.
+	r.Inbound(peer, peer, &nbf.Frame{Command: nbf.CmdDataOnlyLast, DestNumber: localNum, SourceNumber: remoteNum, Payload: []byte("\xffSMBz")})
+	before := port.countSent(nbf.CmdDataOnlyLast)
+	if before == 0 {
+		t.Fatal("no reply frame recorded to retransmit")
+	}
+
+	// Peer asks for the last frame again.
+	r.Inbound(peer, peer, &nbf.Frame{Command: nbf.CmdReceiveOutstanding, DestNumber: localNum, SourceNumber: remoteNum})
+	if got := port.countSent(nbf.CmdDataOnlyLast); got != before+1 {
+		t.Fatalf("RECEIVE_OUTSTANDING sent %d DATA_ONLY_LAST total, want %d (one retransmit)", got, before+1)
+	}
+	last := port.lastSent(nbf.CmdDataOnlyLast)
+	if want := []byte("R:\xffSMBz"); string(last.Payload) != string(want) {
+		t.Fatalf("retransmit payload %q, want %q", last.Payload, want)
 	}
 }
 

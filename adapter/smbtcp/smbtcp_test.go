@@ -14,7 +14,9 @@ import (
 // so the test can assert the transport's framing without the real SMB command engine.
 type echoConsumer struct{ served chan []byte }
 
-func (e echoConsumer) NewConn() smb.SessionCircuit { return &echoCircuit{served: e.served} }
+func (e echoConsumer) NewConn(client string) smb.SessionCircuit {
+	return &echoCircuit{served: e.served}
+}
 
 type echoCircuit struct{ served chan []byte }
 

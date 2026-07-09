@@ -34,7 +34,7 @@ func OpenW5500(spi *machine.SPI, csPin, rstPin, intPin machine.Pin) (link.FrameL
 	}
 
 	dev := w5500.New(spi, csPin, intPin)
-	
+
 	// Initialize W5500
 	err := dev.Configure()
 	if err != nil {
@@ -64,7 +64,7 @@ func (l *w5500Link) Read() (link.Frame, error) {
 		if l.closed {
 			return nil, link.ErrClosed
 		}
-		
+
 		n, err := l.dev.GetRxSize(0)
 		if err != nil {
 			return nil, err
@@ -77,7 +77,7 @@ func (l *w5500Link) Read() (link.Frame, error) {
 			}
 			return buf[:readLen], nil
 		}
-		
+
 		time.Sleep(2 * time.Millisecond)
 	}
 }

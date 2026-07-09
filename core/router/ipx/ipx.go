@@ -37,6 +37,7 @@ var DefaultNetwork = [4]byte{0x00, 0x00, 0x00, 0x00}
 type Port interface {
 	SetDeliveryCallback(cb portipx.DeliveryCallback)
 	Send(dstMAC [6]byte, d *protocol.Datagram) error
+	SrcMAC() [6]byte
 }
 
 // SocketHandler receives IPX datagrams whose destination socket matches a RegisterSocket call.

@@ -18,14 +18,15 @@ func (r *recordingSink) SendDatagram(d netbios.Datagram) error {
 
 // recordingConsumer captures the bodies routed to it.
 type recordingConsumer struct {
-	name string
-	src  nbproto.Name
-	body []byte
-	hits int
+	name    string
+	src     nbproto.Name
+	body    []byte
+	hits    int
+	replyTo *netbios.DatagramEndpoint
 }
 
-func (c *recordingConsumer) HandleMailslot(name string, src, dest nbproto.Name, body []byte) {
-	c.name, c.src, c.body, c.hits = name, src, append([]byte(nil), body...), c.hits+1
+func (c *recordingConsumer) HandleMailslot(name string, src, dest nbproto.Name, body []byte, replyTo *netbios.DatagramEndpoint) {
+	c.name, c.src, c.body, c.hits, c.replyTo = name, src, append([]byte(nil), body...), c.hits+1, replyTo
 }
 
 // TestRouterRoutesByName proves an inbound mailslot write is unwrapped and routed

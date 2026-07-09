@@ -25,6 +25,7 @@ import (
 	msframe "github.com/ObsoleteMadness/ClassicStack/core/protocol/messenger"
 	nbproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbios"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/mailslot"
+	nbservice "github.com/ObsoleteMadness/ClassicStack/core/service/netbios"
 )
 
 // Name is the component name for the messenger service.
@@ -113,10 +114,11 @@ func (s *Service) Stop(ctx context.Context) error {
 // decodes the single-block pop-up, logs it, and publishes a bus.MessageReceived for
 // the UI. The source/destination NetBIOS names are the datagram envelope's; the
 // authoritative From/To are inside the messenger frame.
-func (s *Service) HandleMailslot(name string, src, dest nbproto.Name, body []byte) {
+func (s *Service) HandleMailslot(name string, src, dest nbproto.Name, body []byte, replyTo *nbservice.DatagramEndpoint) {
 	_ = name
 	_ = src
 	_ = dest
+	_ = replyTo // messenger pop-ups are one-way; no directed reply
 	m, err := msframe.Unmarshal(body)
 	if err != nil {
 		return // not a single-block messenger datagram — drop quietly

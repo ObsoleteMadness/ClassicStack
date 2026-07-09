@@ -99,8 +99,105 @@ const (
 	Flags2NTStatus       uint16 = 0x4000 // SMB_FLAGS2_NT_STATUS
 )
 
-// DialectNTLM is the NT LM 0.12 dialect string negotiated in SMB_COM_NEGOTIATE.
-const DialectNTLM = "NT LM 0.12"
+// SMB dialect strings ([MS-CIFS] 2.2.4.52; [smb6.0] §"list of SMB protocol dialects").
+// Ordered least→most functional. The NEGOTIATE response format is keyed by which of
+// these the server selects (see DialectFamily): Core → WCT=1, any LANMAN 1.0..2.1 →
+// WCT=13, NT LM 0.12 → WCT=17.
+const (
+	DialectPCNetwork1 = "PC NETWORK PROGRAM 1.0"      // the core protocol
+	DialectMSNet103   = "MICROSOFT NETWORKS 1.03"     // MS-NET 1.03
+	DialectMSNet30    = "MICROSOFT NETWORKS 3.0"      // DOS LANMAN 1.0
+	DialectLANMAN10   = "LANMAN1.0"                   // LAN Manager 1.0
+	DialectLM12X002   = "LM1.2X002"                   // LAN Manager 2.0
+	DialectDOSLM12    = "DOS LM1.2X002"               // DOS LAN Manager 2.0
+	DialectDOSLANMAN2 = "DOS LANMAN2.1"               // DOS LAN Manager 2.1
+	DialectLANMAN21   = "LANMAN2.1"                   // OS/2 LAN Manager 2.1
+	DialectWfW311     = "Windows for Workgroups 3.1a" // WfW
+	DialectNTLM       = "NT LM 0.12"                  // NT LAN Manager
+)
+
+// DialectFamily groups the dialects by NEGOTIATE-response wire format ([MS-CIFS]
+// 2.2.4.52.2: WordCount MUST match the selected dialect family).
+type DialectFamily int
+
+const (
+	// DialectFamilyUnknown means none of the offered dialects were recognised; the
+	// server answers with the core WCT=1 shape and DialectIndex 0xFFFF.
+	DialectFamilyUnknown DialectFamily = iota
+	DialectFamilyCore                  // PC NETWORK PROGRAM 1.0 (also MS-NET 1.03) → WCT=1
+	DialectFamilyLanMan                // LANMAN 1.0 .. LANMAN 2.1 / WfW 3.1a → WCT=13
+	DialectFamilyNT                    // NT LM 0.12 → WCT=17
+)
+
+// dialectFamily maps a dialect string to its response-format family. Anything not
+// listed is DialectFamilyCore (the safe common-minimum WCT=1 shape).
+func dialectFamily(name string) DialectFamily {
+	switch name {
+	case DialectNTLM:
+		return DialectFamilyNT
+	case DialectMSNet30, DialectLANMAN10, DialectLM12X002, DialectDOSLM12,
+		DialectDOSLANMAN2, DialectLANMAN21, DialectWfW311:
+		return DialectFamilyLanMan
+	case DialectPCNetwork1, DialectMSNet103, DialectPCLAN10:
+		return DialectFamilyCore
+	default:
+		return DialectFamilyCore
+	}
+}
+
+// DialectPCLAN10 is an alternate spelling some MS-NET builds use for the core dialect.
+const DialectPCLAN10 = "PCLAN1.0"
+
+// dialectRank orders dialects by capability (higher = more recent/functional), so the
+// server can select the most recent dialect the client offered ([smb6.0]: "SMB servers
+// select the most recent version of the protocol known to both client and server").
+// Unlisted strings rank 0 (below every known dialect but still selectable as core).
+func dialectRank(name string) int {
+	switch name {
+	case DialectNTLM:
+		return 100
+	case DialectWfW311:
+		return 90
+	case DialectLANMAN21:
+		return 80
+	case DialectDOSLANMAN2:
+		return 70
+	case DialectDOSLM12:
+		return 60
+	case DialectLM12X002:
+		return 50
+	case DialectLANMAN10:
+		return 40
+	case DialectMSNet30:
+		return 30
+	case DialectMSNet103:
+		return 20
+	case DialectPCNetwork1, DialectPCLAN10:
+		return 10
+	default:
+		return 0
+	}
+}
+
+// SelectDialect chooses the most-recent dialect from the client's offered list (a slice
+// of dialect strings in the order they appeared in the NEGOTIATE request) that this
+// server supports, and returns its 0-based index, the dialect string, and its response
+// family. If the list is empty or none is recognised it returns index 0xFFFF /
+// DialectFamilyUnknown ([MS-CIFS] 2.2.4.52.2: DialectIndex 0xFFFF when nothing matches).
+func SelectDialect(offered []string) (index uint16, name string, family DialectFamily) {
+	bestRank := 0
+	bestIdx := -1
+	for i, d := range offered {
+		if r := dialectRank(d); r > bestRank {
+			bestRank = r
+			bestIdx = i
+		}
+	}
+	if bestIdx < 0 {
+		return 0xFFFF, "", DialectFamilyUnknown
+	}
+	return uint16(bestIdx), offered[bestIdx], dialectFamily(offered[bestIdx])
+}
 
 // Common NTSTATUS / DOS status values used by the codec's callers.
 const (

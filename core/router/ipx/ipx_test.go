@@ -22,6 +22,7 @@ type sentFrame struct {
 }
 
 func (p *fakePort) SetDeliveryCallback(cb portipx.DeliveryCallback) { p.cb = cb }
+func (p *fakePort) SrcMAC() [6]byte                                 { return ourNode }
 func (p *fakePort) Send(dstMAC [6]byte, d *protocol.Datagram) error {
 	p.mu.Lock()
 	p.sent = append(p.sent, sentFrame{dstMAC: dstMAC, d: d})

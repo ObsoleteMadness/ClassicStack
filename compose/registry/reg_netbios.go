@@ -33,6 +33,10 @@ func init() {
 		// transport (back-compat).
 		nbSec := netbios.SectionFromModel(m)
 		svc.SetBoundTransports(nbSec.Transports)
+		// The workgroup (shared Identity, §4-bis) is stamped into the NB-IPX
+		// NAME_RECOGNIZED reply prefix a Win98 NWLink client validates before it opens
+		// a session (spec/errata.md). SMB reads the same Identity.Workgroup.
+		svc.SetWorkgroup(m.Identity.Workgroup)
 		// NBT (:139) is a NetBIOS transport, so its listen address lives on the NetBIOS
 		// section. Record it on the service (§B); the compose cross-wire (wireSMBTCP) reads
 		// it from here when the nbt binding is on (the :139 listener is physically shared
