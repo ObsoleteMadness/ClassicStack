@@ -77,6 +77,12 @@ const (
 	NBIPXConnFlagACK uint8 = 0x40 // requesting an ACK
 	NBIPXConnFlagATT uint8 = 0x20 // attention
 	NBIPXConnFlagEOM uint8 = 0x10 // end of message
+	// NBIPXConnFlagRESEND is a resend request: the peer asks us to retransmit our
+	// data frames starting from the sequence number in its RecvSeq field.
+	// ERRATA (captures ipx.pcap 2026-07-10 frame 278): Win98 NWLink emits
+	// SYS|RESEND (0x88) with RecvSeq 0 when a server data frame arrives carrying an
+	// unexpected SendSeq — see the sequencing rules on NBIPXSessionHeader.
+	NBIPXConnFlagRESEND uint8 = 0x08
 
 	// NBIPXConnFlagCONFIRM is the low bit a server sets on the session-accept DATA
 	// frame that confirms a client's SESSION_INITIALIZE. ERRATA (captures/ipx.pcap):
@@ -127,6 +133,38 @@ const NBIPXSessionHeaderLen = 18
 //	14-15 RecvSeq         (LE) — receive sequence number
 //	16-17 BytesReceived   (LE)
 //	18+   Data (the SMB PDU)
+//
+// Sequencing rules (ERRATA, observed against WinNT 3.51 / Win98 NWLink clients in
+// captures ipx.pcap 2026-07-10; see spec/errata.md):
+//
+//   - SendSeq is consumed by frames that carry data — the SESSION_INITIALIZE
+//     (0x41, seq 0; the client's first SMB frame is seq 1) and every data frame —
+//     and by SESSION_END (0x40, zero data). Zero-data SYSTEM/control frames (the
+//     0x81 accept, an 0x80 ack, an 0x88 resend request, and NT's 0xC0 probe)
+//     carry the sender's CURRENT send counter but consume nothing — so the
+//     server's first data frame MUST be seq 0, and a probe is acked with the
+//     UNCHANGED RecvSeq (acking a probe as consumed reads as a protocol error:
+//     NT aborts the session after ~9 probes, client error 59). Ground truth
+//     (ipx.pcap 2026-07-10 frames 488-509, WfW client ↔ NT server): WfW's
+//     bare-SYS 0x80 ack (seq 4) did not consume — its next data frame reused
+//     seq 4 — while its SESSION_END (0x40, seq 5) did (NT's end-ack said
+//     RecvSeq 6).
+//   - RecvSeq is the cumulative acknowledgment: the next SendSeq the sender expects
+//     from its peer. A data frame whose SendSeq or RecvSeq contradicts the peer's
+//     counters is DISCARDED and answered with SYS|RESEND (RecvSeq = resend-from);
+//     mirroring the client's SendSeq back (what this engine originally did) reads
+//     as "server data frame 0 was lost" and deadlocks the circuit.
+//   - BytesReceived is the RECEIVE-WINDOW EDGE: RecvSeq + the number of frames
+//     the sender is prepared to accept (the highest peer SendSeq acceptable,
+//     plus one). NT-as-server advertises RecvSeq+5 on every frame (accept = 6,
+//     then 7/8/9/10 as it consumes); WfW advertises +3. An NT CLIENT will not
+//     transmit data while the peer's advertised edge is below its next send
+//     sequence: it polls with a zero-data SYS|ACK probe (0xC0, SendSeq 1) every
+//     ~600ms, and each probe MUST be answered with a zero-data SYS frame whose
+//     BytesReceived opens the window (RecvSeq unchanged). Unanswered, NT retries
+//     ~7x and drops the session; answered with a zero window, it re-probes until
+//     the client errors with 240 "session cancelled". Win9x/WfW clients ignore
+//     the field (they transmit regardless and accept 0 from us).
 type NBIPXSessionHeader struct {
 	ConnCtrlFlag   uint8 // SYS|ACK|ATT|EOM bitfield
 	DataStreamType uint8 // NBIPXFindName, NBIPXSessionInit, ...

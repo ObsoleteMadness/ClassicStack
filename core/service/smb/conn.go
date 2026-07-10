@@ -43,8 +43,17 @@ func (s *Service) NewConn(client string) *Conn {
 // bytes to send back over the circuit, or nil to send nothing (the silent-drop
 // case some commands and malformed frames take). req begins at the "\xffSMB"
 // header — the transport has already stripped its own framing.
+//
+// At debug level it narrates the exchange: one line for the decoded inbound command
+// and one for the outbound response (its status + length, or a silent drop), keyed by
+// the circuit's client label — so a `-log debug` run shows exactly which SMB requests
+// reached the engine and what it answered (the diagnosis path for "the client tore the
+// session down after NEGOTIATE" — see spec/errata.md).
 func (c *Conn) ServeMessage(req []byte) []byte {
-	return c.svc.Dispatch(c.sess, req)
+	c.svc.logSMBRequest(c.sess, req)
+	resp := c.svc.Dispatch(c.sess, req)
+	c.svc.logSMBResponse(c.sess, resp)
+	return resp
 }
 
 // SetPushWriter installs the transport's server-initiated push channel: a function

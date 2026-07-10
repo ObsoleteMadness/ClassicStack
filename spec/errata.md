@@ -147,6 +147,78 @@ Note the **field widths differ** between the LANMAN and NT forms (SecurityMode 2
 
 **Where:** `core/service/browser/browser.go` (`discoverMaster`, `masterDiscoveryDelay`, `masterSeen`, wired from `Start`); `core/service/browser/handle.go` (`observeAnnouncement`/`handleElection` set `masterSeen`).
 
+### AndX chaining must be processed server-side — [smb6.0] 988 "ANDX SMB Messages", NT 3.51 depends on it
+
+**Spec ([smb6.0] 988–1008):** LANMAN1.0+ clients may chain multiple requests in one message; "There is one message sent containing the chained requests and there is one response message" (rule 3); "The server will implicitly use the result of the first command in the 'X' command" — the SESSION_SETUP_ANDX UID / TREE_CONNECT_ANDX TID flow into the chained blocks (rule 5); "The first Command to encounter an error will stop all further processing" (rule 7), with the error in the single response header (rule 8); AndXOffset is measured from the start of the SMB header (rules 1, 9).
+
+**Observed (`netbeui.pcap` frames 174/175, NT 3.51, 2026-07-09):** NT opens a share with one message chaining SESSION_SETUP_ANDX → TREE_CONNECT_ANDX (`\\CLASSICSTACK\FOO`). The refactor dispatch served only the primary command and replied with `AndXCommand = 0xFF` — the chained tree connect was silently ignored. NT treats that as a failed tree connect: it does **not** retry the share; it falls back to `\\CLASSICSTACK\IPC$` + an NT_CREATE_ANDX of the `\srvsvc` RPC pipe and ultimately reports "access denied" to the user. Win9x/WfW sends these commands unchained, which is why the gap was invisible until an NT client was tested.
+
+**Related observation (frames 189/190):** the NT redirector surfaces the status of the `\srvsvc` pipe open verbatim. Our IPC$ tree answered NT_CREATE_ANDX with the generic `treeFor` ACCESS_DENIED → the user sees "Access denied". A server that serves no RPC pipes must answer STATUS_OBJECT_NAME_NOT_FOUND ("no such pipe") so the user at least sees a truthful error.
+
+**Correction (netbeui.pcap 2026-07-10, frames 265–285):** the earlier theory that NOT_FOUND "steers the redirector to its RAP fallback" is WRONG. Observed: NT 3.51 `net view` against our NT LM 0.12 server opens IPC$, NT_CREATEs `\srvsvc`, receives ERRDOS/ERRbadfile (the correct DOS-status mapping of OBJECT_NAME_NOT_FOUND for its Flags2=0x0003 session), then tree-disconnects and LOGOFFs without ever attempting a RAP NetShareEnum over \PIPE\LANMAN — the user sees "access denied". CAP_RPC_REMOTE_APIS was already clear in our Capabilities, so its absence does not trigger the fallback either; NT appears to commit to MS-RPC share enumeration purely from the negotiated NT LM 0.12 dialect (it RAPs only against pre-NT-dialect servers, e.g. WfW's LANMAN2.1). Serving `net view` from NT therefore requires an actual `\srvsvc` pipe implementing NetrShareEnum ([MS-SRVS]) — RAP alone is not reachable from an NT client on an NT dialect.
+
+**What we do:** `Dispatch` now walks the AndX chain (`processAndXChain`): each chained block is re-framed with the shared header and dispatched, its response block is spliced onto the reply with the previous block's AndXCommand/AndXOffset patched, and the response header accumulates the chained status/TID/UID. FID inheritance for chained OPEN_ANDX → I/O is not implemented (no client in the compatibility set chains an open with I/O). NT_CREATE_ANDX on the IPC$ tree returns STATUS_OBJECT_NAME_NOT_FOUND.
+
+**Where:** `core/service/smb/andx.go` (`isAndXRequest`, `processAndXChain`), `core/service/smb/dispatch.go` (`Dispatch`/`dispatchOne` split), `core/service/smb/ntcreate.go` (IPC$ pipe-open status).
+
+### TRANS2_QUERY_FS_INFORMATION + SMB_QUERY_FILE_NAME_INFO are mandatory for NT clients; NT info-level strings are ALWAYS Unicode — [smb6.0] 4097/4116, [MS-CIFS] §2.2.8.2/§2.2.8.3.9
+
+**Observed (`netbeui.pcap` frames 486–493, NT 3.51, 2026-07-09):** immediately after opening a share root, NT issues TRANS2 QUERY_FILE_INFO level 0x0104 (SMB_QUERY_FILE_NAME_INFO) on the root FID and TRANS2 QUERY_FS_INFO level 0x0102 (SMB_QUERY_FS_VOLUME_INFO). Both were answered ERRDOS/1 "Invalid function" (QUERY_FS_INFO had no handler; NAME_INFO was an unsupported pack level) — NT then closed everything, logged off, and reported the share connect as failed ("access denied") to the user.
+
+**Spec traps:** (1) the QUERY_FS_INFO response carries **no parameter bytes** — data block only ([MS-CIFS] §2.2.6.4.2), unlike the QUERY_PATH/FILE_INFO responses (one ignored EaErrorOffset param word). (2) Info levels above 0x102 "are mapped to corresponding calls to NtQueryVolumeInformationFile" ([smb6.0] 4116) — their strings (volume label, filesystem name, file name) are **UTF-16LE regardless of the negotiated wire charset**; this NT 3.51 session was ASCII (no Flags2 Unicode) yet expects Unicode in these structures. (3) SMB_QUERY_FS_VOLUME_INFO has an 18-byte fixed part (the 2 bytes after VolumeLabelSize are SupportsObjects+Reserved per [MS-FSCC] 2.5.9).
+
+**What we do:** `queryFSInfo` serves SMB_INFO_ALLOCATION (1), SMB_INFO_VOLUME (2, wire-charset label — the pre-NT form Win9x asks without CAP_NT_SMBS), SMB_QUERY_FS_VOLUME_INFO (0x102), SIZE (0x103), DEVICE (0x104, disk+mounted), ATTRIBUTE (0x105, "NTFS", case-preserved, 255-byte names — reporting FAT would trigger 8.3 name rules). Geometry mirrors SMB_COM_QUERY_INFORMATION_DISK (512-byte sectors × 64/unit); serial is an FNV-1a of the share name. `packFileNameInfo` serves level 0x0104 for both QUERY_PATH_INFO and QUERY_FILE_INFO ('\\'-rooted share-relative path, UTF-16LE).
+
+**Where:** `core/service/smb/trans2.go` (`queryFSInfo`, `packFileNameInfo`, `utf16LEBytes`, `volumeSerial`).
+
+### NT refuses USER-level security without a challenge — NEGOTIATE must advertise SHARE-level when the server is guest-only ([MS-CIFS] 2.2.4.52.2 SecurityMode)
+
+**Observed (`netbeui.pcap` frames 51–61, NT 3.51 `net view \\classicstack`, 2026-07-09):** our NT LM 0.12 NEGOTIATE response advertised SecurityMode 0x01 (USER-level) with ChallengeLength 0 (plaintext). NT answered with NBF Session End + LLC DISC immediately — it never sent a SESSION_SETUP — and reported "access denied" to the user; it then re-negotiated twice with the same result. The NT-family redirector will not send a plaintext password (EnablePlainTextPassword defaults off), so a user-level server that offers no challenge is simply unusable by NT. `main` had the same posture (`negotiateSecurityMode = 0x01`, only ever validated against Win9x/DOS, which do send plaintext).
+
+**What we do:** `securityMode()` decides per NEGOTIATE: SHARE-level (0x00) when no named users exist — no credentials are wanted, so NT proceeds without any password, matching the "no users ⇒ guest-open" policy — and USER-level (0x01) once the wired store holds users. Because the compose root wires the built-in store even when empty, wiring alone is not the signal: the store reports `HasUsers()` (structural upgrade on the Authenticator seam), read live so adding the first user via the web UI flips subsequent negotiates. A store WITH users keeps the historical limitation: Win9x/DOS clients authenticate in cleartext; NT clients would need LM/NTLM challenge-response, which is not implemented.
+
+**Where:** `core/service/smb/negotiate.go` (`securityMode`, `negotiateSecurityModeShare`/`User`), `adapter/auth/local/store.go` (`HasUsers`).
+
+### OS/2 LAN Manager volunteers user + password on every SESSION_SETUP — an empty store must accept it as guest
+
+**Spec:** [smb6.0] 289–291 covers the credential-less "implicit user logon" (empty password → admit). It does not say what a server without accounts should do with a credential it never asked for.
+
+**Observed (`netbeui.pcap`, OS/2 LAN Manager client 02:60:8c:c6:dc:44, frames 31–32, 2026-07-10):** unlike Win9x — which sends its logon name with an EMPTY password to a guest-open server — the OS/2 redirector sends its logged-on **username and a non-empty password** in SESSION_SETUP_ANDX even against a server it should treat as passwordless. Validating that pair against an empty user store necessarily fails (unknown account), and the resulting ERRSRV/ERRbadpw surfaces on the client as "access denied" for `net view \\SERVER`.
+
+**What we do:** SESSION_SETUP only authenticates when the wired store actually HAS named users (`storeHasUsers`, the same live signal NEGOTIATE's `securityMode` uses); with an empty store every presented credential — named, passworded, or hashed — is accepted as a guest session (Action=0x0001).
+
+**Where:** `core/service/smb/negotiate.go` (`handleSessionSetup`, `storeHasUsers`).
+
+### NEGOTIATE MaxMpxCount=1 starves the NT redirector client-side — error 1450 with nothing on the wire
+
+**Spec:** [MS-CIFS] 2.2.4.52.2 — MaxMpxCount is "the maximum number of outstanding SMB operations the server supports"; it caps how many requests the *client* may pipeline, not server concurrency.
+
+**Observed (`netbeui.pcap`, NT 3.51 client 00:00:d8:50:ae:d3, 2026-07-10):** with MaxMpxCount=1 advertised, NT completed NEGOTIATE → SESSION_SETUP+TREE_CONNECT → both \srvsvc probes (every server frame Wireshark-clean, all LLC2-acked), then went silent — no request, no disconnect — and `net view` surfaced error 1450 (ERROR_NO_SYSTEM_RESOURCES). The failure is generated *inside* the NT redirector: it reserves multiplex slots for oplock breaks, echoes and transaction secondaries, and with one credit fails the next operation with STATUS_INSUFFICIENT_RESOURCES before anything reaches the wire. Confirmed fixed e2e by raising the advertisement.
+
+**What we do:** advertise MaxMpxCount=50 (what NT and Samba servers advertise). We process pipelined requests in arrival order regardless, so the value is a client-behavior promise, not a server capacity.
+
+**Where:** `core/service/smb/negotiate.go` (`negotiateMaxMpxCount`).
+
+### FIND_FIRST2 BOTH_DIRECTORY_INFO: FileNameLength counts one NUL on ASCII sessions; ShortName is ALWAYS Unicode — [MS-CIFS] §2.2.8.1.7 <167>/<168>, NT 3.51 enforces
+
+**Spec:** SMB_FIND_FILE_BOTH_DIRECTORY_INFO's ShortName field "MUST contain the 8.3 name, if any, of the file **in Unicode format**" (UTF-16LE regardless of session charset; ShortNameLength 0 = no 8.3 name). Footnotes <167>/<168>: NT servers NUL-terminate FileName, and when CAP_UNICODE is NOT negotiated the one NUL byte **is counted** in FileNameLength (on Unicode sessions the padding NULs are uncounted).
+
+**Observed (`netbeui.pcap`, NT 3.51, frames 166/169, 2026-07-10):** we packed FileName with no terminator and FileNameLength = exact name bytes, and ShortName as the wire-charset long name (14 ASCII bytes — neither Unicode nor 8.3). Wireshark parsed all 27 entries cleanly, NT acked and Find-Close2'd the search — then displayed an **empty directory**: the redirector silently discarded every entry. The NT redirector was written against NT servers and expects their exact termination/counting behavior. Confirmed fixed e2e (NT and OS/2 both list correctly).
+
+**What we do:** FileName always carries a NUL terminator (1 byte ASCII / 2 bytes UTF-16LE); on non-Unicode sessions FileNameLength = name+1, on Unicode sessions the terminator is uncounted padding. ShortName is emitted as uppercase UTF-16LE only when the backend supplies a *distinct, valid 8.3* alternate name, else ShortNameLength=0 (the Samba "mangled names = no" posture).
+
+**Where:** `core/service/smb/trans2.go` (`packFindBothDir`, `shortNameUTF16`, `is8dot3`); regressions in `trans2_test.go`.
+
+### FIND_FIRST2 pre-NT info levels SMB_INFO_STANDARD (0x0001) / SMB_INFO_QUERY_EA_SIZE (0x0002) are mandatory for OS/2 — [MS-CIFS] §2.2.8.1.1/§2.2.8.1.2
+
+**Spec:** the LANMAN2.0 find levels: optional ResumeKey(4, only when SMB_FIND_RETURN_RESUME_KEYS is set in the request Flags), SMB_DATE/SMB_TIME creation/access/write pairs, FileDataSize(4), AllocationSize(4), Attributes(2), then (EA level only) EaSize(4), FileNameLength(1) and the name. Footnotes <153>/<154>: NT servers NUL-terminate the name and do NOT count the terminator in FileNameLength — the opposite counting rule from the 0x0104 level.
+
+**Observed (`netbeui.pcap`, OS/2 LAN Server 4.06 client 02:60:8c:c6:dc:44, frames 308–337, 2026-07-10):** the OS/2 redirector enumerates directories with level 0x0002 (and 0x0001), never 0x0104. Our ERRbadfunc reply made `dir` fail; OS/2 then tried to read its own message file `\OSO001.MSG` **over the same share** with a level-0x0001 find — which also failed — so the user saw the unrenderable-message fallback **SYS0318** instead of an error. Records are packed back to back with no alignment. Confirmed fixed e2e.
+
+**What we do:** serve 0x0001/0x0002 from the same snapshot search the 0x0104 path uses (`packFindStandard`), honoring the resume-key flag; EaSize is 0 (no EAs).
+
+**Where:** `core/service/smb/trans2.go` (`supportedFindLevel`, `packFindEntries`, `packFindStandard`); regressions in `trans2_test.go`.
+
 ## AFP
 
 ### Catalog date epoch (Inside Macintosh: Networking, "AFP date and time")
@@ -332,6 +404,24 @@ Observed DataStreamType values are a small set: `0x01` FIND.NAME, `0x02` NAME.RE
 
 **Where:** `core/service/netbios/nbipx.go` (`deliverDirectedDatagram`, `NBIPXNameSocket`), `compose/runtime/transports.go` (`wireIPX` registers 0x0554). Coverage: `TestNBIPX_RawDirectedDatagramDelivered`, `TestNBIPX_NameSocket0554Delivered`.
 
+### NBIPX session sequencing: SYS frames consume no SendSeq, RecvSeq is a cumulative ack, zero-data SYS|ACK probes must be answered — observation-based
+
+**No spec:** as above, from observation of WinNT 3.51 and Win98 NWLink clients (`ipx.pcap` 2026-07-10; NT `00:00:d8:2a:2f:22`, Win98 `00:86:b0:90:8e:3a`). WfW 3.11 masked all of this because its `net view` uses connectionless SMB directly over IPX and never exercises the sequenced session path.
+
+**Observed (the sequencing rules):**
+
+1. **SendSeq is consumed by data-carrying frames and SESSION_END** — the SESSION_INITIALIZE (`0x41`, seq 0; the client's first SMB frame arrives with SendSeq 1), every data frame (fragments included), and SESSION_END (`0x40`, zero data). Zero-data SYSTEM/control frames — the `0x81` accept, an `0x80` ack, an `0x88` resend request, NT's `0xC0` probe — consume **nothing**: the accept carries SendSeq 0 and the client's first data frame still says `RecvSeq 0` ("your first data frame must be seq 0"). Ground truth from the WfW-client ↔ NT-server session (frames 488–509): WfW's bare-SYS `0x80` ack (seq 4) didn't consume — its next data frame reused seq 4 — while its SESSION_END (`0x40`, seq 5) did (NT's end-ack said RecvSeq 6). Acking a probe as if it consumed (`RecvSeq 2`) is a protocol error: NT aborts after ~9 probes and the client reports **error 59 "unexpected network error"** (round-3 misstep, corrected).
+2. **RecvSeq is the cumulative acknowledgment** (next SendSeq expected from the peer). The accept says RecvSeq 1 (acking the connect); a response to the first SMB request must say RecvSeq 2.
+3. **A data frame with the wrong SendSeq/RecvSeq is silently discarded** and answered with a zero-data `SYS|RESEND` (ConnCtrlFlag `0x88`, new flag bit **RESEND `0x08`**) whose RecvSeq names the seq to resend from, while the client re-sends its own frame with `SEND_ACK|EOM` (`0x50`).
+4. **BytesReceived is the receive-window edge, and NT-as-client enforces it.** The field is `RecvSeq + posted receives` — the highest peer SendSeq the sender will accept, plus one. NT-as-server advertises `RecvSeq + 5` on every frame (accept = 6, then 7/8/9/10 as it consumes client frames); WfW advertises `+3`; Win9x/WfW **ignore** the field inbound (they transmit against our 0 and accept it). An NT client will not send data while the peer's advertised edge is below its next send seq: with our `BytesReceived 0` it polled with a zero-data `SYS|ACK` probe (`0xC0`, SendSeq 1) every ~600ms. Unanswered, NT gives up after ~7 probes and tears the session down (round 1); answered with a correct ack but a zero window (round 2), it re-probes for minutes until **Error 240 "the session has been cancelled"**. The probe reply is a zero-data SYS frame with unchanged `RecvSeq` and a `BytesReceived` that opens the window.
+5. **The 6-byte trailer on SESSION_INITIALIZE/accept is `[max frame data (LE16)][timer][timer]`** — observed 0x05AC=1452 (NT), 0x0590=1424 (WfW), 0x05A0=1440 (Win98), then `15 00 09 00` (NT) / `25 00 0d 00` (Win9x family). NT-as-server echoes the client's max-frame value but substitutes its **own** timer pair; our verbatim echo of the whole trailer produced byte-identical output for NT and is accepted by all three clients.
+
+**Regression:** the refactor's engine mirrored the client's SendSeq into its response (`SendSeq 1` instead of `0`), never stamped RecvSeq on data frames (`0` instead of `2`), and dropped zero-data frames in the fragment path. Effect on the wire: Win98 read our NEGOTIATE response as "server data frame 0 was lost + my request unacked", NAK'd with `0x88` and retransmitted NEGOTIATE forever (frames 275–307); NT's probe went unanswered so it never sent SMB at all (frames 149–176). Both failed `net view \\CLASSICSTACK`; WfW worked (connectionless path).
+
+**What we do:** `ipxCircuit` carries `sendSeq`/`recvSeq` (window-of-one, init `0`/`1` at accept) plus the retained last response (`lastResp`/`lastRespSeq`); `handleData` validates SendSeq, treats `DataLen == 0` as session control (SYS|ACK probe → `sendSystemAck` with unchanged RecvSeq; SYS|RESEND → `resendData`), re-sends the retained response on a duplicate of the last consumed frame instead of re-serving the SMB, and `sendData`/`pushData` allocate one SendSeq per frame, stamp the live RecvSeq, and fragment responses larger than `nbipxMaxFrameData` (1452 = 1500 − IPX 30 − session header 18) via TotalDataLen/Offset/DataLen with EOM on the last frame. Every outbound frame advertises the receive window: `BytesReceived = RecvSeq + nbipxRecvWindow (5)`, mirroring NT's own advertisement. `handleSessionEnd`'s SESSION_END_ACK acknowledges the end frame's consumed seq (`RecvSeq = end SendSeq + 1`) and carries our send counter, matching NT's own end-ack (frame 509).
+
+**Where:** `core/protocol/netbios/nbipx.go` (`NBIPXConnFlagRESEND`, sequencing-rules doc on `NBIPXSessionHeader`), `core/service/netbios/nbipx.go` (`ipxCircuit` seq state, `handleData`, `sendData`/`sendDataFrames`/`resendData`/`sendSystemAck`/`pushData`).
+
 ## NetBEUI (NBF)
 
 ### NBF transmit flow control (NO_RECEIVE / RECEIVE_CONTINUE / RECEIVE_OUTSTANDING) — [IBM SC30-3587] §5
@@ -355,6 +445,16 @@ Observed DataStreamType values are a small set: `0x01` FIND.NAME, `0x02` NAME.RE
 **What we do:** `handleNameQuery` now always replies NAME_RECOGNIZED for a name we own, and allocates a circuit **only** when `ss != 0` (a real CALL — reply carries the assigned local session number in Data2/RspCorrelator). For `ss == 0` (the locate/FIND.NAME) no circuit is created and the reply carries Data2 `ss = 0`, matching the Win98 reference reply byte-for-byte (command `0x0E`, XmitCorrelator = the query's RspCorrelator, dest = querier's source name, source = our name). A foreign name is still ignored.
 
 **Where:** `core/service/netbios/nbf.go` (`handleNameQuery`). Coverage: `TestNBF_LocateQueryIsAnswered` (session-0 locate, pinned to the pcap fields) plus the existing `TestNBF_CallEstablishesCircuit` (session != 0).
+
+### NBF LENGTH field is the HEADER length only (X'000E' / X'002C'), never header+payload — [IBM SC30-3587] §5.6 frame-format tables, NT 3.51 enforces
+
+**Spec ([IBM SC30-3587] Table 5-25 DATA_ONLY_LAST et al.):** every NBF frame-format table gives byte 0–1 `LENGTH` as a **fixed constant** — `X'000E'` (14) for session frames (commands 0x14–0x1F), `X'002C'` (44) for non-session frames — i.e. the length of the NetBIOS header alone. USER DATA following the header is *not* counted.
+
+**Observed (`captures/netbeui.pcap`, NT 3.51 `00:00:d8:50:ae:d3`, 2026-07-09):** our `Frame.Encode` wrote `header+payload` into LENGTH (e.g. `0x005D` = 93 on the 79-byte SMB NEGOTIATE response DOL, frame 2703), while the NT client's own DOL (frame 2702) carries `0x000E`. NT's `netbeui.sys` **silently discards** a session frame whose LENGTH differs — *without even acknowledging it at the LLC level*: its RR stayed at N(R)=1 across the original send and ~40 checkpoint-triggered LLC2 retransmissions (frames 2703–2934), then the client gave up with SESSION_END/DISC and reported **System Error 240** (ERROR_VC_DISCONNECTED, "The session was cancelled"). The failure was invisible on every zero-payload frame — NAME_QUERY replies, SESSION_CONFIRM, DATA_ACK — because there `header+payload == header` and the wrong formula produces the right bytes, which is exactly why name service and session setup interoperated while every data-bearing frame died. Win98 (`00:86:b0:a4:b8:81`, same capture) does not validate the field and accepted the malformed `0x005D` frames throughout. This also retro-invalidates the earlier "frame 191/49 framing is structurally valid" analysis and the NE2000 back-to-back-frame-loss theory: the drops were deterministic LENGTH rejection, not lossy hardware.
+
+**What we do:** `Frame.Encode` writes `LENGTH = header length` (14 or 44 by command class). `Decode` continues to ignore the field on receive (lenient; both 0x000E-strict NT and any legacy sender parse fine).
+
+**Where:** `core/protocol/netbeui/netbeui.go` (`Encode`). Coverage: `TestSessionFrameRoundTrip` now pins `LENGTH == 0x000E` on a payload-bearing DOL; `TestCaptureReplay_AddNameQuery` pins the 0x002C non-session form.
 
 ### IPX Diagnostic Responder (socket 0x0456) — observation-based
 

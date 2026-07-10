@@ -22,8 +22,18 @@ import (
 // deliberately do NOT advertise CAP_RAW_MODE / CAP_MPX_MODE (those transports are
 // not implemented), so Win9x falls back to plain READ/WRITE/WRITE_ANDX.
 const (
-	negotiateSecurityMode  = 0x01               // SECURITY_MODE_USER_SECURITY, no challenge
-	negotiateMaxMpxCount   = 1                  // single-request server
+	negotiateSecurityModeShare = 0x00 // share-level, plaintext, no challenge
+	negotiateSecurityModeUser  = 0x01 // SECURITY_MODE_USER_SECURITY, plaintext, no challenge
+
+	// MaxMpxCount is the number of outstanding requests the CLIENT may keep in
+	// flight ([MS-CIFS] 2.2.4.52.2) — it is a promise about client behavior, not
+	// server concurrency, and we process pipelined requests in arrival order
+	// regardless. Advertising 1 starves the NT redirector, which reserves mpx
+	// slots internally (oplock breaks, echoes, transaction secondaries) and
+	// fails operations CLIENT-SIDE with STATUS_INSUFFICIENT_RESOURCES (net view
+	// → error 1450, with nothing on the wire) when no slot is free. Real
+	// servers (NT, Samba) advertise 50.
+	negotiateMaxMpxCount   = 50
 	negotiateMaxNumberVcs  = 1                  // one virtual circuit per session
 	negotiateMaxBufferSize = 0x4000             // 16 KiB per request
 	negotiateMaxRawSize    = 0                  // raw mode disabled
@@ -137,11 +147,11 @@ func buildErrorResponse(h protocol.Header, req []byte, status uint32) []byte {
 // WCT=1, LANMAN 1.0..2.1 / WfW 3.1a → WCT=13, NT LM 0.12 → WCT=17. Emitting the wrong
 // word count for the selected dialect yields a malformed reply a client may reject.
 //
-// SecurityMode is user-level, plaintext, no challenge (we accept credentials as a
-// guest session; authentication is handled — or not — by SESSION_SETUP, out of scope
-// here). The response header echoes the request header (reply flag + SUCCESS status);
-// it does NOT stamp SMB_FLAGS2_KNOWS_LONG_NAMES the way the generic responseHeader
-// helper does — NEGOTIATE preserves the client's Flags2.
+// SecurityMode is plaintext, no challenge; share- vs user-level is chosen by
+// securityMode() from whether a user store is wired. The response header echoes the
+// request header (reply flag + SUCCESS status); it does NOT stamp
+// SMB_FLAGS2_KNOWS_LONG_NAMES the way the generic responseHeader helper does —
+// NEGOTIATE preserves the client's Flags2.
 func (s *Service) handleNegotiate(sess *smbSession, h protocol.Header, req []byte) []byte {
 	idx, name, family := protocol.SelectDialect(parseNegotiateDialects(req))
 
@@ -198,13 +208,57 @@ func buildNegotiateCore(h protocol.Header, dialectIdx uint16) []byte {
 // 3.1a) the byte area is empty (ByteCount=0). Appending it for those dialects yields
 // trailing "Unknown Data" a client does not parse (observed in captures/ipx.pcap for a
 // WfW 3.1a selection).
+// securityMode picks the NEGOTIATE SecurityMode ([MS-CIFS] 2.2.4.52.2, bit 0).
+// With no named users the server is SHARE-level (bit 0 clear): every share is
+// guest-open, no account/password is wanted, and — decisively — the NT-family
+// redirector refuses to use a USER-level server that offers no challenge (it
+// will not send a plaintext password: netbeui.pcap frames 51–61 show NT 3.51
+// answering such a NEGOTIATE response with Session End + DISC and reporting
+// "access denied", without ever attempting SESSION_SETUP). With named users we
+// advertise USER-level plaintext so Win9x/DOS clients send cleartext
+// credentials; NT clients then need challenge/response we do not implement —
+// see spec/errata.md.
+//
+// "Has named users" is read live off the wired Authenticator when it reports
+// its user set (the built-in store's HasUsers — the compose root wires the
+// store even when it is empty, so wiring alone is not the signal). An
+// authenticator that cannot report is taken as user-level, the conservative
+// reading.
+func (s *Service) securityMode() byte {
+	s.mu.Lock()
+	authn := s.auth
+	s.mu.Unlock()
+	if !storeHasUsers(authn) {
+		return negotiateSecurityModeShare
+	}
+	return negotiateSecurityModeUser
+}
+
+// storeHasUsers reports whether the wired Authenticator currently holds any
+// named users. nil (no store) is false; a store that exposes HasUsers (the
+// built-in adapter/auth/local store — the compose root wires it even when
+// empty, so wiring alone is not the signal) is asked live; an authenticator
+// that cannot report is taken as populated, the conservative reading. Both the
+// NEGOTIATE security posture and SESSION_SETUP validation key off this: with
+// no named users the server is share-level and every credential is accepted
+// as-is (guest), never challenged or failed.
+func storeHasUsers(authn Authenticator) bool {
+	if authn == nil {
+		return false
+	}
+	if r, ok := authn.(interface{ HasUsers() bool }); ok {
+		return r.HasUsers()
+	}
+	return true
+}
+
 func (s *Service) buildNegotiateLanMan(h protocol.Header, dialectIdx uint16, dialect string) []byte {
 	out := negotiateResponseHeader(h).Encode(nil)
 	out = append(out, 13) // WordCount = 13
 
 	w := make([]byte, 26)                              // 13 words
 	bp.PutLE16(w[0:2], dialectIdx)                     // DialectIndex
-	bp.PutLE16(w[2:4], negotiateSecurityMode)          // SecurityMode (16-bit)
+	bp.PutLE16(w[2:4], uint16(s.securityMode()))       // SecurityMode (16-bit)
 	bp.PutLE16(w[4:6], uint16(negotiateMaxBufferSize)) // MaxBufferSize (16-bit)
 	bp.PutLE16(w[6:8], negotiateMaxMpxCount)           // MaxMpxCount
 	bp.PutLE16(w[8:10], negotiateMaxNumberVcs)         // MaxNumberVcs
@@ -242,7 +296,7 @@ func (s *Service) buildNegotiateNT(h protocol.Header, dialectIdx uint16) []byte 
 
 	w := make([]byte, 34)          // 17 words
 	bp.PutLE16(w[0:2], dialectIdx) // DialectIndex
-	w[2] = negotiateSecurityMode   // SecurityMode (8-bit)
+	w[2] = s.securityMode()        // SecurityMode (8-bit)
 	bp.PutLE16(w[3:5], negotiateMaxMpxCount)
 	bp.PutLE16(w[5:7], negotiateMaxNumberVcs)
 	bp.PutLE32(w[7:11], negotiateMaxBufferSize) // MaxBufferSize (32-bit)
@@ -278,10 +332,10 @@ func smbServerTimeDate(t time.Time) (smbTime, smbDate uint16) {
 const statusLogonFailure uint32 = 0xC000006D
 
 // handleSessionSetup answers SMB_COM_SESSION_SETUP_ANDX. It grants a guest session
-// (UID=1, Action=0x0001) unless a store is wired and the client presented a NON-EMPTY
-// cleartext password for a named account, in which case it validates the pair against
-// the store: success grants a named, non-guest session (Action=0x0000); failure returns
-// STATUS_LOGON_FAILURE.
+// (UID=1, Action=0x0001) unless the wired store HAS named users (storeHasUsers) and
+// the client presented a NON-EMPTY cleartext password for a named account, in which
+// case it validates the pair against the store: success grants a named, non-guest
+// session (Action=0x0000); failure returns STATUS_LOGON_FAILURE.
 //
 // A credential-less setup (empty password) is ALWAYS granted as guest, even with a
 // store wired: [smb6.0] 289-291 requires a user-level server to admit a client that
@@ -306,7 +360,12 @@ func (s *Service) handleSessionSetup(sess *smbSession, h protocol.Header, req []
 	// Only authenticate when the client actually presented a credential: a named
 	// account WITH a non-empty cleartext password. An empty password is the
 	// credential-less guest path ([smb6.0] 289), never a failed authentication.
-	if authn != nil && user != "" && pass != "" && !hashed {
+	// And only when the store actually HAS named users: with an empty store the
+	// server advertised SHARE-level security, no account can possibly match, and
+	// clients that volunteer their logged-on identity anyway (OS/2 LAN Manager
+	// sends user+password with every SESSION_SETUP; netbeui.pcap frame 31) must
+	// be accepted as guests, not failed with STATUS_LOGON_FAILURE.
+	if storeHasUsers(authn) && user != "" && pass != "" && !hashed {
 		ok, err := authn.Authenticate(user, pass)
 		if err != nil {
 			s.logf("SESSION_SETUP authenticate error")

@@ -29,14 +29,23 @@ const (
 
 // Entry IDs from the AppleSingle/AppleDouble spec.
 const (
-	EntryIDDataFork     uint32 = 1
-	EntryIDResourceFork uint32 = 2
-	EntryIDComment      uint32 = 4
+	EntryIDDataFork     uint32 = 1 // Data Fork
+	EntryIDResourceFork uint32 = 2 // Resource Fork
+	EntryIDRealName     uint32 = 3 // File’s name as created on home file system
+	EntryIDComment      uint32 = 4 // Standard Macintosh comment
 	// EntryIDIconBW is the entry ID for a classic 32x32 1-bit
 	// Macintosh icon (netatalk adouble.h AD_ICON). The payload is
 	// 128 bytes of bitmap with no mask.
-	EntryIDIconBW     uint32 = 5
-	EntryIDFinderInfo uint32 = 9
+	EntryIDIconBW        uint32 = 5  // Macintosh black-and-white icon
+	EntryIDIconColor     uint32 = 6  // Macintosh color icon
+	EntryIDFileDates     uint32 = 8  // File creation date, modification date, and so on
+	EntryIDFinderInfo    uint32 = 9  // Standard Macintosh Finder information
+	EntryIDMacintoshInfo uint32 = 10 // Macintosh file information, attributes, and so on
+	EntryIDProDOSInfo    uint32 = 11 // ProDOS file information, attributes, and so on
+	EntryIDMSDOSInfo     uint32 = 12 // MS-DOS file information, attributes, and so on
+	EntryIDShortName     uint32 = 13 // AFP Short Name
+	EntryIDAFPFileInfo   uint32 = 14 // AFP File Information, attributes, and so on
+	EntryIDDirectoryID   uint32 = 15 // AFP Directory ID
 )
 
 // Layout sizes.
@@ -70,6 +79,7 @@ type Parsed struct {
 	Comment    []byte
 	Resource   []byte
 	IconBW     []byte
+	IconColor  []byte
 	// ResourceOffset is the byte offset within the sidecar at which
 	// the ResourceFork payload begins.
 	ResourceOffset int64
@@ -81,6 +91,7 @@ type Parsed struct {
 	HasComment    bool
 	HasResource   bool
 	HasIconBW     bool
+	HasIconColor  bool
 }
 
 // Parse decodes an AppleDouble sidecar's bytes. Returns

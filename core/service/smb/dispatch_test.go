@@ -175,8 +175,8 @@ func TestNegotiate_LanManFieldWidths(t *testing.T) {
 	reply := svc.Dispatch(sess, req)
 
 	w := reply[protocol.HeaderLen+1:] // word block starts after WCT byte
-	if sm := bp.LE16(w[2:4]); sm != negotiateSecurityMode {
-		t.Errorf("SecurityMode(16-bit) = %#x, want %#x", sm, negotiateSecurityMode)
+	if sm := bp.LE16(w[2:4]); sm != negotiateSecurityModeShare {
+		t.Errorf("SecurityMode(16-bit) = %#x, want %#x (share-level, no store wired)", sm, negotiateSecurityModeShare)
 	}
 	if mb := bp.LE16(w[4:6]); mb != uint16(negotiateMaxBufferSize) {
 		t.Errorf("MaxBufferSize(16-bit) = %d, want %d", mb, negotiateMaxBufferSize)
@@ -241,8 +241,8 @@ func TestNegotiate_NTFieldWidths(t *testing.T) {
 	reply := svc.Dispatch(sess, req)
 
 	w := reply[protocol.HeaderLen+1:]
-	if sm := w[2]; sm != negotiateSecurityMode { // SecurityMode is 1 byte here
-		t.Errorf("SecurityMode(8-bit) = %#x, want %#x", sm, negotiateSecurityMode)
+	if sm := w[2]; sm != negotiateSecurityModeShare { // SecurityMode is 1 byte here
+		t.Errorf("SecurityMode(8-bit) = %#x, want %#x (share-level, no store wired)", sm, negotiateSecurityModeShare)
 	}
 	if mb := bp.LE32(w[7:11]); mb != negotiateMaxBufferSize { // MaxBufferSize is 4 bytes here
 		t.Errorf("MaxBufferSize(32-bit) = %d, want %d", mb, negotiateMaxBufferSize)
@@ -251,6 +251,45 @@ func TestNegotiate_NTFieldWidths(t *testing.T) {
 		t.Errorf("Capabilities = %#x, want %#x", caps, negotiateCapabilities)
 	}
 }
+
+// TestNegotiate_SecurityModeFollowsUserStore proves the advertised SecurityMode
+// ([MS-CIFS] 2.2.4.52.2 bit 0) is SHARE-level when no user store is wired and
+// USER-level once one is. A user-level server that offers no challenge is
+// unusable by NT-family redirectors — they refuse to send plaintext passwords
+// and abort right after NEGOTIATE (netbeui.pcap frames 51–61, NT 3.51 `net
+// view` → Session End + DISC → "access denied") — so a guest-only server must
+// advertise share-level.
+func TestNegotiate_SecurityModeFollowsUserStore(t *testing.T) {
+	svc, sess := newDispatchService(t)
+	req := smbReq(protocol.CommandNegotiate, 0, 0, 0, nil, dialectListBytes(protocol.DialectNTLM))
+
+	reply := svc.Dispatch(sess, req)
+	if sm := reply[protocol.HeaderLen+1+2]; sm != negotiateSecurityModeShare {
+		t.Errorf("no store: SecurityMode = %#x, want %#x (share-level)", sm, negotiateSecurityModeShare)
+	}
+
+	// A wired store that reports NO named users (the compose root wires the
+	// built-in store even when empty) stays share-level.
+	svc.SetAuthenticator(emptyStoreAuth{})
+	reply = svc.Dispatch(sess, req)
+	if sm := reply[protocol.HeaderLen+1+2]; sm != negotiateSecurityModeShare {
+		t.Errorf("empty store: SecurityMode = %#x, want %#x (share-level)", sm, negotiateSecurityModeShare)
+	}
+
+	// An authenticator that cannot report its user set is taken as user-level.
+	svc.SetAuthenticator(fakeAuth{user: "alice", pass: "secret"})
+	reply = svc.Dispatch(sess, req)
+	if sm := reply[protocol.HeaderLen+1+2]; sm != negotiateSecurityModeUser {
+		t.Errorf("store wired: SecurityMode = %#x, want %#x (user-level)", sm, negotiateSecurityModeUser)
+	}
+}
+
+// emptyStoreAuth mimics the built-in user store with zero records: it can
+// report HasUsers (false), so NEGOTIATE stays share-level.
+type emptyStoreAuth struct{}
+
+func (emptyStoreAuth) Authenticate(string, string) (bool, error) { return false, nil }
+func (emptyStoreAuth) HasUsers() bool                            { return false }
 
 // TestSMBServerTimeDate proves the SMB_TIME/SMB_DATE packer encodes a known timestamp
 // into the DOS 16-bit fields the LANMAN NEGOTIATE response carries.

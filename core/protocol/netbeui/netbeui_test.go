@@ -72,6 +72,14 @@ func TestSessionFrameRoundTrip(t *testing.T) {
 	if len(enc) != SessionHeaderLength+5 {
 		t.Fatalf("len = %d, want %d", len(enc), SessionHeaderLength+5)
 	}
+	// LENGTH is the header length only (X'000E', [IBM SC30-3587] Table 5-25),
+	// NOT header+payload. NT 3.51 silently discards frames that get this
+	// wrong (netbeui.pcap: every payload-bearing DOL went un-acked while
+	// zero-payload frames — accidentally correct — were accepted).
+	if enc[0] != byte(SessionHeaderLength) || enc[1] != 0x00 {
+		t.Fatalf("LENGTH = %#04x, want %#04x (header length only)",
+			uint16(enc[0])|uint16(enc[1])<<8, SessionHeaderLength)
+	}
 	dec, err := Decode(enc)
 	if err != nil {
 		t.Fatalf("Decode: %v", err)

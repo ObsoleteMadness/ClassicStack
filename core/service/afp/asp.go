@@ -1,7 +1,7 @@
 package afp
 
 import (
-	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -283,7 +283,9 @@ func (s *Service) maintainSession(sess *session) {
 			return
 		case <-ticker.C:
 			if sess.idle() > asp.SessionMaintenanceTimeout {
-				s.logf(fmt.Sprintf("ASP session %d timed out (idle > %v), closing", sess.id, asp.SessionMaintenanceTimeout))
+				// strconv, not fmt: core/ bans reflect transitively (archtest §1).
+				s.logf("ASP session " + strconv.Itoa(int(sess.id)) +
+					" timed out (idle > " + asp.SessionMaintenanceTimeout.String() + "), closing")
 				s.teardownSession(sess)
 				return
 			}

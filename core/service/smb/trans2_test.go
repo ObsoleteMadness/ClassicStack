@@ -1,6 +1,7 @@
 package smb
 
 import (
+	"strings"
 	"testing"
 
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
@@ -29,10 +30,15 @@ func trans2Req(tid, sub uint16, params []byte) []byte {
 // path (ANSI, NUL-terminated): SearchAttributes(2) SearchCount(2) Flags(2)
 // InformationLevel(2) SearchStorageType(4) FileName.
 func findFirst2Params(searchCount int, flags uint16, path string) []byte {
+	return findFirst2ParamsLevel(searchCount, flags, infoFileBothDirInfo, path)
+}
+
+// findFirst2ParamsLevel is findFirst2Params with an explicit information level.
+func findFirst2ParamsLevel(searchCount int, flags, level uint16, path string) []byte {
 	p := make([]byte, 12)
 	bp.PutLE16(p[2:4], uint16(searchCount))
 	bp.PutLE16(p[4:6], flags)
-	bp.PutLE16(p[6:8], infoFileBothDirInfo)
+	bp.PutLE16(p[6:8], level)
 	p = append(p, []byte(path)...)
 	return append(p, 0)
 }
@@ -73,13 +79,172 @@ func findReplyNames(t *testing.T, reply []byte, includeSID bool) (names []string
 		rec := data[pos:]
 		next := int(bp.LE32(rec[0:4]))
 		nameLen := int(bp.LE32(rec[60:64]))
-		names = append(names, string(rec[94:94+nameLen]))
+		// On non-Unicode sessions FileNameLength counts one NUL terminator
+		// ([MS-CIFS] §2.2.8.1.7 <167>); strip it like a real client.
+		names = append(names, strings.TrimRight(string(rec[94:94+nameLen]), "\x00"))
 		if next == 0 {
 			break
 		}
 		pos += next
 	}
 	return names, sid, endOfSearch
+}
+
+// findReplyBlocks returns a find reply's parameter and data blocks.
+func findReplyBlocks(t *testing.T, reply []byte) (params, data []byte) {
+	t.Helper()
+	w := reply[protocol.HeaderLen+1:]
+	paramCount := int(bp.LE16(w[6:8]))
+	paramOffset := int(bp.LE16(w[8:10]))
+	dataCount := int(bp.LE16(w[12:14]))
+	dataOffset := int(bp.LE16(w[14:16]))
+	return reply[paramOffset : paramOffset+paramCount], reply[dataOffset : dataOffset+dataCount]
+}
+
+// TestTrans2_FindBothDirCountsASCIITerminator proves an SMB_FIND_FILE_BOTH_DIRECTORY_INFO
+// record on a non-Unicode session NUL-terminates FileName and counts that one NUL
+// byte in FileNameLength, the Windows NT server behavior the NT 3.51 redirector
+// requires ([MS-CIFS] §2.2.8.1.7 <167>/<168>; netbeui.pcap 2026-07-10 — without
+// it NT renders the directory listing empty). ShortNameLength must be 0 when no
+// distinct 8.3 alternate name exists.
+func TestTrans2_FindBothDirCountsASCIITerminator(t *testing.T) {
+	svc, sess, tid := fsService(t)
+	sess.closeFID(createFile(t, svc, sess, tid, "longfilename.txt"))
+
+	reply := svc.Dispatch(sess, trans2Req(tid, trans2FindFirst2, findFirst2Params(100, 0, "*")))
+	if h := respHeader(t, reply); h.Status != statusSuccess {
+		t.Fatalf("FIND_FIRST2 status = %#x", h.Status)
+	}
+	_, data := findReplyBlocks(t, reply)
+
+	const name = "longfilename.txt"
+	if got := int(bp.LE32(data[60:64])); got != len(name)+1 {
+		t.Errorf("FileNameLength = %d, want %d (name + counted NUL)", got, len(name)+1)
+	}
+	if got := string(data[94 : 94+len(name)]); got != name {
+		t.Errorf("FileName = %q, want %q", got, name)
+	}
+	if data[94+len(name)] != 0 {
+		t.Error("FileName is not NUL-terminated")
+	}
+	if data[68] != 0 {
+		t.Errorf("ShortNameLength = %d, want 0 (no distinct 8.3 name)", data[68])
+	}
+}
+
+// TestTrans2_FindInfoStandardLevel proves FIND_FIRST2 serves the LANMAN2.0
+// SMB_INFO_STANDARD level ([MS-CIFS] §2.2.8.1.1) OS/2 LAN Server requests
+// (netbeui.pcap 2026-07-10 frames 308/316 — rejecting it produced SYS0318):
+// optional ResumeKey, DOS date/time stamps, sizes, attributes, then the name
+// with an uncounted NUL terminator (<153>).
+func TestTrans2_FindInfoStandardLevel(t *testing.T) {
+	svc, sess, tid := fsService(t)
+	for _, name := range []string{"alpha.txt", "beta.txt"} {
+		sess.closeFID(createFile(t, svc, sess, tid, name))
+	}
+
+	req := trans2Req(tid, trans2FindFirst2,
+		findFirst2ParamsLevel(100, findReturnResumeKeys, infoStandard, "*"))
+	reply := svc.Dispatch(sess, req)
+	if h := respHeader(t, reply); h.Status != statusSuccess {
+		t.Fatalf("FIND_FIRST2 level 0x0001 status = %#x", h.Status)
+	}
+	params, data := findReplyBlocks(t, reply)
+	if count := bp.LE16(params[2:4]); count != 2 {
+		t.Fatalf("SearchCount = %d, want 2", count)
+	}
+	if eos := bp.LE16(params[4:6]); eos == 0 {
+		t.Error("EndOfSearch not set for a single-batch listing")
+	}
+
+	// Record: ResumeKey(4) dates/times(12) FileDataSize(4) AllocationSize(4)
+	// Attributes(2) FileNameLength(1) FileName + NUL.
+	want := map[string]bool{"alpha.txt": true, "beta.txt": true}
+	pos := 0
+	for i := 0; i < 2; i++ {
+		rec := data[pos:]
+		nameLen := int(rec[26])
+		name := string(rec[27 : 27+nameLen])
+		if !want[name] {
+			t.Errorf("record %d: unexpected name %q", i, name)
+		}
+		if rec[27+nameLen] != 0 {
+			t.Errorf("record %d: FileName not NUL-terminated", i)
+		}
+		pos += 27 + nameLen + 1
+	}
+	if pos != len(data) {
+		t.Errorf("data block is %d bytes, records consumed %d", len(data), pos)
+	}
+}
+
+// TestTrans2_FindInfoQueryEaSizeLevel proves the SMB_INFO_QUERY_EA_SIZE level
+// ([MS-CIFS] §2.2.8.1.2): SMB_INFO_STANDARD (here without resume keys) plus a
+// zero EaSize before the name length.
+func TestTrans2_FindInfoQueryEaSizeLevel(t *testing.T) {
+	svc, sess, tid := fsService(t)
+	sess.closeFID(createFile(t, svc, sess, tid, "alpha.txt"))
+
+	req := trans2Req(tid, trans2FindFirst2,
+		findFirst2ParamsLevel(100, 0, infoQueryEaSize, "*"))
+	reply := svc.Dispatch(sess, req)
+	if h := respHeader(t, reply); h.Status != statusSuccess {
+		t.Fatalf("FIND_FIRST2 level 0x0002 status = %#x", h.Status)
+	}
+	_, data := findReplyBlocks(t, reply)
+
+	// Record: dates/times(12) FileDataSize(4) AllocationSize(4) Attributes(2)
+	// EaSize(4) FileNameLength(1) FileName + NUL.
+	if ea := bp.LE32(data[22:26]); ea != 0 {
+		t.Errorf("EaSize = %d, want 0", ea)
+	}
+	const name = "alpha.txt"
+	if got := int(data[26]); got != len(name) {
+		t.Errorf("FileNameLength = %d, want %d (terminator uncounted)", got, len(name))
+	}
+	if got := string(data[27 : 27+len(name)]); got != name {
+		t.Errorf("FileName = %q, want %q", got, name)
+	}
+}
+
+// TestShortNameUTF16 proves the BOTH_DIRECTORY_INFO ShortName encoder emits
+// UTF-16LE uppercase for a distinct valid 8.3 alternate and nothing otherwise
+// (the field is "in Unicode format" regardless of session charset,
+// [MS-CIFS] §2.2.8.1.7).
+func TestShortNameUTF16(t *testing.T) {
+	got := shortNameUTF16("longfilename.txt", "LONGFI~1.TXT")
+	want := []byte("L\x00O\x00N\x00G\x00F\x00I\x00~\x001\x00.\x00T\x00X\x00T\x00")
+	if string(got) != string(want) {
+		t.Errorf("shortNameUTF16 = % x, want % x", got, want)
+	}
+	for name, short := range map[string]string{
+		"alpha.txt":      "alpha.txt",      // identical to long name
+		"._1516HBWT.INF": "._1516HBWT.INF", // not 8.3 (10-char base)
+		"beta.txt":       "",               // absent
+	} {
+		if b := shortNameUTF16(name, short); b != nil {
+			t.Errorf("shortNameUTF16(%q, %q) = % x, want nil", name, short, b)
+		}
+	}
+}
+
+// TestIs8Dot3 exercises the DOS 8.3 validity checker.
+func TestIs8Dot3(t *testing.T) {
+	for name, want := range map[string]bool{
+		"ALPHA.TXT":     true,
+		"alpha":         true,
+		"12345678.abc":  true,
+		"123456789.txt": false, // 9-char base
+		"A.B.C":         false, // two dots
+		"READ ME.TXT":   false, // space
+		".foo":          false, // empty base
+		"FOO.":          false, // empty extension
+		"NAME.LONG":     false, // 4-char extension
+	} {
+		if got := is8dot3(name); got != want {
+			t.Errorf("is8dot3(%q) = %v, want %v", name, got, want)
+		}
+	}
 }
 
 // TestTrans2_FindFirst2ListsDirectory proves FIND_FIRST2 with "*" returns every
@@ -189,5 +354,135 @@ func TestTrans2_QueryPathInfoBasic(t *testing.T) {
 	attrs := bp.LE32(reply[dataOffset+32 : dataOffset+36])
 	if attrs&uint32(attrArchive) == 0 {
 		t.Errorf("BASIC info attrs = %#x, want archive bit", attrs)
+	}
+}
+
+// trans2RespData slices a TRANS2 reply's data block (DataCount/DataOffset from
+// the response words) and its parameter count.
+func trans2RespData(t *testing.T, reply []byte) (data []byte, paramCount int) {
+	t.Helper()
+	w := reply[protocol.HeaderLen+1:]
+	paramCount = int(bp.LE16(w[6:8]))
+	dataCount := int(bp.LE16(w[12:14]))
+	dataOffset := int(bp.LE16(w[14:16]))
+	if dataOffset+dataCount > len(reply) {
+		t.Fatalf("TRANS2 data block out of range (off %d count %d len %d)", dataOffset, dataCount, len(reply))
+	}
+	return reply[dataOffset : dataOffset+dataCount], paramCount
+}
+
+// TestTrans2_QueryFSVolumeInfo proves QUERY_FS_INFORMATION at
+// SMB_QUERY_FS_VOLUME_INFO (the level NT 3.51 issues right after opening a
+// share, netbeui.pcap frame 491) returns the FileFsVolumeInformation structure
+// with a Unicode label and no parameter bytes ([MS-CIFS] §2.2.6.4.2/§2.2.8.2.3).
+func TestTrans2_QueryFSVolumeInfo(t *testing.T) {
+	svc, sess, tid := fsService(t)
+
+	p := make([]byte, 2)
+	bp.PutLE16(p[0:2], fsQueryVolumeInfo)
+	reply := svc.Dispatch(sess, trans2Req(tid, trans2QueryFSInfo, p))
+	if h := respHeader(t, reply); h.Status != statusSuccess {
+		t.Fatalf("QUERY_FS_INFO(VOLUME_INFO) status = %#x, want success", h.Status)
+	}
+	data, params := trans2RespData(t, reply)
+	if params != 0 {
+		t.Errorf("QUERY_FS_INFO response ParameterCount = %d, want 0", params)
+	}
+	if len(data) < 18 {
+		t.Fatalf("VOLUME_INFO data len = %d, want >= 18", len(data))
+	}
+	labelSize := int(bp.LE32(data[12:16]))
+	if labelSize == 0 || 18+labelSize != len(data) {
+		t.Fatalf("VolumeLabelSize = %d, data len = %d, want 18+size", labelSize, len(data))
+	}
+	// The label is UTF-16LE regardless of the request charset.
+	var label []byte
+	for i := 18; i+1 < len(data); i += 2 {
+		label = append(label, data[i])
+		if data[i+1] != 0 {
+			t.Fatalf("VolumeLabel not UTF-16LE ASCII: % x", data[18:])
+		}
+	}
+	if string(label) != "PUBLIC" {
+		t.Errorf("VolumeLabel = %q, want PUBLIC", label)
+	}
+}
+
+// TestTrans2_QueryFSInfoLevels proves each period QUERY_FS_INFORMATION level a
+// legacy client may request is served with the spec'd structure size.
+func TestTrans2_QueryFSInfoLevels(t *testing.T) {
+	cases := []struct {
+		name    string
+		level   uint16
+		minLen  int
+		exact   bool
+		wantLen int
+	}{
+		{"SMB_INFO_ALLOCATION", fsInfoAllocation, 0, true, 18},
+		{"SMB_INFO_VOLUME", fsInfoVolume, 5, false, 0},
+		{"SMB_QUERY_FS_SIZE_INFO", fsQuerySizeInfo, 0, true, 24},
+		{"SMB_QUERY_FS_DEVICE_INFO", fsQueryDeviceInfo, 0, true, 8},
+		{"SMB_QUERY_FS_ATTRIBUTE_INFO", fsQueryAttributeInfo, 12, false, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			svc, sess, tid := fsService(t)
+			p := make([]byte, 2)
+			bp.PutLE16(p[0:2], c.level)
+			reply := svc.Dispatch(sess, trans2Req(tid, trans2QueryFSInfo, p))
+			if h := respHeader(t, reply); h.Status != statusSuccess {
+				t.Fatalf("level %#x status = %#x, want success", c.level, h.Status)
+			}
+			data, _ := trans2RespData(t, reply)
+			if c.exact && len(data) != c.wantLen {
+				t.Fatalf("data len = %d, want %d", len(data), c.wantLen)
+			}
+			if !c.exact && len(data) < c.minLen {
+				t.Fatalf("data len = %d, want >= %d", len(data), c.minLen)
+			}
+		})
+	}
+
+	// DEVICE_INFO content: FILE_DEVICE_DISK, mounted.
+	svc, sess, tid := fsService(t)
+	p := make([]byte, 2)
+	bp.PutLE16(p[0:2], fsQueryDeviceInfo)
+	data, _ := trans2RespData(t, svc.Dispatch(sess, trans2Req(tid, trans2QueryFSInfo, p)))
+	if bp.LE32(data[0:4]) != fileDeviceDisk || bp.LE32(data[4:8]) != fileDeviceIsMounted {
+		t.Errorf("DEVICE_INFO = %x/%x, want disk/mounted", bp.LE32(data[0:4]), bp.LE32(data[4:8]))
+	}
+
+	// An unknown level still refuses.
+	bp.PutLE16(p[0:2], 0x01FF)
+	reply := svc.Dispatch(sess, trans2Req(tid, trans2QueryFSInfo, p))
+	if h := respHeader(t, reply); h.Status == statusSuccess {
+		t.Error("unknown FS info level answered success, want error")
+	}
+}
+
+// TestTrans2_QueryFileNameInfo proves QUERY_FILE_INFO at
+// SMB_QUERY_FILE_NAME_INFO (0x0104 — asked by NT 3.51 for the share-root FID,
+// netbeui.pcap frame 486) returns FileNameLength + the '\'-rooted name in
+// UTF-16LE ([MS-CIFS] §2.2.8.3.9), independent of the request charset.
+func TestTrans2_QueryFileNameInfo(t *testing.T) {
+	svc, sess, tid := fsService(t)
+	fid := createFile(t, svc, sess, tid, "n.txt")
+
+	p := make([]byte, 4)
+	bp.PutLE16(p[0:2], fid)
+	bp.PutLE16(p[2:4], infoQueryFileName)
+	reply := svc.Dispatch(sess, trans2Req(tid, trans2QueryFileInfo, p))
+	if h := respHeader(t, reply); h.Status != statusSuccess {
+		t.Fatalf("QUERY_FILE_INFO(NAME_INFO) status = %#x, want success", h.Status)
+	}
+	data, _ := trans2RespData(t, reply)
+	want := "\\n.txt"
+	if got := int(bp.LE32(data[0:4])); got != 2*len(want) {
+		t.Fatalf("FileNameLength = %d, want %d", got, 2*len(want))
+	}
+	for i, r := range want {
+		if data[4+2*i] != byte(r) || data[5+2*i] != 0 {
+			t.Fatalf("FileName not UTF-16LE %q: % x", want, data[4:])
+		}
 	}
 }

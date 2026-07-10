@@ -78,6 +78,9 @@ func (e *echoConsumer) NewConn(client string) SessionCircuit {
 }
 func (ec *echoCircuit) ServeMessage(req []byte) []byte {
 	ec.c.last = append([]byte(nil), req...)
+	if string(req) == "quiet" { // marker: a silent-drop command (no response)
+		return nil
+	}
 	return append([]byte("R:"), req...)
 }
 func (ec *echoCircuit) SetPushWriter(w func([]byte)) { ec.push = w }
@@ -232,6 +235,100 @@ func TestNBF_DataDeliversToConsumerAndReplies(t *testing.T) {
 	if reply.DestNumber != remoteNum || reply.SourceNumber != localNum {
 		t.Errorf("response session nums dst=%d src=%d, want dst=%d src=%d",
 			reply.DestNumber, reply.SourceNumber, remoteNum, localNum)
+	}
+}
+
+// TestNBF_AckWithDataAllowedPiggybacksAck proves that a DATA_ONLY_LAST whose
+// Data1 sets ACKNOWLEDGE_WITH_DATA_ALLOWED is acknowledged on the response
+// data frame itself (ACKNOWLEDGE_INCLUDED + the request's RSP correlator in
+// XMIT correlator) with no separate DATA_ACK — one reply frame instead of two
+// back-to-back frames, which netbeui.pcap showed an NT 3.51 client's NIC
+// could not receive.
+func TestNBF_AckWithDataAllowedPiggybacksAck(t *testing.T) {
+	_, r, port, _ := newWiredEngine(t)
+	name := protocol.NewName("CLASSICSTACK", protocol.NameTypeFileServer)
+	localNum, remoteNum, peer := establishCircuit(t, r, port, name, 7)
+
+	dol := &nbf.Frame{
+		Command:       nbf.CmdDataOnlyLast,
+		Data1:         nbf.DataAckWithDataAllowed,
+		RspCorrelator: 0x0077,
+		DestNumber:    localNum,
+		SourceNumber:  remoteNum,
+		Payload:       []byte("\xffSMBhello"),
+	}
+	r.Inbound(peer, peer, dol)
+
+	if port.lastSent(nbf.CmdDataAck) != nil {
+		t.Error("separate DATA_ACK sent despite ACKNOWLEDGE_WITH_DATA_ALLOWED")
+	}
+	reply := port.lastSent(nbf.CmdDataOnlyLast)
+	if reply == nil {
+		t.Fatal("no DATA_ONLY_LAST response sent")
+	}
+	if reply.Data1&nbf.DataAckIncluded == 0 {
+		t.Error("response Data1 missing ACKNOWLEDGE_INCLUDED")
+	}
+	if reply.XmitCorrelator != 0x0077 {
+		t.Errorf("response XmitCorrelator = %#04x, want the request's RSP correlator 0x0077", reply.XmitCorrelator)
+	}
+}
+
+// TestNBF_AckWithDataFallsBackToDataAckOnSilentDrop: when the consumer produces
+// no response there is no data frame to carry the deferred acknowledgment, so a
+// plain DATA_ACK must still be sent.
+func TestNBF_AckWithDataFallsBackToDataAckOnSilentDrop(t *testing.T) {
+	_, r, port, _ := newWiredEngine(t)
+	name := protocol.NewName("CLASSICSTACK", protocol.NameTypeFileServer)
+	localNum, remoteNum, peer := establishCircuit(t, r, port, name, 7)
+
+	dol := &nbf.Frame{
+		Command:       nbf.CmdDataOnlyLast,
+		Data1:         nbf.DataAckWithDataAllowed,
+		RspCorrelator: 0x0042,
+		DestNumber:    localNum,
+		SourceNumber:  remoteNum,
+		Payload:       []byte("quiet"),
+	}
+	r.Inbound(peer, peer, dol)
+
+	ack := port.lastSent(nbf.CmdDataAck)
+	if ack == nil {
+		t.Fatal("no DATA_ACK sent for a silent-drop message")
+	}
+	if ack.XmitCorrelator != 0x0042 {
+		t.Errorf("DATA_ACK XmitCorrelator = %#04x, want 0x0042", ack.XmitCorrelator)
+	}
+}
+
+// TestNBF_NoAckDataNotAcknowledged: SEND.NO.ACK data (Data1 NO.ACK bit) must
+// not be acknowledged at all, though it is still served to the consumer.
+func TestNBF_NoAckDataNotAcknowledged(t *testing.T) {
+	_, r, port, consumer := newWiredEngine(t)
+	name := protocol.NewName("CLASSICSTACK", protocol.NameTypeFileServer)
+	localNum, remoteNum, peer := establishCircuit(t, r, port, name, 7)
+
+	dol := &nbf.Frame{
+		Command:      nbf.CmdDataOnlyLast,
+		Data1:        nbf.DataNoAck,
+		DestNumber:   localNum,
+		SourceNumber: remoteNum,
+		Payload:      []byte("\xffSMBnoack"),
+	}
+	r.Inbound(peer, peer, dol)
+
+	if port.lastSent(nbf.CmdDataAck) != nil {
+		t.Error("DATA_ACK sent for NO.ACK data")
+	}
+	if string(consumer.last) != "\xffSMBnoack" {
+		t.Errorf("consumer saw %q, want the NO.ACK message", consumer.last)
+	}
+	reply := port.lastSent(nbf.CmdDataOnlyLast)
+	if reply == nil {
+		t.Fatal("no response sent for NO.ACK data")
+	}
+	if reply.Data1&nbf.DataAckIncluded != 0 {
+		t.Error("response carries ACKNOWLEDGE_INCLUDED for NO.ACK data")
 	}
 }
 

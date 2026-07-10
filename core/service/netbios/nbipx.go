@@ -96,6 +96,21 @@ type ipxCircuit struct {
 	localID  uint16
 	remoteID uint16
 
+	// Sliding-window-of-one sequencing state (see the sequencing-rules ERRATA on
+	// protocol.NBIPXSessionHeader). sendSeq is the SendSeq our NEXT data frame will
+	// carry; recvSeq is the next SendSeq expected from the peer (the cumulative ack
+	// we stamp as RecvSeq on everything we send). The client's SESSION_INITIALIZE
+	// consumes its seq 0, so recvSeq starts at 1; our SYS accept consumes nothing,
+	// so sendSeq starts at 0.
+	sendSeq uint16
+	recvSeq uint16
+
+	// Retained last response message for retransmission: a peer SYS|RESEND (or a
+	// duplicate of the request frame we already consumed) is answered by re-framing
+	// lastResp from lastRespSeq without re-serving the SMB command.
+	lastResp    []byte
+	lastRespSeq uint16
+
 	frag []byte         // accumulated DATA_FIRST_MIDDLE payload
 	conn SessionCircuit // SMB virtual circuit (nil until consumer opens one)
 }
@@ -292,10 +307,13 @@ func (e *ipxSessionEngine) handleSessionRequest(d *ipxproto.Datagram, hdr *proto
 			sock:     d.SrcSock,
 			localID:  e.allocLocalIDLocked(),
 			remoteID: hdr.SourceConnID,
+			// The SESSION_INITIALIZE consumed the client's seq 0; our accept is a
+			// SYS frame and consumes none of ours.
+			recvSeq: 1,
 		}
 		e.circuits[key] = c
 	}
-	localID := c.localID
+	localID, sendSeq, recvSeq := c.localID, c.sendSeq, c.recvSeq
 	e.mu.Unlock()
 
 	// Session-accept payload: swap the called/calling names, preserve the trailer.
@@ -303,7 +321,7 @@ func (e *ipxSessionEngine) handleSessionRequest(d *ipxproto.Datagram, hdr *proto
 	accept = append(accept, calling...)
 	accept = append(accept, called...)
 	accept = append(accept, trailer...)
-	e.sendSessionAccept(d, hdr, localID, accept)
+	e.sendSessionAccept(d, hdr, localID, sendSeq, recvSeq, accept)
 	e.logf("NBIPX circuit established")
 }
 
@@ -314,15 +332,17 @@ func (e *ipxSessionEngine) handleSessionRequest(d *ipxproto.Datagram, hdr *proto
 // before it will send its first SMB frame — an accept of bare SYS with RecvSeq 0 is
 // treated as unconfirmed and the client retransmits SESSION_INITIALIZE forever
 // (ERRATA captures/ipx.pcap frames 331-340 vs the working WFW server frame 367).
-func (e *ipxSessionEngine) sendSessionAccept(in *ipxproto.Datagram, inHdr *protocol.NBIPXSessionHeader, localID uint16, payload []byte) {
+func (e *ipxSessionEngine) sendSessionAccept(in *ipxproto.Datagram, inHdr *protocol.NBIPXSessionHeader, localID, sendSeq, recvSeq uint16, payload []byte) {
 	h := &protocol.NBIPXSessionHeader{
 		ConnCtrlFlag:   protocol.NBIPXConnFlagSYS | protocol.NBIPXConnFlagCONFIRM,
 		DataStreamType: protocol.NBIPXSessionData,
 		SourceConnID:   localID,
 		DestConnID:     inHdr.SourceConnID,
+		SendSeq:        sendSeq,
 		TotalDataLen:   uint16(len(payload)),
 		DataLen:        uint16(len(payload)),
-		RecvSeq:        protocol.NBIPXSessionAcceptRecvSeq,
+		RecvSeq:        recvSeq, // protocol.NBIPXSessionAcceptRecvSeq (1) on a fresh circuit
+		BytesReceived:  recvSeq + nbipxRecvWindow,
 	}
 	e.send(in, append(protocol.EncodeSessionHeader(h), payload...), "session-accept")
 }
@@ -334,9 +354,9 @@ func (e *ipxSessionEngine) handleSessionEnd(d *ipxproto.Datagram, hdr *protocol.
 	key := keyFor(d, hdr)
 	e.mu.Lock()
 	c := e.circuits[key]
-	var localID uint16
+	var localID, sendSeq uint16
 	if c != nil {
-		localID = c.localID
+		localID, sendSeq = c.localID, c.sendSeq
 		delete(e.circuits, key)
 	}
 	e.mu.Unlock()
@@ -344,14 +364,26 @@ func (e *ipxSessionEngine) handleSessionEnd(d *ipxproto.Datagram, hdr *protocol.
 	if c != nil && c.conn != nil {
 		c.conn.Close()
 	}
-	e.sendControl(d, hdr, localID, protocol.NBIPXSessionEndAck)
+	// SESSION_END carries the ACK-required bit and consumes a sequence number,
+	// so the ack's RecvSeq acknowledges it (NT's own end-ack does the same:
+	// ipx.pcap 2026-07-10 frames 508/509).
+	e.sendControl(d, hdr, localID, sendSeq, hdr.SendSeq+1, protocol.NBIPXSessionEndAck)
 }
 
-// handleData reassembles an SMB message: DATA_FIRST_MIDDLE (and any DATA_ONLY_LAST
-// without the EOM flag) buffers; DATA_ONLY_LAST with EOM completes it. On a
-// complete message the engine opens the SMB circuit lazily, serves the message, and
-// sends the response back as DATA frames. A message on a circuit with no consumer
-// is dropped.
+// handleData drives the sequenced data path of an open circuit (see the
+// sequencing-rules ERRATA on protocol.NBIPXSessionHeader):
+//
+//   - A zero-data frame is session control, consuming no sequence number: a
+//     SYS|RESEND asks us to retransmit the retained response from RecvSeq; a
+//     SYS|ACK probe (NT sends 0xC0 right after the accept) is answered with a
+//     zero-data SYS frame carrying our current counters; a bare ACK is state we
+//     already have.
+//   - An in-order data frame (SendSeq == recvSeq) advances recvSeq; without EOM it
+//     buffers as a fragment, with EOM it completes a message that is served to the
+//     lazily-opened SMB circuit and answered with sequenced DATA frames.
+//   - A duplicate of the frame we just consumed (SendSeq == recvSeq-1, the client
+//     retransmitting because our response was lost) re-sends the retained response
+//     without re-serving the SMB command.
 func (e *ipxSessionEngine) handleData(d *ipxproto.Datagram, hdr *protocol.NBIPXSessionHeader) {
 	if len(d.Payload) < protocol.NBIPXSessionHeaderLen+int(hdr.DataLen) {
 		return
@@ -370,9 +402,50 @@ func (e *ipxSessionEngine) handleData(d *ipxproto.Datagram, hdr *protocol.NBIPXS
 		e.mu.Unlock()
 		return
 	}
+
+	// Zero-data session-control (probe / ACK / resend request). These consume no
+	// sequence number: NT's post-accept probe (0xC0, SendSeq 1) is acked with the
+	// UNCHANGED RecvSeq (1) — acking it as consumed (RecvSeq 2) reads as a
+	// protocol error and NT aborts after ~9 probes (client error 59). What the
+	// probe actually polls for is the receive-window advertisement in the
+	// BytesReceived field; see nbipxRecvWindow.
+	if hdr.DataLen == 0 {
+		sendSeq, recvSeq := c.sendSeq, c.recvSeq
+		lastResp, lastRespSeq := c.lastResp, c.lastRespSeq
+		e.mu.Unlock()
+		if hdr.ConnCtrlFlag&protocol.NBIPXConnFlagRESEND != 0 && len(lastResp) > 0 {
+			e.resendData(d, c, lastResp, lastRespSeq, hdr.RecvSeq, recvSeq)
+			return
+		}
+		if hdr.ConnCtrlFlag&protocol.NBIPXConnFlagACK != 0 {
+			e.sendSystemAck(d, c.localID, hdr.SourceConnID, sendSeq, recvSeq)
+		}
+		return
+	}
+
+	// Sequenced data frame.
+	if hdr.SendSeq != c.recvSeq {
+		// The retransmit of a frame we already consumed: our response was lost (or
+		// rejected) — re-send it rather than re-serving the command.
+		dup := hdr.SendSeq == c.recvSeq-1
+		lastResp, lastRespSeq, recvSeq := c.lastResp, c.lastRespSeq, c.recvSeq
+		e.mu.Unlock()
+		if dup && len(lastResp) > 0 {
+			e.resendData(d, c, lastResp, lastRespSeq, lastRespSeq, recvSeq)
+		}
+		return // anything else is out of window — drop, the peer recovers
+	}
+	c.recvSeq++
+
 	if !eom {
 		c.frag = append(c.frag, body...)
+		sendSeq, recvSeq := c.sendSeq, c.recvSeq
 		e.mu.Unlock()
+		// A fragment produces no data response to carry the ack, so honour an
+		// explicit ACK request with a system frame.
+		if hdr.ConnCtrlFlag&protocol.NBIPXConnFlagACK != 0 {
+			e.sendSystemAck(d, c.localID, hdr.SourceConnID, sendSeq, recvSeq)
+		}
 		return
 	}
 	var msg []byte
@@ -388,17 +461,14 @@ func (e *ipxSessionEngine) handleData(d *ipxproto.Datagram, hdr *protocol.NBIPXS
 		if consumer := e.consumer(); consumer != nil {
 			c.conn = consumer.NewConn(nbipxClientLabel(c.node, c.sock))
 			// Install the server-push writer for asynchronous completions
-			// (NOTIFY_CHANGE), framing SMB bytes onto a DATA_ONLY_LAST addressed
-			// from the circuit's retained peer address + connection ids.
-			peerNet, peerNode, peerSock := c.net, c.node, c.sock
-			cLocal, cRemote := c.localID, c.remoteID
+			// (NOTIFY_CHANGE), framing SMB bytes onto sequenced DATA frames
+			// addressed from the circuit's retained peer address + connection ids.
 			c.conn.SetPushWriter(func(frame []byte) {
-				e.pushData(peerNet, peerNode, peerSock, cLocal, cRemote, frame)
+				e.pushData(key, frame)
 			})
 		}
 	}
 	conn := c.conn
-	localID := c.localID
 	e.mu.Unlock()
 
 	if conn == nil {
@@ -406,69 +476,172 @@ func (e *ipxSessionEngine) handleData(d *ipxproto.Datagram, hdr *protocol.NBIPXS
 	}
 	resp := conn.ServeMessage(msg)
 	if len(resp) == 0 {
-		return // silent-drop command
+		// Silent-drop command: still answer an explicit ACK request so the client
+		// releases its send window.
+		if hdr.ConnCtrlFlag&protocol.NBIPXConnFlagACK != 0 {
+			e.mu.Lock()
+			sendSeq, recvSeq := c.sendSeq, c.recvSeq
+			e.mu.Unlock()
+			e.sendSystemAck(d, c.localID, hdr.SourceConnID, sendSeq, recvSeq)
+		}
+		return
 	}
-	e.sendData(d, hdr, localID, resp)
+	e.sendData(d, c, resp)
 }
 
-// sendControl emits an NB-IPX session-control packet (SESSION_CONFIRM /
-// SESSION_END_ACK) back to the peer, mirroring the connection IDs (our localID as
-// SourceConnID, the peer's as DestConnID) and reflecting the IPX addressing.
-func (e *ipxSessionEngine) sendControl(in *ipxproto.Datagram, inHdr *protocol.NBIPXSessionHeader, localID uint16, streamType uint8) {
+// sendControl emits an NB-IPX session-control packet (SESSION_END_ACK) back to
+// the peer, mirroring the connection IDs (our localID as SourceConnID, the peer's
+// as DestConnID), carrying our send counter and the cumulative ack, and
+// reflecting the IPX addressing.
+func (e *ipxSessionEngine) sendControl(in *ipxproto.Datagram, inHdr *protocol.NBIPXSessionHeader, localID, sendSeq, recvSeq uint16, streamType uint8) {
 	h := &protocol.NBIPXSessionHeader{
 		ConnCtrlFlag:   protocol.NBIPXConnFlagSYS,
 		DataStreamType: streamType,
 		SourceConnID:   localID,
 		DestConnID:     inHdr.SourceConnID,
-		SendSeq:        inHdr.SendSeq,
+		SendSeq:        sendSeq,
+		RecvSeq:        recvSeq,
+		BytesReceived:  recvSeq + nbipxRecvWindow,
 	}
 	e.send(in, protocol.EncodeSessionHeader(h), "session-control")
 }
 
-// sendData sends a reassembled response back as one EOM-flagged DATA (0x06) frame
-// (a file-server reply fits the IPX datagram; the legacy transport replied the same
-// way). An empty payload still sends one DATA frame so an empty SMB reply is framed.
-func (e *ipxSessionEngine) sendData(in *ipxproto.Datagram, inHdr *protocol.NBIPXSessionHeader, localID uint16, payload []byte) {
-	h := &protocol.NBIPXSessionHeader{
-		ConnCtrlFlag:   protocol.NBIPXConnFlagEOM,
-		DataStreamType: protocol.NBIPXSessionData,
-		SourceConnID:   localID,
-		DestConnID:     inHdr.SourceConnID,
-		SendSeq:        inHdr.SendSeq,
-		TotalDataLen:   uint16(len(payload)),
-		DataLen:        uint16(len(payload)),
+// nbipxMaxFrameData is the most message data one DATA frame carries: an Ethernet II
+// payload (1500) less the IPX header (30) and the NB-IPX session header (18). A
+// response larger than this is fragmented across frames via TotalDataLen/Offset/
+// DataLen with EOM set only on the last — the receive side of the same scheme
+// handleData's c.frag path already reassembles.
+const nbipxMaxFrameData = 1500 - 30 - protocol.NBIPXSessionHeaderLen
+
+// nbipxRecvWindow is the receive window we advertise in the BytesReceived field
+// of every session frame we send: BytesReceived = RecvSeq + window, the highest
+// peer SendSeq we are prepared to accept plus one (the "window edge"). An NT
+// NWLink client will NOT transmit data while the peer's advertised edge is below
+// its next send sequence — with a zero advertisement it polls with zero-data
+// SYS|ACK probes (0xC0) every ~600ms until the client errors out, while Win9x/WfW
+// clients ignore the field entirely. 5 mirrors NT's own advertisement (its accept
+// carries RecvSeq 1 + 5 = 6, then 7/8/9/10 as it consumes frames; ipx.pcap
+// 2026-07-10 frames 488-509). We serve every message as it arrives, so the
+// window never actually closes.
+const nbipxRecvWindow = 5
+
+// sendData sends a reassembled response back as sequenced DATA (0x06) frames, EOM
+// on the last, allocating one SendSeq per frame from the circuit and retaining the
+// message for RESEND/duplicate recovery. An empty payload still sends one DATA
+// frame so an empty SMB reply is framed.
+func (e *ipxSessionEngine) sendData(in *ipxproto.Datagram, c *ipxCircuit, payload []byte) {
+	frames := (len(payload) + nbipxMaxFrameData - 1) / nbipxMaxFrameData
+	if frames == 0 {
+		frames = 1
 	}
-	e.send(in, append(protocol.EncodeSessionHeader(h), payload...), "session-send")
+	e.mu.Lock()
+	firstSeq := c.sendSeq
+	c.sendSeq += uint16(frames)
+	c.lastResp = payload
+	c.lastRespSeq = firstSeq
+	recvSeq := c.recvSeq
+	e.mu.Unlock()
+	e.sendDataFrames(in, c, payload, firstSeq, firstSeq, recvSeq)
 }
 
-// pushData sends a server-initiated reassembled message (an asynchronous
-// NOTIFY_CHANGE completion, §10d wire push) to the circuit's peer as one
-// EOM-flagged DATA (0x06). Unlike sendData it has no inbound datagram to swap
-// addressing from, so it addresses the peer directly from the circuit's retained
-// net/node/sock. A nil sender drops it.
-func (e *ipxSessionEngine) pushData(peerNet [4]byte, peerNode [6]byte, peerSock [2]byte, localID, remoteID uint16, payload []byte) {
-	if e.sender == nil {
-		return
+// resendData retransmits the retained response message from the peer-requested
+// sequence number (a SYS|RESEND, or a duplicate request frame whose response was
+// lost) without consuming new sequence numbers or touching circuit state. A
+// request outside the retained message's frame range resends the whole message.
+func (e *ipxSessionEngine) resendData(in *ipxproto.Datagram, c *ipxCircuit, payload []byte, firstSeq, fromSeq, recvSeq uint16) {
+	if fromSeq < firstSeq || fromSeq > firstSeq+uint16(len(payload)/nbipxMaxFrameData) {
+		fromSeq = firstSeq
 	}
+	e.sendDataFrames(in, c, payload, firstSeq, fromSeq, recvSeq)
+}
+
+// sendDataFrames frames payload into DATA frames numbered from firstSeq, emitting
+// those at/after fromSeq (== firstSeq sends the whole message), stamping recvSeq as
+// the cumulative ack. EOM is set only on the final frame.
+func (e *ipxSessionEngine) sendDataFrames(in *ipxproto.Datagram, c *ipxCircuit, payload []byte, firstSeq, fromSeq, recvSeq uint16) {
+	total := uint16(len(payload))
+	seq := firstSeq
+	for off := 0; ; off += nbipxMaxFrameData {
+		n := len(payload) - off
+		last := n <= nbipxMaxFrameData
+		if !last {
+			n = nbipxMaxFrameData
+		}
+		if seq >= fromSeq {
+			var ctrl uint8
+			if last {
+				ctrl = protocol.NBIPXConnFlagEOM
+			}
+			h := &protocol.NBIPXSessionHeader{
+				ConnCtrlFlag:   ctrl,
+				DataStreamType: protocol.NBIPXSessionData,
+				SourceConnID:   c.localID,
+				DestConnID:     c.remoteID,
+				SendSeq:        seq,
+				TotalDataLen:   total,
+				Offset:         uint16(off),
+				DataLen:        uint16(n),
+				RecvSeq:        recvSeq,
+				BytesReceived:  recvSeq + nbipxRecvWindow,
+			}
+			e.send(in, append(protocol.EncodeSessionHeader(h), payload[off:off+n]...), "session-send")
+		}
+		seq++
+		if last {
+			return
+		}
+	}
+}
+
+// sendSystemAck answers a zero-data SYS|ACK probe (and acks a frame that produced
+// no data response) with a zero-data SYS frame carrying our current send counter
+// and cumulative ack. NT 3.51 probes every fresh circuit this way and drops the
+// session if the probe goes unanswered.
+func (e *ipxSessionEngine) sendSystemAck(in *ipxproto.Datagram, localID, remoteID, sendSeq, recvSeq uint16) {
 	h := &protocol.NBIPXSessionHeader{
-		ConnCtrlFlag:   protocol.NBIPXConnFlagEOM,
+		ConnCtrlFlag:   protocol.NBIPXConnFlagSYS,
 		DataStreamType: protocol.NBIPXSessionData,
 		SourceConnID:   localID,
 		DestConnID:     remoteID,
-		TotalDataLen:   uint16(len(payload)),
-		DataLen:        uint16(len(payload)),
+		SendSeq:        sendSeq,
+		RecvSeq:        recvSeq,
+		BytesReceived:  recvSeq + nbipxRecvWindow,
 	}
-	out := &ipxproto.Datagram{
-		Type:    protocol.IPXTypePEP,
-		DstNet:  peerNet,
-		DstNode: peerNode,
-		DstSock: peerSock,
-		SrcSock: NBIPXSessionSocket,
-		Payload: append(protocol.EncodeSessionHeader(h), payload...),
+	e.send(in, protocol.EncodeSessionHeader(h), "session-ack")
+}
+
+// pushData sends a server-initiated reassembled message (an asynchronous
+// NOTIFY_CHANGE completion, §10d wire push) to the circuit's peer as sequenced
+// DATA frames. Unlike sendData it has no inbound datagram to swap addressing from,
+// so it synthesizes the addressing from the circuit's retained net/node/sock; the
+// circuit is looked up live so a push after SESSION_END is dropped and the
+// sequence counters stay coherent with the request/response path.
+func (e *ipxSessionEngine) pushData(key ipxCircuitKey, payload []byte) {
+	if e.sender == nil {
+		return
 	}
-	if err := e.sender.Send(out); err != nil {
-		e.logf("NBIPX push failed")
+	frames := (len(payload) + nbipxMaxFrameData - 1) / nbipxMaxFrameData
+	if frames == 0 {
+		frames = 1
 	}
+	e.mu.Lock()
+	c := e.circuits[key]
+	if c == nil {
+		e.mu.Unlock()
+		return
+	}
+	firstSeq := c.sendSeq
+	c.sendSeq += uint16(frames)
+	recvSeq := c.recvSeq
+	e.mu.Unlock()
+
+	in := &ipxproto.Datagram{
+		SrcNet:  c.net,
+		SrcNode: c.node,
+		SrcSock: c.sock,
+		DstSock: NBIPXSessionSocket,
+	}
+	e.sendDataFrames(in, c, payload, firstSeq, firstSeq, recvSeq)
 }
 
 // send writes an NB-IPX PEP datagram (type 4) back to the inbound peer, swapping

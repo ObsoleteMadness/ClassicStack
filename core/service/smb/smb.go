@@ -53,6 +53,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
+	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/smb"
 	"github.com/ObsoleteMadness/ClassicStack/core/share"
 )
 
@@ -592,6 +593,50 @@ func (s *Service) logf(msg string) {
 		return
 	}
 	s.logger.Log1(log.Info, msg, log.Str("scope", Name))
+}
+
+// logSMBRequest narrates one inbound SMB message at debug level: the decoded command
+// mnemonic, the client label, and the TID/UID it carries. A frame that does not decode
+// as SMB is logged as such (it is dropped by Dispatch). Guarded by Enabled so the
+// decode/format cost is skipped when debug is off.
+func (s *Service) logSMBRequest(sess *smbSession, req []byte) {
+	if s.logger == nil || !s.logger.Enabled(log.Debug) {
+		return
+	}
+	h, err := protocol.DecodeHeader(req)
+	if err != nil {
+		s.logger.Log2(log.Debug, "SMB request (not an SMB frame)",
+			log.Str("client", sess.client), log.Int("bytes", int64(len(req))))
+		return
+	}
+	s.logger.Log(log.Debug, "SMB request",
+		log.Str("scope", Name),
+		log.Str("client", sess.client),
+		log.Str("command", protocol.CommandName(h.Command)),
+		log.Int("tid", int64(h.TID)),
+		log.Int("uid", int64(h.UID)))
+}
+
+// logSMBResponse narrates the response the engine produced for the last request at debug
+// level: its wire status and length, or that nothing is sent back (a silent-drop or a
+// dropped malformed frame). Guarded by Enabled.
+func (s *Service) logSMBResponse(sess *smbSession, resp []byte) {
+	if s.logger == nil || !s.logger.Enabled(log.Debug) {
+		return
+	}
+	if resp == nil {
+		s.logger.Log1(log.Debug, "SMB response (none — silent drop)", log.Str("client", sess.client))
+		return
+	}
+	var status uint32
+	if h, err := protocol.DecodeHeader(resp); err == nil {
+		status = h.Status
+	}
+	s.logger.Log(log.Debug, "SMB response",
+		log.Str("scope", Name),
+		log.Str("client", sess.client),
+		log.Int("status", int64(status)),
+		log.Int("bytes", int64(len(resp))))
 }
 
 // compile-time assertions.

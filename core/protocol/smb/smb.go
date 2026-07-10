@@ -87,6 +87,105 @@ const (
 	CommandNoAndXCommand         = 0xFF // AndX terminator
 )
 
+// CommandName returns the mnemonic for an SMB1 command byte ("SMB_COM_NEGOTIATE"
+// etc.), or "SMB_COM_0xNN" for an unrecognised command. It is a diagnostics helper
+// for debug/trace logging — the dispatcher keys off the numeric const, not this.
+func CommandName(cmd uint8) string {
+	switch cmd {
+	case CommandCreateDirectory:
+		return "SMB_COM_CREATE_DIRECTORY"
+	case CommandDeleteDirectory:
+		return "SMB_COM_DELETE_DIRECTORY"
+	case CommandOpen:
+		return "SMB_COM_OPEN"
+	case CommandCreate:
+		return "SMB_COM_CREATE"
+	case CommandClose:
+		return "SMB_COM_CLOSE"
+	case CommandFlush:
+		return "SMB_COM_FLUSH"
+	case CommandDelete:
+		return "SMB_COM_DELETE"
+	case CommandRename:
+		return "SMB_COM_RENAME"
+	case CommandQueryInformation:
+		return "SMB_COM_QUERY_INFORMATION"
+	case CommandSetInformation:
+		return "SMB_COM_SET_INFORMATION"
+	case CommandRead:
+		return "SMB_COM_READ"
+	case CommandWrite:
+		return "SMB_COM_WRITE"
+	case CommandCheckDirectory:
+		return "SMB_COM_CHECK_DIRECTORY"
+	case CommandSeek:
+		return "SMB_COM_SEEK"
+	case CommandReadMPX:
+		return "SMB_COM_READ_MPX"
+	case CommandWriteRaw:
+		return "SMB_COM_WRITE_RAW"
+	case CommandWriteMPX:
+		return "SMB_COM_WRITE_MPX"
+	case CommandWriteComplete:
+		return "SMB_COM_WRITE_COMPLETE"
+	case CommandSetInformation2:
+		return "SMB_COM_SET_INFORMATION2"
+	case CommandLockingAndX:
+		return "SMB_COM_LOCKING_ANDX"
+	case CommandTransaction:
+		return "SMB_COM_TRANSACTION"
+	case CommandTransactionSecondary:
+		return "SMB_COM_TRANSACTION_SECONDARY"
+	case CommandEcho:
+		return "SMB_COM_ECHO"
+	case CommandOpenAndX:
+		return "SMB_COM_OPEN_ANDX"
+	case CommandReadAndX:
+		return "SMB_COM_READ_ANDX"
+	case CommandWriteAndX:
+		return "SMB_COM_WRITE_ANDX"
+	case CommandTransaction2:
+		return "SMB_COM_TRANSACTION2"
+	case CommandTransaction2Secondary:
+		return "SMB_COM_TRANSACTION2_SECONDARY"
+	case CommandFindClose2:
+		return "SMB_COM_FIND_CLOSE2"
+	case CommandTreeConnect:
+		return "SMB_COM_TREE_CONNECT"
+	case CommandTreeDisconnect:
+		return "SMB_COM_TREE_DISCONNECT"
+	case CommandNegotiate:
+		return "SMB_COM_NEGOTIATE"
+	case CommandSessionSetupAndX:
+		return "SMB_COM_SESSION_SETUP_ANDX"
+	case CommandLogoffAndX:
+		return "SMB_COM_LOGOFF_ANDX"
+	case CommandTreeConnectAndX:
+		return "SMB_COM_TREE_CONNECT_ANDX"
+	case CommandQueryInformationDisk:
+		return "SMB_COM_QUERY_INFORMATION_DISK"
+	case CommandSearch:
+		return "SMB_COM_SEARCH"
+	case CommandNtTransact:
+		return "SMB_COM_NT_TRANSACT"
+	case CommandNtTransactSecondary:
+		return "SMB_COM_NT_TRANSACT_SECONDARY"
+	case CommandNtCreateAndX:
+		return "SMB_COM_NT_CREATE_ANDX"
+	case CommandNtCancel:
+		return "SMB_COM_NT_CANCEL"
+	default:
+		return "SMB_COM_0x" + hexByte(cmd)
+	}
+}
+
+// hexByte formats a byte as two uppercase hex digits (avoids importing fmt/strconv
+// in the core protocol ring for one diagnostics call).
+func hexByte(b uint8) string {
+	const digits = "0123456789ABCDEF"
+	return string([]byte{digits[b>>4], digits[b&0x0F]})
+}
+
 // Flags (offset 9) bits ([MS-CIFS] §2.2.3.1).
 const (
 	FlagReply = 0x80 // SMB_FLAGS_REPLY: message is a server response

@@ -3,6 +3,7 @@ package smb
 import (
 	stdfs "io/fs"
 	"strings"
+	"unicode/utf16"
 
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 
@@ -20,19 +21,48 @@ import (
 const (
 	trans2FindFirst2     = 0x0001
 	trans2FindNext2      = 0x0002
+	trans2QueryFSInfo    = 0x0003 // TRANS2_QUERY_FS_INFORMATION
 	trans2QueryPathInfo  = 0x0005
 	trans2SetPathInfo    = 0x0006 // TRANS2_SET_PATH_INFORMATION
 	trans2QueryFileInfo  = 0x0007
 	trans2SetFileInfo    = 0x0008 // TRANS2_SET_FILE_INFORMATION
+	infoStandard         = 0x0001 // SMB_INFO_STANDARD (LANMAN2.0 find level — OS/2, DOS LANMAN)
+	infoQueryEaSize      = 0x0002 // SMB_INFO_QUERY_EA_SIZE (SMB_INFO_STANDARD + EaSize)
 	infoFileBothDirInfo  = 0x0104 // SMB_FIND_FILE_BOTH_DIRECTORY_INFO
 	infoQueryFileBasic   = 0x0101 // SMB_QUERY_FILE_BASIC_INFO
 	infoQueryFileStd     = 0x0102 // SMB_QUERY_FILE_STANDARD_INFO
 	infoQueryFileEA      = 0x0103 // SMB_QUERY_FILE_EA_INFO
+	infoQueryFileName    = 0x0104 // SMB_QUERY_FILE_NAME_INFO (FileNameInformation)
 	infoQueryFileAllInfo = 0x0107 // SMB_QUERY_FILE_ALL_INFO
 	infoSetFileBasic     = 0x0101 // SMB_SET_FILE_BASIC_INFO (FileBasicInformation)
 
+	// TRANS2_QUERY_FS_INFORMATION information levels ([smb6.0] 4118 table;
+	// [MS-CIFS] §2.2.2.3.4). Levels ≥ 0x102 "are mapped to corresponding calls
+	// to NtQueryVolumeInformationFile" ([smb6.0] 4116), so their strings are
+	// Unicode regardless of the request charset.
+	fsInfoAllocation     = 0x0001 // SMB_INFO_ALLOCATION
+	fsInfoVolume         = 0x0002 // SMB_INFO_VOLUME
+	fsQueryVolumeInfo    = 0x0102 // SMB_QUERY_FS_VOLUME_INFO (FileFsVolumeInformation)
+	fsQuerySizeInfo      = 0x0103 // SMB_QUERY_FS_SIZE_INFO (FileFsSizeInformation)
+	fsQueryDeviceInfo    = 0x0104 // SMB_QUERY_FS_DEVICE_INFO (FileFsDeviceInformation)
+	fsQueryAttributeInfo = 0x0105 // SMB_QUERY_FS_ATTRIBUTE_INFO (FileFsAttributeInformation)
+
+	// SMB_QUERY_FS_DEVICE_INFO fields ([MS-CIFS] §2.2.8.2.5).
+	fileDeviceDisk      = 0x00000007 // FILE_DEVICE_DISK
+	fileDeviceIsMounted = 0x00000020 // FILE_DEVICE_IS_MOUNTED
+
+	// SMB_QUERY_FS_ATTRIBUTE_INFO FileSystemAttributes ([MS-CIFS] §2.2.8.2.6).
+	fileCasePreservedNames = 0x00000002 // FILE_CASE_PRESERVED_NAMES
+
 	findCloseAfterRequest = 0x0001 // SMB_FIND_CLOSE_AFTER_REQUEST
 	findCloseAtEOS        = 0x0002 // SMB_FIND_CLOSE_AT_EOS
+	findReturnResumeKeys  = 0x0004 // SMB_FIND_RETURN_RESUME_KEYS
+
+	// The synthetic disk geometry every space-reporting reply uses: 512-byte
+	// sectors, 64 sectors per allocation unit (32 KiB units) — matching
+	// SMB_COM_QUERY_INFORMATION_DISK (pathops.go).
+	fsBytesPerSector = 512
+	fsSectorsPerUnit = 64
 )
 
 // trans2Request is the parsed TRANS2 sub-request: the subcommand plus its
@@ -90,6 +120,8 @@ func (s *Service) handleTransaction2(sess *smbSession, h protocol.Header, req []
 		return s.findFirst2(sess, sh, h, t2.params)
 	case trans2FindNext2:
 		return s.findNext2(sess, sh, h, t2.params)
+	case trans2QueryFSInfo:
+		return s.queryFSInfo(sh, h, t2.params)
 	case trans2QueryPathInfo:
 		return s.queryPathInfo(sh, h, t2.params)
 	case trans2QueryFileInfo:
@@ -173,7 +205,7 @@ func (s *Service) findFirst2(sess *smbSession, sh *Share, h protocol.Header, par
 	searchCount := clampSearchCount(int(bp.LE16(params[2:4])))
 	flags := bp.LE16(params[4:6])
 	infoLevel := bp.LE16(params[6:8])
-	if infoLevel != infoFileBothDirInfo {
+	if !supportedFindLevel(infoLevel) {
 		return errResponse(h, statusNotSupported)
 	}
 
@@ -186,7 +218,7 @@ func (s *Service) findFirst2(sess *smbSession, sh *Share, h protocol.Header, par
 		return errResponse(h, st)
 	}
 
-	data, returned, lastNameOff := packFindBothDir(sh, rows, searchCount, h.Flags2)
+	data, returned, lastNameOff := packFindEntries(sh, rows, searchCount, infoLevel, flags&findReturnResumeKeys != 0, h.Flags2)
 	endOfSearch := returned >= len(rows)
 
 	sid := sess.allocSID(&searchHandle{rows: nil, flags2: h.Flags2})
@@ -211,7 +243,7 @@ func (s *Service) findNext2(sess *smbSession, sh *Share, h protocol.Header, para
 	sid := bp.LE16(params[0:2])
 	searchCount := clampSearchCount(int(bp.LE16(params[2:4])))
 	infoLevel := bp.LE16(params[4:6])
-	if infoLevel != infoFileBothDirInfo {
+	if !supportedFindLevel(infoLevel) {
 		return errResponse(h, statusNotSupported)
 	}
 	flags := bp.LE16(params[10:12])
@@ -230,7 +262,7 @@ func (s *Service) findNext2(sess *smbSession, sh *Share, h protocol.Header, para
 		return errResponse(h, statusNoMoreFiles)
 	}
 
-	data, returned, lastNameOff := packFindBothDir(sh, rows, searchCount, h.Flags2)
+	data, returned, lastNameOff := packFindEntries(sh, rows, searchCount, infoLevel, flags&findReturnResumeKeys != 0, h.Flags2)
 	endOfSearch := returned >= len(rows)
 
 	sess.mu.Lock()
@@ -315,6 +347,9 @@ func (s *Service) queryPathInfo(sh *Share, h protocol.Header, params []byte) []b
 	if err != nil {
 		return errResponse(h, statusObjectNameNotFound)
 	}
+	if infoLevel == infoQueryFileName {
+		return buildTrans2InfoResponse(h, packFileNameInfo(store))
+	}
 	data, ok := packQueryInfo(infoLevel, info, sh.AttrsFor(store, info))
 	if !ok {
 		return errResponse(h, statusNotSupported)
@@ -338,11 +373,149 @@ func (s *Service) queryFileInfo(sess *smbSession, h protocol.Header, params []by
 	if err != nil {
 		return errResponse(h, statusObjectNameNotFound)
 	}
+	if infoLevel == infoQueryFileName {
+		return buildTrans2InfoResponse(h, packFileNameInfo(hnd.path))
+	}
 	data, ok := packQueryInfo(infoLevel, info, hnd.share.AttrsFor(hnd.path, info))
 	if !ok {
 		return errResponse(h, statusNotSupported)
 	}
 	return buildTrans2InfoResponse(h, data)
+}
+
+// queryFSInfo serves TRANS2_QUERY_FS_INFORMATION ([smb6.0] 4097; [MS-CIFS]
+// §2.2.6.4): "the filesystem is identified by Tid in the SMB header"; the
+// 2-byte param block carries the InformationLevel and the response returns the
+// level-dependent structure in the Data block with NO parameter bytes
+// ([MS-CIFS] §2.2.6.4.2). NT 3.51 issues SMB_QUERY_FS_VOLUME_INFO right after
+// opening a share (netbeui.pcap frame 491) and treats an error reply as a
+// failed share access, so every level a period client asks for is served.
+func (s *Service) queryFSInfo(sh *Share, h protocol.Header, params []byte) []byte {
+	if len(params) < 2 {
+		return errResponse(h, statusUnsuccessful)
+	}
+	level := bp.LE16(params[0:2])
+
+	total, free, err := sh.FS().DiskUsage("")
+	if err != nil {
+		total, free = 0, 0
+	}
+	const unitBytes = fsBytesPerSector * fsSectorsPerUnit
+	totalUnits := total / unitBytes
+	freeUnits := free / unitBytes
+	if totalUnits == 0 {
+		// A backend that cannot report usage still presents a mounted,
+		// non-empty volume (matching SMB_COM_QUERY_INFORMATION_DISK).
+		totalUnits = 1
+	}
+	label := sh.Name()
+
+	var data []byte
+	switch level {
+	case fsInfoAllocation:
+		// idFileSystem(4, "NT server always returns 0") cSectorUnit(4) cUnit(4)
+		// cUnitAvail(4) cbSector(2) — [smb6.0] 4130.
+		data = make([]byte, 18)
+		bp.PutLE32(data[4:8], fsSectorsPerUnit)
+		bp.PutLE32(data[8:12], clamp32(totalUnits))
+		bp.PutLE32(data[12:16], clamp32(freeUnits))
+		bp.PutLE16(data[16:18], fsBytesPerSector)
+	case fsInfoVolume:
+		// ulVsn(4) cch(1) Label(STRING, wire charset) — [smb6.0] 4141. The
+		// pre-NT form: Win9x asks this level when CAP_NT_SMBS is off.
+		wire, err := sh.EncodeName(label, h.Flags2)
+		if err != nil {
+			wire = nil
+		}
+		data = make([]byte, 5+len(wire))
+		bp.PutLE32(data[0:4], volumeSerial(label))
+		data[4] = byte(len(label))
+		copy(data[5:], wire)
+	case fsQueryVolumeInfo:
+		// FileFsVolumeInformation: VolumeCreationTime FILETIME(8, unknown=0)
+		// SerialNumber(4) VolumeLabelSize(4) Reserved(2) VolumeLabel(WCHAR —
+		// "the Unicode-encoded volume label", [MS-CIFS] §2.2.8.2.3, regardless
+		// of the request charset).
+		lab := utf16LEBytes(label)
+		data = make([]byte, 18+len(lab))
+		bp.PutLE32(data[8:12], volumeSerial(label))
+		bp.PutLE32(data[12:16], uint32(len(lab)))
+		copy(data[18:], lab)
+	case fsQuerySizeInfo:
+		// TotalAllocationUnits(8) TotalFreeAllocationUnits(8)
+		// SectorsPerAllocationUnit(4) BytesPerSector(4) — [MS-CIFS] §2.2.8.2.4.
+		data = make([]byte, 24)
+		bp.PutLE64(data[0:8], totalUnits)
+		bp.PutLE64(data[8:16], freeUnits)
+		bp.PutLE32(data[16:20], fsSectorsPerUnit)
+		bp.PutLE32(data[20:24], fsBytesPerSector)
+	case fsQueryDeviceInfo:
+		// DeviceType(4) DeviceCharacteristics(4) — [MS-CIFS] §2.2.8.2.5.
+		data = make([]byte, 8)
+		bp.PutLE32(data[0:4], fileDeviceDisk)
+		bp.PutLE32(data[4:8], fileDeviceIsMounted)
+	case fsQueryAttributeInfo:
+		// FileSystemAttributes(4) MaxFileNameLengthInBytes(4)
+		// LengthOfFileSystemName(4) FileSystemName(WCHAR, always Unicode) —
+		// [MS-CIFS] §2.2.8.2.6. "NTFS" advertises long, case-preserved names
+		// (the share seam preserves case and is not 8.3-limited); reporting
+		// FAT would make NT-family clients apply 8.3 name rules.
+		name := utf16LEBytes("NTFS")
+		data = make([]byte, 12+len(name))
+		bp.PutLE32(data[0:4], fileCasePreservedNames)
+		bp.PutLE32(data[4:8], 255)
+		bp.PutLE32(data[8:12], uint32(len(name)))
+		copy(data[12:], name)
+	default:
+		return errResponse(h, statusNotSupported)
+	}
+	return buildTrans2Response(h, nil, data)
+}
+
+// packFileNameInfo serializes SMB_QUERY_FILE_NAME_INFO ([MS-CIFS] §2.2.8.3.9):
+// FileNameLength(4) + FileName — "the name of the file in Unicode" (always
+// UTF-16LE, independent of the request charset). The name is the '\'-separated
+// path from the share root; the root itself is "\".
+func packFileNameInfo(store string) []byte {
+	name := "\\" + strings.ReplaceAll(store, "/", "\\")
+	wire := utf16LEBytes(name)
+	buf := make([]byte, 4+len(wire))
+	bp.PutLE32(buf[0:4], uint32(len(wire)))
+	copy(buf[4:], wire)
+	return buf
+}
+
+// utf16LEBytes encodes s as UTF-16LE without a terminator — the encoding the
+// NT information levels mandate for their strings whatever the negotiated
+// wire charset ([smb6.0] 4116: levels above 0x102 map to the
+// NtQueryVolumeInformationFile structures).
+func utf16LEBytes(s string) []byte {
+	units := utf16.Encode([]rune(s))
+	out := make([]byte, 2*len(units))
+	for i, u := range units {
+		bp.PutLE16(out[2*i:2*i+2], u)
+	}
+	return out
+}
+
+// volumeSerial derives a stable volume serial number from the share name
+// (FNV-1a). Period clients only require the value to be consistent across
+// requests to the same share.
+func volumeSerial(name string) uint32 {
+	h := uint32(2166136261)
+	for i := 0; i < len(name); i++ {
+		h ^= uint32(name[i])
+		h *= 16777619
+	}
+	return h
+}
+
+// clamp32 caps a count at the 32-bit maximum (the SMB_INFO_ALLOCATION fields).
+func clamp32(v uint64) uint32 {
+	if v > 0xFFFFFFFF {
+		return 0xFFFFFFFF
+	}
+	return uint32(v)
 }
 
 // handleFindClose2 answers SMB_COM_FIND_CLOSE2 (0x34): release a search SID.
@@ -398,11 +571,35 @@ func packQueryInfo(level uint16, info stdfs.FileInfo, attrs uint16) ([]byte, boo
 	}
 }
 
-// packFindBothDir packs up to maxEntries findRows as SMB_FIND_FILE_BOTH_DIRECTORY_INFO
-// records ([MS-CIFS] §2.2.8.1.7): a 94-byte fixed area then the long file name in
-// the request wire charset, each record 4-byte aligned via NextEntryOffset (0 on
-// the last). Returns the data block, the count packed, and the offset of the last
-// record's FileName field (the resume hint).
+// supportedFindLevel reports whether a FIND_FIRST2/FIND_NEXT2 information level
+// is one the packers below can encode.
+func supportedFindLevel(level uint16) bool {
+	return level == infoStandard || level == infoQueryEaSize || level == infoFileBothDirInfo
+}
+
+// packFindEntries packs up to maxEntries findRows at the requested information
+// level: the NT SMB_FIND_FILE_BOTH_DIRECTORY_INFO or the pre-NT LANMAN2.0
+// levels (SMB_INFO_STANDARD / SMB_INFO_QUERY_EA_SIZE) that OS/2 LAN Server and
+// DOS LANMAN redirectors ask for (netbeui.pcap 2026-07-10 frames 308/316 —
+// rejecting them leaves OS/2 unable even to read its message file → SYS0318).
+func packFindEntries(sh *Share, rows []findRow, maxEntries int, infoLevel uint16, resumeKeys bool, flags2 uint16) (data []byte, returned int, lastNameOffset uint16) {
+	if infoLevel == infoFileBothDirInfo {
+		return packFindBothDir(sh, rows, maxEntries, flags2)
+	}
+	return packFindStandard(sh, rows, maxEntries, infoLevel == infoQueryEaSize, resumeKeys, flags2)
+}
+
+// packFindBothDir packs findRows as SMB_FIND_FILE_BOTH_DIRECTORY_INFO records
+// ([MS-CIFS] §2.2.8.1.7): a 94-byte fixed area then the long file name in the
+// request wire charset, each record 4-byte aligned via NextEntryOffset (0 on
+// the last). The name carries a NUL terminator; on a non-Unicode session its
+// one byte IS counted in FileNameLength ([MS-CIFS] <167>/<168> — NT servers do
+// this and the NT 3.51 redirector expects it), on a Unicode session the two
+// NUL bytes are uncounted padding. ShortName is the 8.3 alternate name, ALWAYS
+// UTF-16LE regardless of session charset ("in Unicode format", §2.2.8.1.7),
+// and length 0 when no distinct valid 8.3 name exists. Returns the data block,
+// the count packed, and the offset of the last record's FileName field (the
+// resume hint).
 func packFindBothDir(sh *Share, rows []findRow, maxEntries int, flags2 uint16) (data []byte, returned int, lastNameOffset uint16) {
 	out := make([]byte, 0, 128)
 	for i := 0; i < len(rows) && returned < maxEntries; i++ {
@@ -411,10 +608,16 @@ func packFindBothDir(sh *Share, rows []findRow, maxEntries int, flags2 uint16) (
 		if err != nil {
 			continue // a name the wire charset cannot represent is skipped, not fatal
 		}
-		shortWire := shortNameWire(sh, row.shortName, flags2)
+		term := 1 // NUL terminator width in the wire charset
+		nameLenField := len(nameWire) + 1
+		if flags2&protocol.Flags2Unicode != 0 {
+			term = 2
+			nameLenField = len(nameWire)
+		}
+		shortWire := shortNameUTF16(row.name, row.shortName)
 
 		const fixed = 94
-		recLen := fixed + len(nameWire)
+		recLen := fixed + len(nameWire) + term
 		pad := (4 - recLen%4) % 4
 		recStart := len(out)
 		last := i == len(rows)-1 || returned == maxEntries-1
@@ -434,7 +637,7 @@ func packFindBothDir(sh *Share, rows []findRow, maxEntries int, flags2 uint16) (
 		bp.PutLE64(rec[40:48], size)
 		bp.PutLE64(rec[48:56], allocSize(size, row.info.IsDir()))
 		bp.PutLE32(rec[56:60], uint32(sh.AttrsFor(row.store, row.info)))
-		bp.PutLE32(rec[60:64], uint32(len(nameWire)))
+		bp.PutLE32(rec[60:64], uint32(nameLenField))
 		rec[68] = byte(len(shortWire))
 		copy(rec[70:94], shortWire)
 		copy(rec[94:], nameWire)
@@ -446,18 +649,95 @@ func packFindBothDir(sh *Share, rows []findRow, maxEntries int, flags2 uint16) (
 	return out, returned, lastNameOffset
 }
 
-// shortNameWire encodes a derived short (8.3) name to the request wire charset,
-// truncated to the 24-byte ShortName field. A name the charset cannot represent
-// falls back to empty (the field is optional).
-func shortNameWire(sh *Share, short string, flags2 uint16) []byte {
-	b, err := sh.EncodeName(short, flags2)
-	if err != nil || len(b) > 24 {
-		if err == nil {
-			return b[:24]
+// packFindStandard packs findRows as SMB_INFO_STANDARD or (withEA)
+// SMB_INFO_QUERY_EA_SIZE records ([MS-CIFS] §2.2.8.1.1/§2.2.8.1.2): optional
+// ResumeKey(4, present only when SMB_FIND_RETURN_RESUME_KEYS was set in the
+// request Flags), SMB_DATE/SMB_TIME creation/access/write pairs,
+// FileDataSize(4), AllocationSize(4), Attributes(2), EaSize(4, EA level only),
+// then FileNameLength(1) and the name in the request wire charset followed by
+// a NUL terminator NOT counted in FileNameLength ([MS-CIFS] <153>/<154>).
+// Records are packed back to back with no alignment.
+func packFindStandard(sh *Share, rows []findRow, maxEntries int, withEA, resumeKeys bool, flags2 uint16) (data []byte, returned int, lastNameOffset uint16) {
+	out := make([]byte, 0, 128)
+	for i := 0; i < len(rows) && returned < maxEntries; i++ {
+		row := rows[i]
+		nameWire, err := sh.EncodeName(row.name, flags2)
+		if err != nil || len(nameWire) > 255 {
+			continue // a name the wire charset cannot represent is skipped, not fatal
 		}
+		term := 1
+		if flags2&protocol.Flags2Unicode != 0 {
+			term = 2
+		}
+
+		fixed := 23 // dates/times(12) + FileDataSize(4) + AllocationSize(4) + Attributes(2) + FileNameLength(1)
+		if resumeKeys {
+			fixed += 4
+		}
+		if withEA {
+			fixed += 4
+		}
+		recStart := len(out)
+		rec := make([]byte, fixed+len(nameWire)+term)
+
+		off := 0
+		if resumeKeys {
+			bp.PutLE32(rec[0:4], uint32(i+1)) // opaque server key; FIND_NEXT2 resumes from the snapshot
+			off = 4
+		}
+		st, sd := smbServerTimeDate(row.info.ModTime())
+		for _, fo := range []int{off, off + 4, off + 8} { // creation, access, write — all ModTime
+			bp.PutLE16(rec[fo:fo+2], sd)
+			bp.PutLE16(rec[fo+2:fo+4], st)
+		}
+		size := fileSize(row.info)
+		bp.PutLE32(rec[off+12:off+16], clamp32(size))
+		bp.PutLE32(rec[off+16:off+20], clamp32(allocSize(size, row.info.IsDir())))
+		bp.PutLE16(rec[off+20:off+22], sh.AttrsFor(row.store, row.info))
+		nameLenOff := off + 22
+		if withEA {
+			bp.PutLE32(rec[off+22:off+26], 0) // EaSize: no EAs
+			nameLenOff = off + 26
+		}
+		rec[nameLenOff] = byte(len(nameWire))
+		copy(rec[nameLenOff+1:], nameWire)
+
+		out = append(out, rec...)
+		lastNameOffset = uint16(recStart + fixed)
+		returned++
+	}
+	return out, returned, lastNameOffset
+}
+
+// shortNameUTF16 encodes a row's derived 8.3 alternate name for the BOTH_DIR
+// ShortName field: UTF-16LE, uppercase, at most 24 bytes. A short name that is
+// absent, identical to the long name, or not a valid 8.3 name yields nil —
+// ShortNameLength 0 means "no 8.3 name is present" ([MS-CIFS] §2.2.8.1.7).
+func shortNameUTF16(name, short string) []byte {
+	if short == "" || strings.EqualFold(short, name) || !is8dot3(short) {
+		return nil
+	}
+	b := utf16LEBytes(strings.ToUpper(short))
+	if len(b) > 24 {
 		return nil
 	}
 	return b
+}
+
+// is8dot3 reports whether name fits the DOS 8.3 form: 1-8 character base, at
+// most one dot, 0-3 character extension, ASCII with none of the characters DOS
+// reserves.
+func is8dot3(name string) bool {
+	base, ext, hasDot := strings.Cut(name, ".")
+	if base == "" || len(base) > 8 || (hasDot && (ext == "" || len(ext) > 3)) {
+		return false
+	}
+	for _, r := range name {
+		if r <= ' ' || r > '~' || strings.ContainsRune(`+,;=[]*?/\:"<>|`, r) {
+			return false
+		}
+	}
+	return strings.Count(name, ".") <= 1
 }
 
 // fileSize returns a FileInfo's byte size, 0 for a directory.

@@ -14,7 +14,8 @@
 //
 // Common prefix layout (both shapes, all multi-byte fields little-endian):
 //
-//	+0  uint16  LENGTH          (includes this field)
+//	+0  uint16  LENGTH          (header length only: X'000E' session,
+//	                             X'002C' non-session — user data NOT counted)
 //	+2  uint16  DELIMITER       (0xEFFF)
 //	+4  uint8   COMMAND
 //	+5  uint8   DATA1           (option flags / reserved)
@@ -46,8 +47,8 @@ var (
 	// ErrBadDelimiter is returned by Decode when the 0xEFFF delimiter is
 	// missing — a strong signal the input is not an NBF body.
 	ErrBadDelimiter = errors.New("netbeui: bad delimiter")
-	// ErrFrameTooLarge is returned by Encode when the frame exceeds the
-	// maximum length encodable in the 16-bit length field.
+	// ErrFrameTooLarge is returned by Encode when header+payload exceeds
+	// 64 KiB — far beyond any link MTU, so a caller bug.
 	ErrFrameTooLarge = errors.New("netbeui: frame too large")
 )
 
@@ -90,8 +91,12 @@ func (f *Frame) Encode() ([]byte, error) {
 
 	b := make([]byte, total)
 
-	// Common prefix.
-	bp.PutLE16(b[0:2], uint16(total))
+	// Common prefix. LENGTH is the header length only (X'000E' / X'002C',
+	// [IBM SC30-3587] Table 5-25 etc.) — never header+payload. NT 3.51's
+	// netbeui.sys silently discards session frames whose LENGTH differs
+	// (without even acknowledging them at the LLC level), while Win9x does
+	// not validate the field; see spec/errata.md.
+	bp.PutLE16(b[0:2], uint16(hdrLen))
 	bp.PutLE16(b[2:4], NBFDelimiter)
 	b[4] = f.Command
 	b[5] = f.Data1

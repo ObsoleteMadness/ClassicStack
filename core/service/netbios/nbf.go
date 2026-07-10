@@ -135,6 +135,7 @@ func (e *sessionEngine) ownsName(name protocol.Name) bool {
 // frames are left to the name layer / ignored here.
 func (e *sessionEngine) HandleFrame(srcMAC, dstMAC [6]byte, frame *nbf.Frame) {
 	_ = dstMAC
+	e.logFrame("NBF UI frame in", srcMAC, frame.Command)
 	switch frame.Command {
 	case nbf.CmdNameQuery:
 		e.handleNameQuery(srcMAC, frame)
@@ -151,6 +152,7 @@ func (e *sessionEngine) HandleFrame(srcMAC, dstMAC [6]byte, frame *nbf.Frame) {
 // NBF session-command frame (0x14–0x1F). It drives the lifecycle and data paths.
 func (e *sessionEngine) HandleSessionFrame(srcMAC, dstMAC [6]byte, frame *nbf.Frame) {
 	_ = dstMAC
+	e.logFrame("NBF session frame in", srcMAC, frame.Command)
 	switch frame.Command {
 	case nbf.CmdSessionInitialize:
 		e.handleSessionInitialize(srcMAC, frame)
@@ -266,9 +268,19 @@ func (e *sessionEngine) handleDataFirstMiddle(srcMAC [6]byte, frame *nbf.Frame) 
 }
 
 // handleDataOnlyLast completes an SMB message (joining any buffered segments),
-// acknowledges receipt with DATA_ACK, serves the message to the SMB circuit, and
-// sends the response back as DATA frames. A message on a circuit with no consumer
-// is acknowledged and dropped.
+// acknowledges receipt, serves the message to the SMB circuit, and sends the
+// response back as DATA frames. A message on a circuit with no consumer is
+// acknowledged and dropped.
+//
+// Acknowledgment follows the sender's Data1 option bits ([IBM SC30-3587]
+// Table 5-25): NO.ACK data is not acknowledged at all; when the sender set
+// ACKNOWLEDGE_WITH_DATA_ALLOWED, the acknowledgment rides the first frame of
+// our response (ACKNOWLEDGE_INCLUDED + the sender's RSP correlator) instead of
+// a separate DATA_ACK. That halves the reply to one frame — verified against
+// netbeui.pcap, where an NT 3.51 client's NE2000-class NIC reliably dropped
+// the second of our two back-to-back frames (DATA_ACK then DATA_ONLY_LAST)
+// and the SMB session never came up. A separate DATA_ACK is still sent when
+// the sender did not allow piggybacking or when we have no response to carry it.
 func (e *sessionEngine) handleDataOnlyLast(srcMAC [6]byte, frame *nbf.Frame) {
 	key := circuitKey{srcMAC, frame.DestNumber}
 	e.mu.Lock()
@@ -303,23 +315,40 @@ func (e *sessionEngine) handleDataOnlyLast(srcMAC [6]byte, frame *nbf.Frame) {
 	localNum := c.localNum
 	e.mu.Unlock()
 
-	// Acknowledge the data segment (spec §5: DATA_ONLY_LAST is ACKed).
-	ack := &nbf.Frame{
-		Command:        nbf.CmdDataAck,
-		XmitCorrelator: frame.RspCorrelator,
-		DestNumber:     remoteNum,
-		SourceNumber:   localNum,
+	wantsAck := frame.Data1&nbf.DataNoAck == 0
+	piggyback := wantsAck && frame.Data1&nbf.DataAckWithDataAllowed != 0 && conn != nil
+	if wantsAck && !piggyback {
+		e.sendDataAck(srcMAC, localNum, remoteNum, frame.RspCorrelator)
 	}
-	e.send(srcMAC, ack, "data-ack")
 
 	if conn == nil {
 		return // no consumer wired — message dropped after ACK
 	}
 	resp := conn.ServeMessage(msg)
 	if len(resp) == 0 {
-		return // silent-drop command
+		// Silent-drop command: nothing to carry a piggybacked ack, so a
+		// deferred acknowledgment falls back to a plain DATA_ACK.
+		if piggyback {
+			e.sendDataAck(srcMAC, localNum, remoteNum, frame.RspCorrelator)
+		}
+		return
 	}
-	e.sendSessionData(srcMAC, localNum, remoteNum, resp)
+	ackCorrelator := uint16(0)
+	if piggyback {
+		ackCorrelator = frame.RspCorrelator
+	}
+	e.sendSessionDataAck(srcMAC, localNum, remoteNum, resp, ackCorrelator, piggyback)
+}
+
+// sendDataAck sends a DATA_ACK for a received DATA_ONLY_LAST (spec §5.6.11:
+// XMIT correlator echoes the data frame's RSP correlator).
+func (e *sessionEngine) sendDataAck(dstMAC [6]byte, localNum, remoteNum uint8, correlator uint16) {
+	e.send(dstMAC, &nbf.Frame{
+		Command:        nbf.CmdDataAck,
+		XmitCorrelator: correlator,
+		DestNumber:     remoteNum,
+		SourceNumber:   localNum,
+	}, "data-ack")
 }
 
 // sendSessionData fragments resp onto DATA_FIRST_MIDDLE/DATA_ONLY_LAST frames at
@@ -328,6 +357,14 @@ func (e *sessionEngine) handleDataOnlyLast(srcMAC [6]byte, frame *nbf.Frame) {
 // the circuit's receive window is closed (the peer sent NO_RECEIVE), the frames are
 // queued and flushed on RECEIVE_CONTINUE instead of being sent immediately.
 func (e *sessionEngine) sendSessionData(dstMAC [6]byte, localNum, remoteNum uint8, payload []byte) {
+	e.sendSessionDataAck(dstMAC, localNum, remoteNum, payload, 0, false)
+}
+
+// sendSessionDataAck is sendSessionData with an optional piggybacked
+// acknowledgment: when ackIncluded is set, the first frame carries
+// ACKNOWLEDGE_INCLUDED and ackCorrelator (the peer's RSP correlator), standing
+// in for a separate DATA_ACK ([IBM SC30-3587] Table 5-25).
+func (e *sessionEngine) sendSessionDataAck(dstMAC [6]byte, localNum, remoteNum uint8, payload []byte, ackCorrelator uint16, ackIncluded bool) {
 	max := int(ethernetMaxIField)
 	frames := make([]*nbf.Frame, 0, len(payload)/max+1)
 	if len(payload) == 0 {
@@ -350,6 +387,10 @@ func (e *sessionEngine) sendSessionData(dstMAC [6]byte, localNum, remoteNum uint
 				Payload:      append([]byte(nil), payload[off:end]...),
 			})
 		}
+	}
+	if ackIncluded {
+		frames[0].Data1 |= nbf.DataAckIncluded
+		frames[0].XmitCorrelator = ackCorrelator
 	}
 
 	// Hold the frames if the peer's receive window is closed; otherwise send now.
@@ -472,6 +513,7 @@ func (e *sessionEngine) send(dstMAC [6]byte, frame *nbf.Frame, reason string) {
 	if e.sender == nil {
 		return
 	}
+	e.logFrame("NBF frame out ("+reason+")", dstMAC, frame.Command)
 	if err := e.sender.Send(dstMAC, frame); err != nil {
 		e.logf("NBF send failed: " + reason)
 	}
@@ -483,4 +525,32 @@ func (e *sessionEngine) logf(msg string) {
 		return
 	}
 	e.logger.Log1(log.Info, msg, log.Str("scope", Name))
+}
+
+// logFrame narrates one NBF frame (in or out) at debug level: the command mnemonic and
+// the peer MAC. Guarded by Enabled so the format cost is skipped when debug is off. This
+// is the NetBIOS-layer half of the request/response narration (the SMB-layer half is in
+// core/service/smb ServeMessage).
+func (e *sessionEngine) logFrame(msg string, mac [6]byte, cmd uint8) {
+	if e.logger == nil || !e.logger.Enabled(log.Debug) {
+		return
+	}
+	e.logger.Log(log.Debug, msg,
+		log.Str("scope", Name),
+		log.Str("command", nbf.CommandName(cmd)),
+		log.Str("peer", macString(mac)))
+}
+
+// macString formats a 6-byte MAC as aa:bb:cc:dd:ee:ff for log fields (avoids importing
+// net/fmt in the core ring for one diagnostics call).
+func macString(mac [6]byte) string {
+	const digits = "0123456789abcdef"
+	out := make([]byte, 0, 17)
+	for i, b := range mac {
+		if i > 0 {
+			out = append(out, ':')
+		}
+		out = append(out, digits[b>>4], digits[b&0x0F])
+	}
+	return string(out)
 }

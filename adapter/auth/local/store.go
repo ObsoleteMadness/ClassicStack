@@ -92,6 +92,19 @@ func (s *Store) Users() ([]auth.User, error) {
 	return out, nil
 }
 
+// HasUsers reports whether any user records exist (including disabled ones —
+// an operator who parked accounts still opted into user administration). File
+// services consult this structurally (not via auth.UserStore) to decide their
+// advertised security posture: SMB NEGOTIATE announces share-level security
+// while the store is empty, because an NT-family redirector refuses a
+// user-level server that offers no challenge (see core/service/smb
+// securityMode and spec/errata.md).
+func (s *Store) HasUsers() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.users) > 0
+}
+
 // SetUser adds a user or resets an existing user's password (preserving the
 // disabled flag). An empty username/password is rejected.
 func (s *Store) SetUser(username, password string) error {

@@ -154,8 +154,11 @@ func establishIPXCircuit(t *testing.T, r *ipxrouter.Router, port *recordingIPXPo
 }
 
 // dataDatagram builds a DATA frame (stream 0x06, EOM per the flag) on an open
-// circuit, carrying an SMB message body.
-func dataDatagram(remoteID uint16, eom bool, body []byte) *ipxproto.Datagram {
+// circuit, carrying an SMB message body. seq is the frame's SendSeq: the session
+// request consumed the client's seq 0, so a client's first data frame is seq 1 and
+// every data frame (fragments included) consumes one (sequencing ERRATA on
+// protocol.NBIPXSessionHeader; ipx.pcap 2026-07-10 frame 275).
+func dataDatagram(remoteID, seq uint16, eom bool, body []byte) *ipxproto.Datagram {
 	flag := uint8(0)
 	if eom {
 		flag = protocol.NBIPXConnFlagEOM
@@ -165,6 +168,7 @@ func dataDatagram(remoteID uint16, eom bool, body []byte) *ipxproto.Datagram {
 		DataStreamType: protocol.NBIPXSessionData,
 		SourceConnID:   remoteID,
 		DestConnID:     1, // a real (assigned) DestConnID marks this a message, not a request
+		SendSeq:        seq,
 		TotalDataLen:   uint16(len(body)),
 		DataLen:        uint16(len(body)),
 	}
@@ -228,7 +232,7 @@ func TestNBIPX_DataDeliversToConsumerAndReplies(t *testing.T) {
 	establishIPXCircuit(t, r, port, remoteID)
 
 	msg := []byte("SMBhello")
-	r.Inbound(dataDatagram(remoteID, true, msg))
+	r.Inbound(dataDatagram(remoteID, 1, true, msg))
 
 	if consumer.opened != 1 {
 		t.Fatalf("consumer opened %d circuits, want 1", consumer.opened)
@@ -257,9 +261,9 @@ func TestNBIPX_SegmentedMessageReassembled(t *testing.T) {
 	remoteID := uint16(0x0011)
 	establishIPXCircuit(t, r, port, remoteID)
 
-	r.Inbound(dataDatagram(remoteID, false, []byte("AAAA")))
-	r.Inbound(dataDatagram(remoteID, false, []byte("BBBB")))
-	r.Inbound(dataDatagram(remoteID, true, []byte("CCCC")))
+	r.Inbound(dataDatagram(remoteID, 1, false, []byte("AAAA")))
+	r.Inbound(dataDatagram(remoteID, 2, false, []byte("BBBB")))
+	r.Inbound(dataDatagram(remoteID, 3, true, []byte("CCCC")))
 
 	if string(consumer.last) != "AAAABBBBCCCC" {
 		t.Fatalf("reassembled message = %q, want %q", consumer.last, "AAAABBBBCCCC")
@@ -273,7 +277,7 @@ func TestNBIPX_SessionEndClosesConn(t *testing.T) {
 	remoteID := uint16(0x00aa)
 	establishIPXCircuit(t, r, port, remoteID)
 	// Carry one message so a conn is opened.
-	r.Inbound(dataDatagram(remoteID, true, []byte("x")))
+	r.Inbound(dataDatagram(remoteID, 1, true, []byte("x")))
 	if consumer.opened != 1 {
 		t.Fatalf("consumer opened %d, want 1", consumer.opened)
 	}
@@ -302,7 +306,7 @@ func TestNBIPX_StopTearsDownCircuits(t *testing.T) {
 	}
 	remoteID := uint16(0x00bb)
 	establishIPXCircuit(t, r, port, remoteID)
-	r.Inbound(dataDatagram(remoteID, true, []byte("y")))
+	r.Inbound(dataDatagram(remoteID, 1, true, []byte("y")))
 	if consumer.opened != 1 {
 		t.Fatalf("consumer opened %d, want 1", consumer.opened)
 	}

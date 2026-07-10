@@ -91,11 +91,81 @@ const (
 	CmdSessionAlive uint8 = 0x1F
 )
 
+// DATA_FIRST_MIDDLE / DATA_ONLY_LAST Data1 option bits ([IBM SC30-3587]
+// Table 5-24/5-25, layout B'rrrrxyzr'). A receiver acknowledges a
+// DATA_ONLY_LAST either with a DATA_ACK frame or — when the sender set
+// ACKNOWLEDGE_WITH_DATA_ALLOWED — with its own data frame carrying
+// ACKNOWLEDGE_INCLUDED and the sender's RSP correlator in XMIT correlator.
+const (
+	// DataAckIncluded (x) marks this data frame as also acknowledging the
+	// peer's DATA_ONLY_LAST; XMIT correlator holds that frame's RSP correlator.
+	DataAckIncluded uint8 = 0x08
+	// DataAckWithDataAllowed (y) permits the session partner to acknowledge
+	// this frame with a data frame (DataAckIncluded) instead of a DATA_ACK.
+	DataAckWithDataAllowed uint8 = 0x04
+	// DataNoAck (z) marks SEND.NO.ACK data: no acknowledgment is expected.
+	DataNoAck uint8 = 0x02
+)
+
 // IsSessionCommand reports whether cmd is a session-layer command (0x14–0x1F)
 // that uses the 14-byte session header with destination and source session
 // numbers instead of 16-byte names.
 func IsSessionCommand(cmd uint8) bool {
 	return cmd >= 0x14 && cmd <= 0x1F
+}
+
+// CommandName returns the NBF command mnemonic ("NAME_QUERY" etc.), or "0xNN" for an
+// unrecognised command. Diagnostics helper for debug/trace logging.
+func CommandName(cmd uint8) string {
+	switch cmd {
+	case CmdAddGroupNameQuery:
+		return "ADD_GROUP_NAME_QUERY"
+	case CmdAddNameQuery:
+		return "ADD_NAME_QUERY"
+	case CmdNameInConflict:
+		return "NAME_IN_CONFLICT"
+	case CmdStatusQuery:
+		return "STATUS_QUERY"
+	case CmdTerminateTraceRemote:
+		return "TERMINATE_TRACE_REMOTE"
+	case CmdDatagram:
+		return "DATAGRAM"
+	case CmdDatagramBroadcast:
+		return "DATAGRAM_BROADCAST"
+	case CmdNameQuery:
+		return "NAME_QUERY"
+	case CmdAddNameResponse:
+		return "ADD_NAME_RESPONSE"
+	case CmdNameRecognized:
+		return "NAME_RECOGNIZED"
+	case CmdStatusResponse:
+		return "STATUS_RESPONSE"
+	case CmdTerminateTraceLocal:
+		return "TERMINATE_TRACE_LOCAL"
+	case CmdDataAck:
+		return "DATA_ACK"
+	case CmdDataFirstMiddle:
+		return "DATA_FIRST_MIDDLE"
+	case CmdDataOnlyLast:
+		return "DATA_ONLY_LAST"
+	case CmdSessionConfirm:
+		return "SESSION_CONFIRM"
+	case CmdSessionEnd:
+		return "SESSION_END"
+	case CmdSessionInitialize:
+		return "SESSION_INITIALIZE"
+	case CmdNoReceive:
+		return "NO_RECEIVE"
+	case CmdReceiveOutstanding:
+		return "RECEIVE_OUTSTANDING"
+	case CmdReceiveContinue:
+		return "RECEIVE_CONTINUE"
+	case CmdSessionAlive:
+		return "SESSION_ALIVE"
+	default:
+		const digits = "0123456789ABCDEF"
+		return "0x" + string([]byte{digits[cmd>>4], digits[cmd&0x0F]})
+	}
 }
 
 // NonSessionHeaderLength is the total non-session NBF frame header length

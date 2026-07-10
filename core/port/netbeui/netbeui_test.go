@@ -357,6 +357,190 @@ func TestSessionCommandSentAsIFrame(t *testing.T) {
 	}
 }
 
+// llcSFrame builds a 4-byte-LLC supervisory frame (RR/RNR/REJ). ssap selects
+// command (0xF0) or response (0xF1); pf sets the P/F bit alongside N(R).
+func llcSFrame(dst, src [6]byte, ssap, ctrl0, nR byte, pf bool) []byte {
+	frame := make([]byte, ethHdrLen+4)
+	copy(frame[0:6], dst[:])
+	copy(frame[6:12], src[:])
+	frame[12], frame[13] = 0x00, 0x04
+	frame[14], frame[15] = 0xF0, ssap
+	frame[16] = ctrl0
+	frame[17] = nR << 1
+	if pf {
+		frame[17] |= 0x01
+	}
+	return frame
+}
+
+// sentIFrames returns the captured outbound I-frames' ctrl0 bytes (N(S)<<1),
+// in send order, skipping U- and S-frames.
+func (f *fakeFrameLink) sentIFrames() []byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []byte
+	for _, fr := range f.sent {
+		if len(fr) >= 18 && fr[14] == 0xF0 && fr[16]&0x01 == 0 {
+			out = append(out, fr[16])
+		}
+	}
+	return out
+}
+
+// establishAndSendTwo brings up an LLC2 connection (SABME→UA) and has the port
+// send two session-command I-frames (N(S)=0 and 1), returning the port.
+func establishAndSendTwo(t *testing.T, fl *fakeFrameLink, ourMAC, client [6]byte) *Port {
+	t.Helper()
+	fl.push(llcUFrame(ourMAC, client, 0x7F)) // SABME
+	c, _ := New(enabledModel(t), fl, ourMAC, newTestLogger())
+	c.Start(context.Background())
+	t.Cleanup(func() { c.Stop(context.Background()) })
+	waitFor(t, func() bool { return fl.sentCount() >= 1 }) // UA — conn exists
+
+	p := c.(*Port)
+	ack := &nbf.Frame{Command: nbf.CmdDataAck, DestNumber: 0x15, SourceNumber: 1}
+	dol := &nbf.Frame{Command: nbf.CmdDataOnlyLast, DestNumber: 0x15, SourceNumber: 1, Payload: []byte("\xffSMBresp")}
+	if err := p.Send(client, ack); err != nil {
+		t.Fatalf("Send ack: %v", err)
+	}
+	if err := p.Send(client, dol); err != nil {
+		t.Fatalf("Send dol: %v", err)
+	}
+	return p
+}
+
+// TestCheckpointPollRetransmitsUnacked reproduces the NT 3.51 netbeui.pcap
+// failure: the client's NIC dropped our second back-to-back I-frame (N(S)=1),
+// so the client checkpoint-polled with RR P N(R)=1 — and the port only echoed
+// RR, never retransmitting, so the SMB session hung until the client gave up.
+// The poll must now trigger retransmission of the outstanding I-frame.
+func TestCheckpointPollRetransmitsUnacked(t *testing.T) {
+	fl := &fakeFrameLink{}
+	ourMAC := [6]byte{0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE}
+	client := [6]byte{0x00, 0x00, 0xD8, 0x50, 0xAE, 0xD3}
+	establishAndSendTwo(t, fl, ourMAC, client)
+
+	// Client's recovery checkpoint: RR command, P=1, N(R)=1 (got 0, missed 1).
+	before := fl.sentCount()
+	fl.push(llcSFrame(ourMAC, client, 0xF0, 0x01, 1, true))
+	waitFor(t, func() bool { return fl.sentCount() >= before+2 })
+
+	fl.mu.Lock()
+	tail := fl.sent[before:]
+	fl.mu.Unlock()
+	var gotRR, gotRetransmit bool
+	for _, fr := range tail {
+		if fr[15] == 0xF1 && fr[16] == 0x01 { // RR response to the poll
+			gotRR = true
+		}
+		if fr[16]&0x01 == 0 && fr[16]>>1 == 1 { // I-frame N(S)=1 again
+			gotRetransmit = true
+		}
+		if fr[16]&0x01 == 0 && fr[16]>>1 == 0 {
+			t.Error("retransmitted acknowledged I-frame N(S)=0")
+		}
+	}
+	if !gotRR {
+		t.Error("no RR F=1 response to the checkpoint poll")
+	}
+	if !gotRetransmit {
+		t.Error("checkpoint poll with N(R)=1 did not retransmit I-frame N(S)=1")
+	}
+}
+
+// TestAckedIFramesNotRetransmitted: once the peer's N(R) has acknowledged
+// everything, a later checkpoint poll yields only an RR response.
+func TestAckedIFramesNotRetransmitted(t *testing.T) {
+	fl := &fakeFrameLink{}
+	ourMAC := [6]byte{0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE}
+	client := [6]byte{0x00, 0x00, 0xD8, 0x50, 0xAE, 0xD3}
+	establishAndSendTwo(t, fl, ourMAC, client)
+
+	// Delayed ack of both frames (RR response, F=0, N(R)=2)…
+	fl.push(llcSFrame(ourMAC, client, 0xF1, 0x01, 2, false))
+	// …then a checkpoint poll at the acked level.
+	fl.push(llcSFrame(ourMAC, client, 0xF0, 0x01, 2, true))
+
+	waitFor(t, func() bool {
+		fl.mu.Lock()
+		defer fl.mu.Unlock()
+		for _, fr := range fl.sent {
+			if fr[15] == 0xF1 && fr[16] == 0x01 { // RR response went out
+				return true
+			}
+		}
+		return false
+	})
+	if got := fl.sentIFrames(); len(got) != 2 {
+		t.Fatalf("I-frames on the wire = %d (ctrl0 % x), want 2 (no retransmits after full ack)", len(got), got)
+	}
+}
+
+// TestREJRetransmitsFromNR: a REJ S-frame is an immediate retransmit request.
+func TestREJRetransmitsFromNR(t *testing.T) {
+	fl := &fakeFrameLink{}
+	ourMAC := [6]byte{0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE}
+	client := [6]byte{0x00, 0x00, 0xD8, 0x50, 0xAE, 0xD3}
+	establishAndSendTwo(t, fl, ourMAC, client)
+
+	fl.push(llcSFrame(ourMAC, client, 0xF1, 0x09, 0, false)) // REJ N(R)=0: resend both
+	waitFor(t, func() bool { return len(fl.sentIFrames()) >= 4 })
+	got := fl.sentIFrames()
+	if len(got) < 4 || got[len(got)-2]>>1 != 0 || got[len(got)-1]>>1 != 1 {
+		t.Fatalf("I-frame ctrl0 sequence % x, want retransmission of N(S)=0 then N(S)=1", got)
+	}
+}
+
+// TestT1PollsAndRecovers: with no acknowledgment at all, the T1 reply timer
+// must checkpoint-poll (RR command, P=1), and the peer's RR F=1 response
+// reporting a stale N(R) must trigger retransmission.
+func TestT1PollsAndRecovers(t *testing.T) {
+	saved := llcT1
+	llcT1 = 25 * time.Millisecond
+	defer func() { llcT1 = saved }()
+
+	fl := &fakeFrameLink{}
+	ourMAC := [6]byte{0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE}
+	client := [6]byte{0x00, 0x00, 0xD8, 0x50, 0xAE, 0xD3}
+	establishAndSendTwo(t, fl, ourMAC, client)
+
+	// T1 must fire and poll: RR command (SSAP 0xF0), P=1.
+	waitFor(t, func() bool {
+		fl.mu.Lock()
+		defer fl.mu.Unlock()
+		for _, fr := range fl.sent {
+			if len(fr) >= 18 && fr[15] == 0xF0 && fr[16] == 0x01 && fr[17]&0x01 != 0 {
+				return true
+			}
+		}
+		return false
+	})
+
+	// Peer answers the poll: RR response F=1, N(R)=0 — it missed everything.
+	fl.push(llcSFrame(ourMAC, client, 0xF1, 0x01, 0, true))
+	waitFor(t, func() bool { return len(fl.sentIFrames()) >= 4 })
+	if got := fl.sentIFrames(); len(got) < 4 {
+		t.Fatalf("I-frames on the wire = %d (ctrl0 % x), want both retransmitted after RR F", len(got), got)
+	}
+}
+
+// TestT1GivesUpAfterN2: llcN2 unanswered polls drop the dead connection.
+func TestT1GivesUpAfterN2(t *testing.T) {
+	saved := llcT1
+	llcT1 = 5 * time.Millisecond
+	defer func() { llcT1 = saved }()
+
+	fl := &fakeFrameLink{}
+	ourMAC := [6]byte{0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE}
+	client := [6]byte{0x00, 0x00, 0xD8, 0x50, 0xAE, 0xD3}
+	p := establishAndSendTwo(t, fl, ourMAC, client)
+
+	waitFor(t, func() bool { return p.lookupConn(client) == nil })
+	if p.lookupConn(client) != nil {
+		t.Fatal("connection not dropped after N2 unanswered T1 polls")
+	}
+}
+
 func TestStopStartRestartable(t *testing.T) {
 	c, _ := New(enabledModel(t), &fakeFrameLink{}, [6]byte{}, newTestLogger())
 	ctx := context.Background()

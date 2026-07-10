@@ -42,12 +42,27 @@ const ipcShareName = "IPC$"
 // LOCKING_ANDX / MPX / raw-read-write paths, out of M7 scope) answers
 // STATUS_NOT_SUPPORTED so the client gets a definite reply; an unparseable frame
 // is dropped (nil) so a malformed packet cannot wedge the connection.
+//
+// When the primary command is an AndX command carrying chained secondaries
+// ([smb6.0] 988 "ANDX SMB Messages" — e.g. NT's SESSION_SETUP_ANDX →
+// TREE_CONNECT_ANDX), the chained commands are dispatched in turn and their
+// response blocks spliced into the single reply (andx.go).
 func (s *Service) Dispatch(sess *smbSession, req []byte) []byte {
 	h, err := protocol.DecodeHeader(req)
 	if err != nil {
 		return nil // not an SMB frame — drop it
 	}
+	resp := s.dispatchOne(sess, h, req)
+	if resp == nil || !isAndXRequest(h.Command) {
+		return resp
+	}
+	return s.processAndXChain(sess, h, req, resp)
+}
 
+// dispatchOne serves a single command block — the primary command of a message,
+// or one chained block re-framed by processAndXChain. h.Command selects the
+// handler (the header bytes in req are not re-decoded).
+func (s *Service) dispatchOne(sess *smbSession, h protocol.Header, req []byte) []byte {
 	switch h.Command {
 	case protocol.CommandNegotiate:
 		return s.handleNegotiate(sess, h, req)

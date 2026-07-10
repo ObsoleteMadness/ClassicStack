@@ -57,6 +57,14 @@ const (
 // DesiredAccess(4) AllocationSize(8) ExtFileAttributes(4) ShareAccess(4)
 // CreateDisposition(4) CreateOptions(4) ImpersonationLevel(4) SecurityFlags(1).
 func (s *Service) handleNtCreateAndX(sess *smbSession, h protocol.Header, req []byte) []byte {
+	if tc, ok := sess.tree(h.TID); ok && (tc.ipc || tc.share == nil) {
+		// An open on the IPC$ tree names an RPC pipe (\srvsvc, \wkssvc, …) we do
+		// not serve. Answer STATUS_OBJECT_NAME_NOT_FOUND ("no such pipe") so the
+		// client falls back to its RAP path; ACCESS_DENIED here is surfaced
+		// verbatim to the user by the NT redirector ("Access denied" connecting
+		// any share — netbeui.pcap frames 189/190, NT 3.51 probing \srvsvc).
+		return errResponse(h, statusObjectNameNotFound)
+	}
 	sh, st := s.treeFor(sess, h)
 	if st != statusSuccess {
 		return errResponse(h, st)
