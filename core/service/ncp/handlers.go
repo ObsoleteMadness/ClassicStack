@@ -14,8 +14,41 @@ package ncp
 // the NetWare-hashed credential can validate the shuffle exactly.
 
 import (
+	"strings"
 	"time"
+
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 )
+
+// maxRWBufferSize is the largest read/write buffer the server accepts in
+// Negotiate Buffer Size, matching mars_nwe's Ethernet RW_BUFFERSIZE
+// (include/net.h); the reply to a capped read must still fit one IPX datagram.
+const maxRWBufferSize uint16 = 1024
+
+// negotiateBufferSize answers fnNegotiateBuffer (0x21): the request carries the
+// client's proposed buffer/packet size (2 BE), the reply is the accepted size
+// (2 BE) = min(maxRWBufferSize, proposed). Per mars_nwe (nwconn.c case 0x21) a
+// proposal below 512 is nonsense some clients send (Atari ST PAM's Net/E) and is
+// ignored — the reply then re-states the connection's current size.
+func (cn *Conn) negotiateBufferSize(body []byte) ([]byte, error) {
+	cn.c.mu.Lock()
+	if cn.c.rwBufferSize == 0 {
+		cn.c.rwBufferSize = maxRWBufferSize
+	}
+	var proposed uint16
+	if len(body) >= 2 {
+		if proposed = uint16(body[0])<<8 | uint16(body[1]); proposed >= 512 {
+			cn.c.rwBufferSize = min(maxRWBufferSize, proposed)
+		}
+	}
+	accepted := cn.c.rwBufferSize
+	cn.c.mu.Unlock()
+	cn.svc.logging.Log(log.Debug, "NCP negotiate buffer size",
+		log.Int("proposed", int64(proposed)),
+		log.Int("accepted", int64(accepted)),
+		log.Int("conn", int64(cn.c.number)))
+	return appendU16(nil, accepted), nil
+}
 
 // getServerDateTime answers fnGetServerDateTime (0x14): 7 bytes —
 // year(since 1900), month, day, hour, minute, second, day-of-week.
@@ -96,55 +129,54 @@ func (cn *Conn) getLoginKey() ([]byte, error) {
 // the response hash, and the length-prefixed object name.
 func (cn *Conn) loginEncrypted(args []byte) ([]byte, error) {
 	user := parseEncryptedLoginUser(args)
-	cn.c.mu.Lock()
-	cn.c.user = user
-	cn.c.loggedIn = true
-	cn.c.mu.Unlock()
+	cn.recordLogin(user)
 	cn.svc.counters.loginsOK.Add(1)
+	cn.svc.logging.Log(log.Info, "NCP keyed login granted (guest-equivalent)",
+		log.Str("user", user), log.Int("conn", int64(cn.c.number)))
 	cn.svc.pushStats()
 	return nil, nil
 }
 
-// getLoginUserID answers Get connection's logged identity (0x17/0x15): a 4-byte
-// bindery object id (we report 1 for a logged-in connection, 0 otherwise) and the
-// 48-byte object name.
-func (cn *Conn) getLoginUserID() ([]byte, error) {
+// recordLogin marks the connection logged in as user, binding it to the
+// resolved bindery identity (GUEST for empty/unknown names) and stamping the
+// login time the connection-information family reports.
+func (cn *Conn) recordLogin(user string) {
+	id, typ := cn.svc.loginObjectFor(user)
 	cn.c.mu.Lock()
-	user := cn.c.user
-	logged := cn.c.loggedIn
+	cn.c.user = user
+	cn.c.loggedIn = true
+	cn.c.objectID = id
+	cn.c.objectType = typ
+	cn.c.loginTime = time.Now()
 	cn.c.mu.Unlock()
-	out := make([]byte, 0, 4+48)
-	if logged {
-		out = appendU32(out, 1)
-	} else {
-		out = appendU32(out, 0)
-	}
-	var nameField [48]byte
-	copy(nameField[:], user)
-	out = append(out, nameField[:]...)
-	return out, nil
 }
 
 // grantLogin validates a cleartext credential (when an Authenticator is wired and
 // the volume is not world-open) and records the login on the connection. With no
-// Authenticator wired it grants a guest login (the compatibility default).
+// Authenticator wired it grants a guest login (the compatibility default). GUEST
+// — and an unnamed login — is ALWAYS granted, even with an Authenticator wired:
+// the NetWare convention (mars_nwe's standard bindery) is a passwordless GUEST
+// account, and vintage clients attach as GUEST when no user is specified.
 func (cn *Conn) grantLogin(user, pass string) ([]byte, error) {
 	cn.svc.mu.Lock()
 	auth := cn.svc.auth
 	cn.svc.mu.Unlock()
 
-	if auth != nil && user != "" {
+	guest := user == "" || strings.EqualFold(user, "GUEST")
+	if auth != nil && !guest {
 		ok, err := auth.Authenticate(user, pass)
 		if err != nil || !ok {
 			cn.svc.counters.loginsFailed.Add(1)
+			cn.svc.logging.Log(log.Info, "NCP login denied",
+				log.Str("user", user), log.Int("conn", int64(cn.c.number)))
 			return nil, errAccessDenied
 		}
 	}
-	cn.c.mu.Lock()
-	cn.c.user = user
-	cn.c.loggedIn = true
-	cn.c.mu.Unlock()
+	cn.recordLogin(user)
 	cn.svc.counters.loginsOK.Add(1)
+	cn.svc.logging.Log(log.Info, "NCP login granted",
+		log.Str("user", user), log.Bool("guest", guest),
+		log.Int("conn", int64(cn.c.number)))
 	cn.svc.pushStats()
 	return nil, nil
 }

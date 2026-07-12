@@ -100,9 +100,28 @@ func TestSAP_AnswersGeneralQueryByType(t *testing.T) {
 	}
 }
 
-// TestSAP_WildcardQueryReturnsAll proves a wildcard query returns every registered
-// entry.
+// TestSAP_WildcardQueryReturnsAll proves a wildcard GENERAL query returns every
+// registered entry. (A nearest query returns exactly one — see below.)
 func TestSAP_WildcardQueryReturnsAll(t *testing.T) {
+	a, s := newAdv()
+	a.Register(ncpproto.SAPEntry{Type: ncpproto.SAPServerTypeFileServer, Name: "NWSERVER", Socket: ncpproto.NCPSocket})
+	a.Register(ncpproto.SAPEntry{Type: ncpproto.SAPServerTypeNetBIOS, Name: "CLASSICSTACK", Socket: [2]byte{0x04, 0x55}})
+
+	query := []byte{0x00, 0x01, 0xFF, 0xFF} // general query, wildcard type
+	a.HandleDatagram(&ipxproto.Datagram{Payload: query})
+	if len(s.sent) != 1 {
+		t.Fatalf("wildcard query answered with %d datagrams, want 1", len(s.sent))
+	}
+	if entries := decodeEntries(t, s.sent[0].Payload); len(entries) != 2 {
+		t.Fatalf("wildcard answer carried %d entries, want 2", len(entries))
+	}
+}
+
+// TestSAP_NearestResponseSingleEntry proves a nearest query is answered with exactly
+// ONE entry even when several match — the client attaches to it (mars_nwe
+// send_server_response picks a single best server; a real NetWare 4 server answers
+// GetNearestServer with one entry too).
+func TestSAP_NearestResponseSingleEntry(t *testing.T) {
 	a, s := newAdv()
 	a.Register(ncpproto.SAPEntry{Type: ncpproto.SAPServerTypeFileServer, Name: "NWSERVER", Socket: ncpproto.NCPSocket})
 	a.Register(ncpproto.SAPEntry{Type: ncpproto.SAPServerTypeNetBIOS, Name: "CLASSICSTACK", Socket: [2]byte{0x04, 0x55}})
@@ -110,10 +129,10 @@ func TestSAP_WildcardQueryReturnsAll(t *testing.T) {
 	query := []byte{0x00, 0x03, 0xFF, 0xFF} // nearest query, wildcard type
 	a.HandleDatagram(&ipxproto.Datagram{Payload: query})
 	if len(s.sent) != 1 {
-		t.Fatalf("wildcard query answered with %d datagrams, want 1", len(s.sent))
+		t.Fatalf("nearest query answered with %d datagrams, want 1", len(s.sent))
 	}
-	if entries := decodeEntries(t, s.sent[0].Payload); len(entries) != 2 {
-		t.Fatalf("wildcard answer carried %d entries, want 2", len(entries))
+	if entries := decodeEntries(t, s.sent[0].Payload); len(entries) != 1 {
+		t.Fatalf("nearest answer carried %d entries, want exactly 1", len(entries))
 	}
 }
 

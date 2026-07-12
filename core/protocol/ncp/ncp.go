@@ -44,14 +44,17 @@ const (
 const (
 	CompletionSuccess       uint8 = 0x00 // operation succeeded
 	CompletionConnNotLogged uint8 = 0x7C // connection not logged in
-	CompletionNoSuchObject  uint8 = 0x96 // bindery object not found
-	CompletionInvalidConn   uint8 = 0x9B // bad connection number / station
+	CompletionNoSuchObject  uint8 = 0xFC // bindery: no such object (mars_nwe -0xfc)
+	CompletionNoSuchVolume  uint8 = 0x98 // volume does not exist (mars_nwe -0x98)
+	CompletionInvalidConn   uint8 = 0x9B // bad connection number / station / dir handle
+	CompletionBadStation    uint8 = 0xFD // bad station (target connection) number (mars_nwe 0xfd)
 	CompletionNoFiles       uint8 = 0x9C // no more matching files (scan end)
 	CompletionInvalidPath   uint8 = 0x9C // invalid path (shares 0x9C in NetWare)
 	CompletionNoSuchFile    uint8 = 0xFF // file/dir not found (generic failure)
 	CompletionFuncNotSupp   uint8 = 0xFB // requested function not supported
 	CompletionLockFail      uint8 = 0xFE // lock / busy
 	CompletionAccessDenied  uint8 = 0x8C // no privileges / access denied
+	CompletionBadNameSpace  uint8 = 0xBF // invalid name space (mars_nwe's AFP-calls reply)
 )
 
 // Connection-status bits (the reply header's ConnectionStatus byte). Bit 0x40

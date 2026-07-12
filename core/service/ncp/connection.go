@@ -1,6 +1,7 @@
 package ncp
 
 import (
+	"fmt"
 	"sync"
 	"time"
 )
@@ -33,6 +34,12 @@ type endpoint struct {
 	node [6]byte
 }
 
+// String renders the endpoint in the conventional IPX net.node form
+// (e.g. "00000000.02608c531b97") for the diagnostic logs.
+func (ep endpoint) String() string {
+	return fmt.Sprintf("%x.%x", ep.net, ep.node)
+}
+
 // dirHandle is one allocated directory handle: the volume it is bound to and the
 // store path (the seam's '/'-separated form) it currently points at. NetWare
 // clients allocate a handle, set it to a directory, then issue path operations
@@ -56,8 +63,21 @@ type openFile struct {
 type connection struct {
 	number   uint16
 	ep       endpoint
-	user     string // logged-in bindery user; "" = not logged in (guest)
+	sock     [2]byte // client's IPX socket (Get Connection Internet Address reports it)
+	user     string  // logged-in bindery user; "" = not logged in (guest)
 	loggedIn bool
+
+	// The logged-in bindery identity + login instant, reported by the
+	// connection-information family (0x17/0x16, 0x17/0x1C — mars_nwe nwbind.c).
+	// objectID 0 = not logged in.
+	objectID   uint32
+	objectType uint16
+	loginTime  time.Time
+
+	// rwBufferSize is the Negotiate Buffer Size (0x21) result for this
+	// connection (mars_nwe's rw_buffer_size); 0 = not yet negotiated
+	// (treated as maxRWBufferSize).
+	rwBufferSize uint16
 
 	mu       sync.Mutex
 	dirs     map[uint8]*dirHandle
@@ -80,6 +100,26 @@ func (c *connection) AllocDir(vol *Volume, path string) uint8 {
 	id := c.nextDir
 	c.dirs[id] = &dirHandle{volume: vol, path: path}
 	return id
+}
+
+// SeedDir installs a well-known directory handle (the connection-init LOGIN
+// handle) and keeps AllocDir from reusing its id.
+func (c *connection) SeedDir(id uint8, vol *Volume, path string) {
+	c.mu.Lock()
+	c.dirs[id] = &dirHandle{volume: vol, path: path}
+	if c.nextDir < id {
+		c.nextDir = id
+	}
+	c.mu.Unlock()
+}
+
+// SetDir rebinds directory handle id to vol at path, creating the handle when the
+// client names one it never allocated (Set Directory Handle 0x16/0x00 retargets a
+// client-held handle in place — DOS shells SET handles they were given at login).
+func (c *connection) SetDir(id uint8, vol *Volume, path string) {
+	c.mu.Lock()
+	c.dirs[id] = &dirHandle{volume: vol, path: path}
+	c.mu.Unlock()
 }
 
 // Dir returns the directory handle for id, if allocated.
@@ -174,7 +214,7 @@ func newConnTable() *connTable {
 // it. A retransmitted create-connection from a station that already holds a
 // connection returns the existing one (idempotent). Returns nil,false when the
 // connection cap is reached.
-func (t *connTable) Create(net [4]byte, node [6]byte) (*connection, bool) {
+func (t *connTable) Create(net [4]byte, node [6]byte, sock [2]byte) (*connection, bool) {
 	ep := endpoint{net: net, node: node}
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -189,6 +229,7 @@ func (t *connTable) Create(net [4]byte, node [6]byte) (*connection, bool) {
 	c := &connection{
 		number:   num,
 		ep:       ep,
+		sock:     sock,
 		dirs:     make(map[uint8]*dirHandle),
 		bases:    make(map[uint32]*dirHandle),
 		files:    make(map[uint16]*openFile),
@@ -222,6 +263,16 @@ func (t *connTable) ByNumber(num uint16) (*connection, bool) {
 	if ok {
 		c.touch()
 	}
+	return c, ok
+}
+
+// Peek returns the connection with the given number, if live, WITHOUT touching
+// its idle clock — for the connection-information family, where one station asks
+// about another and must not keep it alive.
+func (t *connTable) Peek(num uint16) (*connection, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	c, ok := t.byNum[num]
 	return c, ok
 }
 

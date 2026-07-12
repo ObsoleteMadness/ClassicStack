@@ -256,7 +256,7 @@ func Build(opts Options) (*Runtime, error) {
 	// service is a no-op. The returned wiring is retained so a port added at RUNTIME
 	// can be attached to its mini-router (SetTransportAttacher, below) and so the
 	// MacIP egress lifecycle can be driven from Start/Stop.
-	transports := crossWireTransports(comps, opts.MacIPEgress)
+	transports := crossWireTransports(comps, opts.MacIPEgress, ctx.Logger)
 
 	// Wire the user store (§4): build the configured store once and hand it to the
 	// supervisor (the web UI's user CRUD surface) AND to every built file service as

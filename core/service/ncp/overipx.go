@@ -21,6 +21,7 @@ package ncp
 import (
 	"sync"
 
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	ipxproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx"
 	ncpproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ncp"
 )
@@ -54,6 +55,11 @@ type OverIPX struct {
 	// through which NCP and NB-IPX both advertise — the transport keeps only the handle
 	// so it never owns the SAP socket.
 	sap sapHandle
+
+	// rip is the optional RIP responder handle (set by SetRIP): the socket-0x0453
+	// route answerer that makes the SAP-advertised internal network reachable (the
+	// client's GetLocalTarget step). Held only for teardown, like sap.
+	rip sapHandle
 }
 
 // sapHandle is the minimal SAP-advertiser surface the NCP transport needs: stop it on
@@ -113,15 +119,20 @@ func (t *OverIPX) HandleDatagram(d *ipxproto.Datagram) {
 // handleCreate allocates (or reuses) the endpoint's service connection and replies
 // with the assigned number.
 func (t *OverIPX) handleCreate(d *ipxproto.Datagram, ep endpoint, req *ncpproto.RequestHeader) {
-	c, ok := t.svc.conns.Create(ep.net, ep.node)
+	c, ok := t.svc.conns.Create(ep.net, ep.node, d.SrcSock)
 	if !ok {
 		// Connection cap reached: reply with an error completion and conn 0.
+		t.svc.logging.Log(log.Warn, "NCP create connection refused (connection cap reached)",
+			log.Str("client", ep.String()))
 		t.reply(d, ncpproto.Reply(req, 0, ncpproto.CompletionInvalidConn), nil)
 		return
 	}
+	t.svc.seedLoginDir(c)
 	t.mu.Lock()
 	t.conns[ep] = t.svc.NewConn(c)
 	t.mu.Unlock()
+	t.svc.logging.Log(log.Debug, "NCP create connection",
+		log.Int("conn", int64(c.number)), log.Str("client", ep.String()))
 	t.svc.pushStats()
 
 	r := ncpproto.Reply(req, c.number, ncpproto.CompletionSuccess)
@@ -135,6 +146,8 @@ func (t *OverIPX) handleDestroy(d *ipxproto.Datagram, ep endpoint, req *ncpproto
 	num := req.ConnectionNumber()
 	if c, ok := t.svc.conns.Destroy(num); ok {
 		closeConnFiles(c)
+		t.svc.logging.Log(log.Debug, "NCP destroy connection",
+			log.Int("conn", int64(num)), log.Str("client", ep.String()))
 	}
 	t.mu.Lock()
 	delete(t.conns, ep)
@@ -151,6 +164,8 @@ func (t *OverIPX) handleRequest(d *ipxproto.Datagram, ep endpoint, req *ncpproto
 	cn := t.conns[ep]
 	t.mu.Unlock()
 	if cn == nil {
+		t.svc.logging.Log(log.Debug, "NCP request from unknown endpoint (no create-connection seen)",
+			log.Str("client", ep.String()))
 		t.reply(d, ncpproto.Reply(req, req.ConnectionNumber(), ncpproto.CompletionInvalidConn), nil)
 		return
 	}
@@ -159,7 +174,11 @@ func (t *OverIPX) handleRequest(d *ipxproto.Datagram, ep endpoint, req *ncpproto
 }
 
 // reply marshals the NCP reply header + body and sends it back to the datagram's
-// source endpoint on the NCP socket.
+// source endpoint on the NCP socket. The reply is sourced from the address the
+// request targeted: the client attaches to the SAP-advertised internal-network
+// address (internal-net:00-00-00-00-00-01) and matches replies against it, so
+// answering from the wire identity instead would be discarded (a real NetWare 4
+// server sources NCP replies from its internal address the same way).
 func (t *OverIPX) reply(in *ipxproto.Datagram, hdr ncpproto.ReplyHeader, body []byte) {
 	payload := hdr.Marshal(make([]byte, 0, ncpproto.ReplyHeaderLen+len(body)))
 	payload = append(payload, body...)
@@ -169,6 +188,8 @@ func (t *OverIPX) reply(in *ipxproto.Datagram, hdr ncpproto.ReplyHeader, body []
 		DstNet:  in.SrcNet,
 		DstNode: in.SrcNode,
 		DstSock: in.SrcSock,
+		SrcNet:  in.DstNet,
+		SrcNode: in.DstNode,
 		SrcSock: ncpproto.NCPSocket,
 		Payload: payload,
 	}
@@ -205,9 +226,13 @@ func (t *OverIPX) closeCircuits() {
 	t.mu.Lock()
 	t.conns = make(map[endpoint]*Conn)
 	sap := t.sap
+	rip := t.rip
 	t.mu.Unlock()
 	if sap != nil {
 		sap.Stop()
+	}
+	if rip != nil {
+		rip.Stop()
 	}
 }
 
@@ -218,6 +243,15 @@ func (t *OverIPX) closeCircuits() {
 func (t *OverIPX) SetSAP(sap sapHandle) {
 	t.mu.Lock()
 	t.sap = sap
+	t.mu.Unlock()
+}
+
+// SetRIP installs the RIP responder handle the transport stops on teardown (set
+// during compose cross-wiring; the responder itself lives in core/service/rip and
+// answers on socket 0x0453).
+func (t *OverIPX) SetRIP(rip sapHandle) {
+	t.mu.Lock()
+	t.rip = rip
 	t.mu.Unlock()
 }
 

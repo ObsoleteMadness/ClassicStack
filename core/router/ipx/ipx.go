@@ -26,6 +26,25 @@ import (
 // NetBIOS-over-IPX name claims.
 var BroadcastNode = [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
 
+// InternalNode is the node ID of the server on its internal network. NetWare's internal
+// network always hosts the server at node 00-00-00-00-00-01 (mars_nwe nwserv.c: node
+// defaults to 1; a real NetWare 4 server advertises the same). SAP advertises the NCP
+// file service at internal-net:InternalNode:0x0451.
+var InternalNode = [6]byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x01}
+
+// DeriveInternalNetwork returns the default NetWare internal network number for a
+// station: the low four bytes of its node ID. The internal network must be nonzero
+// and unique on the internetwork; deriving it from the (unique) hardware address is
+// the same spirit as mars_nwe's AUTO mode, which derives it from the host's IP
+// address. A node whose low bytes are all zero falls back to a fixed nonzero number.
+func DeriveInternalNetwork(node [6]byte) [4]byte {
+	net := [4]byte{node[2], node[3], node[4], node[5]}
+	if net == ([4]byte{}) {
+		return [4]byte{0x00, 0x00, 0x00, 0x01}
+	}
+	return net
+}
+
 // DefaultNetwork is the fall-back IPX network number when the operator has not configured one.
 // All-zeros ("local segment, unknown") matches what Win98/NWLink uses before a NetWare server
 // assigns a real number, so ClassicStack and its clients appear on the same segment.
@@ -55,14 +74,15 @@ type NodeHandler interface {
 // Router dispatches inbound IPX datagrams to socket/node/broadcast handlers and fills source
 // addresses on outbound datagrams. Implementations are safe for concurrent use.
 type Router struct {
-	logger    log.Logger
-	mu        sync.RWMutex
-	network   [4]byte
-	node      [6]byte
-	sockets   map[[2]byte]SocketHandler
-	nodes     map[[6]byte]NodeHandler
-	broadcast NodeHandler
-	ports     []Port
+	logger      log.Logger
+	mu          sync.RWMutex
+	network     [4]byte
+	node        [6]byte
+	internalNet [4]byte // NetWare internal network (zero = none); see SetInternalIdentity
+	sockets     map[[2]byte]SocketHandler
+	nodes       map[[6]byte]NodeHandler
+	broadcast   NodeHandler
+	ports       []Port
 }
 
 // NewRouter returns a router with the default network number and a zero node ID. Callers
@@ -96,6 +116,24 @@ func (r *Router) Node() [6]byte {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.node
+}
+
+// SetInternalNetwork configures the NetWare internal network number. The server is
+// addressable on it as internal-net:InternalNode (the NCP file service's advertised
+// address, mars_nwe's my_server_adr): inbound datagrams so addressed pass the
+// destination filter and dispatch by socket as usual. Zero disables the internal
+// network (the default).
+func (r *Router) SetInternalNetwork(network [4]byte) {
+	r.mu.Lock()
+	r.internalNet = network
+	r.mu.Unlock()
+}
+
+// InternalNetwork returns the configured NetWare internal network number (zero = none).
+func (r *Router) InternalNetwork() [4]byte {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.internalNet
 }
 
 // RegisterSocket attaches handler to inbound datagrams whose destination socket matches.
@@ -208,20 +246,28 @@ func (r *Router) Inbound(d *protocol.Datagram) {
 }
 
 // acceptsDest reports whether (network, node) matches the router's identity or is a broadcast.
-// Network 0 ("local segment, unknown") is accepted because some clients send name-claim
-// broadcasts that way before learning the network number.
+// Broadcast-node datagrams are accepted regardless of destination network: we serve every
+// segment the port hears, and a client that has learned a real wire network number (e.g. from
+// a coexisting NetWare server's RIP/SAP) addresses its broadcasts to that net — a SAP
+// GetNearestServer so addressed must still reach the advertiser. For unicast, network 0
+// ("local segment, unknown") is accepted alongside our own network, and the NetWare internal
+// address (internal-net:InternalNode) is accepted when an internal network is configured.
 func (r *Router) acceptsDest(network [4]byte, node [6]byte) bool {
 	r.mu.RLock()
 	ours := r.network
 	myNode := r.node
+	internal := r.internalNet
 	_, claimed := r.nodes[node]
 	r.mu.RUnlock()
 
-	if !isZero4(network) && network != ours {
-		return false
-	}
 	if node == BroadcastNode {
 		return true
+	}
+	if !isZero4(internal) && network == internal && node == InternalNode {
+		return true
+	}
+	if !isZero4(network) && network != ours {
+		return false
 	}
 	return node == myNode || claimed
 }

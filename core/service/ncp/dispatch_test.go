@@ -23,7 +23,7 @@ func newTestService(t *testing.T) (*Service, *Conn) {
 	}}); err != nil {
 		t.Fatalf("ReconcileVolumes: %v", err)
 	}
-	c, ok := svc.conns.Create([4]byte{0, 0, 0, 1}, [6]byte{1, 2, 3, 4, 5, 6})
+	c, ok := svc.conns.Create([4]byte{0, 0, 0, 1}, [6]byte{1, 2, 3, 4, 5, 6}, [2]byte{0x40, 0x02})
 	if !ok {
 		t.Fatal("Create connection failed")
 	}
@@ -93,9 +93,9 @@ func TestEndToEnd_OpenWriteReadClose(t *testing.T) {
 	}
 
 	// Allocate a directory handle at the volume root. mars_nwe alloc args (after the
-	// subfunction byte): src-handle, two flag bytes, then the VOL: path (not
-	// length-prefixed — runs to the end of the request).
-	allocArgs := append([]byte{0 /*src handle*/, 0, 0 /*flags*/}, []byte("SYS:")...)
+	// subfunction byte): src-handle(1), drive letter(1), then the length-prefixed
+	// "VOL:" path.
+	allocArgs := append([]byte{0 /*src handle*/, 0 /*drive*/}, byteStr("SYS:")...)
 	completion, body := cn.ServeRequest(req(fnDirServices, mux(sf16AllocPermDir, allocArgs)))
 	if completion != ncpproto.CompletionSuccess || len(body) < 1 {
 		t.Fatalf("alloc dir handle: completion=%#x body=%v", completion, body)

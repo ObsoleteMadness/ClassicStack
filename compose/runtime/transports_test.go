@@ -69,7 +69,7 @@ func TestCrossWireTransports_NetBEUIToSMB(t *testing.T) {
 		browser.Name: br,
 	}
 
-	crossWireTransports(comps, nil)
+	crossWireTransports(comps, nil, nil)
 
 	// AddPort must have installed the inbound delivery callback on the port.
 	if port.cb == nil {
@@ -142,7 +142,7 @@ func TestCrossWireTransports_DirectIPXWithoutNetBIOS(t *testing.T) {
 		"IPX":    port,
 	}
 
-	crossWireTransports(comps, nil)
+	crossWireTransports(comps, nil, nil)
 
 	if port.cb == nil {
 		t.Fatal("direct-IPX without NetBIOS did not attach the IPX port (no delivery callback) — the mini-router was not built off the SMB consumer")
@@ -165,7 +165,7 @@ func TestTransportWiring_AttachPortNetBEUILate(t *testing.T) {
 		netbios.Name: nb,
 		smb.Name:     sm,
 	}
-	w := crossWireTransports(comps, nil)
+	w := crossWireTransports(comps, nil, nil)
 	if w.netbeui == nil {
 		t.Fatal("NetBEUI mini-router was not built with zero ports — a late port would have nowhere to attach")
 	}
@@ -200,7 +200,7 @@ func TestTransportWiring_AttachPortIPXLate(t *testing.T) {
 	sm := smb.New(nil)
 	comps := map[string]component.Component{smb.Name: sm}
 
-	w := crossWireTransports(comps, nil)
+	w := crossWireTransports(comps, nil, nil)
 	if w.ipx == nil {
 		t.Fatal("IPX mini-router was not built off the SMB consumer with zero ports")
 	}
@@ -216,7 +216,7 @@ func TestTransportWiring_AttachPortIPXLate(t *testing.T) {
 // transport was wired (no NetBIOS/SMB consumer): the wiring holds nil mini-routers, so a
 // late port is simply left alone rather than attached to a phantom router.
 func TestTransportWiring_AttachPortNoRouters(t *testing.T) {
-	w := crossWireTransports(map[string]component.Component{}, nil)
+	w := crossWireTransports(map[string]component.Component{}, nil, nil)
 	if w.ipx != nil || w.netbeui != nil {
 		t.Fatal("mini-routers built with no consumer to drive them")
 	}
@@ -261,7 +261,7 @@ func TestCrossWireTransports_NoNetBIOS(t *testing.T) {
 	port := &recordingNetBEUIPort{}
 	comps := map[string]component.Component{"NetBEUI": port}
 
-	crossWireTransports(comps, nil)
+	crossWireTransports(comps, nil, nil)
 
 	if port.cb != nil {
 		t.Fatal("cross-wire attached a NetBEUI port with no NetBIOS service to feed")

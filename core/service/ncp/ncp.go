@@ -65,11 +65,11 @@ type Authenticator interface {
 // seam and a table of client service-connections; it holds no storage-layout
 // knowledge itself.
 type Service struct {
-	logger log.Logger
-	vols   []*Volume
-	server string // NetWare server name (the §4-bis identity hostname); upper-cased
-	desc   string // server description (the §4-bis identity description); optional
-	auth   Authenticator
+	logging log.Logger // established at construction, never nil; sinks own level filtering
+	vols    []*Volume
+	server  string // NetWare server name (the §4-bis identity hostname); upper-cased
+	desc    string // server description (the §4-bis identity description); optional
+	auth    Authenticator
 
 	conns *connTable
 
@@ -90,9 +90,14 @@ type Service struct {
 // on Stop so no file handles leak. *OverIPX satisfies it.
 type circuitCloser interface{ closeCircuits() }
 
-// New builds the NCP service with no volumes (the registry default).
+// New builds the NCP service with no volumes (the registry default). The logger
+// is established here, at configure time; a nil logger becomes a sink-less no-op
+// so call sites log unconditionally and the sinks decide what is emitted.
 func New(logger log.Logger) *Service {
-	s := &Service{logger: logger, conns: newConnTable()}
+	if logger == nil {
+		logger = log.New(Name)
+	}
+	s := &Service{logging: logger, conns: newConnTable()}
 	// §10d reactor: deliver foreign-origin FS mutations under one of our volumes to
 	// the NCP wire-push sink. NCP (like classic AFP) has no per-directory async push
 	// on the wire, so the sink is count-only for now — a clean hook a later slice
@@ -333,7 +338,7 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 	s.running = true
 	s.subscribeReactorLocked()
-	s.logf("NCP service started (NetWare 3.x bindery; NCP over IPX socket 0x0451)")
+	s.logging.Log0(log.Info, "NCP service started (NetWare 3.x bindery; NCP over IPX socket 0x0451)")
 	return nil
 }
 
@@ -382,16 +387,8 @@ func (s *Service) Stop(ctx context.Context) error {
 	for _, v := range vols {
 		_ = v.Close()
 	}
-	s.logf("NCP service stopped")
+	s.logging.Log0(log.Info, "NCP service stopped")
 	return nil
-}
-
-// logf emits one info line through the logger if configured.
-func (s *Service) logf(msg string) {
-	if s.logger == nil || !s.logger.Enabled(log.Info) {
-		return
-	}
-	s.logger.Log1(log.Info, msg, log.Str("scope", Name))
 }
 
 // compile-time assertions.

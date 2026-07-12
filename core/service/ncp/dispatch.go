@@ -17,10 +17,13 @@ package ncp
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"time"
 
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	ncpproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ncp"
 )
 
@@ -29,11 +32,13 @@ import (
 const (
 	fnFileSearchInit     uint8 = 0x3E // begin a directory scan
 	fnFileSearchContinue uint8 = 0x3F // continue a directory scan
+	fnSearchForFile      uint8 = 0x40 // Search for a File (FCB-era search, one call per entry)
 	fnOpenForRead        uint8 = 0x41 // open file for reading
 	fnCloseFile          uint8 = 0x42 // close file
 	fnCreateFile         uint8 = 0x43 // create file, overwrite if exists
 	fnEraseFile          uint8 = 0x44 // erase/delete file
-	fnRenameFile         uint8 = 0x45 // rename file (0x46 is set-attributes, NOT rename)
+	fnRenameFile         uint8 = 0x45 // rename file
+	fnSetFileAttributes  uint8 = 0x46 // set file attributes
 	fnGetFileSize        uint8 = 0x47 // seek to end, return file size
 	fnReadFile           uint8 = 0x48 // read file
 	fnWriteFile          uint8 = 0x49 // write file
@@ -42,9 +47,38 @@ const (
 	fnDirServices        uint8 = 0x16 // multiplexed dir-handle / volume services
 	fnConnBindery        uint8 = 0x17 // multiplexed connection/bindery services
 	fnNameSpace          uint8 = 0x57 // name-space family (OS/2 & Mac long names); subfn at body[0]
+	fnGetVolInfoNumber   uint8 = 0x12 // Get Volume Info with Number
+	fnGetStationNumber   uint8 = 0x13 // Get Station Number (connection number)
 	fnGetServerDateTime  uint8 = 0x14 // get file-server date/time
 	fnEndOfJob           uint8 = 0x18 // end of job
 	fnLogout             uint8 = 0x19 // logout
+	fnNegotiateBuffer    uint8 = 0x21 // Negotiate Buffer Size (max read/write packet)
+	fnTTS                uint8 = 0x22 // Transaction Tracking System family; subfn at body[0]
+	fnAFP                uint8 = 0x23 // AFP-namespace family (answered CompletionBadNameSpace)
+	fnCommitFile         uint8 = 0x3B // commit file to disk
+	fnCommitFile2        uint8 = 0x3D // commit file (older form)
+)
+
+// Synchronization (log/lock/release/clear) function codes — mars_nwe nwconn.c
+// cases 0x3..0xe and the physical-record calls. ClassicStack keeps no
+// cross-connection lock manager: the whole family is acknowledged as granted
+// (grantLock), the same practical posture the SMB service takes. 0x04 (Lock File
+// Set) and 0x0C (Release Logical Record) are NOT accepted — mars_nwe leaves both
+// to its unsupported default and clients tolerate 0xFB there.
+const (
+	fnLogFile             uint8 = 0x03 // log (and optionally lock) a file
+	fnReleaseFile         uint8 = 0x05 // release a file lock (keep it logged)
+	fnReleaseFileSet      uint8 = 0x06 // release every file lock in the set
+	fnClearFile           uint8 = 0x07 // clear a file from the log set
+	fnClearFileSet        uint8 = 0x08 // clear the whole file log set
+	fnLogLogicalRecord    uint8 = 0x09 // log (and optionally lock) a logical record
+	fnLogLogicalRecordSet uint8 = 0x0A // lock the logged logical-record set
+	fnClearLogicalRecord  uint8 = 0x0B // clear a logical record
+	fnReleaseLogRecordSet uint8 = 0x0D // release the logical-record set
+	fnClearLogRecordSet   uint8 = 0x0E // clear the logical-record set
+	fnLogPhysicalRecord   uint8 = 0x1A // log/lock a physical byte range of an open file
+	fnClearPhysicalRecord uint8 = 0x1E // clear a physical byte-range lock
+	fnClearPhysRecordSet  uint8 = 0x1F // clear the physical-record set (mars_nwe: dummy)
 )
 
 // Subfunctions of fnConnBindery (0x17). Get-server-info / bindery-access / login
@@ -52,20 +86,41 @@ const (
 const (
 	sf17GetServerInfo    uint8 = 0x11 // Get File Server Information
 	sf17GetBinderyAccess uint8 = 0x46 // Get Bindery Access Level
+	sf17GetInetAddrOld   uint8 = 0x13 // Get Connection Internet Address (old, 1-byte conn)
 	sf17LoginUnencrypted uint8 = 0x14 // Login To File Server (cleartext)
+	sf17GetObjConnList   uint8 = 0x15 // Get Object Connection List (old, 1-byte conn numbers)
+	sf17GetConnInfoOld   uint8 = 0x16 // Get Connection Information (old; "Get Station's Logged Info")
 	sf17GetLoginKey      uint8 = 0x17 // Get login encryption key (challenge)
 	sf17LoginEncrypted   uint8 = 0x18 // Keyed login (challenge-response)
-	sf17GetLoginUserID   uint8 = 0x15 // Get connection's logged identity
+	sf17GetInetAddr      uint8 = 0x1A // Get Connection Internet Address (new, +conn-type byte)
+	sf17GetObjConnList2  uint8 = 0x1B // Get Object Connection List (new, 2-byte conn numbers)
+	sf17GetConnInfo      uint8 = 0x1C // Get Connection Information (new, 4-byte conn)
+	sf17GetObjectID      uint8 = 0x35 // Get Bindery Object ID (by type+name)
+	sf17GetObjectName    uint8 = 0x36 // Get Bindery Object Name (by id)
+	sf17ScanObject       uint8 = 0x37 // Scan Bindery Object (wildcard scan)
 )
 
 // Subfunctions of fnDirServices (0x16) — mars_nwe nwconn.c case 0x16. Allocate has
 // three flavours (permanent/temp/special-temp); all build a dir handle.
 const (
+	sf16SetDirHandle    uint8 = 0x00 // Set Directory Handle (retarget an existing handle)
+	sf16GetDirPath      uint8 = 0x01 // Get Directory Path ("VOL:path" of a handle)
+	sf16ScanDirInfo     uint8 = 0x02 // Scan Directory Information (Nth subdirectory)
+	sf16GetEffDirRights uint8 = 0x03 // Get Effective Directory Rights
+	sf16GetVolumeNumber uint8 = 0x05 // Get Volume Number (by name)
+	sf16GetVolumeName   uint8 = 0x06 // Get Volume Name (number 0..31)
+	sf16CreateDir       uint8 = 0x0A // Create Directory
+	sf16DeleteDir       uint8 = 0x0B // Delete Directory
+	sf16RenameDir       uint8 = 0x0F // Rename Directory (in place)
 	sf16AllocPermDir    uint8 = 0x12 // Allocate Permanent Directory Handle
 	sf16AllocTempDir    uint8 = 0x13 // Allocate Temporary Directory Handle
 	sf16AllocSpecialDir uint8 = 0x16 // Allocate Special Temporary Directory Handle
 	sf16DeallocDirHdl   uint8 = 0x14 // Deallocate Directory Handle
 	sf16GetVolumeInfo   uint8 = 0x15 // Get Volume Info with Handle
+	sf16SetDirInfo      uint8 = 0x19 // Set Directory Information (dates/owner/rights)
+	sf16ScanVolRestrict uint8 = 0x20 // Scan volume user disk restrictions
+	sf16GetVolPurgeInfo uint8 = 0x2C // Get Volume and Purge Information (NW 3.11+; ncpfs)
+	sf16GetDirInfo      uint8 = 0x2D // Get Directory Information (usage for a handle's volume)
 )
 
 // errFuncNotSupported is the engine's sentinel for an unrecognised function/
@@ -91,9 +146,19 @@ func (s *Service) NewConn(c *connection) *Conn { return &Conn{svc: s, c: c} }
 // transport handles before calling here.
 func (cn *Conn) ServeRequest(req *ncpproto.RequestHeader) (uint8, []byte) {
 	cn.c.touch()
+	cn.svc.logging.Log2(log.Trace, "NCP request",
+		log.Str("fn", fnString(req)), log.Int("conn", int64(cn.c.number)))
 	body, err := cn.handle(req)
 	if err != nil {
-		return cn.svc.completionFor(err), nil
+		code := cn.svc.completionFor(err)
+		// Every non-success completion is narrated at Debug with the function (and
+		// subfunction, for the multiplexed families) so an unsupported or failing
+		// verb is visible from the log without a capture.
+		cn.svc.logging.Log(log.Debug, "NCP request failed",
+			log.Str("fn", fnString(req)),
+			log.Str("completion", fmt.Sprintf("0x%02X", code)),
+			log.Int("conn", int64(cn.c.number)))
+		return code, nil
 	}
 	return ncpproto.CompletionSuccess, body
 }
@@ -104,15 +169,42 @@ func (cn *Conn) handle(req *ncpproto.RequestHeader) ([]byte, error) {
 	switch req.Function {
 	case fnGetServerDateTime:
 		return cn.getServerDateTime()
+	case fnGetVolInfoNumber:
+		return cn.getVolumeInfoWithNumber(req.Body)
+	case fnGetStationNumber:
+		// Per mars_nwe (nwconn.c case 0x13): the reply is the 1-byte connection number.
+		return []byte{byte(cn.c.number)}, nil
+	case fnLogFile, fnReleaseFile, fnReleaseFileSet, fnClearFile, fnClearFileSet,
+		fnLogLogicalRecord, fnLogLogicalRecordSet, fnClearLogicalRecord,
+		fnReleaseLogRecordSet, fnClearLogRecordSet,
+		fnLogPhysicalRecord, fnClearPhysicalRecord, fnClearPhysRecordSet:
+		return cn.grantLock()
+	case fnTTS:
+		return cn.ttsCall(req.Body)
+	case fnAFP:
+		// Per mars_nwe (nwconn.c case 0x23): the AFP-namespace family is answered
+		// "invalid name space" — the client falls back to the DOS calls.
+		return nil, errBadNameSpace
+	case fnCommitFile, fnCommitFile2:
+		return cn.commitFile(req.Body)
+	case fnSetFileAttributes:
+		return cn.setFileAttributes(req.Body)
+	case fnSearchForFile:
+		return cn.searchForFile(req.Body)
 	case fnEndOfJob, fnLogout:
 		// End-of-job / logout: clear the connection's login identity but keep the
 		// connection (the client may log in again). No reply body.
 		cn.c.mu.Lock()
 		cn.c.loggedIn = false
 		cn.c.user = ""
+		cn.c.objectID = 0
+		cn.c.objectType = 0
+		cn.c.loginTime = time.Time{}
 		cn.c.mu.Unlock()
 		cn.svc.pushStats()
 		return nil, nil
+	case fnNegotiateBuffer:
+		return cn.negotiateBufferSize(req.Body)
 	case fnConnBindery:
 		return cn.connBindery(req.Body)
 	case fnDirServices:
@@ -169,10 +261,10 @@ func (cn *Conn) connBindery(body []byte) ([]byte, error) {
 		// (0xFFFFFFFF when not logged in). 0x33 = supervisor, 0x22 = user; we report
 		// supervisor-equivalent for a logged-in connection, anonymous otherwise.
 		cn.c.mu.Lock()
-		logged := cn.c.loggedIn
+		id := cn.c.objectID
 		cn.c.mu.Unlock()
-		if logged {
-			return appendU32([]byte{0x33}, 1), nil
+		if id != 0 {
+			return appendU32([]byte{0x33}, id), nil
 		}
 		return appendU32([]byte{0x00}, 0xFFFFFFFF), nil
 	case sf17LoginUnencrypted:
@@ -181,8 +273,24 @@ func (cn *Conn) connBindery(body []byte) ([]byte, error) {
 		return cn.getLoginKey()
 	case sf17LoginEncrypted:
 		return cn.loginEncrypted(args)
-	case sf17GetLoginUserID:
-		return cn.getLoginUserID()
+	case sf17GetConnInfoOld:
+		return cn.getConnectionInfo(args, true)
+	case sf17GetConnInfo:
+		return cn.getConnectionInfo(args, false)
+	case sf17GetInetAddrOld:
+		return cn.getConnInternetAddress(args, true)
+	case sf17GetInetAddr:
+		return cn.getConnInternetAddress(args, false)
+	case sf17GetObjConnList:
+		return cn.getObjectConnList(args, true)
+	case sf17GetObjConnList2:
+		return cn.getObjectConnList(args, false)
+	case sf17GetObjectID:
+		return cn.getBinderyObjectID(args)
+	case sf17GetObjectName:
+		return cn.getBinderyObjectName(args)
+	case sf17ScanObject:
+		return cn.scanBinderyObject(args)
 	default:
 		return nil, errFuncNotSupported
 	}
@@ -197,12 +305,38 @@ func (cn *Conn) dirServices(body []byte) ([]byte, error) {
 		return nil, errFuncNotSupported
 	}
 	switch sf {
+	case sf16SetDirHandle:
+		return cn.setDirHandle(args)
+	case sf16GetDirPath:
+		return cn.getDirPath(args)
+	case sf16ScanDirInfo:
+		return cn.scanDirInfo(args)
+	case sf16GetEffDirRights:
+		return cn.getEffDirRights(args)
+	case sf16GetVolumeNumber:
+		return cn.getVolumeNumber(args)
+	case sf16GetVolumeName:
+		return cn.getVolumeName(args)
+	case sf16CreateDir:
+		return cn.createDir(args)
+	case sf16DeleteDir:
+		return cn.deleteDir(args)
+	case sf16RenameDir:
+		return cn.renameDir(args)
 	case sf16AllocPermDir, sf16AllocTempDir, sf16AllocSpecialDir:
 		return cn.allocDirHandle(args)
 	case sf16DeallocDirHdl:
 		return cn.deallocDirHandle(args)
 	case sf16GetVolumeInfo:
 		return cn.getVolumeInfo(args)
+	case sf16SetDirInfo:
+		return cn.setDirInfo(args)
+	case sf16ScanVolRestrict:
+		return cn.scanVolRestrictions(args)
+	case sf16GetVolPurgeInfo:
+		return cn.getVolPurgeInfo(args)
+	case sf16GetDirInfo:
+		return cn.getDirInfo(args)
 	default:
 		return nil, errFuncNotSupported
 	}
@@ -223,17 +357,31 @@ func (s *Service) completionFor(err error) uint8 {
 		return ncpproto.CompletionNoFiles
 	case errors.Is(err, errBadHandle):
 		return ncpproto.CompletionInvalidConn
+	case errors.Is(err, errBadStation):
+		return ncpproto.CompletionBadStation
+	case errors.Is(err, errNoSuchObject):
+		return ncpproto.CompletionNoSuchObject
+	case errors.Is(err, errNoSuchVolume):
+		return ncpproto.CompletionNoSuchVolume
+	case errors.Is(err, errBadNameSpace):
+		return ncpproto.CompletionBadNameSpace
 	default:
 		return ncpproto.CompletionNoSuchFile
 	}
 }
 
 // errNoMoreFiles ends a directory scan; errBadHandle marks an unknown dir/file
-// handle; errAccessDenied marks a login/permission failure.
+// handle; errAccessDenied marks a login/permission failure; errNoSuchObject
+// marks a bindery lookup/scan miss; errNoSuchVolume marks a bad volume
+// name/number; errBadNameSpace answers the AFP-namespace family.
 var (
 	errNoMoreFiles  = errors.New("ncp: no more files")
 	errBadHandle    = errors.New("ncp: invalid handle")
+	errBadStation   = errors.New("ncp: bad station number")
 	errAccessDenied = errors.New("ncp: access denied")
+	errNoSuchObject = errors.New("ncp: no such bindery object")
+	errNoSuchVolume = errors.New("ncp: no such volume")
+	errBadNameSpace = errors.New("ncp: invalid name space")
 )
 
 // --- small helpers for building reply bodies (big-endian on the wire) ---

@@ -24,9 +24,11 @@
 package sap
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	ipxproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx"
 	ncpproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ncp"
 )
@@ -53,6 +55,11 @@ type IPXSender interface {
 type Advertiser struct {
 	sender IPXSender
 
+	// logging is established at construction (or swapped at wire time via SetLogger,
+	// before the advertiser is registered on the SAP socket); never nil. The sinks
+	// own level filtering — call sites log unconditionally.
+	logging log.Logger
+
 	mu      sync.Mutex
 	network [4]byte
 	node    [6]byte
@@ -66,7 +73,22 @@ type Advertiser struct {
 // (SetIdentity), registers each discoverable service's entry, starts it, and registers
 // it on the SAP socket.
 func New(sender IPXSender) *Advertiser {
-	return &Advertiser{sender: sender, entries: make(map[int]ncpproto.SAPEntry)}
+	return &Advertiser{
+		sender:  sender,
+		logging: log.New(Name), // sink-less no-op until SetLogger installs the wired logger
+		entries: make(map[int]ncpproto.SAPEntry),
+	}
+}
+
+// SetLogger installs the logger for query/answer diagnostics (each nearest/general
+// query answered — or ignored for want of a matching entry — is narrated at Debug).
+// Configure-time only: call before the advertiser is registered on the SAP socket.
+// A nil logger restores the sink-less no-op.
+func (a *Advertiser) SetLogger(l log.Logger) {
+	if l == nil {
+		l = log.New(Name)
+	}
+	a.logging = l
 }
 
 // SetIdentity sets the server's IPX network + node stamped into any registered entry
@@ -202,18 +224,36 @@ func (a *Advertiser) HandleDatagram(d *ipxproto.Datagram) {
 		return
 	}
 	var op uint16
+	kind := "general-service"
 	switch q.Operation {
 	case ncpproto.SAPNearestQuery:
 		op = ncpproto.SAPNearestResponse
+		kind = "nearest-service"
 	case ncpproto.SAPGeneralQuery:
 		op = ncpproto.SAPGeneralResponse
 	default:
 		return // not a query we answer
 	}
+	querier := fmt.Sprintf("%x.%x", d.SrcNet, d.SrcNode)
 	entries := a.matching(q.ServiceType)
 	if len(entries) == 0 {
+		a.logging.Log(log.Debug, "SAP query ignored (no matching entry)",
+			log.Str("kind", kind),
+			log.Str("service_type", fmt.Sprintf("0x%04X", q.ServiceType)),
+			log.Str("querier", querier))
 		return
 	}
+	if op == ncpproto.SAPNearestResponse {
+		// A nearest response carries exactly ONE entry — the client attaches to it
+		// (mars_nwe send_server_response picks a single best server; a real NetWare 4
+		// server answers GetNearestServer with one entry too).
+		entries = entries[:1]
+	}
+	a.logging.Log(log.Debug, "SAP query answered",
+		log.Str("kind", kind),
+		log.Str("service_type", fmt.Sprintf("0x%04X", q.ServiceType)),
+		log.Str("server", entries[0].Name),
+		log.Str("querier", querier))
 	payload := ncpproto.MarshalResponse(op, entries, nil)
 	_ = a.sender.Send(&ipxproto.Datagram{
 		Type:    0x04,

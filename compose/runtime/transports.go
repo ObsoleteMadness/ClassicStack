@@ -40,9 +40,11 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/core/auth"
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	diagproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx/diag"
 	ncpproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ncp"
 	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbios"
+	ripproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/rip"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/afp"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/browser"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/ipxdiag"
@@ -53,6 +55,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/service/nbp"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/ncp"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/netbios"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/rip"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/sap"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/smb"
 )
@@ -107,7 +110,7 @@ func (w *transportWiring) AttachPort(c component.Component) {
 // attach ports added later at runtime (AttachPort). The mini-routers are built whenever
 // their consuming service exists (even with ZERO ports at startup), so the first port of
 // a family added from the config-builder UI has a live router to join.
-func crossWireTransports(comps map[string]component.Component, egressOpener MacIPEgressOpener) *transportWiring {
+func crossWireTransports(comps map[string]component.Component, egressOpener MacIPEgressOpener, mkLogger func(scope string) log.Logger) *transportWiring {
 	nb := netbiosService(comps)
 	sm := smbService(comps)
 	w := &transportWiring{}
@@ -143,7 +146,7 @@ func crossWireTransports(comps map[string]component.Component, egressOpener MacI
 	// by the NetBIOS ipx binding, the direct-hosted leg by the SMB ipx binding.
 	nbIPXBound := nb != nil && nb.Binds(netbios.TransportIPX)
 	smbIPXBound := sm != nil && sm.Binds(smb.TransportIPX)
-	w.ipx = wireIPX(nb, sm, comps, nbIPXBound, smbIPXBound)
+	w.ipx = wireIPX(nb, sm, comps, nbIPXBound, smbIPXBound, mkLogger)
 
 	// The TCP family (direct-hosted SMB over :445; NBT over :139) is a supervised
 	// adapter listener built inert in the registry; wire its SMB consumer + address
@@ -307,7 +310,7 @@ func wireNetBEUI(nb *netbios.Service, comps map[string]component.Component) *net
 // nbIPXBound / smbIPXBound gate the two IPX legs by the operator's transport bindings:
 // the NB-IPX session leg by NetBIOS's ipx binding, the direct-hosted-SMB leg by SMB's
 // ipx binding. A leg whose service is present but whose binding is off is not wired.
-func wireIPX(nb *netbios.Service, sm *smb.Service, comps map[string]component.Component, nbIPXBound, smbIPXBound bool) *ipxrouter.Router {
+func wireIPX(nb *netbios.Service, sm *smb.Service, comps map[string]component.Component, nbIPXBound, smbIPXBound bool, mkLogger func(scope string) log.Logger) *ipxrouter.Router {
 	// Resolve the effective consumers after applying bindings: a service whose ipx
 	// binding is off contributes nothing to the IPX mini-router.
 	if nb != nil && !nbIPXBound {
@@ -353,6 +356,9 @@ func wireIPX(nb *netbios.Service, sm *smb.Service, comps map[string]component.Co
 		if sapAdv == nil {
 			sapAdv = sap.New(r)
 			sapAdv.SetIdentity(r.Network(), r.Node())
+			if mkLogger != nil {
+				sapAdv.SetLogger(mkLogger(sap.Name))
+			}
 		}
 		sapAdv.Register(e)
 	}
@@ -408,11 +414,31 @@ func wireIPX(nb *netbios.Service, sm *smb.Service, comps map[string]component.Co
 	// engine; its SAP entry (File Server 0x0004 @ 0x0451) is registered with the shared
 	// advertiser so NETx/VLM discover it. The transport holds the advertiser handle for
 	// its "sap: advertising" dashboard prop and to stop it on teardown.
+	//
+	// Discovery plumbing (the NetWare client attach sequence, per mars_nwe): the SAP
+	// entry advertises the server at its INTERNAL network address (internal-net:
+	// 00-00-00-00-00-01:0451), never the wire address — the client then broadcasts a
+	// RIP request for that network (GetLocalTarget) and will not open an NCP connection
+	// until it is answered, taking the answer's source MAC as the frame address. So the
+	// mini-router is given the internal identity (it must accept datagrams addressed to
+	// it) and a RIP responder is stood up on socket 0x0453 owning that network.
 	if nc != nil {
+		internalNet := ipxrouter.DeriveInternalNetwork(r.Node())
+		r.SetInternalNetwork(internalNet)
+
 		t := nc.NewOverIPX(r)
 		_ = r.RegisterSocket(ncpproto.NCPSocket, t)
-		sapReg(nc.SAPEntry())
+		e := nc.SAPEntry()
+		e.Network = internalNet
+		e.Node = ipxrouter.InternalNode
+		sapReg(e)
 		t.SetSAP(sapAdv)
+
+		responder := rip.New(r)
+		responder.SetNetworks(internalNet)
+		_ = r.RegisterSocket(ripproto.Socket, responder)
+		responder.Start()
+		t.SetRIP(responder)
 	}
 	// Start the shared advertiser and register it on the SAP socket once any service
 	// registered an entry. (The NB-IPX entry may register later, from the async claim

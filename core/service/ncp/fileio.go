@@ -16,6 +16,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 )
@@ -33,6 +34,11 @@ func (cn *Conn) getVolumeInfo(args []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	return volumeInfoReply(vol)
+}
+
+// volumeInfoReply builds the shared Get Volume Info body (0x16/0x15 and 0x12).
+func volumeInfoReply(vol *Volume) ([]byte, error) {
 	total, free, err := vol.FS().DiskUsage("")
 	if err != nil {
 		return nil, err
@@ -59,26 +65,32 @@ func (cn *Conn) getVolumeInfo(args []byte) ([]byte, error) {
 }
 
 // allocDirHandle answers Allocate Directory Handle (0x16 subfunctions 0x12 perm /
-// 0x13 temp / 0x16 special-temp). Per mars_nwe the subfunction args are: source
-// dir-handle, then two bytes, then the path that names the volume (VOL:dir/...).
-// Reply is the new dir-handle byte and an 8-bit effective-rights mask. The new
-// handle is bound to the resolved volume + base directory.
+// 0x13 temp / 0x16 special-temp). Per mars_nwe (nwconn.c → nw_alloc_dir_handle)
+// the subfunction args are: source dir-handle(1), drive letter(1), then the
+// LENGTH-PREFIXED path — "VOL:dir" absolute, or relative to the source handle,
+// or empty for the source handle's own directory (a requester allocates a
+// zero-length-path temp handle when mapping a drive to the current directory).
+// Reply is the new dir-handle byte and an 8-bit effective-rights mask.
 func (cn *Conn) allocDirHandle(args []byte) ([]byte, error) {
-	// args[0] = source handle, args[1]/args[2] = drive/flags, args[3:] = path.
-	if len(args) < 4 {
-		return nil, errFuncNotSupported
+	if len(args) < 3 {
+		return nil, errBadHandle
 	}
-	path := strings.TrimRight(string(args[3:]), "\x00")
-	vol, base, err := cn.resolveVolPath(path)
+	vol, store, err := cn.resolveWireAt(args[0], args, 2)
 	if err != nil {
 		return nil, err
 	}
 	if !cn.mayUse(vol) {
 		return nil, errAccessDenied
 	}
-	id := cn.c.AllocDir(vol, base)
-	// Reply: new handle, then an 8-bit effective-rights mask (0xFF = all rights).
-	return []byte{id, 0xFF}, nil
+	st, err := vol.FS().Stat(store)
+	if err != nil {
+		return nil, err
+	}
+	if !st.IsDir() {
+		return nil, os.ErrNotExist
+	}
+	id := cn.c.AllocDir(vol, store)
+	return []byte{id, effRights(vol)}, nil
 }
 
 // deallocDirHandle answers Deallocate Directory Handle (0x16/0x14): the
@@ -327,62 +339,231 @@ func (cn *Conn) searchInit(args []byte) ([]byte, error) {
 	// hand back and the client echoes on searchContinue.
 	dirID := cn.c.AllocDir(vol, store)
 	out := make([]byte, 0, 6)
-	out = append(out, 0)          // volume number (single-volume reply)
-	out = append(out, 0, dirID)   // dir_id[2] (BE; low byte = our slot)
-	out = append(out, 0xFF, 0xFF) // searchsequence = before-first
-	out = append(out, 0xFF)       // dir_rights (all)
+	out = append(out, byte(cn.svc.volumeIndex(vol))) // volume number
+	out = append(out, 0, dirID)                      // dir_id[2] (BE; low byte = our slot)
+	out = append(out, 0xFF, 0xFF)                    // searchsequence = before-first
+	out = append(out, effRights(vol))                // dir_rights
 	return out, nil
 }
 
 // searchContinue handles fnFileSearchContinue (0x3F). Per mars_nwe the args are
-// volume(1), dir_id[2], searchsequence[2], search_attrib(1), len(1), pattern. The
-// reply is searchsequence[2], dir_id[2], then the entry info. We return the next
-// matching entry or errNoMoreFiles at the end of the directory.
+// volume(1), dir_id[2 BE], searchsequence[2 BE, 0xFFFF = first], search_attrib(1),
+// len(1), pattern. The reply is searchsequence[2 BE], dir_id[2] echoed, then
+// NW_DIR_INFO or NW_FILE_INFO for the matched entry (nwconn.c case 0x3f): the
+// search-attribute's directory bit picks directories vs files, and the end of
+// the scan answers 0xFF (mars_nwe nw_dir_search -0xff).
 func (cn *Conn) searchContinue(args []byte) ([]byte, error) {
-	if len(args) < 5 {
-		return nil, errNoMoreFiles
+	if len(args) < 6 {
+		return nil, os.ErrNotExist
 	}
 	dirID := args[2] // low byte of dir_id[1..2]
 	last := int(beU16(args[3:]))
+	wantDirs := args[5]&nwAttrDirectory != 0
+	pattern := "*"
+	if raw, _, ok := readByteString(args, 6); ok {
+		pattern = dosPattern(raw)
+	}
 	dh, ok := cn.c.Dir(dirID)
 	if !ok {
 		return nil, errBadHandle
 	}
+	i, e, info, err := cn.searchDir(dh, last, wantDirs, pattern)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 0, 4+26)
+	out = appendU16(out, uint16(i))
+	out = append(out, args[1], args[2]) // echo dir_id
+	full := joinStore(dh.path, e.Name())
+	if e.IsDir() {
+		return dh.volume.appendDirEntryInfo(out, full, info.ModTime()), nil
+	}
+	return dh.volume.appendFileEntryInfo(out, full, info.Size(), info.ModTime()), nil
+}
+
+// searchForFile handles fnSearchForFile (0x40) — the FCB-era one-call-per-entry
+// search DOS shells use for DIR. Per mars_nwe the args are sequence[2 BE]
+// (0xFFFF = first), dir-handle(1), search-attrib(1), len(1), then the path whose
+// final component is the wildcard pattern. The reply is sequence[2 BE],
+// reserved[2], then NW_DIR_INFO or NW_FILE_INFO; a scan past the last match
+// answers 0xFF.
+func (cn *Conn) searchForFile(body []byte) ([]byte, error) {
+	if len(body) < 5 {
+		return nil, os.ErrNotExist
+	}
+	last := int(beU16(body[0:]))
+	wantDirs := body[3]&nwAttrDirectory != 0
+	raw, _, ok := readByteString(body, 4)
+	if !ok {
+		return nil, errFuncNotSupported
+	}
+	// Split the wire path into the directory part (resolved against the handle;
+	// may be volume-qualified) and the pattern leaf.
+	dirWire, leaf := "", raw
+	if i := strings.LastIndexAny(raw, "/\\"); i >= 0 {
+		dirWire, leaf = raw[:i], raw[i+1:]
+	} else if i := strings.IndexByte(raw, ':'); i >= 0 {
+		dirWire, leaf = raw[:i+1], raw[i+1:]
+	}
+	vol, store, err := cn.resolveWire(body[2], dirWire)
+	if err != nil {
+		return nil, err
+	}
+	if !cn.mayUse(vol) {
+		return nil, errAccessDenied
+	}
+	dh := &dirHandle{volume: vol, path: store}
+	i, e, info, err := cn.searchDir(dh, last, wantDirs, dosPattern(leaf))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 0, 4+26)
+	out = appendU16(out, uint16(i))
+	out = append(out, 0, 0) // reserved
+	full := joinStore(store, e.Name())
+	if e.IsDir() {
+		return vol.appendDirEntryInfo(out, full, info.ModTime()), nil
+	}
+	return vol.appendFileEntryInfo(out, full, info.Size(), info.ModTime()), nil
+}
+
+// searchDir scans a directory for the first entry after sequence `last` (0xFFFF
+// = before the first) that matches the directory/file split and the DOS pattern,
+// returning its index, entry, and file info. A scan with no (more) matches
+// answers os.ErrNotExist → completion 0xFF, mars_nwe's not-found return.
+func (cn *Conn) searchDir(dh *dirHandle, last int, wantDirs bool, pattern string) (int, os.DirEntry, os.FileInfo, error) {
 	entries, err := dh.volume.FS().ReadDir(dh.path)
 	if err != nil {
-		return nil, err
+		return 0, nil, nil, err
 	}
-	next := last + 1
-	if last == 0xFFFF {
-		next = 0
+	start := 0
+	if last != 0xFFFF {
+		start = last + 1
 	}
-	if next >= len(entries) {
-		return nil, errNoMoreFiles
+	for i := start; i < len(entries); i++ {
+		e := entries[i]
+		if e.IsDir() != wantDirs {
+			continue
+		}
+		full := joinStore(dh.path, e.Name())
+		if !dosMatch(pattern, dh.volume.ShortName(full)) {
+			continue
+		}
+		info, ierr := e.Info()
+		if ierr != nil {
+			continue
+		}
+		return i, e, info, nil
 	}
-	e := entries[next]
-	info, err := e.Info()
-	if err != nil {
-		return nil, err
+	return 0, nil, nil, os.ErrNotExist
+}
+
+// NetWare DOS attribute bits — the low byte of NW_FILE_INFO/NW_DIR_INFO's
+// attrib[2] field and the search-attribute of the search functions.
+const (
+	nwAttrReadOnly  uint8 = 0x01
+	nwAttrDirectory uint8 = 0x10
+	nwAttrArchive   uint8 = 0x20
+)
+
+// appendFileEntryInfo appends NW_FILE_INFO (mars_nwe connect.h / get_file_attrib):
+// name[14], attrib LO-HI(2), size[4 BE], create date, access date, modify date,
+// modify time (each 2 BE).
+func (v *Volume) appendFileEntryInfo(dst []byte, store string, size int64, mt time.Time) []byte {
+	dst = v.appendFileName(dst, store)
+	attr := nwAttrArchive
+	if v.sh.ReadOnly() {
+		attr |= nwAttrReadOnly
 	}
-	out := make([]byte, 0, 32)
-	// Reply: next searchsequence[2], echoed dir_id[2], then name + attr + size.
-	out = append(out, byte(next>>8), byte(next))
-	out = append(out, args[1], args[2]) // echo dir_id
-	fullStore := e.Name()
-	if dh.path != "" {
-		fullStore = dh.path + "/" + e.Name()
+	dst = append(dst, attr, 0)
+	dst = appendU32(dst, uint32(size))
+	dst = appendU16(dst, nwDate(mt))
+	dst = appendU16(dst, nwDate(mt))
+	dst = appendU16(dst, nwDate(mt))
+	dst = appendU16(dst, nwTime(mt))
+	return dst
+}
+
+// appendDirEntryInfo appends NW_DIR_INFO (mars_nwe connect.h / get_dir_attrib):
+// name[14], attrib LO-HI(2), create date+time (2+2 BE), owner id[4], access-
+// rights mask(1), reserved(1), next_search[2] (mars_nwe zeroes the mask, owner,
+// and next_search).
+func (v *Volume) appendDirEntryInfo(dst []byte, store string, mt time.Time) []byte {
+	dst = v.appendFileName(dst, store)
+	dst = append(dst, nwAttrDirectory, 0)
+	dst = appendU16(dst, nwDate(mt))
+	dst = appendU16(dst, nwTime(mt))
+	dst = appendU32(dst, 0) // owner id
+	dst = append(dst, 0, 0) // access-rights mask, reserved
+	dst = appendU16(dst, 0) // next_search
+	return dst
+}
+
+// dosPattern normalizes a NetWare search pattern. Clients send wildcards in the
+// ENCODED high-bit form — 0xAA = '*', 0xBF = '?', 0xAE = '.' (a DIR of *.* is
+// the bytes AA AE AA on the wire, observed in ipx.pcap) — and may prefix
+// metacharacters with 0xFF, which is dropped (mars_nwe fn_dos_match strips 0xFF;
+// x_str_match accepts 0xAA/0xBF/0xAE alongside the ASCII forms). An empty
+// pattern matches everything.
+func dosPattern(s string) string {
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case 0xFF: // augmented-wildcard prefix: drop
+		case 0xAA:
+			out = append(out, '*')
+		case 0xBF:
+			out = append(out, '?')
+		case 0xAE:
+			out = append(out, '.')
+		default:
+			out = append(out, s[i])
+		}
 	}
-	out = dh.volume.appendFileName(out, fullStore)
-	var size uint32
-	attr := byte(0x00)
-	if e.IsDir() {
-		attr = 0x10 // subdirectory attribute
-	} else {
-		size = uint32(info.Size())
+	if len(out) == 0 {
+		return "*"
 	}
-	out = append(out, attr)
-	out = appendU32(out, size)
-	return out, nil
+	return strings.ToUpper(string(out))
+}
+
+// dosMatch matches a DOS 8.3 name against a normalized upper-case pattern with
+// FCB semantics: when the pattern carries an extension, base and extension match
+// independently — so "*.*" matches a name with no extension, unlike a plain glob.
+func dosMatch(pattern, name string) bool {
+	name = strings.ToUpper(name)
+	if !strings.Contains(pattern, ".") {
+		return dosComponentMatch(pattern, name)
+	}
+	pb, pe, _ := strings.Cut(pattern, ".")
+	nb, ne, _ := strings.Cut(name, ".")
+	return dosComponentMatch(pb, nb) && dosComponentMatch(pe, ne)
+}
+
+// dosComponentMatch globs one 8.3 name component with DOS semantics: '*' matches
+// any run, and '?' matches ONE character or NOTHING — mars_nwe x_str_match only
+// advances the name when a character is available, which is how the requesters'
+// "????????.???" pattern matches FOO.TXT. Components are at most 8 characters,
+// so the recursion stays trivial.
+func dosComponentMatch(p, s string) bool {
+	if p == "" {
+		return s == ""
+	}
+	switch p[0] {
+	case '*':
+		for i := 0; i <= len(s); i++ {
+			if dosComponentMatch(p[1:], s[i:]) {
+				return true
+			}
+		}
+		return false
+	case '?':
+		if s != "" && dosComponentMatch(p[1:], s[1:]) {
+			return true
+		}
+		return dosComponentMatch(p[1:], s)
+	default:
+		return s != "" && s[0] == p[0] && dosComponentMatch(p[1:], s[1:])
+	}
 }
 
 // --- path / handle resolution helpers ---
@@ -419,7 +600,7 @@ func (cn *Conn) resolveVolPath(wire string) (*Volume, string, error) {
 	}
 	vol, ok := cn.svc.volumeByName(volName)
 	if !ok {
-		return nil, "", os.ErrNotExist
+		return nil, "", errNoSuchVolume
 	}
 	store, err := vol.ResolvePath(wire)
 	if err != nil {
