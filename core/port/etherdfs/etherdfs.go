@@ -34,10 +34,11 @@ const Name = "EtherDFS"
 const BPFFilter = "ether proto 0xedf5"
 
 // Handler processes one decoded inbound EtherDFS request frame and returns the
-// reply payload (the per-opcode body) to send back, or nil to send nothing. It
-// runs on the read goroutine: decode-and-respond, do not block. srcMAC is the
-// station address the port stamps as the reply's source.
-type Handler func(req proto.Frame) (reply []byte)
+// AX status word and reply payload (the per-opcode body) to send back, or
+// ok=false to send nothing. It runs on the read goroutine: decode-and-respond,
+// do not block. srcMAC is the station address the port stamps as the reply's
+// source.
+type Handler func(req proto.Frame) (status uint16, payload []byte, ok bool)
 
 // Port is the EtherDFS port. It embeds the frameport base and adds the EtherType
 // 0xEDF5 demux, the own-MAC/broadcast acceptance filter, and the request handler.
@@ -55,11 +56,13 @@ type Port struct {
 // link on every Start and survives a UI Stop→Start (a closed pcap handle is
 // terminal). A nil opener yields the inert-but-configured form. srcMAC is this
 // station's hardware address, stamped as the reply source and matched against
-// inbound destinations. Returns (nil, nil) when the section is disabled.
+// inbound destinations.
+//
+// A DISABLED section still builds the port (the MacIP pattern): the component
+// exists so the dashboard shows it as Disabled and the operator can enable it
+// live; the compose factory's opener gates on the current enabled flag, so a
+// disabled port Starts inert (no link) rather than opening the NIC.
 func NewInstanceFromOpener(sec *port.Section, open func() (link.FrameLink, error), srcMAC [6]byte, logger log.Logger) (*Port, error) {
-	if !sec.IsEnabled {
-		return nil, nil
-	}
 	if open == nil {
 		open = func() (link.FrameLink, error) { return nil, nil }
 	}
@@ -99,11 +102,11 @@ func (p *Port) onFrame(frame link.Frame) {
 	if h == nil {
 		return
 	}
-	reply := h(req)
-	if reply == nil {
+	status, payload, ok := h(req)
+	if !ok {
 		return
 	}
-	out := req.Reply(p.srcMAC, reply).Encode(nil)
+	out := req.Reply(p.srcMAC, status, payload).Encode(nil)
 	_ = p.Send(out)
 }
 

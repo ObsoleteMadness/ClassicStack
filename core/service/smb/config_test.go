@@ -52,7 +52,7 @@ func TestShareSectionSpecMapsFields(t *testing.T) {
 		FSType:        "local_fs",
 		ForkBackend:   "appledouble",
 		FilenameCodec: "macroman-utf8",
-		NameEngine:    "long",
+		MetaBackend:   "metastore",
 		Metastore:     "mem",
 		Path:          "/srv/public",
 		ReadOnly:      true,
@@ -68,8 +68,8 @@ func TestShareSectionSpecMapsFields(t *testing.T) {
 	if fsSpec.FSType != "local_fs" || fsSpec.ForkBackend != "appledouble" || fsSpec.FilenameCodec != "macroman-utf8" {
 		t.Fatalf("core fields not mapped: %+v", fsSpec)
 	}
-	if fsSpec.NameEngine != "long" || fsSpec.Metastore != "mem" || fsSpec.Path != "/srv/public" || !fsSpec.ReadOnly {
-		t.Fatalf("engine/metastore/path/readonly not mapped: %+v", fsSpec)
+	if fsSpec.MetaBackend != "metastore" || fsSpec.Metastore != "mem" || fsSpec.Path != "/srv/public" || !fsSpec.ReadOnly {
+		t.Fatalf("meta-backend/metastore/path/readonly not mapped: %+v", fsSpec)
 	}
 	if len(fsSpec.AllowedUsers) != 2 || fsSpec.AllowedUsers[0] != "alice" {
 		t.Fatalf("allowed_users not mapped: %+v", fsSpec.AllowedUsers)

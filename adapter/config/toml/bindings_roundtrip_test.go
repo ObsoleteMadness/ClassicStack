@@ -22,7 +22,7 @@ func TestEtherDFSSectionsRoundTrip(t *testing.T) {
 
 	m := config.NewModel()
 	m.Set(&etherdfs.ServerSection{SKey: etherdfs.ServerKey, IsEnabled: true, Interface: "eth0", ServerName: "ATTIC"})
-	m.AddInstance(&etherdfs.DriveSection{DName: "E", FSType: "local_fs", Path: "/srv/dos", NameEngine: "short"})
+	m.AddInstance(&etherdfs.DriveSection{DName: "E", FSType: "local_fs", Path: "/srv/dos", MetaBackend: "metastore"})
 
 	c := New()
 	data, err := c.Marshal(m)
@@ -42,8 +42,8 @@ func TestEtherDFSSectionsRoundTrip(t *testing.T) {
 	if len(specs) != 1 || specs[0].Name != "E" || specs[0].Share.Path != "/srv/dos" {
 		t.Errorf("drive specs wrong: %+v", specs)
 	}
-	if specs[0].Share.NameEngine != "short" {
-		t.Errorf("name_engine not round-tripped: %q", specs[0].Share.NameEngine)
+	if specs[0].Share.MetaBackend != "metastore" {
+		t.Errorf("meta_backend not round-tripped: %q", specs[0].Share.MetaBackend)
 	}
 }
 

@@ -33,15 +33,12 @@ type DriveSection struct {
 	ForkBackend string `toml:"fork_backend"`
 	// FilenameCodec selects the wire↔store name codec.
 	FilenameCodec string `toml:"filename_codec"`
-	// NameEngine selects the short/medium name engine. EtherDFS drives default to
-	// "short" so DOS sees 8.3 names.
-	NameEngine string `toml:"name_engine"`
 	// Metastore selects the CNID/shortname store kind ("mem" default).
 	Metastore string `toml:"metastore"`
-	// DOSAttrBackend selects how DOS attributes (RO/HID/SYS/ARCH) that the host
-	// cannot represent are persisted: auto|metastore|sidecar|native|xattr (empty =
-	// auto). EtherDFS serves these to DOS clients. See fs.ShareSpec.DOSAttrBackend.
-	DOSAttrBackend string `toml:"dos_attr_backend"`
+	// MetaBackend selects the share's MetaEngine (derived names, CNIDs, DOS
+	// attributes RO/HID/SYS/ARCH): "metastore"|"xattr"|"ads" (empty = per-platform
+	// default). EtherDFS serves these to DOS clients. See fs.ShareSpec.MetaBackend.
+	MetaBackend string `toml:"meta_backend"`
 	// Path is the backend location (host directory for local_fs, …).
 	Path string `toml:"path"`
 	// ReadOnly makes the whole drive read-only (drive-wide, not per-user).
@@ -112,16 +109,15 @@ func (d *DriveSection) Validate() error {
 // "key=value" entries become Extra entries; a bare "" key is dropped.
 func (d *DriveSection) fsSpec() fs.ShareSpec {
 	spec := fs.ShareSpec{
-		Name:           d.DName,
-		FSType:         d.FSType,
-		ForkBackend:    d.ForkBackend,
-		FilenameCodec:  d.FilenameCodec,
-		NameEngine:     d.NameEngine,
-		Metastore:      d.Metastore,
-		DOSAttrBackend: d.DOSAttrBackend,
-		Path:           d.Path,
-		ReadOnly:       d.ReadOnly,
-		AllowedUsers:   append([]string(nil), d.AllowedUsers...),
+		Name:          d.DName,
+		FSType:        d.FSType,
+		ForkBackend:   d.ForkBackend,
+		FilenameCodec: d.FilenameCodec,
+		Metastore:     d.Metastore,
+		MetaBackend:   d.MetaBackend,
+		Path:          d.Path,
+		ReadOnly:      d.ReadOnly,
+		AllowedUsers:  append([]string(nil), d.AllowedUsers...),
 	}
 	if len(d.Options) > 0 {
 		extra := make(map[string]any, len(d.Options))

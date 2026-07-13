@@ -129,6 +129,35 @@ func TestSearch_DirectoryAttrFilter(t *testing.T) {
 	}
 }
 
+// TestSearch_LongNameGetsShortNameByDefault is the end-to-end regression test
+// for the DOS/Win16 SMB_COM_SEARCH bug: a share built with default config (no
+// explicit meta_backend) must still derive a real 8.3 short name for a long
+// filename and for an AppleDouble "._" sidecar — SMB_COM_SEARCH (the only
+// enumeration DOS/Win16 clients use) matches names against an 8-dot-3 wildcard
+// pattern, so an unset MetaEngine default of "passthrough" (the bug fixed by
+// this test) silently drops any entry that isn't already 8.3-shaped. Confirmed
+// against ipx.pcap: NT/Win98 (TRANS2 FIND_FIRST2) show these entries because
+// FIND_FIRST2 doesn't need a short name to display a long one; DOS/Win16 do not.
+func TestSearch_LongNameGetsShortNameByDefault(t *testing.T) {
+	svc, sess, tid := fsService(t)
+	createFile(t, svc, sess, tid, "Really long file name here.COM")
+	createFile(t, svc, sess, tid, "._1516HBWT.INF")
+
+	reply := coreSearch(svc, sess, tid, 20, attrArchive, searchArea("????????.???", nil))
+	if h := respHeader(t, reply); h.Status != statusSuccess {
+		t.Fatalf("SEARCH status = %#x, want success", h.Status)
+	}
+	_, names := coreSearchRecords(t, reply)
+	if len(names) != 2 {
+		t.Fatalf("SEARCH returned %d names %v, want 2 (long name + AppleDouble sidecar)", len(names), names)
+	}
+	for _, name := range names {
+		if len(name) > 12 { // 8 + '.' + 3
+			t.Errorf("name %q is not 8.3-derived (len %d)", name, len(name))
+		}
+	}
+}
+
 // lockRangeBytes builds one LOCKING_ANDX lock/unlock record: Pid(2) Offset(4)
 // Length(4).
 func lockRangeBytes(pid uint16, offset, length uint32) []byte {

@@ -109,18 +109,15 @@ func (r *Reactor) coordinate(np NamedPath, fe fs.Event) {
 	if np.FS == nil {
 		return
 	}
-	// Re-derive the new name's shortname on a rename so the peer's NameEngine has a
+	// Re-derive the new name's shortname on a rename so the peer's MetaEngine has a
 	// fresh, consistent mapping. The stale old-name mapping is harmless (it points at a
 	// name that no longer exists; reverse lookups for the new short name are fresh).
 	if fe.Op == fs.OpRename && fe.HostPath != "" {
 		if store, ok := storeRel(fe.HostPath, np.Root); ok {
-			if named, ok := np.FS.(fs.Named); ok {
-				if ne := named.Names(); ne != nil {
-					dir, base := splitStorePath(store)
-					ne.Bind(dir, base, fs.ShortName)
-					ne.Bind(dir, base, fs.MediumName)
-				}
-			}
+			me := np.FS.Meta()
+			dir, base := splitStorePath(store)
+			me.ShortName(dir, base)
+			me.MediumName(dir, base)
 		}
 	}
 }

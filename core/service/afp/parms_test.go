@@ -82,8 +82,11 @@ func TestFileDirParams_FullFileBitmap(t *testing.T) {
 	if name, _, ok := pString(block, longOff); !ok || string(name) != "doc.txt" {
 		t.Errorf("LongName = %q (ok=%v), want doc.txt", name, ok)
 	}
-	if name, _, ok := pString(block, shortOff); !ok || string(name) != "doc.txt" {
-		t.Errorf("ShortName = %q (ok=%v), want doc.txt", name, ok)
+	// 8.3 short names are always DOS-cased (uppercase) per derivedNameEngine —
+	// "doc.txt" already fits 8.3, so it's bound as-is upper-cased, not passed
+	// through in its original case.
+	if name, _, ok := pString(block, shortOff); !ok || string(name) != "DOC.TXT" {
+		t.Errorf("ShortName = %q (ok=%v), want DOC.TXT", name, ok)
 	}
 }
 

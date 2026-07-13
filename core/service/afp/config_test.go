@@ -15,7 +15,7 @@ func TestVolumeSectionSpecMapsFields(t *testing.T) {
 		FSType:        "local_fs",
 		ForkBackend:   "appledouble",
 		FilenameCodec: "macroman-utf8",
-		NameEngine:    "long",
+		MetaBackend:   "metastore",
 		Metastore:     "mem",
 		Path:          "/srv/public",
 		ReadOnly:      true,
@@ -27,8 +27,8 @@ func TestVolumeSectionSpecMapsFields(t *testing.T) {
 	if spec.Name != "Public" || spec.FSType != "local_fs" || spec.ForkBackend != "appledouble" {
 		t.Fatalf("core fields not mapped: %+v", spec)
 	}
-	if spec.FilenameCodec != "macroman-utf8" || spec.NameEngine != "long" || spec.Metastore != "mem" {
-		t.Fatalf("codec/engine/metastore not mapped: %+v", spec)
+	if spec.FilenameCodec != "macroman-utf8" || spec.MetaBackend != "metastore" || spec.Metastore != "mem" {
+		t.Fatalf("codec/meta-backend/metastore not mapped: %+v", spec)
 	}
 	if spec.Path != "/srv/public" || !spec.ReadOnly {
 		t.Fatalf("path/readonly not mapped: %+v", spec)

@@ -58,25 +58,14 @@ func (d *Drive) FS() fs.ForkFS { return d.sh.FS() }
 // for a backend that owns none. Called at service Stop.
 func (d *Drive) Close() error { return d.sh.Close() }
 
-// dosAttrs returns the drive's DOS-attribute store (the per-share backend
-// assembled by BuildShare), or nil when the share exposes none. EtherDFS persists
-// and serves the FAT RO/HID/SYS/ARCH bits through it, so attributes survive across
-// the host filesystem (which cannot represent them) per the configured backend.
-func (d *Drive) dosAttrs() fs.DOSAttrStore {
-	if da, ok := d.sh.FS().(fs.DOSAttred); ok {
-		return da.DOSAttrs()
-	}
-	return nil
-}
-
-// names returns the drive's NameEngine, for reversing a wire 8.3 short name a DOS
-// client sent back to the stored host (long) name. nil when the share exposes none.
-func (d *Drive) names() fs.NameEngine {
-	if n, ok := d.sh.FS().(fs.Named); ok {
-		return n.Names()
-	}
-	return nil
-}
+// meta returns the drive's MetaEngine (the per-share names/CNID/DOS-attribute
+// facade assembled by BuildShare). It is mandatory — every ForkFS carries one —
+// so this never returns nil. EtherDFS persists and serves the FAT
+// RO/HID/SYS/ARCH bits through it (Attrs/SetAttrs/DeleteAttrs/RenameAttrs), so
+// attributes survive across the host filesystem (which cannot represent them)
+// per the configured backend, and reverses a wire 8.3 short name a DOS client
+// sent back to the stored host (long) name via ShortName/ToLong.
+func (d *Drive) meta() fs.MetaEngine { return d.sh.FS().Meta() }
 
 // ReadOnly reports whether the drive rejects writes.
 func (d *Drive) ReadOnly() bool { return d.sh.ReadOnly() }
@@ -94,7 +83,7 @@ func (d *Drive) resolvePath(wirePath string) string {
 	if norm == "" {
 		return ""
 	}
-	ne := d.names()
+	me := d.meta()
 	var elems []string
 	dir := ""
 	for el := range strings.SplitSeq(norm, "/") {
@@ -112,10 +101,8 @@ func (d *Drive) resolvePath(wirePath string) string {
 		// ToLong returns the input unchanged when there is no binding (a real host
 		// name the client typed directly), so this is safe for both.
 		resolved := el
-		if ne != nil {
-			if long, ok := ne.ToLong(dir, el, fs.ShortName); ok {
-				resolved = long
-			}
+		if long, ok := me.ToLong(dir, el, fs.ShortName); ok {
+			resolved = long
 		}
 		elems = append(elems, resolved)
 		dir = strings.Join(elems, "/")

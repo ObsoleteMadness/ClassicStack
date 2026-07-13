@@ -104,9 +104,9 @@ func TestPortDispatchesAddressedFrame(t *testing.T) {
 	p := newTestPort(t, srcMAC, fl)
 
 	var gotOpcode uint8
-	p.SetHandler(func(req proto.Frame) []byte {
+	p.SetHandler(func(req proto.Frame) (uint16, []byte, bool) {
 		gotOpcode = req.Opcode
-		return proto.StatusReply(proto.ErrNone)
+		return proto.ErrNone, nil, true
 	})
 
 	if err := p.Start(context.Background()); err != nil {
@@ -138,13 +138,16 @@ func TestPortAcceptsBroadcast(t *testing.T) {
 	client := [6]byte{0x02, 0, 0, 0, 0, 0x99}
 	fl := &fakeFrameLink{}
 	p := newTestPort(t, srcMAC, fl)
-	p.SetHandler(func(req proto.Frame) []byte { return proto.StatusReply(proto.ErrNone) })
+	p.SetHandler(func(req proto.Frame) (uint16, []byte, bool) { return proto.ErrNone, nil, true })
 	_ = p.Start(context.Background())
 	defer p.Stop(context.Background())
 
-	fl.push(buildReq(broadcastMAC, client, proto.OpInstallChk, nil))
+	// The reference client's auto-discovery broadcasts an ordinary AL_DISKSPACE
+	// query (no dedicated discovery opcode exists on the wire) and learns the
+	// server's MAC from whichever reply arrives.
+	fl.push(buildReq(broadcastMAC, client, proto.OpDiskspace, nil))
 	if !waitFor(func() bool { _, ok := fl.sent0(); return ok }) {
-		t.Fatal("broadcast (install check) frame was not answered")
+		t.Fatal("broadcast (auto-discovery) frame was not answered")
 	}
 }
 
@@ -156,7 +159,7 @@ func TestPortIgnoresForeignMAC(t *testing.T) {
 	p := newTestPort(t, srcMAC, fl)
 
 	called := false
-	p.SetHandler(func(req proto.Frame) []byte { called = true; return proto.StatusReply(0) })
+	p.SetHandler(func(req proto.Frame) (uint16, []byte, bool) { called = true; return 0, nil, true })
 	_ = p.Start(context.Background())
 	defer p.Stop(context.Background())
 
@@ -174,7 +177,7 @@ func TestPortIgnoresWrongEtherType(t *testing.T) {
 	fl := &fakeFrameLink{}
 	p := newTestPort(t, srcMAC, fl)
 	called := false
-	p.SetHandler(func(req proto.Frame) []byte { called = true; return proto.StatusReply(0) })
+	p.SetHandler(func(req proto.Frame) (uint16, []byte, bool) { called = true; return 0, nil, true })
 	_ = p.Start(context.Background())
 	defer p.Stop(context.Background())
 
@@ -187,13 +190,25 @@ func TestPortIgnoresWrongEtherType(t *testing.T) {
 	}
 }
 
-func TestDisabledSectionYieldsNilPort(t *testing.T) {
+func TestDisabledSectionBuildsInertPort(t *testing.T) {
+	// A disabled section still builds the port (the MacIP pattern): the component
+	// exists so the dashboard can show it Disabled and the operator can enable it
+	// live. It must report Enabled()==false and Start inert (nil opener → no link).
 	sec := &port.Section{SKey: Name, IsEnabled: false}
 	p, err := NewInstanceFromOpener(sec, nil, [6]byte{}, log.New(Name))
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if p != nil {
-		t.Error("disabled section should yield a nil port")
+	if p == nil {
+		t.Fatal("disabled section should still build the port")
+	}
+	if p.Enabled() {
+		t.Error("disabled section: Enabled() = true, want false")
+	}
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("inert Start: %v", err)
+	}
+	if err := p.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
 	}
 }

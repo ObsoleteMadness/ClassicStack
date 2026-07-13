@@ -14,7 +14,7 @@ func buildCoordShare(t *testing.T) fs.ForkFS {
 	ffs, err := fs.BuildShare(fs.ShareSpec{
 		FSType:      "memfs",
 		ForkBackend: fs.ForkAppleDoubleDefault,
-		NameEngine:  "short",
+		MetaBackend: "metastore",
 	}, nil)
 	if err != nil {
 		t.Fatalf("BuildShare: %v", err)
@@ -55,11 +55,7 @@ func TestReactorCoordinate_ReDerivesShortnameOnForeignRename(t *testing.T) {
 	r := NewReactor("afp", func() []NamedPath { return []NamedPath{np} }, nil)
 
 	// A long name with no prior mapping: before coordination the engine has not bound it.
-	named, ok := ffs.(fs.Named)
-	if !ok {
-		t.Fatal("share FS is not fs.Named")
-	}
-	ne := named.Names()
+	me := ffs.Meta()
 
 	// Simulate SMB renaming "dir/old.txt" -> "dir/a-very-long-new-name.txt" on the shared
 	// host path; the AFP reactor coordinates.
@@ -72,8 +68,8 @@ func TestReactorCoordinate_ReDerivesShortnameOnForeignRename(t *testing.T) {
 	r.coordinate(np, ev)
 
 	// The new name now has a derived shortname bound (idempotent + stable on re-lookup).
-	first := ne.Bind("dir", "a-very-long-new-name.txt", fs.ShortName)
-	second := ne.Bind("dir", "a-very-long-new-name.txt", fs.ShortName)
+	first := me.ShortName("dir", "a-very-long-new-name.txt")
+	second := me.ShortName("dir", "a-very-long-new-name.txt")
 	if first == "" || first != second {
 		t.Fatalf("shortname not stable after coordinate: %q vs %q", first, second)
 	}

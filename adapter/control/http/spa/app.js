@@ -357,8 +357,8 @@ class CsSetup extends HTMLElement {
 const DASHBOARD_GROUPS = [
   { id: "appletalk", label: "AppleTalk router", desc: "Routing, zones, name binding, gateways",
     members: ["Router", "RTMP", "ZIP", "NBP", "AEP", "MacIP", "IPXGW", "IPXDiag"] },
-  { id: "fileservices", label: "File & print services", desc: "AFP, SMB, NetBIOS, browsing",
-    members: ["AFP", "SMB", "SMB-TCP", "NetBIOS", "Browser", "Messenger"] },
+  { id: "fileservices", label: "File & print services", desc: "AFP, SMB, NCP, EtherDFS, NetBIOS, browsing",
+    members: ["AFP", "SMB", "SMB-TCP", "NCP", "EtherDFS", "NetBIOS", "Browser", "Messenger"] },
   { id: "transports", label: "Transports", desc: "Link-layer ports (zone / network seed)",
     members: ["EtherTalk", "LToUDP", "TashTalk", "IPX", "NetBEUI"],
     match: (u) => (u.Kind === "port") },
@@ -807,7 +807,7 @@ const FIELD_META = {
   DefaultZone: { label: "Default zone", desc: "The AppleTalk zone the router advertises when a port seeds none." },
   Members: { label: "Members", desc: "The components that participate." },
   // AFP server
-  ServerName: { label: "Server name", desc: "AppleTalk/Chooser name. Empty falls back to the host name." },
+  ServerName: { label: "Server name", desc: "Name advertised to clients (AFP Chooser / EtherDFS install check). Empty falls back to the host name." },
   Zone: { label: "Zone", desc: "AppleTalk zone this service advertises into. Empty = the router's default zone." },
   Transports: { label: "Transports", desc: "Which transport stacks to bind. Empty = bind all built transports." },
   TCPAddr: { label: "TCP listen address", desc: "Explicit host:port for the TCP transport (never an implicit privileged port)." },
@@ -829,9 +829,15 @@ const FIELD_META = {
   Device: { label: "Device", desc: "Serial device path (COM3 / /dev/ttyUSB0)." },
   Baud: { label: "Baud rate", desc: "Serial line speed. 0 = adapter default." },
   Default: { label: "Default interface", desc: "Ports that name no interface of their own inherit this one. At most one entry should be the default." },
-  // AFP volume / SMB share
+  // AFP volume / SMB share / EtherDFS drive
   VName: { label: "Volume name", desc: "Display name shown to AFP clients." },
   SName: { label: "Share name", desc: "Display name shown to SMB clients." },
+  DName: { label: "Drive letter", desc: "The DOS drive letter (A–Z) this export is addressed by; EtherDFS clients map a local letter to it." },
+  ForkBackend: { label: "Fork backend", desc: "How resource forks / Finder info are stored (appledouble · ads · xattr · native · auto)." },
+  FilenameCodec: { label: "Filename codec", desc: "Wire↔store filename translation. Empty = default." },
+  NameEngine: { label: "Name engine", desc: "Short/long name mapping; \"short\" serves DOS-style 8.3 names (the EtherDFS default)." },
+  Metastore: { label: "Metastore", desc: "Where IDs/short-name mappings persist (mem default; sqlite for a durable store)." },
+  DOSAttrBackend: { label: "DOS attribute backend", desc: "How DOS RO/HID/SYS/ARCH bits the host cannot represent are persisted (auto · metastore · sidecar · native · xattr)." },
   Path: { label: "Path", desc: "Host directory backing this share." },
   FSType: { label: "Filesystem type", desc: "Storage backend (local_fs, memfs, …)." },
   ReadOnly: { label: "Read-only", desc: "Export the whole share read-only." },
@@ -1091,6 +1097,9 @@ const LIST_ONLY_CONFIG = {
 // dropdown plus its zone/network seed fields surfaced.
 function formOptionsFor(name, model) {
   const opts = { overrides: {}, hide: new Set() };
+  // SKey is the section's schema key — server-side identity, never operator-editable.
+  // Hidden fields round-trip verbatim through collect(), so hiding it everywhere is safe.
+  opts.hide.add("SKey");
   if (name === "Router") {
     opts.overrides.Members = (v) => checkboxList("Members — AppleTalk ports that join this router",
       portInstanceNames(model), v, "The AppleTalk transport ports (EtherTalk / LToUDP / TashTalk) that participate in RTMP + ZIP forwarding. A checked port routes; an unchecked one runs standalone on its own segment. Each port's seed zone/network define its segment.");
@@ -1179,8 +1188,9 @@ const SERVER_DEFAULTS = {
   SMB: { Transports: [], TCPAddr: "" },
   NetBIOS: { Transports: [], ScopeID: "", NBTAddr: "" },
   // EtherDFS is BOTH the wire endpoint and the file server, so its singleton section
-  // carries the NIC binding (Interface/MAC/IsEnabled) plus the advertised name.
-  EtherDFS: { IsEnabled: false, Interface: "", MAC: "", ServerName: "" },
+  // carries the NIC binding (Interface/MAC/IsEnabled) plus the advertised name and
+  // its own pcap capture path (same shape as a transport port's Capture/CaptureSnaplen).
+  EtherDFS: { IsEnabled: false, Interface: "", MAC: "", ServerName: "", Capture: "", CaptureSnaplen: 0 },
   // MacIP (IP-over-AppleTalk) gateway: synthesised with its full field shape so it is
   // configurable on a fresh install. Mirrors macip.Section (toml keys → Go field names).
   MacIP: {
@@ -1228,6 +1238,12 @@ class CsConfigBase extends HTMLElement {
   // config-builder can offer the first Add. Falls back to false when /schemas is absent.
   buildHasSchema(key) {
     return ((this.schemas && this.schemas.repeated) || []).includes(key);
+  }
+  // buildHasSingleton is the singleton-section counterpart: true when this build
+  // registered the singleton schema (e.g. [EtherDFS]) — so its panel can be offered
+  // (synthesised from SERVER_DEFAULTS) even before any section is stored.
+  buildHasSingleton(key) {
+    return ((this.schemas && this.schemas.singleton) || []).includes(key);
   }
   // saveBar is the shared Save-to-disk / Download-server.toml row every config tab
   // carries: a change applied live on any tab is persisted for the WHOLE model here.
@@ -1289,7 +1305,9 @@ class CsConfigBase extends HTMLElement {
     const m = this.model;
     let sec = (m[key] && typeof m[key] === "object") ? m[key]
       : (m.Sections && m.Sections[key]) || null;
-    if (!sec && SERVER_DEFAULTS[key] && this.hasComponent(key)) sec = { ...SERVER_DEFAULTS[key] };
+    if (!sec && SERVER_DEFAULTS[key] && (this.hasComponent(key) || this.buildHasSingleton(key))) {
+      sec = { ...SERVER_DEFAULTS[key] };
+    }
     if (!sec) return null;
     return this.sectionPanel(key, key, sec, open);
   }
@@ -1299,7 +1317,7 @@ class CsConfigBase extends HTMLElement {
   listEditor(key) {
     const owner = LIST_OWNERS[key] || key;
     const lists = this.model.Lists || {};
-    if (!this.hasComponent(owner) && !lists[key]) return null;
+    if (!this.hasComponent(owner) && !lists[key] && !this.buildHasSchema(key)) return null;
     return new CsInstanceEditor(key, owner, lists[key] || [], () => this.activate(), this.model);
   }
 
@@ -1406,7 +1424,11 @@ class CsSharingTab extends CsConfigBase {
     ];
     let any = false;
     for (const svc of services) {
-      const built = this.hasComponent(svc.name) || (this.model.Lists || {})[svc.list];
+      // Show a file service when its component is built, it already has volumes/shares
+      // in the model, or this BUILD registered its schema (so a fresh install can
+      // configure e.g. EtherDFS before it has ever been enabled).
+      const built = this.hasComponent(svc.name) || (this.model.Lists || {})[svc.list]
+        || this.buildHasSchema(svc.list);
       if (!built) continue;
       any = true;
       out.push(el("h3", { class: "group-head" }, [svc.name]));
@@ -1532,9 +1554,10 @@ class CsInstanceEditor extends HTMLElement {
 }
 
 // instName returns a repeated instance's name, trying the Go field names the JSON uses
-// (VName for AFP volumes, SName for SMB shares) and the generic Name/name fallbacks.
+// (VName for AFP/NCP volumes, SName for SMB shares, DName for EtherDFS drives) and the
+// generic Name/name fallbacks.
 function instName(inst) {
-  return inst.VName || inst.SName || inst.Name || inst.name || "";
+  return inst.VName || inst.SName || inst.DName || inst.Name || inst.name || "";
 }
 
 function formatBytes(bytes) {
@@ -1572,6 +1595,13 @@ async function openInstanceModal(key, owner, inst, onChange, model) {
   // serial-port list for its Device dropdown. Volume/share instances pass neither.
   const isPort = AT_PORT_KEYS.includes(key) || PROTO_PORT_KEYS.includes(key);
   const opts = isPort && model ? formOptionsFor(key, model) : { overrides: {}, hide: new Set() };
+  if (key === "EtherDFSDrives") {
+    // An EtherDFS drive is addressed by its DOS drive letter — the name IS the letter
+    // (A–Z), so offer the alphabet rather than free text. Clients map a local letter
+    // onto this remote one.
+    opts.overrides.DName = (v) => dropdown(fieldMeta("DName").label,
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split(""), v, fieldMeta("DName").desc);
+  }
   if (key === "TashTalk") {
     opts.serialDevice = true;
     opts.serialPorts = (await api.serialPorts().catch(() => []))
@@ -1584,8 +1614,20 @@ async function openInstanceModal(key, owner, inst, onChange, model) {
     status.textContent = ""; status.className = "err";
     const section = form.collect();
     try {
-      if (isNew) await api.addInstance(owner, key, section);
-      else await api.reconfigure(key, section);
+      if (isNew) {
+        await api.addInstance(owner, key, section);
+      } else if (LIST_OWNERS[key]) {
+        // A volume/share/drive EDIT re-stages the instance under its OWNER via
+        // add_instance (replace-by-name): /reconfigure addresses a supervised
+        // component, and a list key ("AFPVolumes") is not one — the owner is.
+        // A rename drops the old instance first so it does not linger beside the
+        // renamed copy.
+        const prev = instName(inst), next = instName(section);
+        if (prev && next && prev !== next) await api.removeInstance(owner, key, prev);
+        await api.addInstance(owner, key, section);
+      } else {
+        await api.reconfigure(key, section);
+      }
       status.className = "ok-msg"; status.textContent = "Saved.";
       setTimeout(() => { close(); onChange(); }, 500);
     } catch (e) { status.textContent = e.message; }

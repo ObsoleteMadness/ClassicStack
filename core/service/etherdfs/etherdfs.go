@@ -60,6 +60,7 @@ type Service struct {
 	mu       sync.Mutex
 	drives   map[uint8]*Drive // by drive number (0=A … 25=Z)
 	server   string
+	nameFor  func() string // fallback server name (Identity.Hostname) for a hot-apply with no section name
 	busFor   func(fs.ShareSpec) bus.Bus
 	resolver func() ([]DriveSpec, error)
 
@@ -125,6 +126,15 @@ func (s *Service) serverName() string {
 	return defaultServerName
 }
 
+// SetServerNameResolver installs the fallback the advertised name re-resolves
+// through when a hot-applied ServerSection carries no server_name (the shared
+// Identity.Hostname; §4-bis). nil keeps the built-in CLASSICSTACK default.
+func (s *Service) SetServerNameResolver(f func() string) {
+	s.mu.Lock()
+	s.nameFor = f
+	s.mu.Unlock()
+}
+
 // SetBusResolver installs the resolver that returns the shared FS-mutation bus for
 // a drive's host path (§10d). Set BEFORE ReconcileDrives so the initial drive set
 // is built over the shared bus. nil = isolated drives.
@@ -140,6 +150,52 @@ func (s *Service) SetDriveResolver(f func() ([]DriveSpec, error)) {
 	s.mu.Lock()
 	s.resolver = f
 	s.mu.Unlock()
+}
+
+// ApplyConfig hot-applies a reconfigure (component.Configurable), overriding the
+// embedded port's so both section shapes the supervisor addresses to "EtherDFS"
+// land correctly:
+//
+//   - the singleton *ServerSection (the dashboard cog / Sharing-tab server panel):
+//     the advertised name applies live; the wire binding is projected onto a
+//     port.Section for the embedded port, which answers ErrNeedsRestart for a
+//     structural (interface) change. An enabled-flag flip is also answered with
+//     ErrNeedsRestart — the link is opened/closed per Start via the enabled-gated
+//     opener, so only a restart makes the flip take effect on the wire.
+//
+//   - a drive instance, or nil (the owner-notify after an add/remove/edit of an
+//     EtherDFSDrives entry): re-resolve the whole drive set from the model and
+//     reconcile, mirroring AFP/SMB/NCP.
+func (s *Service) ApplyConfig(section any) error {
+	if srv, ok := section.(*ServerSection); ok && srv != nil {
+		name := srv.ServerName
+		s.mu.Lock()
+		nameFor := s.nameFor
+		s.mu.Unlock()
+		if name == "" && nameFor != nil {
+			name = nameFor()
+		}
+		s.SetServerName(name)
+		wasEnabled := s.Port.Enabled()
+		if err := s.Port.ApplyConfig(srv.PortSection()); err != nil {
+			return err
+		}
+		if srv.IsEnabled != wasEnabled {
+			return component.ErrNeedsRestart
+		}
+		return nil
+	}
+	s.mu.Lock()
+	resolve := s.resolver
+	s.mu.Unlock()
+	if resolve == nil {
+		return component.ErrNeedsRestart
+	}
+	desired, err := resolve()
+	if err != nil {
+		return err
+	}
+	return s.ReconcileDrives(desired)
 }
 
 // ReconcileDrives builds the drive set from specs, replacing any current set. A
@@ -219,6 +275,19 @@ func (s *Service) Props() map[string]string {
 	return map[string]string{"drives": itoa(s.driveCount())}
 }
 
+// Stats overrides the embedded port's snapshot (component.Statful) to add the
+// file-service gauges — configured drives and live client sessions — on top of
+// the port's frame/byte counters, for the dashboard stats line.
+func (s *Service) Stats() component.Stats {
+	st := s.Port.Stats()
+	if st.Gauges == nil {
+		st.Gauges = map[string]float64{}
+	}
+	st.Gauges["drives"] = float64(s.driveCount())
+	st.Gauges["sessions"] = float64(s.sessions.count())
+	return st
+}
+
 // itoa formats a small non-negative int without importing strconv.
 func itoa(n int) string {
 	if n == 0 {
@@ -235,9 +304,12 @@ func itoa(n int) string {
 }
 
 // compile-time capability assertions: the embedded port supplies
-// Component/Enableable/Bindable/Statful/Metered/Configurable; the service adds
-// Describable and overrides Name/Stop.
+// Component/Enableable/Bindable/Metered; the service adds Describable and
+// overrides Name/Stop/Stats/ApplyConfig (Statful gains the drive/session gauges,
+// Configurable routes ServerSection + drive-set reconfigures).
 var (
-	_ component.Component   = (*Service)(nil)
-	_ component.Describable = (*Service)(nil)
+	_ component.Component    = (*Service)(nil)
+	_ component.Describable  = (*Service)(nil)
+	_ component.Statful      = (*Service)(nil)
+	_ component.Configurable = (*Service)(nil)
 )

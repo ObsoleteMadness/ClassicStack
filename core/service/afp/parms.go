@@ -79,7 +79,7 @@ func (v *Volume) packFileParams(out []byte, store string, info stdfs.FileInfo, b
 		out = bp.AppendBE32(out, v.ParentCNID(store))
 	}
 	if bitmap&fdBitmapCreateDate != 0 {
-		out = bp.AppendBE32(out, macTime(info.ModTime())) // no distinct create date in the seam
+		out = bp.AppendBE32(out, macTime(v.createTime(store, info)))
 	}
 	if bitmap&fdBitmapModDate != 0 {
 		out = bp.AppendBE32(out, macTime(info.ModTime()))
@@ -126,7 +126,7 @@ func (v *Volume) packDirParams(out []byte, store string, info stdfs.FileInfo, bi
 		out = bp.AppendBE32(out, v.ParentCNID(store))
 	}
 	if bitmap&fdBitmapCreateDate != 0 {
-		out = bp.AppendBE32(out, macTime(info.ModTime()))
+		out = bp.AppendBE32(out, macTime(v.createTime(store, info)))
 	}
 	if bitmap&fdBitmapModDate != 0 {
 		out = bp.AppendBE32(out, macTime(info.ModTime()))

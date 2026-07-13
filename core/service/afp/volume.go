@@ -4,6 +4,7 @@ import (
 	stdfs "io/fs"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
@@ -12,26 +13,32 @@ import (
 )
 
 // Volume is one AFP share: the AFP-facing id over a shared share.Share (the bound
-// fs.ForkFS + the config that built it) plus a metastore.CNIDStore for catalog
-// node ids. It holds NO storage-layout knowledge: it never imports path/filepath,
-// never branches on runtime.GOOS, and never knows whether forks live in
-// AppleDouble sidecars, NTFS streams, or Netatalk EAs — it reaches the filesystem
-// only through v.FS(). Its only additions over the shared share are the AFP id,
-// the CNID store, and the AFP wire-path codec threading.
+// fs.ForkFS + the config that built it), reaching CNID tracking through the
+// share's own fs.MetaEngine (sh.FS().Meta()) rather than a separate store — a
+// same-share AFP volume and SMB share now see the SAME CNID/name/attr state
+// instead of two disconnected metastore instances. It holds NO storage-layout
+// knowledge: it never imports path/filepath, never branches on runtime.GOOS, and
+// never knows whether forks live in AppleDouble sidecars, NTFS streams, or
+// Netatalk EAs — it reaches the filesystem only through v.FS(). Its only
+// additions over the shared share are the AFP id and the AFP wire-path codec
+// threading.
 //
 // Store paths are always '/'-separated regardless of host (the FileSystem and
-// CNIDStore both use this convention); the codec's ReservedSet — not the volume —
+// MetaEngine both use this convention); the codec's ReservedSet — not the volume —
 // decides which characters a given backend can hold.
 type Volume struct {
-	id    uint16
-	sh    *share.Share
-	cnids *metastore.CNIDStore
+	id uint16
+	sh *share.Share
 
 	dtOnce sync.Once
 	dt     *desktopDB // lazily-built Desktop database (icons + APPL mappings)
 
 	extMap *ExtensionMap // default type/creator by extension; nil = none
 }
+
+// meta returns the share's mandatory MetaEngine — the single source of CNID
+// tracking (and derived names/attrs) for this volume.
+func (v *Volume) meta() fs.MetaEngine { return v.sh.FS().Meta() }
 
 // SetExtensionMap installs the extension→type/creator map this volume consults to
 // default Finder info for files that have none stored. A nil map disables defaulting.
@@ -63,8 +70,11 @@ func NewVolume(spec VolumeSpec) (*Volume, error) {
 // share.Build over the supplied FS-mutation bus (§10d): when an AFP volume and an
 // SMB share back the same host path, the service hands them the SAME bus so a
 // mutation by one reaches the other. A nil bus means "isolated" (share.Build then
-// makes a private one). It binds a CNIDStore over the same metastore kind the share
-// declares.
+// makes a private one). CNID tracking rides the share's own fs.MetaEngine
+// (sh.FS().Meta()) — the ONE metastore.Store BuildShare already opened for
+// names/CNID/attrs — instead of this volume opening a second, disconnected
+// store as it did before the MetaEngine consolidation. A same-bus SMB share
+// therefore sees the identical CNID/name/attr state, not a separate copy.
 func NewVolumeWithBus(spec VolumeSpec, b bus.Bus) (*Volume, error) {
 	spec.Share.Name = spec.Name
 	// Stamp this service's origin onto the FS mutations this volume produces, so a
@@ -75,18 +85,14 @@ func NewVolumeWithBus(spec VolumeSpec, b bus.Bus) (*Volume, error) {
 		return nil, err
 	}
 
-	// CNID tracking rides the same metastore kind the share declares, so a
-	// mem-snapshotted volume and a sqlite volume preserve CNIDs identically
-	// across restarts (spec/16 §3). An empty path keeps it volatile.
-	store, err := metastore.Open(metastoreKind(spec.Share), "")
-	if err != nil {
-		return nil, err
-	}
-	cnids := metastore.NewCNIDStore(store)
 	// The root directory always exists and owns the well-known root CNID.
-	cnids.EnsureReserved("", cnids.RootID())
+	// BuildShare's MetaEngine already reserves it (meta_store.go/meta_xattr.go/
+	// meta_ads.go all call EnsureReserved("", RootID()) at construction), but the
+	// call is idempotent so repeating it here is harmless and self-documenting.
+	meta := sh.FS().Meta()
+	meta.EnsureCNID("")
 
-	return &Volume{id: spec.ID, sh: sh, cnids: cnids}, nil
+	return &Volume{id: spec.ID, sh: sh}, nil
 }
 
 // ID returns the AFP volume id.
@@ -123,15 +129,6 @@ func (v *Volume) ensureDesktop() { v.dtOnce.Do(func() { v.dt = newDesktopDB() })
 func (v *Volume) desktop() *desktopDB {
 	v.ensureDesktop()
 	return v.dt
-}
-
-// metastoreKind returns the metastore kind a share's CNID store should use,
-// defaulting to "mem" so the CNID registry works with no SQLite linked.
-func metastoreKind(spec fs.ShareSpec) string {
-	if spec.Metastore != "" {
-		return spec.Metastore
-	}
-	return "mem"
 }
 
 // --- AFP-specific path/CNID operations; catalog ops are FS ops via v.FS() ---
@@ -184,12 +181,12 @@ func (v *Volume) EncodeName(stored string, pathType uint8) ([]byte, error) {
 }
 
 // CNID returns the catalog node id for a store path, allocating one on first
-// sight. The mapping rides the volume's metastore, so it persists according to
+// sight. The mapping rides the share's MetaEngine, so it persists according to
 // the store kind without the volume knowing which.
-func (v *Volume) CNID(path string) uint32 { return v.cnids.Ensure(path) }
+func (v *Volume) CNID(path string) uint32 { return v.meta().EnsureCNID(path) }
 
 // PathForCNID reverses CNID: the store path a node id maps to.
-func (v *Volume) PathForCNID(cnid uint32) (string, bool) { return v.cnids.Path(cnid) }
+func (v *Volume) PathForCNID(cnid uint32) (string, bool) { return v.meta().PathForCNID(cnid) }
 
 // ParentCNID returns the catalog node id of a path's parent directory. The
 // volume root's parent is the synthetic CNIDParentOfRoot (1), per AFP (Inside
@@ -198,7 +195,7 @@ func (v *Volume) ParentCNID(path string) uint32 {
 	if path == "" {
 		return metastore.CNIDParentOfRoot
 	}
-	return v.cnids.Ensure(ascend(path))
+	return v.meta().EnsureCNID(ascend(path))
 }
 
 // Enumerate lists the children of a directory as store-native dir entries.
@@ -241,6 +238,18 @@ func (v *Volume) FinderInfo(path string) (info [32]byte, ok bool) {
 // engine (the write side of FinderInfo, used by FPSetFileDirParms/Set*Parms).
 func (v *Volume) SetFinderInfo(path string, info [32]byte) error {
 	return v.FS().WriteFinderInfo(path, info)
+}
+
+// createTime returns a path's stored DOS/AFP creation time via the share's
+// MetaEngine, falling back to the host mtime when nothing is stored (first-ever
+// stat of a file that predates the MetaEngine attrs, or a MetaEngine backend
+// whose attrs store declined for this path). No POSIX filesystem records a
+// distinct creation time, so this is the only source of a real one.
+func (v *Volume) createTime(path string, info stdfs.FileInfo) time.Time {
+	if attr, ok := v.meta().Attrs(path); ok && !attr.CreateTime.IsZero() {
+		return attr.CreateTime
+	}
+	return info.ModTime()
 }
 
 // ShortName returns the volume's 8.3-style short name for a path's final
@@ -292,8 +301,7 @@ func (v *Volume) renamePath(old, new string) error {
 	if err := v.FS().Rename(old, new); err != nil {
 		return err
 	}
-	v.cnids.Rebind(old, new)
-	return nil
+	return v.meta().RebindCNID(old, new)
 }
 
 // removePath deletes a path inside the volume (data + metadata, via the FS) and
@@ -302,8 +310,7 @@ func (v *Volume) removePath(path string) error {
 	if err := v.FS().Remove(path); err != nil {
 		return err
 	}
-	v.cnids.Remove(path)
-	return nil
+	return v.meta().RemoveCNID(path)
 }
 
 // --- store-path helpers (no path/filepath: store paths are always '/'-joined) ---

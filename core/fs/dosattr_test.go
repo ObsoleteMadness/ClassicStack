@@ -5,36 +5,52 @@ import (
 	"testing"
 )
 
-// buildLocalShare builds a local_fs-backed share over a temp dir with the given
-// DOS-attr backend, returning the share and the temp dir.
-func buildLocalShare(t *testing.T, backend string) (ForkFS, string) {
+// buildLocalShare builds a local_fs-backed share over a temp dir with the
+// metastore MetaEngine backend, returning the share and the temp dir.
+func buildLocalShare(t *testing.T) (ForkFS, string) {
 	t.Helper()
 	dir := t.TempDir()
 	sh, err := BuildShare(ShareSpec{
-		Name:           "T",
-		FSType:         "local_fs",
-		NameEngine:     "short",
-		Metastore:      "mem",
-		Path:           dir,
-		DOSAttrBackend: backend,
+		Name:        "T",
+		FSType:      "local_fs",
+		MetaBackend: "metastore",
+		Metastore:   "mem",
+		Path:        dir,
 	}, nil)
 	if err != nil {
-		t.Fatalf("BuildShare(%q): %v", backend, err)
+		t.Fatalf("BuildShare: %v", err)
 	}
 	return sh, dir
 }
 
-func TestBuildShareExposesDOSAttrsAndNames(t *testing.T) {
-	sh, _ := buildLocalShare(t, "metastore")
-	if _, ok := sh.(DOSAttred); !ok {
-		t.Error("built share does not expose DOSAttred")
-	}
-	if _, ok := sh.(Named); !ok {
-		t.Error("built share does not expose Named")
+func TestBuildShareExposesMetaEngine(t *testing.T) {
+	sh, _ := buildLocalShare(t)
+	if sh.Meta() == nil {
+		t.Error("built share does not expose a MetaEngine")
 	}
 	if _, ok := sh.(HostPather); !ok {
 		t.Error("local_fs-backed share should expose HostPather")
 	}
+}
+
+// buildLocalDOSAttrStore builds a local_fs base FileSystem over a temp dir and
+// a DOSAttrStore through buildDOSAttrStore directly (the internal seam every
+// MetaEngine backend's Attrs/SetAttrs/DeleteAttrs/RenameAttrs wraps), so this
+// test can drive each dos-attr backend name without a MetaBackend selector for
+// it in ShareSpec.
+func buildLocalDOSAttrStore(t *testing.T, backend string) (DOSAttrStore, FileSystem, string) {
+	t.Helper()
+	dir := t.TempDir()
+	spec := ShareSpec{Name: "T", FSType: "local_fs", Path: dir}
+	f, ok := lookupFactory(spec.FSType)
+	if !ok {
+		t.Fatalf("no factory for %q", spec.FSType)
+	}
+	base, err := f(spec, NewBus(0), nil)
+	if err != nil {
+		t.Fatalf("build base fs: %v", err)
+	}
+	return buildDOSAttrStore(backend, base, nil, nil), base, dir
 }
 
 func TestDOSAttrStoreThroughShare(t *testing.T) {
@@ -42,8 +58,7 @@ func TestDOSAttrStoreThroughShare(t *testing.T) {
 	// host-gated and covered by the build matrix).
 	for _, backend := range []string{"metastore", "sidecar", "auto"} {
 		t.Run(backend, func(t *testing.T) {
-			sh, dir := buildLocalShare(t, backend)
-			da := sh.(DOSAttred).DOSAttrs()
+			da, _, dir := buildLocalDOSAttrStore(t, backend)
 
 			// Create a real file so sidecar/host backends have something to attach to.
 			if err := os.WriteFile(dir+string(os.PathSeparator)+"FILE.TXT", []byte("x"), 0o644); err != nil {
@@ -82,8 +97,7 @@ func TestDOSAttrStoreThroughShare(t *testing.T) {
 func TestSidecarDOSAttrBlobIsSambaCompatible(t *testing.T) {
 	// The sidecar writes the same XATTR_DOSINFO blob Samba uses, so the bytes a
 	// sidecar produced decode back through the metastore codec.
-	sh, dir := buildLocalShare(t, "sidecar")
-	da := sh.(DOSAttred).DOSAttrs()
+	da, _, dir := buildLocalDOSAttrStore(t, "sidecar")
 	if err := os.WriteFile(dir+string(os.PathSeparator)+"S.TXT", []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}

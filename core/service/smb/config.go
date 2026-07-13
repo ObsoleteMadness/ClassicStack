@@ -40,14 +40,12 @@ type ShareSection struct {
 	ForkBackend string `toml:"fork_backend"`
 	// FilenameCodec selects the wire↔store name codec.
 	FilenameCodec string `toml:"filename_codec"`
-	// NameEngine selects the short/medium name engine.
-	NameEngine string `toml:"name_engine"`
 	// Metastore selects the CNID/shortname store kind ("mem" default).
 	Metastore string `toml:"metastore"`
-	// DOSAttrBackend selects how DOS attributes (RO/HID/SYS/ARCH) that the host
-	// cannot represent are persisted: auto|metastore|sidecar|native|xattr (empty =
-	// auto). See fs.ShareSpec.DOSAttrBackend.
-	DOSAttrBackend string `toml:"dos_attr_backend"`
+	// MetaBackend selects the share's MetaEngine (derived names, CNIDs, DOS
+	// attributes RO/HID/SYS/ARCH): "metastore"|"xattr"|"ads" (empty = per-platform
+	// default). See fs.ShareSpec.MetaBackend.
+	MetaBackend string `toml:"meta_backend"`
 	// Path is the backend location (host directory for local_fs, …).
 	Path string `toml:"path"`
 	// ReadOnly makes the whole share read-only (share-wide, not per-user).
@@ -123,16 +121,15 @@ func (s *ShareSection) Validate() error {
 // non-empty key reads as a present-but-empty value, a bare "" key is dropped.
 func (s *ShareSection) fsSpec() fs.ShareSpec {
 	spec := fs.ShareSpec{
-		Name:           s.SName,
-		FSType:         s.FSType,
-		ForkBackend:    s.ForkBackend,
-		FilenameCodec:  s.FilenameCodec,
-		NameEngine:     s.NameEngine,
-		Metastore:      s.Metastore,
-		DOSAttrBackend: s.DOSAttrBackend,
-		Path:           s.Path,
-		ReadOnly:       s.ReadOnly,
-		AllowedUsers:   append([]string(nil), s.AllowedUsers...),
+		Name:          s.SName,
+		FSType:        s.FSType,
+		ForkBackend:   s.ForkBackend,
+		FilenameCodec: s.FilenameCodec,
+		Metastore:     s.Metastore,
+		MetaBackend:   s.MetaBackend,
+		Path:          s.Path,
+		ReadOnly:      s.ReadOnly,
+		AllowedUsers:  append([]string(nil), s.AllowedUsers...),
 	}
 	if len(s.Options) > 0 {
 		extra := make(map[string]any, len(s.Options))

@@ -1,6 +1,9 @@
 package fs
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestDerivedNameEngine_ShortNameRoundTrip(t *testing.T) {
 	e := NewDerivedNameEngine(nil)
@@ -17,6 +20,21 @@ func TestDerivedNameEngine_ShortNameRoundTrip(t *testing.T) {
 	long, ok := e.ToLong("dir", short, ShortName)
 	if !ok || long != "LongFileName.txt" {
 		t.Fatalf("ToLong(%q) = %q ok=%v", short, long, ok)
+	}
+}
+
+func TestDerivedNameEngine_ShortNameAlreadyValidUnchanged(t *testing.T) {
+	e := NewDerivedNameEngine(nil)
+	for _, long := range []string{"rp9.exe", "README.TXT", "A.B", "FILENAME.EXE"} {
+		if short := e.Bind("dir", long, ShortName); short != strings.ToUpper(long) {
+			t.Fatalf("Bind(%q) = %q, want unchanged %q", long, short, strings.ToUpper(long))
+		}
+	}
+	// A later long name that WOULD derive to the same base still gets a suffix
+	// instead of colliding with the as-is binding.
+	other := e.Bind("dir", "RP9x.exe", ShortName)
+	if other == "RP9.EXE" {
+		t.Fatalf("collision: second name reused the as-is short name %q", other)
 	}
 }
 

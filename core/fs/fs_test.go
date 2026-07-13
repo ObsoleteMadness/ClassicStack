@@ -58,7 +58,7 @@ func TestBuildShare_ValidAndInvalidCombinations(t *testing.T) {
 		FSType:        "memfs",
 		ForkBackend:   "appledouble",
 		FilenameCodec: "identity",
-		NameEngine:    "passthrough",
+		MetaBackend:   "metastore",
 		Metastore:     "mem",
 	}, nil); err != nil {
 		t.Fatalf("valid share rejected: %v", err)

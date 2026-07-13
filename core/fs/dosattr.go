@@ -7,13 +7,16 @@ import (
 	"os"
 	"strings"
 
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/metastore"
 )
 
-// DOSAttrStore is the per-share DOS-attribute facade the file services reach
-// through the built share (type-assert the ForkFS to DOSAttred). It is an alias of
-// the metastore facade type so a service imports one name; the concrete backend is
-// selected at BuildShare time per the share's dos_attr_backend.
+// DOSAttrStore is the DOS-attribute facade a MetaEngine backend wraps
+// internally (meta_store.go/meta_xattr.go/meta_ads.go); file services reach it
+// through the built share's Meta().Attrs/SetAttrs/DeleteAttrs/RenameAttrs, not
+// this type directly. It is an alias of the metastore facade type so a MetaEngine
+// backend imports one name; the concrete backend is selected at BuildShare time
+// per the share's meta_backend.
 type DOSAttrStore = metastore.DOSAttrStore
 
 // DOSAttr re-exports the metastore value type so a service need not import
@@ -35,29 +38,13 @@ const (
 	DOSStorableMask = metastore.DOSStorableMask
 )
 
-// DOSAttred is the optional interface a built share satisfies when it carries a
-// DOS-attribute store. A file service type-asserts the ForkFS to it (like Coded /
-// HostPather); a share whose backend declines leaves the assertion failing and the
-// service derives attributes from the entry instead.
-type DOSAttred interface {
-	DOSAttrs() DOSAttrStore
-}
-
-// Named is the optional interface a built share satisfies to expose its NameEngine
-// directly, so a file service can REVERSE a derived name a client sent (8.3 from a
-// DOS client, 31-char medium from classic AFP) back to the stored host name —
-// FileSystem.ShortName/MediumName only go forward. EtherDFS uses this to resolve a
-// wire 8.3 path to the real host file; AFP/NCP use it for medium names.
-type Named interface {
-	Names() NameEngine
-}
-
-// dosAttrBackend names the DOS-attribute persistence backend a share selects via
-// dos_attr_backend. "auto" picks the best host-interop backend available (native
-// on Windows, xattr where the host supports it) and always layers the metastore
-// as a cache; the explicit names force one. "metastore" is the definitive,
-// host-independent store; "sidecar" works on every filesystem; "native"/"xattr"
-// are host-interop backends gated by build/GOOS.
+// dosAttrBackend names the DOS-attribute persistence backend buildDOSAttrStore
+// selects internally (meta_store.go/meta_xattr.go/meta_ads.go each force one via
+// their dosBackend* constant). "auto" picks the best host-interop backend
+// available (native on Windows, xattr where the host supports it) and always
+// layers the metastore as a cache; the explicit names force one. "metastore" is
+// the definitive, host-independent store; "sidecar" works on every filesystem;
+// "native"/"xattr" are host-interop backends gated by build/GOOS.
 const (
 	dosBackendAuto      = "auto"
 	dosBackendMetastore = "metastore"
@@ -81,9 +68,13 @@ var (
 // buildDOSAttrStore assembles the DOS-attribute store for a share from its
 // configured backend over the share's metastore (the definitive cache) and the
 // base FileSystem (for host-path resolution / sidecar writes). An unknown backend
-// name falls back to "auto". The returned store is never nil.
-func buildDOSAttrStore(backend string, base FileSystem, store metastore.Store) DOSAttrStore {
-	cache := metastore.NewDOSAttrStore(store)
+// name falls back to "auto". The returned store is never nil. A nil logger gets a
+// no-op logger.
+func buildDOSAttrStore(backend string, base FileSystem, store metastore.Store, logger log.Logger) DOSAttrStore {
+	if logger == nil {
+		logger = log.New("dosattr")
+	}
+	cache := metastore.NewDOSAttrStore(store, logger)
 	host, _ := base.(HostPather)
 
 	switch strings.ToLower(strings.TrimSpace(backend)) {
@@ -139,12 +130,13 @@ func buildDOSAttrStore(backend string, base FileSystem, store metastore.Store) D
 // universal fallback. Reads consult the cache first, then the sidecar; writes
 // update both.
 type sidecarDOSAttrStore struct {
-	fs    FileSystem
-	cache DOSAttrStore
+	fs      FileSystem
+	cache   DOSAttrStore
+	logging log.Logger
 }
 
 func newSidecarDOSAttrStore(base FileSystem, cache DOSAttrStore) *sidecarDOSAttrStore {
-	return &sidecarDOSAttrStore{fs: base, cache: cache}
+	return &sidecarDOSAttrStore{fs: base, cache: cache, logging: log.New("dosattr.sidecar")}
 }
 
 // dosSidecarPath returns the ".dosattr/<base>" companion path for a store path.
@@ -160,12 +152,15 @@ func (s *sidecarDOSAttrStore) Get(path string) (DOSAttr, bool) {
 	if attr, ok := s.cache.Get(path); ok {
 		return attr, true
 	}
+	s.logging.Log1(log.Debug, "sidecar cache miss, reading companion file", log.Str("path", path))
 	b, err := readWhole(s.fs, dosSidecarPath(path))
 	if err != nil {
+		s.logging.Log1(log.Debug, "sidecar file miss", log.Str("path", path))
 		return DOSAttr{}, false
 	}
 	attr, err := metastore.DecodeDOSInfo(b)
 	if err != nil {
+		s.logging.Log2(log.Debug, "sidecar file decode failed", log.Str("path", path), log.Str("err", err.Error()))
 		return DOSAttr{}, false
 	}
 	_ = s.cache.Set(path, attr) // re-warm the cache

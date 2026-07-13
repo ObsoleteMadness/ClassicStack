@@ -88,42 +88,31 @@ func (sh *Share) FS() fs.ForkFS { return sh.sh.FS() }
 // no-op for a backend that owns none. Called at service Stop, not on RemoveShare.
 func (sh *Share) Close() error { return sh.sh.Close() }
 
-// dosAttrs returns the share's DOS-attribute store (the per-share backend
-// assembled by BuildShare), or nil when the share exposes none. SMB persists the
-// RO/HID/SYS/ARCH bits it cannot derive from the host through it.
-func (sh *Share) dosAttrs() fs.DOSAttrStore {
-	if da, ok := sh.sh.FS().(fs.DOSAttred); ok {
-		return da.DOSAttrs()
-	}
-	return nil
-}
+// meta returns the share's MetaEngine (the per-share names/CNID/DOS-attribute
+// facade assembled by BuildShare). It is mandatory — every ForkFS carries one —
+// so this never returns nil.
+func (sh *Share) meta() fs.MetaEngine { return sh.sh.FS().Meta() }
 
 // AttrsFor renders the DOS attribute word SMB reports for a store path: the
 // host-derived defaults (dosAttrs) OR-ed with any persisted RO/HID/SYS/ARCH bits
-// from the share's DOS-attribute store, so a Hidden/System bit a client set
-// survives even though the POSIX host cannot represent it. A directory keeps its
-// structural bit; the store contributes only the storable bits.
+// from the share's MetaEngine, so a Hidden/System bit a client set survives even
+// though the POSIX host cannot represent it. A directory keeps its structural
+// bit; the store contributes only the storable bits.
 func (sh *Share) AttrsFor(store string, info stdfs.FileInfo) uint16 {
 	a := dosAttrs(info)
-	if da := sh.dosAttrs(); da != nil {
-		if stored, ok := da.Get(store); ok {
-			a |= stored.Attrs & uint16(fs.DOSStorableMask)
-		}
+	if stored, ok := sh.meta().Attrs(store); ok {
+		a |= stored.Attrs & uint16(fs.DOSStorableMask)
 	}
 	return a
 }
 
 // SetAttrs persists the storable DOS attribute bits for a store path through the
-// share's DOS-attribute store. A share with no store (synthetic backend) silently
-// drops them. The structural bits are masked out.
+// share's MetaEngine. The structural bits are masked out.
 func (sh *Share) SetAttrs(store string, attrs uint16) error {
-	da := sh.dosAttrs()
-	if da == nil {
-		return nil
-	}
-	cur, _ := da.Get(store)
+	m := sh.meta()
+	cur, _ := m.Attrs(store)
 	cur.Attrs = attrs & uint16(fs.DOSStorableMask)
-	return da.Set(store, cur)
+	return m.SetAttrs(store, cur)
 }
 
 // codec is the share's FilenameCodec, threaded with the per-request wire charset.

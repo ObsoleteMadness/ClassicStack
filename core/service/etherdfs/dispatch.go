@@ -13,38 +13,41 @@ import (
 	proto "github.com/ObsoleteMadness/ClassicStack/core/protocol/etherdfs"
 )
 
-// dispatch routes one decoded request frame to its opcode handler and returns the
-// reply payload (or nil to send nothing). Retransmits — a frame whose sequence
+// dispatch routes one decoded request frame to its opcode handler and returns
+// the AX status word and reply payload. Retransmits — a frame whose sequence
 // matches the client's last handled sequence — replay the cached reply rather than
 // re-running the side effect (the reference server's dedup, important for
 // non-idempotent ops like WRITE/RENAME/DELETE over a lossy segment).
-func (s *Service) dispatch(req proto.Frame) []byte {
+//
+// There is no dedicated wire opcode for "discovery": the reference client's
+// auto-discovery (etherdfs "::") broadcasts an ordinary AL_DISKSPACE query for
+// the drive it is about to map and learns the server's MAC from whichever reply
+// arrives (see sendquery()'s updatermac in the reference client). AL_INSTALLCHK
+// (0x00) is a DOS-side INT 2Fh installation-check subfunction the client's TSR
+// handles locally by chaining to the previous handler — it is never sent over
+// the wire. So a normal drive lookup below is what makes discovery work; there
+// is deliberately no opcode-0x00 special case.
+func (s *Service) dispatch(req proto.Frame) (status uint16, payload []byte, ok bool) {
 	sess := s.sessions.get(req.SrcMAC)
 
-	// AL_INSTALLCHK is a stateless broadcast probe; answer it without touching the
-	// per-client sequence cache so an install check never evicts a real reply.
-	if req.Opcode == proto.OpInstallChk {
-		return s.handleInstallChk()
+	if cachedStatus, cachedPayload, hit := sess.cachedReply(req.Sequence); hit {
+		return cachedStatus, cachedPayload, true
 	}
 
-	if cached, ok := sess.cachedReply(req.Sequence); ok {
-		return cached
-	}
-
-	reply := s.handle(sess, req)
-	if reply != nil {
-		sess.cacheReply(req.Sequence, reply)
-	}
-	return reply
+	status, payload = s.handle(sess, req)
+	sess.cacheReply(req.Sequence, status, payload)
+	return status, payload, true
 }
 
-// handle dispatches a non-INSTALLCHK request against the addressed drive.
-func (s *Service) handle(sess *session, req proto.Frame) []byte {
+// handle dispatches a request against the addressed drive.
+func (s *Service) handle(sess *session, req proto.Frame) (status uint16, payload []byte) {
 	drv, ok := s.drive(req.Drive)
 	if !ok {
 		// No such drive: report path-not-found, the DOS error a redirector maps to
-		// "invalid drive".
-		return proto.StatusReply(proto.ErrPathNotFound)
+		// "invalid drive". This still answers (unlike the reference server, which
+		// silently drops an out-of-range/unmapped drive), so a discovery probe
+		// against any drive number gets a reply and learns our MAC.
+		return proto.ErrPathNotFound, nil
 	}
 
 	switch req.Opcode {
@@ -86,45 +89,38 @@ func (s *Service) handle(sess *session, req proto.Frame) []byte {
 		return s.handleChdir(drv, req.Payload)
 	case proto.OpLockfil, proto.OpUnlockfil:
 		// Lock/unlock are no-ops: this server does not enforce byte-range locks.
-		return proto.StatusReply(proto.ErrNone)
+		return proto.ErrNone, nil
+	case proto.OpInstallChk:
+		// Not sent by the reference client (see dispatch's doc comment), but
+		// answered harmlessly for any variant that does probe it: success plus
+		// the advertised server name, matching the reference server's tolerant
+		// "unknown query -> still respond if the drive/frame was valid" stance.
+		return proto.ErrNone, []byte(s.serverName())
 	default:
 		// Unrecognised opcode: report access-denied rather than dropping, so the
 		// client gets a definite (if unhelpful) answer rather than timing out.
-		return proto.StatusReply(proto.ErrAccessDenied)
+		return proto.ErrAccessDenied, nil
 	}
 }
 
-// handleInstallChk answers AL_INSTALLCHK: the reference client only needs a reply
-// to exist (any frame from the server's MAC confirms a server is present); we echo
-// a success status followed by the advertised server name for diagnostics.
-func (s *Service) handleInstallChk() []byte {
-	out := proto.StatusReply(proto.ErrNone)
-	out = append(out, []byte(s.serverName())...)
-	return out
-}
-
 // handleDiskSpace answers AL_DISKSPACE: report the drive root's free/total space
-// as DOS cluster geometry. Sizes are clamped to the 16-bit DOS cluster fields with
-// a large bytes-per-cluster so a multi-GB host volume still reports a plausible
-// (capped) size.
-func (s *Service) handleDiskSpace(drv *Drive) []byte {
+// as DOS cluster geometry in fixed 32KB clusters (see proto.DiskSpaceStatus/
+// DiskSpaceReply — the reference server's "MS-DOS tolerates only 1 [sector per
+// cluster] here" constraint). The AX status word this call returns is the fixed
+// DiskSpaceStatus DATA value, not a generic error code.
+func (s *Service) handleDiskSpace(drv *Drive) (uint16, []byte) {
 	total, free, err := drv.FS().DiskUsage("")
 	if err != nil {
 		// Report a small but non-zero geometry so the drive is usable even when the
 		// backend cannot report usage (e.g. a synthetic fs).
 		total, free = 0, 0
 	}
-	const bytesPerSector = 512
-	const sectorsPerCluster = 64 // 32 KiB clusters
-	const bytesPerCluster = bytesPerSector * sectorsPerCluster
+	const bytesPerCluster = 32768 // one 32768-byte sector per cluster, per DiskSpaceStatus
 	totalClusters := clampClusters(total / bytesPerCluster)
 	freeClusters := clampClusters(free / bytesPerCluster)
-	return proto.DiskSpaceReply{
-		Status:            proto.ErrNone,
-		SectorsPerCluster: sectorsPerCluster,
-		BytesPerSector:    bytesPerSector,
-		TotalClusters:     totalClusters,
-		FreeClusters:      freeClusters,
+	return proto.DiskSpaceStatus, proto.DiskSpaceReply{
+		TotalClusters: totalClusters,
+		FreeClusters:  freeClusters,
 	}.Encode(nil)
 }
 
@@ -138,13 +134,13 @@ func clampClusters(n uint64) uint16 {
 
 // handleGetAttr answers AL_GETATTR: stat the path and report DOS time, size, and
 // FAT attribute.
-func (s *Service) handleGetAttr(drv *Drive, body []byte) []byte {
+func (s *Service) handleGetAttr(drv *Drive, body []byte) (uint16, []byte) {
 	p := drv.resolvePath(proto.DecodePathRequest(body).Path)
 	info, err := drv.FS().Stat(p)
 	if err != nil {
-		return proto.StatusReply(dosError(err))
+		return dosError(err), nil
 	}
-	return proto.GetAttrReply{
+	return proto.ErrNone, proto.GetAttrReply{
 		Time: dosDateTime(info.ModTime()),
 		Size: clampSize(info.Size()),
 		Attr: drv.fatAttr(p, info),
@@ -156,35 +152,34 @@ func (s *Service) handleGetAttr(drv *Drive, body []byte) []byte {
 // host filesystem that cannot represent them (the §16 storage seam — metastore,
 // Samba xattr, sidecar, or Windows-native passthrough per the share's backend).
 // The directory/volume structural bits are ignored. A missing target is rejected.
-func (s *Service) handleSetAttr(drv *Drive, body []byte) []byte {
+func (s *Service) handleSetAttr(drv *Drive, body []byte) (uint16, []byte) {
 	if drv.ReadOnly() {
-		return proto.StatusReply(proto.ErrAccessDenied)
+		return proto.ErrAccessDenied, nil
 	}
 	r, err := proto.DecodeSetAttrRequest(body)
 	if err != nil {
-		return proto.StatusReply(proto.ErrFileNotFound)
+		return proto.ErrFileNotFound, nil
 	}
 	p := drv.resolvePath(r.Path)
 	if _, err := drv.FS().Stat(p); err != nil {
-		return proto.StatusReply(dosError(err))
+		return dosError(err), nil
 	}
-	if da := drv.dosAttrs(); da != nil {
-		cur, _ := da.Get(p)
-		cur.Attrs = uint16(r.Attr) & fs.DOSStorableMask
-		if err := da.Set(p, cur); err != nil {
-			return proto.StatusReply(proto.ErrAccessDenied)
-		}
+	m := drv.meta()
+	cur, _ := m.Attrs(p)
+	cur.Attrs = uint16(r.Attr) & fs.DOSStorableMask
+	if err := m.SetAttrs(p, cur); err != nil {
+		return proto.ErrAccessDenied, nil
 	}
-	return proto.StatusReply(proto.ErrNone)
+	return proto.ErrNone, nil
 }
 
 // handleFindFirst answers AL_FINDFIRST: list the search directory, filter by the
 // wildcard mask and attribute, pre-resolve each match's 8.3 short name, cache the
 // cursor, and return the first entry (or no-more-files).
-func (s *Service) handleFindFirst(sess *session, drv *Drive, body []byte) []byte {
+func (s *Service) handleFindFirst(sess *session, drv *Drive, body []byte) (uint16, []byte) {
 	r, err := proto.DecodeFindFirstRequest(body)
 	if err != nil {
-		return proto.StatusReply(proto.ErrNoMoreFiles)
+		return proto.ErrNoMoreFiles, nil
 	}
 	storePath := drv.resolvePath(r.Path)
 	dir, pattern := splitSearch(storePath)
@@ -192,7 +187,7 @@ func (s *Service) handleFindFirst(sess *session, drv *Drive, body []byte) []byte
 
 	entries, err := drv.FS().ReadDir(dir)
 	if err != nil {
-		return proto.StatusReply(proto.ErrPathNotFound)
+		return proto.ErrPathNotFound, nil
 	}
 
 	cur := &findCursor{attr: r.Attr}
@@ -213,28 +208,28 @@ func (s *Service) handleFindFirst(sess *session, drv *Drive, body []byte) []byte
 		return cur.entries[i].shortName < cur.entries[j].shortName
 	})
 	if len(cur.entries) == 0 {
-		return proto.StatusReply(proto.ErrNoMoreFiles)
+		return proto.ErrNoMoreFiles, nil
 	}
 	dirID := sess.addCursor(cur)
-	return findReplyAt(cur, 0, dirID)
+	return proto.ErrNone, findReplyAt(cur, 0, dirID)
 }
 
 // handleFindNext answers AL_FINDNEXT: advance the cursor identified by the request's
 // directory ID/position and return the next entry (or no-more-files).
-func (s *Service) handleFindNext(sess *session, body []byte) []byte {
+func (s *Service) handleFindNext(sess *session, body []byte) (uint16, []byte) {
 	r, err := proto.DecodeFindNextRequest(body)
 	if err != nil {
-		return proto.StatusReply(proto.ErrNoMoreFiles)
+		return proto.ErrNoMoreFiles, nil
 	}
 	cur, ok := sess.cursor(r.DirID)
 	if !ok {
-		return proto.StatusReply(proto.ErrNoMoreFiles)
+		return proto.ErrNoMoreFiles, nil
 	}
 	pos := int(r.Position)
 	if pos < 0 || pos >= len(cur.entries) {
-		return proto.StatusReply(proto.ErrNoMoreFiles)
+		return proto.ErrNoMoreFiles, nil
 	}
-	return findReplyAt(cur, pos, r.DirID)
+	return proto.ErrNone, findReplyAt(cur, pos, r.DirID)
 }
 
 // findReplyAt builds a FindReply for the cursor entry at pos, with the position
@@ -254,30 +249,36 @@ func findReplyAt(cur *findCursor, pos int, dirID uint16) []byte {
 // handleOpen answers AL_OPEN / AL_CREATE / AL_SPOPNFIL. create truncates/creates;
 // spopnfil carries an action code and an action-result in the reply. On success an
 // open handle is registered and its file ID returned.
-func (s *Service) handleOpen(sess *session, drv *Drive, body []byte, create, special bool) []byte {
-	r, err := proto.DecodeOpenRequest(body, special)
+func (s *Service) handleOpen(sess *session, drv *Drive, body []byte, create, special bool) (uint16, []byte) {
+	r, err := proto.DecodeOpenRequest(body)
 	if err != nil {
-		return proto.StatusReply(proto.ErrFileNotFound)
+		return proto.ErrFileNotFound, nil
 	}
 	p := drv.resolvePath(r.Path)
 	if p == "" {
-		return proto.StatusReply(proto.ErrFileNotFound)
+		return proto.ErrFileNotFound, nil
 	}
 
 	var f fs.File
-	action := uint16(1) // 1 = opened existing
+	// Action (the CX result word) is only meaningful for AL_SPOPNFIL
+	// (1=opened, 2=created, 3=truncated) but the reference server always
+	// transmits it (0 for plain OPEN/CREATE, which ignore it) — see
+	// spec/errata.md "Reply AX status..." / the OPEN reply's fixed 25-byte shape.
+	var action uint16
 
 	switch {
 	case create:
 		if drv.ReadOnly() {
-			return proto.StatusReply(proto.ErrAccessDenied)
+			return proto.ErrAccessDenied, nil
 		}
 		nf, err := drv.FS().CreateFile(p)
 		if err != nil {
-			return proto.StatusReply(dosError(err))
+			return dosError(err), nil
 		}
 		f = nf
-		action = 2 // created
+		if special {
+			action = 2 // created
+		}
 	default:
 		flag := os.O_RDWR
 		if drv.ReadOnly() {
@@ -289,15 +290,18 @@ func (s *Service) handleOpen(sess *session, drv *Drive, body []byte, create, spe
 			if special && createOnMissing(r.Action) && !drv.ReadOnly() {
 				cf, cerr := drv.FS().CreateFile(p)
 				if cerr != nil {
-					return proto.StatusReply(dosError(cerr))
+					return dosError(cerr), nil
 				}
 				f = cf
 				action = 2
 			} else {
-				return proto.StatusReply(dosError(err))
+				return dosError(err), nil
 			}
 		} else {
 			f = nf
+			if special {
+				action = 1 // opened existing
+			}
 		}
 	}
 
@@ -306,185 +310,200 @@ func (s *Service) handleOpen(sess *session, drv *Drive, body []byte, create, spe
 	fid, ok := sess.addFile(of)
 	if !ok {
 		_ = f.Close()
-		return proto.StatusReply(proto.ErrAccessDenied)
+		return proto.ErrAccessDenied, nil
+	}
+
+	// Mode is the access-mode byte the client stores in the SFT's open_mode low
+	// byte (ETHERDFS.C: "sftptr->open_mode |= answer[24]") and uses to decide
+	// whether writes through this handle are allowed at all — sending a fixed 0
+	// (DOS access code "read-only") silences every subsequent AL_WRITEFIL
+	// regardless of what the caller asked for. The reference server's three
+	// opcodes each derive it differently: AL_CREATE hardcodes "read/write" (2);
+	// AL_SPOPNFIL echoes the request's open-mode word (MM) masked to 7 bits (the
+	// FCB-open bit, bit 7, is handled separately by the client); plain AL_OPEN
+	// echoes the request's SS word, which carries the desired access mode there
+	// (not a create attribute, unlike AL_CREATE's SS).
+	var mode uint8
+	switch {
+	case create:
+		mode = 2 // read/write
+	case special:
+		mode = uint8(r.OpenMode & 0x7f)
+	default:
+		mode = uint8(r.Attr & 0xff)
 	}
 
 	rep := proto.OpenReply{
-		Attr:      drv.fatAttr(p, info),
-		FCB:       proto.FilenameToFCB(shortBase(drv, p)),
-		Time:      dosDateTime(modTimeOf(info)),
-		Size:      sizeOf(info),
-		FileID:    fid,
-		HasAction: special,
-		Action:    action,
-		Mode:      0, // read/write (or read-only via the drive flag)
+		Attr:   drv.fatAttr(p, info),
+		FCB:    proto.FilenameToFCB(shortBase(drv, p)),
+		Time:   dosDateTime(modTimeOf(info)),
+		Size:   sizeOf(info),
+		FileID: fid,
+		Action: action,
+		Mode:   mode,
 	}
-	return rep.Encode(nil)
+	return proto.ErrNone, rep.Encode(nil)
 }
 
 // handleRead answers AL_READFIL: read Length bytes at Offset from the open file.
-func (s *Service) handleRead(sess *session, body []byte) []byte {
+func (s *Service) handleRead(sess *session, body []byte) (uint16, []byte) {
 	r, err := proto.DecodeReadRequest(body)
 	if err != nil {
-		return proto.StatusReply(proto.ErrInvalidHandle)
+		return proto.ErrInvalidHandle, nil
 	}
 	of, ok := sess.file(r.FileID)
 	if !ok {
-		return proto.StatusReply(proto.ErrInvalidHandle)
+		return proto.ErrInvalidHandle, nil
 	}
 	buf := make([]byte, r.Length)
 	n, err := of.file.ReadAt(buf, int64(r.Offset))
 	if err != nil && !errors.Is(err, io.EOF) {
-		return proto.StatusReply(proto.ErrReadFault)
+		return proto.ErrReadFault, nil
 	}
-	return proto.ReadReply(buf[:n])
+	return proto.ErrNone, proto.ReadReply(buf[:n])
 }
 
 // handleWrite answers AL_WRITEFIL: write Data at Offset to the open file, or
 // truncate-at-offset for a zero-length write. Returns the bytes written.
-func (s *Service) handleWrite(sess *session, drv *Drive, body []byte) []byte {
+func (s *Service) handleWrite(sess *session, drv *Drive, body []byte) (uint16, []byte) {
 	r, err := proto.DecodeWriteRequest(body)
 	if err != nil {
-		return proto.StatusReply(proto.ErrInvalidHandle)
+		return proto.ErrInvalidHandle, nil
 	}
 	of, ok := sess.file(r.FileID)
 	if !ok {
-		return proto.StatusReply(proto.ErrInvalidHandle)
+		return proto.ErrInvalidHandle, nil
 	}
 	if of.readOnly || drv.ReadOnly() {
-		return proto.StatusReply(proto.ErrAccessDenied)
+		return proto.ErrAccessDenied, nil
 	}
 	if len(r.Data) == 0 {
 		// A zero-byte write at offset truncates the file there (DOS convention).
 		if err := of.file.Truncate(int64(r.Offset)); err != nil {
-			return proto.StatusReply(proto.ErrWriteFault)
+			return proto.ErrWriteFault, nil
 		}
-		return proto.WriteReply(0)
+		return proto.ErrNone, proto.WriteReply(0)
 	}
 	n, err := of.file.WriteAt(r.Data, int64(r.Offset))
 	if err != nil {
-		return proto.StatusReply(proto.ErrWriteFault)
+		return proto.ErrWriteFault, nil
 	}
-	return proto.WriteReply(uint16(n))
+	return proto.ErrNone, proto.WriteReply(uint16(n))
 }
 
 // handleClose answers AL_CLSFIL: close the open handle. Always succeeds.
-func (s *Service) handleClose(sess *session, body []byte) []byte {
+func (s *Service) handleClose(sess *session, body []byte) (uint16, []byte) {
 	if id, ok := fileIDFromBody(body); ok {
 		sess.closeFile(id)
 	}
-	return proto.StatusReply(proto.ErrNone)
+	return proto.ErrNone, nil
 }
 
 // handleCommit answers AL_CMMTFIL: flush the open handle to the backend.
-func (s *Service) handleCommit(sess *session, body []byte) []byte {
+func (s *Service) handleCommit(sess *session, body []byte) (uint16, []byte) {
 	if id, ok := fileIDFromBody(body); ok {
 		if of, ok := sess.file(id); ok {
 			_ = of.file.Sync()
 		}
 	}
-	return proto.StatusReply(proto.ErrNone)
+	return proto.ErrNone, nil
 }
 
 // handleSeekFromEnd answers AL_SKFMEND: compute the absolute offset from the file
 // size plus the (signed) request offset and return it. The redirector uses this to
 // implement SEEK_END without the server holding a cursor.
-func (s *Service) handleSeekFromEnd(sess *session, body []byte) []byte {
+func (s *Service) handleSeekFromEnd(sess *session, body []byte) (uint16, []byte) {
 	r, err := proto.DecodeSeekFromEndRequest(body)
 	if err != nil {
-		return proto.StatusReply(proto.ErrInvalidHandle)
+		return proto.ErrInvalidHandle, nil
 	}
 	of, ok := sess.file(r.FileID)
 	if !ok {
-		return proto.StatusReply(proto.ErrInvalidHandle)
+		return proto.ErrInvalidHandle, nil
 	}
 	info, err := of.file.Stat()
 	if err != nil {
-		return proto.StatusReply(proto.ErrReadFault)
+		return proto.ErrReadFault, nil
 	}
 	end := info.Size()
 	abs := max(end+int64(r.Offset), 0)
-	return proto.SeekReply(uint32(abs))
+	return proto.ErrNone, proto.SeekReply(uint32(abs))
 }
 
 // handleDelete answers AL_DELETE.
-func (s *Service) handleDelete(drv *Drive, body []byte) []byte {
+func (s *Service) handleDelete(drv *Drive, body []byte) (uint16, []byte) {
 	if drv.ReadOnly() {
-		return proto.StatusReply(proto.ErrAccessDenied)
+		return proto.ErrAccessDenied, nil
 	}
 	p := drv.resolvePath(proto.DecodePathRequest(body).Path)
 	if err := drv.FS().Remove(p); err != nil {
-		return proto.StatusReply(dosError(err))
+		return dosError(err), nil
 	}
-	if da := drv.dosAttrs(); da != nil {
-		_ = da.Delete(p)
-	}
-	return proto.StatusReply(proto.ErrNone)
+	_ = drv.meta().DeleteAttrs(p)
+	return proto.ErrNone, nil
 }
 
 // handleRename answers AL_RENAME.
-func (s *Service) handleRename(drv *Drive, body []byte) []byte {
+func (s *Service) handleRename(drv *Drive, body []byte) (uint16, []byte) {
 	if drv.ReadOnly() {
-		return proto.StatusReply(proto.ErrAccessDenied)
+		return proto.ErrAccessDenied, nil
 	}
 	r, err := proto.DecodeRenameRequest(body)
 	if err != nil {
-		return proto.StatusReply(proto.ErrFileNotFound)
+		return proto.ErrFileNotFound, nil
 	}
 	src := drv.resolvePath(r.Src)
 	dst := drv.resolvePath(r.Dst)
 	if _, err := drv.FS().Stat(dst); err == nil {
-		return proto.StatusReply(proto.ErrAccessDenied) // destination exists
+		return proto.ErrAccessDenied, nil // destination exists
 	}
 	if err := drv.FS().Rename(src, dst); err != nil {
-		return proto.StatusReply(dosError(err))
+		return dosError(err), nil
 	}
-	if da := drv.dosAttrs(); da != nil {
-		_ = da.Rename(src, dst)
-	}
-	return proto.StatusReply(proto.ErrNone)
+	_ = drv.meta().RenameAttrs(src, dst)
+	return proto.ErrNone, nil
 }
 
 // handleMkdir answers AL_MKDIR.
-func (s *Service) handleMkdir(drv *Drive, body []byte) []byte {
+func (s *Service) handleMkdir(drv *Drive, body []byte) (uint16, []byte) {
 	if drv.ReadOnly() {
-		return proto.StatusReply(proto.ErrAccessDenied)
+		return proto.ErrAccessDenied, nil
 	}
 	p := drv.resolvePath(proto.DecodePathRequest(body).Path)
 	if err := drv.FS().CreateDir(p); err != nil {
-		return proto.StatusReply(dosError(err))
+		return dosError(err), nil
 	}
-	return proto.StatusReply(proto.ErrNone)
+	return proto.ErrNone, nil
 }
 
 // handleRmdir answers AL_RMDIR.
-func (s *Service) handleRmdir(drv *Drive, body []byte) []byte {
+func (s *Service) handleRmdir(drv *Drive, body []byte) (uint16, []byte) {
 	if drv.ReadOnly() {
-		return proto.StatusReply(proto.ErrAccessDenied)
+		return proto.ErrAccessDenied, nil
 	}
 	p := drv.resolvePath(proto.DecodePathRequest(body).Path)
 	if err := drv.FS().Remove(p); err != nil {
-		return proto.StatusReply(dosError(err))
+		return dosError(err), nil
 	}
-	return proto.StatusReply(proto.ErrNone)
+	return proto.ErrNone, nil
 }
 
 // handleChdir answers AL_CHDIR: validate the target directory exists. The server
 // holds no per-client current directory (the client tracks it); this only confirms
 // the path is a directory so the redirector accepts the CD.
-func (s *Service) handleChdir(drv *Drive, body []byte) []byte {
+func (s *Service) handleChdir(drv *Drive, body []byte) (uint16, []byte) {
 	p := drv.resolvePath(proto.DecodePathRequest(body).Path)
 	if p == "" {
-		return proto.StatusReply(proto.ErrNone) // root always exists
+		return proto.ErrNone, nil // root always exists
 	}
 	info, err := drv.FS().Stat(p)
 	if err != nil {
-		return proto.StatusReply(proto.ErrPathNotFound)
+		return proto.ErrPathNotFound, nil
 	}
 	if !info.IsDir() {
-		return proto.StatusReply(proto.ErrPathNotFound)
+		return proto.ErrPathNotFound, nil
 	}
-	return proto.StatusReply(proto.ErrNone)
+	return proto.ErrNone, nil
 }
 
 // --- helpers -------------------------------------------------------------
@@ -544,17 +563,15 @@ func (d *Drive) fatAttr(p string, info iofs.FileInfo) uint8 {
 		a |= proto.AttrDirectory
 	}
 
-	if da := d.dosAttrs(); da != nil {
-		if stored, ok := da.Get(p); ok {
-			a |= uint8(stored.Attrs & fs.DOSStorableMask)
-			if d.ReadOnly() {
-				a |= proto.AttrReadOnly
-			}
-			if a&proto.AttrDirectory == 0 && a&^proto.AttrReadOnly == 0 {
-				a |= proto.AttrArchive // a plain file always carries Archive
-			}
-			return a
+	if stored, ok := d.meta().Attrs(p); ok {
+		a |= uint8(stored.Attrs & fs.DOSStorableMask)
+		if d.ReadOnly() {
+			a |= proto.AttrReadOnly
 		}
+		if a&proto.AttrDirectory == 0 && a&^proto.AttrReadOnly == 0 {
+			a |= proto.AttrArchive // a plain file always carries Archive
+		}
+		return a
 	}
 
 	// No stored attributes: derive from the host entry.

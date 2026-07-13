@@ -15,7 +15,7 @@ func newForkTestShare(t *testing.T) (ForkFS, FileSystem) {
 		FileSystem: base,
 		ForkEngine: eng,
 		codec:      NewMacRomanUTF8FilenameCodec(),
-		names:      NewPassthroughNameEngine(),
+		meta:       newMetaStoreEngine(ShareSpec{}, base, nil, nil),
 	}, base
 }
 

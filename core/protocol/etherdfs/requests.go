@@ -69,35 +69,36 @@ func DecodeSeekFromEndRequest(b []byte) (SeekFromEndRequest, error) {
 	}, nil
 }
 
-// OpenRequest is the AL_OPEN / AL_CREATE / AL_SPOPNFIL body: a 2-byte attribute
-// mask, an action code (AL_SPOPNFIL only — controls create/open/truncate
-// semantics), and the path (the remainder). For AL_OPEN/AL_CREATE the action
-// field is absent and HasAction is false.
+// OpenRequest is the AL_OPEN / AL_CREATE / AL_SPOPNFIL body: three fixed 2-byte
+// words — Attr (SS, the stack attribute word), Action (CC, the action code —
+// only meaningful for AL_SPOPNFIL), OpenMode (MM, the open mode — only
+// meaningful for AL_SPOPNFIL) — then the path (the remainder). Per
+// spec/etherdfs.txt ("Request: SSCCMMfff...") and the reference server (which
+// reads the path starting at a fixed body offset 6 for ALL THREE opcodes,
+// `reqbuff + 6`), all three words are ALWAYS present on the wire for AL_OPEN and
+// AL_CREATE too, even though only SS is meaningful there — Action/OpenMode are
+// sent as zero and ignored. Decoding fewer than 3 words for AL_OPEN/AL_CREATE
+// misparses the path (it starts 4 bytes early, with garbage CC/MM bytes
+// prepended) — see spec/errata.md.
 type OpenRequest struct {
-	Attr      uint16
-	Action    uint16
-	HasAction bool
-	Path      string
+	Attr     uint16
+	Action   uint16
+	OpenMode uint16
+	Path     string
 }
 
-// DecodeOpenRequest parses an open-family body. For AL_SPOPNFIL pass
-// hasAction=true so the 2-byte action code is consumed before the path.
-func DecodeOpenRequest(b []byte, hasAction bool) (OpenRequest, error) {
-	need := 2
-	if hasAction {
-		need = 4
-	}
-	if len(b) < need {
+// DecodeOpenRequest parses an open-family body: always a fixed 6-byte SS/CC/MM
+// prefix before the path, for AL_OPEN/AL_CREATE/AL_SPOPNFIL alike.
+func DecodeOpenRequest(b []byte) (OpenRequest, error) {
+	if len(b) < 6 {
 		return OpenRequest{}, ErrBadRequest
 	}
-	r := OpenRequest{Attr: bp.LE16(b[0:2]), HasAction: hasAction}
-	off := 2
-	if hasAction {
-		r.Action = bp.LE16(b[2:4])
-		off = 4
-	}
-	r.Path = string(b[off:])
-	return r, nil
+	return OpenRequest{
+		Attr:     bp.LE16(b[0:2]),
+		Action:   bp.LE16(b[2:4]),
+		OpenMode: bp.LE16(b[4:6]),
+		Path:     string(b[6:]),
+	}, nil
 }
 
 // FindFirstRequest is the AL_FINDFIRST body: a 1-byte attribute filter and the

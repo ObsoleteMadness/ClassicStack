@@ -5,6 +5,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -78,15 +79,20 @@ type ForkContainers interface {
 	MetadataPaths(storePath string) []string
 }
 
-// ForkFS is a base FileSystem paired with its mandatory fork adapter (ForkEngine).
-// BuildShare always assembles exactly one fork adapter over the fork-unaware base —
-// resolved by name through the fork-adapter registry (fork_registry.go), defaulting to
-// "appledouble" and selectable to "nofork" when a share carries no resource forks.
-// There is no FS-without-an-adapter path: a fork-less share uses the explicit "nofork"
-// adapter, never a silent fallback.
+// ForkFS is a base FileSystem paired with its two mandatory per-share engines:
+// the fork adapter (ForkEngine) and the metadata engine (MetaEngine). BuildShare
+// always assembles exactly one of each over the fork/meta-unaware base — each
+// resolved by name through its own registry (fork_registry.go/meta_registry.go).
+// ForkEngine defaults to "appledouble" and is selectable to "nofork" when a share
+// carries no resource forks; MetaEngine defaults per host platform (meta_store.go/
+// meta_xattr.go/meta_ads.go) and has no off state, since 8.3 name derivation must
+// always work for a DOS client. There is no FS-without-an-adapter path for either.
 type ForkFS interface {
 	FileSystem
 	ForkEngine
+	// Meta returns the share's MetaEngine: derived names, CNIDs, and DOS
+	// attributes/dates, unified behind one interface (meta.go).
+	Meta() MetaEngine
 }
 
 // Coded is implemented by a built share that carries a FilenameCodec, so a file
@@ -207,17 +213,26 @@ type ShareSpec struct {
 	FSType        string
 	ForkBackend   string
 	FilenameCodec string
-	NameEngine    string
-	Metastore     string
-	// DOSAttrBackend selects how DOS file attributes (RO/HID/SYS/ARCH + create-time)
-	// that the host filesystem cannot represent are persisted: "auto" (default —
-	// native passthrough on Windows, Samba user.DOSATTRIB xattr where the host
-	// supports it, else a sidecar, always cached in the metastore), "metastore"
-	// (definitive store only, host-independent), "sidecar" (works on every
-	// filesystem), "native" (Windows host attributes), or "xattr" (Samba-compatible
-	// user.DOSATTRIB). Empty == auto. Backends needing host syscalls are gated by
-	// build/GOOS; an unavailable backend degrades to sidecar/metastore.
-	DOSAttrBackend string
+	// MetaBackend selects the share's MetaEngine (derived names, CNIDs, DOS
+	// attributes/dates — meta.go/meta_registry.go): "metastore" (the universal
+	// fallback: names+CNID+attrs all over the share's metastore.Store, attrs
+	// themselves further preferring host-native storage via the "auto" DOS-attr
+	// chain), "xattr" (Linux: derived names/attrs/dates in a ClassicStack-private
+	// xattr key; CNID still metastore-backed), "ads" (Windows/NTFS: same, in an
+	// NTFS alternate data stream). Empty == the per-platform default picked by
+	// withDefaults (xattr on linux, ads on an NTFS-backed Windows share, else
+	// metastore). There is no passthrough/off backend — 8.3 derivation is always
+	// on.
+	MetaBackend string
+	// Metastore selects the store kind backing the "metastore" MetaEngine backend
+	// (and CNID tracking on every backend): "mem" (default — snapshots to
+	// MetastorePath when host-backed, else fully volatile) or "sqlite" (adapter/
+	// metastore/sqlite, build-tagged). Ignored by backends that need no store.
+	Metastore string
+	// MetastorePath overrides the on-disk location of the "metastore"/CNID store.
+	// Empty means auto-derive from Path (".classicstack/meta.snapshot" or
+	// ".db") when Path is set, else stay volatile (memfs/zipfs/synthetic).
+	MetastorePath string
 	// Path is the near-universal backend location: the host directory for
 	// local_fs, the image file for hfs-image/fat-image, the archive for zipfs.
 	// Synthetic backends (memfs, macgarden) leave it empty.
@@ -432,7 +447,7 @@ func BuildShare(spec ShareSpec, b bus.Bus) (ForkFS, error) {
 		b = NewBus(0)
 	}
 
-	store, err := metastore.Open(spec.Metastore, "")
+	store, err := metastore.Open(spec.Metastore, spec.MetastorePath)
 	if err != nil {
 		return nil, err
 	}
@@ -450,10 +465,6 @@ func BuildShare(spec ShareSpec, b bus.Bus) (ForkFS, error) {
 	if err != nil {
 		return nil, err
 	}
-	nameEngine, err := nameEngineByName(spec.NameEngine, store)
-	if err != nil {
-		return nil, err
-	}
 	// A fork adapter is MANDATORY: BuildShare always resolves exactly one over the
 	// fork-unaware base FS (withDefaults sets "appledouble" when unspecified; "nofork"
 	// is the explicit no-forks choice). An unknown name is a hard error.
@@ -461,12 +472,37 @@ func BuildShare(spec ShareSpec, b bus.Bus) (ForkFS, error) {
 	if err != nil {
 		return nil, err
 	}
-	// DOS-attribute store: the per-share backend (auto/native/xattr/sidecar/metastore)
-	// over the same metastore, so all four file services persist DOS attributes the
-	// host filesystem cannot represent through one swappable seam.
-	dosAttrs := buildDOSAttrStore(spec.DOSAttrBackend, base, store)
+	// A MetaEngine is likewise MANDATORY: derived names, CNIDs, and DOS
+	// attributes/dates over one swappable seam (meta.go/meta_registry.go). The
+	// per-platform default (defaultMetaBackend) is resolved here, not in
+	// withDefaults, because it needs the built base FS to know whether the host
+	// is NTFS-backed; there is no off/passthrough state.
+	metaBackend := spec.MetaBackend
+	if metaBackend == "" {
+		metaBackend = defaultMetaBackend(base)
+	}
+	metaEngine, err := metaEngineByName(metaBackend, spec, base, store)
+	if err != nil {
+		return nil, err
+	}
 
-	return &shareFS{FileSystem: base, ForkEngine: forkEngine, codec: codec, names: nameEngine, dosAttrs: dosAttrs}, nil
+	return &shareFS{FileSystem: base, ForkEngine: forkEngine, codec: codec, meta: metaEngine}, nil
+}
+
+// defaultMetaBackend picks the per-platform default MetaEngine backend: "xattr"
+// on Linux, "ads" on an NTFS-backed Windows share, else the universal
+// "metastore" fallback (memfs, zipfs, network shares, or a host this build
+// can't confirm is NTFS-backed).
+func defaultMetaBackend(base FileSystem) string {
+	switch runtime.GOOS {
+	case "linux":
+		return "xattr"
+	case "windows":
+		if _, ok := base.(HostPather); ok {
+			return "ads"
+		}
+	}
+	return "metastore"
 }
 
 func withDefaults(spec ShareSpec) ShareSpec {
@@ -479,11 +515,11 @@ func withDefaults(spec ShareSpec) ShareSpec {
 	if spec.FilenameCodec == "" {
 		spec.FilenameCodec = "identity"
 	}
-	if spec.NameEngine == "" {
-		spec.NameEngine = "passthrough"
-	}
 	if spec.Metastore == "" {
 		spec.Metastore = "mem"
+		if spec.MetastorePath == "" {
+			spec.MetastorePath = defaultStorePath(spec, ".snapshot")
+		}
 	}
 	return spec
 }
@@ -563,9 +599,8 @@ func isEmptyParam(v any) bool {
 type shareFS struct {
 	FileSystem
 	ForkEngine
-	codec    FilenameCodec
-	names    NameEngine
-	dosAttrs DOSAttrStore
+	codec FilenameCodec
+	meta  MetaEngine
 }
 
 // Rename moves a path and carries its metadata container in one call: the data
@@ -602,31 +637,27 @@ func (s *shareFS) MetadataPaths(storePath string) []string {
 }
 
 // ShortName and MediumName derive a per-directory short/medium name for the
-// final path element via the share's NameEngine.
+// final path element via the share's MetaEngine. Kept on FileSystem (rather
+// than moved onto MetaEngine-only call sites) so every existing sh.FS().
+// ShortName/MediumName caller (SMB, NCP, EtherDFS, AFP) is unaffected by the
+// MetaEngine consolidation.
 func (s *shareFS) ShortName(path string) (string, error) {
 	dir, base := splitPath(path)
-	return s.names.Bind(dir, base, ShortName), nil
+	return s.meta.ShortName(dir, base), nil
 }
 
 func (s *shareFS) MediumName(path string) (string, error) {
 	dir, base := splitPath(path)
-	return s.names.Bind(dir, base, MediumName), nil
+	return s.meta.MediumName(dir, base), nil
 }
 
 // Codec exposes the share codec for adapter wiring/tests.
 func (s *shareFS) Codec() FilenameCodec { return s.codec }
 
-// DOSAttrs exposes the share's DOS-attribute store (fs.DOSAttred), so a file
-// service (SMB/EtherDFS/NCP/AFP) persists and serves DOS attributes the host
-// filesystem cannot represent without reaching past the share stack.
-func (s *shareFS) DOSAttrs() DOSAttrStore { return s.dosAttrs }
-
-// Names exposes the share's NameEngine (fs.Named), so a file service can map
-// between a host (long) name and its derived 8.3 short / 31-char medium name — and
-// reverse a derived name a client sent back to the stored host name. This is the
-// shortname interface EtherDFS uses for 8.3↔host mapping and AFP/NCP use for
-// medium names.
-func (s *shareFS) Names() NameEngine { return s.names }
+// Meta exposes the share's MetaEngine — the single mandatory per-share facade
+// for derived names, CNIDs, and DOS attributes/dates, so a file service
+// (SMB/EtherDFS/NCP/AFP) reaches all three without three separate stores.
+func (s *shareFS) Meta() MetaEngine { return s.meta }
 
 // HostPath forwards fs.HostPather to the base FileSystem when it is host-backed
 // (local_fs), so the DOS-attribute / shortname interop backends can resolve a real
@@ -743,18 +774,6 @@ func (passthroughNameEngine) ToLong(dir, derived string, kind NameKind) (string,
 	_ = dir
 	_ = kind
 	return derived, true
-}
-
-func nameEngineByName(name string, store metastore.Store) (NameEngine, error) {
-	switch strings.ToLower(name) {
-	case "passthrough", "":
-		return NewPassthroughNameEngine(), nil
-	case "short", "medium":
-		// One engine serves both kinds; the kind is passed per call. See name.go.
-		return NewDerivedNameEngine(store), nil
-	default:
-		return nil, errors.New("fs: unknown name engine")
-	}
 }
 
 type memFS struct {

@@ -58,10 +58,22 @@ func kindTag(kind NameKind) string {
 }
 
 // Bind returns the derived name for long in dir, allocating and persisting a
-// fresh one (with ~N / -N collision suffixes) the first time.
+// fresh one (with ~N / -N collision suffixes) the first time. When long
+// already fits the target convention (8.3 for ShortName, <=31 chars for
+// MediumName) with no sanitization needed, it is bound and returned as-is —
+// no suffix is manufactured for a name that doesn't need one.
 func (e *derivedNameEngine) Bind(dir, long string, kind NameKind) string {
 	if existing, ok := e.store.Get(fwdKey(kind, dir, long)); ok {
 		return string(existing)
+	}
+
+	if asIs, ok := fitsAsIs(long, kind); ok {
+		rk := revKey(kind, dir, asIs)
+		if owner, taken := e.store.Get(rk); !taken || string(owner) == long {
+			_ = e.store.Put(fwdKey(kind, dir, long), []byte(asIs))
+			_ = e.store.Put(rk, []byte(long))
+			return asIs
+		}
 	}
 
 	maxN := 1 << 16
@@ -84,6 +96,30 @@ func (e *derivedNameEngine) Bind(dir, long string, kind NameKind) string {
 		return cand
 	}
 	return long
+}
+
+// fitsAsIs reports whether long already satisfies kind's naming convention
+// without any truncation or character sanitization, so it can be bound to a
+// stable form (asIs) instead of growing a synthetic ~N / -N suffix. For
+// ShortName, asIs is the DOS-cased (uppercased) form of long, since 8.3 short
+// names are case-insensitive and always stored/displayed upper-case.
+func fitsAsIs(long string, kind NameKind) (asIs string, ok bool) {
+	if kind == MediumName {
+		return long, len(long) <= 31
+	}
+	base, ext := splitExt(long)
+	upperBase, upperExt := strings.ToUpper(base), strings.ToUpper(ext)
+	if base == "" || len(upperBase) > 8 || len(upperExt) > 3 {
+		return "", false
+	}
+	if upperBase != sanitizeFAT(upperBase) || upperExt != sanitizeFAT(upperExt) {
+		return "", false
+	}
+	out := upperBase
+	if upperExt != "" {
+		out += "." + upperExt
+	}
+	return out, true
 }
 
 // ToLong reverses Bind: the long name a derived name maps to in dir.

@@ -4,6 +4,14 @@ zone = ''
 transports = ['ddp']
 tcp_addr = ''
 
+[EtherDFS]
+enabled = true
+iface = ''
+mac = ''
+server_name = ''
+capture = 'etherdfs.pcap'
+capture_snaplen = 0
+
 [MacIP]
 enabled = true
 mode = 'bridge'
@@ -39,14 +47,27 @@ name = 'Test Volume'
 fs_type = 'local_fs'
 fork_backend = ''
 filename_codec = ''
-name_engine = ''
+meta_backend = ''
 metastore = ''
-dos_attr_backend = ''
+metastore_path = ''
 path = 'C:\mac'
 read_only = false
 allowed_users = []
 options = []
 extmap_path = ''
+
+[[etherdfsdrives]]
+name = 'C'
+fs_type = 'local_fs'
+fork_backend = ''
+filename_codec = ''
+meta_backend = ''
+metastore = ''
+metastore_path = ''
+path = 'c:\mac\food'
+read_only = false
+allowed_users = []
+options = []
 
 [[ethertalk]]
 name = ''
@@ -58,6 +79,7 @@ seed_network_end = 5
 seed_zone = 'EtherTalk Network'
 device = ''
 baud = 0
+ipx_frame_type = ''
 capture = 'ethertalk.pcap'
 capture_snaplen = 0
 
@@ -84,6 +106,7 @@ seed_network_end = 0
 seed_zone = ''
 device = ''
 baud = 0
+ipx_frame_type = ''
 capture = 'ipx.pcap'
 capture_snaplen = 0
 
@@ -100,6 +123,7 @@ seed_network_end = 2
 seed_zone = 'LToUDP Network'
 device = ''
 baud = 0
+ipx_frame_type = ''
 capture = 'ltoudp.pcap'
 capture_snaplen = 0
 
@@ -108,9 +132,9 @@ name = 'Foo'
 fs_type = 'local_fs'
 fork_backend = ''
 filename_codec = ''
-name_engine = ''
+meta_backend = ''
 metastore = ''
-dos_attr_backend = ''
+metastore_path = ''
 path = 'c:\mac\food'
 read_only = false
 allowed_users = []
@@ -126,6 +150,7 @@ seed_network_end = 0
 seed_zone = ''
 device = ''
 baud = 0
+ipx_frame_type = ''
 capture = 'netbeui.pcap'
 capture_snaplen = 0
 
@@ -139,9 +164,9 @@ description = 'Test share'
 fs_type = 'local_fs'
 fork_backend = ''
 filename_codec = ''
-name_engine = ''
+meta_backend = ''
 metastore = ''
-dos_attr_backend = ''
+metastore_path = ''
 path = 'C:\mac\food'
 read_only = false
 allowed_users = []

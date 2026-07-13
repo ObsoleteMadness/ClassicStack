@@ -4,6 +4,7 @@ package registry
 
 import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
+	"github.com/ObsoleteMadness/ClassicStack/core/link"
 	etherport "github.com/ObsoleteMadness/ClassicStack/core/port/etherdfs"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/etherdfs"
 )
@@ -31,14 +32,28 @@ func init() {
 		sec := srv.PortSection()
 
 		// Build the EtherDFS port: a NIC-bound raw-Ethernet link opened per Start via
-		// the injected opener (nil → inert-but-configured). A disabled section yields a
-		// nil port → the service is nil → (nil, nil) so the supervisor skips it, exactly
-		// as a disabled transport does.
+		// the injected opener (nil → inert-but-configured). A DISABLED section still
+		// builds the component (the MacIP pattern) so the dashboard shows it Disabled
+		// and the web UI can configure/enable it live; the opener below re-reads the
+		// section from the model on EVERY Start, so a disabled service starts inert
+		// (no pcap handle) and an enable or interface change takes effect on the next
+		// (re)start rather than needing a process restart.
 		iface := m.EffectiveInterfaceFor(sec)
-		open := nicLinkOpener(ctx, sec, iface, etherport.BPFFilter)
+		gated := func() (link.FrameLink, error) {
+			cur := etherdfs.ServerSectionFromModel(m)
+			if !cur.IsEnabled {
+				return nil, nil // disabled → inert start
+			}
+			csec := cur.PortSection()
+			open := nicLinkOpener(ctx, csec, m.EffectiveInterfaceFor(csec), etherport.BPFFilter)
+			if open == nil {
+				return nil, nil
+			}
+			return open()
+		}
 		// An empty section mac inherits the bound interface's hw_address so EtherDFS
 		// frames carry a real Ethernet source (else 00:00:00:00:00:00).
-		p, err := etherport.NewInstanceFromOpener(sec, open, sectionMACFor(sec, iface), logger)
+		p, err := etherport.NewInstanceFromOpener(sec, gated, sectionMACFor(sec, iface), logger)
 		if err != nil {
 			return nil, err
 		}
@@ -48,12 +63,14 @@ func init() {
 		}
 
 		// Server identity is the shared Identity.Hostname (§4-bis), unless the section
-		// overrides it: EtherDFS advertises this name in AL_INSTALLCHK replies.
+		// overrides it: EtherDFS advertises this name in AL_INSTALLCHK replies. The
+		// resolver lets a hot-applied section with no name re-derive the fallback.
 		name := srv.ServerName
 		if name == "" {
 			name = m.Identity.Hostname
 		}
 		svc.SetServerName(name)
+		svc.SetServerNameResolver(func() string { return m.Identity.Hostname })
 
 		// §10d: build each drive over the shared FS-mutation bus for its host path, so a
 		// same-host-path AFP volume / SMB share sees this drive's mutations (and

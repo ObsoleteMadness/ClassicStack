@@ -37,7 +37,7 @@ func TestDOSInfoRejectsGarbage(t *testing.T) {
 
 func TestDOSAttrStoreCRUD(t *testing.T) {
 	st, _ := NewMem("")
-	s := NewDOSAttrStore(st)
+	s := NewDOSAttrStore(st, nil)
 
 	if _, ok := s.Get("foo.txt"); ok {
 		t.Fatal("unstored path should report ok=false")

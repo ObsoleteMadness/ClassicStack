@@ -55,9 +55,10 @@ type session struct {
 	cursors map[uint16]*findCursor
 	nextDIR uint16
 
-	lastSeq   uint8
-	lastReply []byte
-	haveLast  bool
+	lastSeq     uint8
+	lastStatus  uint16
+	lastPayload []byte
+	haveLast    bool
 
 	lastSeen time.Time
 }
@@ -130,23 +131,24 @@ func (s *session) cursor(id uint16) (*findCursor, bool) {
 	return c, ok
 }
 
-// cachedReply returns the cached reply for seq when it matches the last handled
-// sequence (a retransmit), so the dispatch can replay it without re-running the
-// side effect.
-func (s *session) cachedReply(seq uint8) ([]byte, bool) {
+// cachedReply returns the cached (status, payload) for seq when it matches the
+// last handled sequence (a retransmit), so the dispatch can replay it without
+// re-running the side effect.
+func (s *session) cachedReply(seq uint8) (status uint16, payload []byte, ok bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.haveLast && s.lastSeq == seq {
-		return s.lastReply, true
+		return s.lastStatus, s.lastPayload, true
 	}
-	return nil, false
+	return 0, nil, false
 }
 
-// cacheReply records the reply produced for seq, for retransmit dedup.
-func (s *session) cacheReply(seq uint8, reply []byte) {
+// cacheReply records the (status, payload) produced for seq, for retransmit dedup.
+func (s *session) cacheReply(seq uint8, status uint16, payload []byte) {
 	s.mu.Lock()
 	s.lastSeq = seq
-	s.lastReply = reply
+	s.lastStatus = status
+	s.lastPayload = payload
 	s.haveLast = true
 	s.lastSeen = time.Now()
 	s.mu.Unlock()
@@ -204,6 +206,13 @@ func (t *sessionTable) get(mac [6]byte) *session {
 		}
 	}
 	return s
+}
+
+// count returns the number of live client sessions (diagnostics / Stats gauge).
+func (t *sessionTable) count() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.sessions)
 }
 
 // closeAll tears down every session (service Stop).

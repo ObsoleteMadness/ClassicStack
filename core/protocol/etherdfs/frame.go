@@ -46,15 +46,20 @@ var (
 )
 
 // Frame is a decoded EtherDFS request or reply. DstMAC/SrcMAC are the Ethernet
-// addresses; Sequence/Drive/Opcode and the CKS flag are the EtherDFS header
-// fields; Payload is the per-opcode body at offset 60. A reply is built from a
-// request by swapping the MACs and replacing the payload (see Reply).
+// addresses; Sequence and the CKS flag are shared by both directions. A REQUEST
+// carries Drive/Opcode at header offset 58-59 (see ParseFrame); a REPLY carries
+// the 16-bit AX status word at that SAME offset instead (see Reply/Encode) — the
+// wire format reuses the position, it does not append the status to Payload.
+// Payload is the per-opcode body starting at offset 60. IsReply distinguishes
+// which of Drive/Opcode vs Status is meaningful/encoded.
 type Frame struct {
 	DstMAC   [6]byte
 	SrcMAC   [6]byte
 	Sequence uint8
-	Drive    uint8
-	Opcode   uint8
+	Drive    uint8  // request only (offset 58, low 5 bits)
+	Opcode   uint8  // request only (offset 59)
+	Status   uint16 // reply only (offset 58-59, the AX register value)
+	IsReply  bool
 	CKS      bool // whether the BSD checksum is present/required
 	Payload  []byte
 }
@@ -106,16 +111,18 @@ func ParseFrame(b []byte) (Frame, error) {
 }
 
 // Reply builds a reply Frame for this request: the MACs are swapped (the reply
-// goes back to the requester from the server), the sequence/drive/opcode and CKS
-// preference are preserved, and payload becomes the reply body. srcMAC is the
-// server's own hardware address (the reply's source).
-func (f Frame) Reply(srcMAC [6]byte, payload []byte) Frame {
+// goes back to the requester from the server), the sequence and CKS preference
+// are preserved, and payload becomes the reply body. status is the AX register
+// value the client reads from header offset 58-59 (0 = success) — the protocol
+// carries it there, not as leading payload bytes. srcMAC is the server's own
+// hardware address (the reply's source).
+func (f Frame) Reply(srcMAC [6]byte, status uint16, payload []byte) Frame {
 	return Frame{
 		DstMAC:   f.SrcMAC,
 		SrcMAC:   srcMAC,
 		Sequence: f.Sequence,
-		Drive:    f.Drive,
-		Opcode:   f.Opcode,
+		Status:   status,
+		IsReply:  true,
 		CKS:      f.CKS,
 		Payload:  payload,
 	}
@@ -123,10 +130,12 @@ func (f Frame) Reply(srcMAC [6]byte, payload []byte) Frame {
 
 // Encode appends the wire form of the frame to dst and returns it (append-style →
 // caller controls allocation). It emits the Ethernet header, the 38-byte
-// padding, the size field (the total length), the version+CKS byte, the
-// sequence/drive/opcode, and the payload; when CKS is set the BSD checksum over
-// [offVersion:] is filled in. The frame is zero-padded to the 60-byte minimum so
-// it is a valid Ethernet frame on the wire.
+// padding, the size field (the total length), the version+CKS byte, and the
+// sequence; header offset 58-59 carries Drive+Opcode for a request or the AX
+// Status word for a reply (IsReply), per the protocol's DOEEpppssccVS[D L | AA]xxx
+// layout — a reply's status is NOT prepended to Payload. When CKS is set the BSD
+// checksum over [offVersion:] is filled in. The frame is zero-padded to the
+// 60-byte minimum so it is a valid Ethernet frame on the wire.
 func (f Frame) Encode(dst []byte) []byte {
 	total := headerEnd + len(f.Payload)
 	out := make([]byte, max(total, MinFrameLen))
@@ -142,8 +151,12 @@ func (f Frame) Encode(dst []byte) []byte {
 	}
 	out[offVersion] = ver
 	out[offSequence] = f.Sequence
-	out[offDrive] = f.Drive & 0x1F
-	out[offOpcode] = f.Opcode
+	if f.IsReply {
+		bp.PutLE16(out[offDrive:offDrive+2], f.Status)
+	} else {
+		out[offDrive] = f.Drive & 0x1F
+		out[offOpcode] = f.Opcode
+	}
 	copy(out[headerEnd:], f.Payload)
 
 	if f.CKS {

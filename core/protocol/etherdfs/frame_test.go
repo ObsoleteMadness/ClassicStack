@@ -83,7 +83,7 @@ func TestReplySwapsMACs(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := [6]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
-	rep := req.Reply(srv, StatusReply(ErrNone))
+	rep := req.Reply(srv, ErrNone, nil)
 	if rep.DstMAC != req.SrcMAC {
 		t.Errorf("reply DstMAC = %v, want request SrcMAC %v", rep.DstMAC, req.SrcMAC)
 	}
@@ -149,9 +149,34 @@ func TestNormalizePath(t *testing.T) {
 	}
 }
 
+// TestReplyStatusAtHeaderOffset pins the wire layout the reference client relies
+// on: sendquery() reads AX from *(uint16*)(frame+58) — the SAME bytes a request
+// carries Drive (58) and Opcode (59) in. A reply must therefore encode Status at
+// offset 58-59, NOT as leading Payload bytes at offset 60, or a real client reads
+// the wrong AX value (typically nonzero, since drive numbers are usually >=2) and
+// treats every successful reply — including the AL_DISKSPACE probe the reference
+// client's auto-discovery (etherdfs "::") broadcasts — as a failure.
+func TestReplyStatusAtHeaderOffset(t *testing.T) {
+	req, err := ParseFrame(makeFrame(t, false, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := [6]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
+	payload := []byte{0x11, 0x22, 0x33, 0x44}
+	wire := req.Reply(srv, ErrAccessDenied, payload).Encode(nil)
+
+	gotStatus := uint16(wire[58]) | uint16(wire[59])<<8
+	if gotStatus != ErrAccessDenied {
+		t.Fatalf("AX at offset 58-59 = %#x, want %#x", gotStatus, ErrAccessDenied)
+	}
+	if !bytes.Equal(wire[60:60+len(payload)], payload) {
+		t.Fatalf("payload at offset 60 = % x, want % x (must not be shifted by a status prefix)", wire[60:60+len(payload)], payload)
+	}
+}
+
 func TestReplyDTOEncodings(t *testing.T) {
-	if got := (DiskSpaceReply{SectorsPerCluster: 8, BytesPerSector: 512, TotalClusters: 100, FreeClusters: 50}).Encode(nil); len(got) != 10 {
-		t.Errorf("DiskSpaceReply len = %d, want 10", len(got))
+	if got := (DiskSpaceReply{TotalClusters: 100, FreeClusters: 50}).Encode(nil); len(got) != 6 {
+		t.Errorf("DiskSpaceReply len = %d, want 6", len(got))
 	}
 	if got := (GetAttrReply{Size: 1234, Attr: AttrArchive}).Encode(nil); len(got) != 9 {
 		t.Errorf("GetAttrReply len = %d, want 9", len(got))
@@ -159,11 +184,13 @@ func TestReplyDTOEncodings(t *testing.T) {
 	if got := (FindReply{FCB: FilenameToFCB("A.TXT")}).Encode(nil); len(got) != 1+FCBNameLen+12 {
 		t.Errorf("FindReply len = %d, want %d", len(got), 1+FCBNameLen+12)
 	}
-	// SPOPNFIL open reply carries the extra 2-byte action result.
-	plain := (OpenReply{}).Encode(nil)
-	withAction := (OpenReply{HasAction: true}).Encode(nil)
-	if len(withAction) != len(plain)+2 {
-		t.Errorf("SPOPNFIL reply should be 2 bytes longer: %d vs %d", len(withAction), len(plain))
+	// OPEN/CREATE/SPOPNFIL all reply with the same fixed 25-byte shape (spec:
+	// "Answer: AfffffffffffttddssssCCRRo (25 bytes)") regardless of Action.
+	if got := (OpenReply{}).Encode(nil); len(got) != 25 {
+		t.Errorf("OpenReply len = %d, want 25", len(got))
+	}
+	if got := (OpenReply{Action: 2}).Encode(nil); len(got) != 25 {
+		t.Errorf("OpenReply (with Action) len = %d, want 25", len(got))
 	}
 }
 
@@ -176,9 +203,22 @@ func TestDecodeRequests(t *testing.T) {
 	if err != nil || rn.Src != "OLD" || rn.Dst != "NEW" {
 		t.Errorf("DecodeRenameRequest = %+v, err=%v", rn, err)
 	}
-	op, err := DecodeOpenRequest([]byte{0x20, 0x00, 0x01, 0x00, 'F', 'O', 'O'}, true)
-	if err != nil || op.Attr != 0x20 || op.Action != 1 || op.Path != "FOO" {
+	op, err := DecodeOpenRequest([]byte{0x20, 0x00, 0x01, 0x00, 0x00, 0x00, 'F', 'O', 'O'})
+	if err != nil || op.Attr != 0x20 || op.Action != 1 || op.OpenMode != 0 || op.Path != "FOO" {
 		t.Errorf("DecodeOpenRequest = %+v, err=%v", op, err)
+	}
+	// AL_OPEN also always carries the fixed SS/CC/MM 6-byte prefix on the wire
+	// (the reference server reads the path at a fixed body offset 6 for every
+	// one of OPEN/CREATE/SPOPNFIL), even though CC/MM are meaningless for a
+	// plain OPEN. A request captured against a real client (spec/errata.md):
+	// SS=0000 CC=0101 MM=0000 then "\ETHERDFS\ETHERDFS.TXT" — decoding fewer
+	// than 6 prefix bytes corrupts the path with leftover CC/MM bytes.
+	spopn, err := DecodeOpenRequest([]byte{0x00, 0x00, 0x01, 0x01, 0x00, 0x00, '\\', 'E', 'T', 'H', 'E', 'R', 'D', 'F', 'S', '\\', 'E', 'T', 'H', 'E', 'R', 'D', 'F', 'S', '.', 'T', 'X', 'T'})
+	if err != nil {
+		t.Fatalf("DecodeOpenRequest (captured SPOPNFIL): %v", err)
+	}
+	if want := `\ETHERDFS\ETHERDFS.TXT`; spopn.Path != want {
+		t.Errorf("DecodeOpenRequest (captured SPOPNFIL) Path = %q, want %q", spopn.Path, want)
 	}
 	if _, err := DecodeReadRequest([]byte{1, 2, 3}); err != ErrBadRequest {
 		t.Errorf("short read request err = %v, want ErrBadRequest", err)

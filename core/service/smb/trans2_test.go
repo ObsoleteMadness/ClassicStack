@@ -105,8 +105,11 @@ func findReplyBlocks(t *testing.T, reply []byte) (params, data []byte) {
 // record on a non-Unicode session NUL-terminates FileName and counts that one NUL
 // byte in FileNameLength, the Windows NT server behavior the NT 3.51 redirector
 // requires ([MS-CIFS] §2.2.8.1.7 <167>/<168>; netbeui.pcap 2026-07-10 — without
-// it NT renders the directory listing empty). ShortNameLength must be 0 when no
-// distinct 8.3 alternate name exists.
+// it NT renders the directory listing empty). ShortNameLength must be non-zero
+// and carry a real derived 8.3 alternate name: MetaEngine derivation is always
+// on by default (the fix for the DOS/Win16 SMB_COM_SEARCH long-name bug), so a
+// long name always gets a distinct short name, unlike the old passthrough
+// default this test predates.
 func TestTrans2_FindBothDirCountsASCIITerminator(t *testing.T) {
 	svc, sess, tid := fsService(t)
 	sess.closeFID(createFile(t, svc, sess, tid, "longfilename.txt"))
@@ -127,8 +130,18 @@ func TestTrans2_FindBothDirCountsASCIITerminator(t *testing.T) {
 	if data[94+len(name)] != 0 {
 		t.Error("FileName is not NUL-terminated")
 	}
-	if data[68] != 0 {
-		t.Errorf("ShortNameLength = %d, want 0 (no distinct 8.3 name)", data[68])
+	shortLen := int(data[68])
+	if shortLen == 0 {
+		t.Fatal("ShortNameLength = 0, want a derived 8.3 alternate name")
+	}
+	// ShortName is UTF-16LE regardless of session charset ([MS-CIFS] §2.2.8.1.7).
+	shortRaw := data[70 : 70+shortLen]
+	var short strings.Builder
+	for i := 0; i+1 < len(shortRaw); i += 2 {
+		short.WriteByte(shortRaw[i])
+	}
+	if got := short.String(); got != "LONGFI~1.TXT" {
+		t.Errorf("ShortName = %q, want LONGFI~1.TXT", got)
 	}
 }
 

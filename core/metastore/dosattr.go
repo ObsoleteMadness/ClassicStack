@@ -1,6 +1,10 @@
 package metastore
 
-import "time"
+import (
+	"time"
+
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
+)
 
 // DOS/FAT file-attribute bits, the cross-service vocabulary every file service
 // (SMB, EtherDFS, NCP, AFP) maps onto. These match the FILE_ATTRIBUTE_* /
@@ -30,8 +34,13 @@ type DOSAttr struct {
 	// entry kind.
 	Attrs uint16
 	// CreateTime is the DOS/Windows creation timestamp. Zero means "unknown" — a
-	// reader then falls back to the host mtime.
+	// reader then falls back to the host mtime. Persisted in the XATTR_DOSINFO
+	// blob (EncodeDOSInfo/DecodeDOSInfo) for Samba interop.
 	CreateTime time.Time
+	// AccessTime is the last-accessed timestamp, a ClassicStack extension with no
+	// XATTR_DOSINFO equivalent — persisted separately (see extattr.go) so the
+	// Samba-compatible blob stays byte-identical. Zero means "unknown".
+	AccessTime time.Time
 }
 
 // Has reports whether attribute bit a is set.
@@ -61,51 +70,86 @@ type DOSAttrStore interface {
 // cache layer the interop backends (xattr/native) write through. It is the tdb
 // equivalent of Samba's attribute database.
 type metaDOSAttrStore struct {
-	store Store
+	store   Store
+	logging log.Logger // established at construction, never nil; sinks own level filtering
 }
 
 // NewDOSAttrStore returns a metastore-backed DOSAttrStore over store (nil → a
-// volatile in-memory store, so a placeholder share still works).
-func NewDOSAttrStore(store Store) DOSAttrStore {
+// volatile in-memory store, so a placeholder share still works). A nil logger
+// gets a no-op logger (zero sinks), matching the rest of the codebase's
+// injection convention.
+func NewDOSAttrStore(store Store, logger log.Logger) DOSAttrStore {
 	if store == nil {
 		store, _ = NewMem("")
 	}
-	return &metaDOSAttrStore{store: store}
+	if logger == nil {
+		logger = log.New("dosattr")
+	}
+	return &metaDOSAttrStore{store: store, logging: logger}
 }
 
 // metastore key layout (one share per store; callers scope by store):
 //
 //	"d/a/<path>" -> XATTR_DOSINFO v3 blob (attrs + create-time)
+//	"d/x/<path>" -> ClassicStack ext-attr v1 blob (access-time; see extattr.go)
 func dosAttrKey(path string) []byte { return []byte("d/a/" + cleanPath(path)) }
+func extAttrKey(path string) []byte { return []byte("d/x/" + cleanPath(path)) }
 
 func (s *metaDOSAttrStore) Get(path string) (DOSAttr, bool) {
 	v, ok := s.store.Get(dosAttrKey(path))
 	if !ok {
+		s.logging.Log1(log.Debug, "dosattr cache miss", log.Str("path", path))
 		return DOSAttr{}, false
 	}
 	attr, err := DecodeDOSInfo(v)
 	if err != nil {
+		s.logging.Log2(log.Debug, "dosattr decode failed, treating as miss", log.Str("path", path), log.Str("err", err.Error()))
 		return DOSAttr{}, false
 	}
+	if xv, ok := s.store.Get(extAttrKey(path)); ok {
+		if ext, err := DecodeExtAttr(xv); err == nil {
+			attr = mergeExtAttr(attr, ext)
+		}
+	}
+	s.logging.Log1(log.Debug, "dosattr cache hit", log.Str("path", path))
 	return attr, true
 }
 
 func (s *metaDOSAttrStore) Set(path string, attr DOSAttr) error {
-	attr.Attrs &= DOSStorableMask
-	return s.store.Put(dosAttrKey(path), EncodeDOSInfo(attr))
+	dosAttr := attr
+	dosAttr.Attrs &= DOSStorableMask
+	if err := s.store.Put(dosAttrKey(path), EncodeDOSInfo(dosAttr)); err != nil {
+		return err
+	}
+	s.logging.Log1(log.Debug, "dosattr set", log.Str("path", path))
+	return s.store.Put(extAttrKey(path), EncodeExtAttr(attr))
 }
 
 func (s *metaDOSAttrStore) Delete(path string) error {
-	return s.store.Delete(dosAttrKey(path))
+	s.logging.Log1(log.Debug, "dosattr delete", log.Str("path", path))
+	if err := s.store.Delete(dosAttrKey(path)); err != nil {
+		return err
+	}
+	return s.store.Delete(extAttrKey(path))
 }
 
 func (s *metaDOSAttrStore) Rename(oldPath, newPath string) error {
-	v, ok := s.store.Get(dosAttrKey(oldPath))
-	if !ok {
-		return nil
+	s.logging.Log2(log.Debug, "dosattr rename", log.Str("old", oldPath), log.Str("new", newPath))
+	if v, ok := s.store.Get(dosAttrKey(oldPath)); ok {
+		if err := s.store.Put(dosAttrKey(newPath), v); err != nil {
+			return err
+		}
+		if err := s.store.Delete(dosAttrKey(oldPath)); err != nil {
+			return err
+		}
 	}
-	if err := s.store.Put(dosAttrKey(newPath), v); err != nil {
-		return err
+	if xv, ok := s.store.Get(extAttrKey(oldPath)); ok {
+		if err := s.store.Put(extAttrKey(newPath), xv); err != nil {
+			return err
+		}
+		if err := s.store.Delete(extAttrKey(oldPath)); err != nil {
+			return err
+		}
 	}
-	return s.store.Delete(dosAttrKey(oldPath))
+	return nil
 }

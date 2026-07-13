@@ -38,14 +38,12 @@ type VolumeSection struct {
 	ForkBackend string `toml:"fork_backend"`
 	// FilenameCodec selects the wire↔store name codec.
 	FilenameCodec string `toml:"filename_codec"`
-	// NameEngine selects the short/medium name engine.
-	NameEngine string `toml:"name_engine"`
 	// Metastore selects the CNID/shortname store kind ("mem" default).
 	Metastore string `toml:"metastore"`
-	// DOSAttrBackend selects how DOS attributes that the host cannot represent are
-	// persisted: auto|metastore|sidecar|native|xattr (empty = auto). See
-	// fs.ShareSpec.DOSAttrBackend.
-	DOSAttrBackend string `toml:"dos_attr_backend"`
+	// MetaBackend selects the share's MetaEngine (derived names, CNIDs, DOS
+	// attributes/dates): "metastore"|"xattr"|"ads" (empty = per-platform default).
+	// See fs.ShareSpec.MetaBackend.
+	MetaBackend string `toml:"meta_backend"`
 	// Path is the backend location (host directory for local_fs, …).
 	Path string `toml:"path"`
 	// ReadOnly makes the whole volume read-only (volume-wide, not per-user).
@@ -115,16 +113,15 @@ func (s *VolumeSection) Validate() error {
 // "key=value" entries become Extra entries.
 func (s *VolumeSection) fsSpec() fs.ShareSpec {
 	spec := fs.ShareSpec{
-		Name:           s.VName,
-		FSType:         s.FSType,
-		ForkBackend:    s.ForkBackend,
-		FilenameCodec:  s.FilenameCodec,
-		NameEngine:     s.NameEngine,
-		Metastore:      s.Metastore,
-		DOSAttrBackend: s.DOSAttrBackend,
-		Path:           s.Path,
-		ReadOnly:       s.ReadOnly,
-		AllowedUsers:   append([]string(nil), s.AllowedUsers...),
+		Name:          s.VName,
+		FSType:        s.FSType,
+		ForkBackend:   s.ForkBackend,
+		FilenameCodec: s.FilenameCodec,
+		Metastore:     s.Metastore,
+		MetaBackend:   s.MetaBackend,
+		Path:          s.Path,
+		ReadOnly:      s.ReadOnly,
+		AllowedUsers:  append([]string(nil), s.AllowedUsers...),
 	}
 	if len(s.Options) > 0 {
 		extra := make(map[string]any, len(s.Options))

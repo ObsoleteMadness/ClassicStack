@@ -33,6 +33,12 @@ type ServerSection struct {
 	// ServerName is the name advertised in AL_INSTALLCHK replies. Empty falls back
 	// to the shared Identity.Hostname.
 	ServerName string `toml:"server_name"`
+
+	// Capture is a pcap file path for this port's wire traffic ("" = no capture),
+	// mirroring port.Section.Capture for the other NIC transports (EtherTalk/IPX/
+	// NetBEUI). CaptureSnaplen caps the bytes stored per frame (0 = full frame).
+	Capture        string `toml:"capture"`
+	CaptureSnaplen int    `toml:"capture_snaplen"`
 }
 
 // Key returns the section key.
@@ -60,10 +66,12 @@ func (s *ServerSection) Validate() error {
 // (EtherDFS is a singleton wire endpoint, not a repeated port).
 func (s *ServerSection) PortSection() *port.Section {
 	return &port.Section{
-		SKey:      ServerKey,
-		Iface:     s.Interface,
-		MAC:       s.MAC,
-		IsEnabled: s.IsEnabled,
+		SKey:           ServerKey,
+		Iface:          s.Interface,
+		MAC:            s.MAC,
+		IsEnabled:      s.IsEnabled,
+		Capture:        s.Capture,
+		CaptureSnaplen: s.CaptureSnaplen,
 	}
 }
 

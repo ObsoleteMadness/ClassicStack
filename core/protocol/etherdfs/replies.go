@@ -2,35 +2,37 @@ package etherdfs
 
 import bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 
-// StatusReply is a bare AX status reply (the common shape for AL_MKDIR/AL_RMDIR/
-// AL_CHDIR/AL_CLSFIL/AL_CMMTFIL/AL_LOCKFIL/AL_UNLOCKFIL/AL_DELETE/AL_SETATTR/
-// AL_RENAME and any error reply): the 2-byte DOS status word and nothing else.
-func StatusReply(status uint16) []byte {
-	out := make([]byte, 2)
-	bp.PutLE16(out, status)
-	return out
-}
+// DiskSpaceStatus is the fixed AX value AL_DISKSPACE returns on success: a
+// packed media-id byte (low) + sectors-per-cluster byte (high), per the
+// reference server's "*ax = 1" (media id 1, ONE 32KB sector per cluster — the
+// reference server's comment notes MS-DOS tolerates only 1 here). This is a
+// DATA word, not a generic success/failure status: DISKSPACE is the one AL_*
+// call whose AX the client reads as content (glob_intregs.w.ax = *ax, used
+// directly as the sectors-per-cluster DOS reports) rather than as an error code.
+const DiskSpaceStatus uint16 = 1
 
-// DiskSpaceReply is the AL_DISKSPACE body: media descriptor, sectors-per-cluster,
-// bytes-per-sector, total clusters, and available clusters. The client multiplies
-// these to present a drive's free/total size to DOS. Fields are packed
-// little-endian; clusters are clamped to the 16-bit DOS range by the caller.
+// diskSpaceBytesPerSector is the fixed sector size AL_DISKSPACE reports (CX),
+// matching the reference server. Combined with the single sector-per-cluster in
+// DiskSpaceStatus's high byte, one "cluster" as reported to DOS is 32 KiB.
+const diskSpaceBytesPerSector uint16 = 32768
+
+// DiskSpaceReply is the AL_DISKSPACE body: BX (total 32KB clusters), CX (bytes
+// per sector, fixed), DX (available 32KB clusters) — exactly 3 words per
+// spec/etherdfs.txt ("Answer: BBCCDD"). The AX status word is DiskSpaceStatus,
+// carried in the frame header (see Frame.Reply), not in this payload — the spec
+// notes AX is "already handled in the protocol's header, no need to transmit it
+// a second time here."
 type DiskSpaceReply struct {
-	Status            uint16
-	SectorsPerCluster uint16
-	BytesPerSector    uint16
-	TotalClusters     uint16
-	FreeClusters      uint16
+	TotalClusters uint16 // BX: total 32KB clusters (input bytes >> 15, clamped to 16 bits)
+	FreeClusters  uint16 // DX: available 32KB clusters
 }
 
-// Encode appends the AL_DISKSPACE reply body to dst.
+// Encode appends the AL_DISKSPACE reply body to dst (BX, CX, DX — 6 bytes).
 func (r DiskSpaceReply) Encode(dst []byte) []byte {
-	var b [10]byte
-	bp.PutLE16(b[0:2], r.Status)
-	bp.PutLE16(b[2:4], r.SectorsPerCluster)
-	bp.PutLE16(b[4:6], r.BytesPerSector)
-	bp.PutLE16(b[6:8], r.TotalClusters)
-	bp.PutLE16(b[8:10], r.FreeClusters)
+	var b [6]byte
+	bp.PutLE16(b[0:2], r.TotalClusters)
+	bp.PutLE16(b[2:4], diskSpaceBytesPerSector)
+	bp.PutLE16(b[4:6], r.FreeClusters)
 	return append(dst, b[:]...)
 }
 
@@ -80,36 +82,34 @@ func (r FindReply) Encode(dst []byte) []byte {
 
 // OpenReply is the AL_OPEN / AL_CREATE / AL_SPOPNFIL success body: the opened
 // entry's attribute, 11-byte FCB name, DOS date/time, size, the server file ID
-// the client uses for subsequent READ/WRITE/SEEK/CLOSE, and the open mode. For
-// AL_SPOPNFIL an extra 2-byte action-result precedes the mode (HasAction).
+// the client uses for subsequent READ/WRITE/SEEK/CLOSE, the CX action-result
+// word, and the open mode — always 25 bytes per spec/etherdfs.txt ("Answer:
+// AfffffffffffttddssssCCRRo (25 bytes)"), for every one of OPEN/CREATE/SPOPNFIL.
+// The reference server writes the same 25-byte shape unconditionally (its CX
+// result, spopres, is simply 0 for plain OPEN/CREATE); Action is meaningful only
+// for AL_SPOPNFIL (1=opened, 2=created, 3=truncated) but is always transmitted.
 type OpenReply struct {
-	Attr      uint8
-	FCB       [FCBNameLen]byte
-	Time      uint32
-	Size      uint32
-	FileID    uint16
-	Action    uint16 // AL_SPOPNFIL action result (1=opened, 2=created, 3=truncated)
-	HasAction bool
-	Mode      uint8
+	Attr   uint8
+	FCB    [FCBNameLen]byte
+	Time   uint32
+	Size   uint32
+	FileID uint16
+	Action uint16 // AL_SPOPNFIL action result (1=opened, 2=created, 3=truncated); 0 otherwise
+	Mode   uint8
 }
 
-// Encode appends the open-family reply body to dst.
+// Encode appends the open-family reply body to dst (always 25 bytes).
 func (r OpenReply) Encode(dst []byte) []byte {
-	out := make([]byte, 0, 1+FCBNameLen+12)
-	out = append(out, r.Attr)
-	out = append(out, r.FCB[:]...)
-	var tmp [10]byte
-	bp.PutLE32(tmp[0:4], r.Time)
-	bp.PutLE32(tmp[4:8], r.Size)
-	bp.PutLE16(tmp[8:10], r.FileID)
-	out = append(out, tmp[:]...)
-	if r.HasAction {
-		var a [2]byte
-		bp.PutLE16(a[:], r.Action)
-		out = append(out, a[:]...)
-	}
-	out = append(out, r.Mode)
-	return append(dst, out...)
+	var b [1 + FCBNameLen + 13]byte
+	b[0] = r.Attr
+	copy(b[1:1+FCBNameLen], r.FCB[:])
+	o := 1 + FCBNameLen
+	bp.PutLE32(b[o:o+4], r.Time)
+	bp.PutLE32(b[o+4:o+8], r.Size)
+	bp.PutLE16(b[o+8:o+10], r.FileID)
+	bp.PutLE16(b[o+10:o+12], r.Action)
+	b[o+12] = r.Mode
+	return append(dst, b[:]...)
 }
 
 // ReadReply is the AL_READFIL success body: the raw file data (up to the

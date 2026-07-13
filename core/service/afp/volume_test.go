@@ -148,8 +148,8 @@ func TestVolume_ResolvePath_AscendsOnDoubleNull(t *testing.T) {
 
 func TestVolume_CNIDStableAndReversible(t *testing.T) {
 	v := newTestVolume(t)
-	if got := v.CNID(""); got != v.cnids.RootID() {
-		t.Errorf("root CNID = %d, want %d", got, v.cnids.RootID())
+	if got := v.CNID(""); got != v.meta().RootCNID() {
+		t.Errorf("root CNID = %d, want %d", got, v.meta().RootCNID())
 	}
 	a := v.CNID("dir/file")
 	b := v.CNID("dir/file")
