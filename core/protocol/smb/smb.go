@@ -62,10 +62,12 @@ const (
 	CommandWriteMPX              = 0x1E
 	CommandWriteComplete         = 0x20
 	CommandSetInformation2       = 0x22
+	CommandQueryInformation2     = 0x23
 	CommandLockingAndX           = 0x24
 	CommandTransaction           = 0x25
 	CommandTransactionSecondary  = 0x26
 	CommandEcho                  = 0x2B
+	CommandWriteAndClose         = 0x2C
 	CommandOpenAndX              = 0x2D
 	CommandReadAndX              = 0x2E
 	CommandWriteAndX             = 0x2F
@@ -130,6 +132,8 @@ func CommandName(cmd uint8) string {
 		return "SMB_COM_WRITE_COMPLETE"
 	case CommandSetInformation2:
 		return "SMB_COM_SET_INFORMATION2"
+	case CommandQueryInformation2:
+		return "SMB_COM_QUERY_INFORMATION2"
 	case CommandLockingAndX:
 		return "SMB_COM_LOCKING_ANDX"
 	case CommandTransaction:
@@ -138,6 +142,8 @@ func CommandName(cmd uint8) string {
 		return "SMB_COM_TRANSACTION_SECONDARY"
 	case CommandEcho:
 		return "SMB_COM_ECHO"
+	case CommandWriteAndClose:
+		return "SMB_COM_WRITE_AND_CLOSE"
 	case CommandOpenAndX:
 		return "SMB_COM_OPEN_ANDX"
 	case CommandReadAndX:

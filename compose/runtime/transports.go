@@ -646,6 +646,19 @@ func (b smbCircuitBridge) ServeMessage(req []byte) []byte { return b.c.ServeMess
 func (b smbCircuitBridge) SetPushWriter(w func([]byte))   { b.c.SetPushWriter(w) }
 func (b smbCircuitBridge) Close()                         { b.c.Close() }
 
+// SetNetBIOSName forwards the calling NetBIOS name to the wrapped SMB circuit if it
+// accepts one (implements netbios.NetBIOSNamer via *smb.Conn), so the bridge itself
+// satisfies netbios.NetBIOSNamer and NBF's type assertion on it succeeds.
+func (b smbCircuitBridge) SetNetBIOSName(name string) {
+	if namer, ok := b.c.(netbios.NetBIOSNamer); ok {
+		namer.SetNetBIOSName(name)
+	}
+}
+
+// compile-time assertion: the circuit bridge also satisfies the optional
+// NetBIOSNamer capability so NBF's type assertion on the wrapped circuit succeeds.
+var _ netbios.NetBIOSNamer = smbCircuitBridge{}
+
 // compile-time assertion: the bridge satisfies the NetBIOS upper-layer seam.
 var _ netbios.SessionConsumer = smbSessionBridge{}
 

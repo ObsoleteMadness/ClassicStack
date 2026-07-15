@@ -224,12 +224,17 @@ func (s *Service) ReactorDelivered() uint64 {
 // the authenticated identity ("" = guest), the SMB dialect it negotiated, when it
 // negotiated, and how many trees/files it currently holds open.
 type SessionInfo struct {
-	Client       string    // transport remote-endpoint label; "" when the transport supplied none
-	User         string    // authenticated identity from SESSION_SETUP; "" = guest
-	Dialect      string    // negotiated SMB dialect string; "" before NEGOTIATE
-	NegotiatedAt time.Time // when NEGOTIATE completed; zero before then
-	OpenTrees    int       // bound tree connects (TREE_CONNECT)
-	OpenFiles    int       // open file handles (FID)
+	Client        string    // transport remote-endpoint label; "" when the transport supplied none
+	MAC           string    // hardware address parsed from Client, if the transport's label carries one; "" otherwise (e.g. TCP)
+	NetBIOSName   string    // calling NetBIOS name (NBF NAME_QUERY SourceName); "" for transports with no NetBIOS name layer
+	User          string    // authenticated identity from SESSION_SETUP; "" = guest
+	Dialect       string    // negotiated SMB dialect string; "" before NEGOTIATE
+	NegotiatedAt  time.Time // when NEGOTIATE completed; zero before then
+	NativeOS      string    // client's reported OS (SESSION_SETUP NativeOS); "" until reported
+	NativeLanMan  string    // client's reported LAN Manager type (SESSION_SETUP NativeLanMan); "" until reported
+	PrimaryDomain string    // client's reported domain/workgroup (SESSION_SETUP PrimaryDomain); "" until reported
+	OpenTrees     int       // bound tree connects (TREE_CONNECT)
+	OpenFiles     int       // open file handles (FID)
 }
 
 // Sessions snapshots every live SMB circuit for the management view, grouped

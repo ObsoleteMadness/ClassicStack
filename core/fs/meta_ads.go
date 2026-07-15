@@ -33,6 +33,7 @@ func newMetaADSEngine(spec ShareSpec, base FileSystem, store metastore.Store, lo
 		names:   NewDerivedNameEngine(store),
 		cnids:   cnids,
 		attrs:   buildDOSAttrStore(dosBackendNative, base, store, logger.With(log.Str("component", "dosattr"))),
+		eas:     metastore.NewEAStore(store, logger.With(log.Str("component", "eastore"))),
 		logging: logger,
 	}
 }

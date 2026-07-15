@@ -56,6 +56,17 @@ const (
 // AndXOffset(2) Reserved(1) NameLength(2) Flags(4) RootDirectoryFID(4)
 // DesiredAccess(4) AllocationSize(8) ExtFileAttributes(4) ShareAccess(4)
 // CreateDisposition(4) CreateOptions(4) ImpersonationLevel(4) SecurityFlags(1).
+//
+// TODO(EA-at-create): NT_CREATE_ANDX itself carries no EA list — a client
+// that wants to set EAs at create time uses the separate NT_TRANSACT_CREATE
+// transact subcommand (EaLength + FILE_FULL_EA_INFORMATION in NT_Trans_Data,
+// [MS-FSCC] §2.4.16), which this codebase does not implement. Not needed for
+// OS/2 Workplace Shell today — WPS opens files via plain OPEN_ANDX/
+// NTCreateAndX and sets EAs afterward via TRANS2_SET_PATH_INFORMATION
+// SMB_INFO_SET_EAS (trans2.go's applySetEAs). Add NT_TRANSACT_CREATE EA
+// parsing only once a capture shows a client actually relying on it —
+// implementing a whole new transact subcommand from spec alone, with no
+// observed wire traffic to validate against, risks unverified protocol code.
 func (s *Service) handleNtCreateAndX(sess *smbSession, h protocol.Header, req []byte) []byte {
 	if tc, ok := sess.tree(h.TID); ok && (tc.ipc || tc.share == nil) {
 		// An open on the IPC$ tree names an RPC pipe (\srvsvc, \wkssvc, …) we do

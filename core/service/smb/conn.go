@@ -53,7 +53,33 @@ func (c *Conn) ServeMessage(req []byte) []byte {
 	c.svc.logSMBRequest(c.sess, req)
 	resp := c.svc.Dispatch(c.sess, req)
 	c.svc.logSMBResponse(c.sess, resp)
+	c.sendContinuations()
 	return resp
+}
+
+// sendContinuations delivers any TRANS2 response continuation frames a chunked
+// reply queued (buildTrans2Response, when the assembled message exceeded the
+// session's maxBufferSize) over the circuit's push writer, in order, right
+// after the primary response returns. A circuit with no push writer installed
+// silently drops them — same fallback as an undeliverable NOTIFY_CHANGE.
+func (c *Conn) sendContinuations() {
+	frames, push := c.sess.drainContinuations()
+	if push == nil {
+		return
+	}
+	for _, f := range frames {
+		push(f)
+	}
+}
+
+// SetNetBIOSName records the calling NetBIOS name a NetBIOS-based transport (NBF)
+// learned at session establishment (the NAME_QUERY SourceName), for the management
+// session view. A transport with no NetBIOS name layer (NB-IPX, direct-IPX, TCP)
+// never calls this. It implements the optional netbios.NetBIOSNamer seam, which a
+// transport type-asserts for after NewConn — the base SessionCircuit contract is
+// unchanged so AFP/NCP's structurally-identical seams need no update.
+func (c *Conn) SetNetBIOSName(name string) {
+	c.sess.setNetBIOSName(name)
 }
 
 // SetPushWriter installs the transport's server-initiated push channel: a function

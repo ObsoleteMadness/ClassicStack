@@ -25,6 +25,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/port/ethertalk"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/macip"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/nbp"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/smb"
 )
 
 // componentSource is the read-only lookup the provider needs: resolve a built component
@@ -75,6 +76,70 @@ type AARPEntry struct {
 	Node    uint8  `json:"node"`    // AppleTalk node of the mapped address
 	MAC     string `json:"mac"`     // resolved hardware address (aa:bb:cc:dd:ee:ff)
 	SeenNs  int64  `json:"seen_ns"` // UnixNano of the last confirm/glean
+}
+
+// SMBSession is the management view of one live SMB circuit: the transport client
+// label plus the fields the web UI displays for it (MAC, calling NetBIOS name,
+// authenticated user, negotiated dialect, and the client's self-reported OS/LAN
+// Manager identity from SESSION_SETUP_ANDX). Owned by this adapter (not
+// core/control), so the neutral plane carries no SMB type.
+type SMBSession struct {
+	Client        string `json:"client"`
+	MAC           string `json:"mac"`
+	NetBIOSName   string `json:"netbios_name"`
+	User          string `json:"user"`
+	Dialect       string `json:"dialect"`
+	NegotiatedAt  int64  `json:"negotiated_at"` // UnixNano; 0 before NEGOTIATE
+	NativeOS      string `json:"native_os"`
+	NativeLanMan  string `json:"native_lanman"`
+	PrimaryDomain string `json:"primary_domain"`
+	OpenTrees     int    `json:"open_trees"`
+	OpenFiles     int    `json:"open_files"`
+}
+
+// SMBSessions returns the live SMB circuit table, sorted by client label.
+// control.ErrUnavailable when no SMB service was built.
+func (p *Provider) SMBSessions() ([]SMBSession, error) {
+	svc := p.smb()
+	if svc == nil {
+		return nil, control.ErrUnavailable
+	}
+	raw := svc.Sessions()
+	out := make([]SMBSession, 0, len(raw))
+	for _, s := range raw {
+		var negotiatedAt int64
+		if !s.NegotiatedAt.IsZero() {
+			negotiatedAt = s.NegotiatedAt.UnixNano()
+		}
+		out = append(out, SMBSession{
+			Client:        s.Client,
+			MAC:           s.MAC,
+			NetBIOSName:   s.NetBIOSName,
+			User:          s.User,
+			Dialect:       s.Dialect,
+			NegotiatedAt:  negotiatedAt,
+			NativeOS:      s.NativeOS,
+			NativeLanMan:  s.NativeLanMan,
+			PrimaryDomain: s.PrimaryDomain,
+			OpenTrees:     s.OpenTrees,
+			OpenFiles:     s.OpenFiles,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Client < out[j].Client })
+	return out, nil
+}
+
+// smb resolves the live SMB service, or nil when none was built.
+func (p *Provider) smb() *smb.Service {
+	if p.src == nil {
+		return nil
+	}
+	if c := p.src.Component(smb.Name); c != nil {
+		if s, ok := c.(*smb.Service); ok {
+			return s
+		}
+	}
+	return nil
 }
 
 // RegisteredNames returns the NBP name table, decoding the NVE byte fields to display

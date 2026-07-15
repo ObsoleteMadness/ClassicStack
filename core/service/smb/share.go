@@ -115,6 +115,109 @@ func (sh *Share) SetAttrs(store string, attrs uint16) error {
 	return m.SetAttrs(store, cur)
 }
 
+// EAs returns the OS/2-style named extended attributes stored for a store
+// path (empty when none are stored), through the share's MetaEngine.
+func (sh *Share) EAs(store string) []fs.EA {
+	eas, _ := sh.meta().EAs(store)
+	return eas
+}
+
+// SetEAs applies eas as an upsert against the store path's existing EA list —
+// [MS-CIFS] §2.2.8.4.2 describes SMB_INFO_SET_EAS as setting "a specific
+// list" (i.e. these entries), not replacing the whole set, matching the OS/2
+// DosSetPathInfo/DosSetFileInfo EA API convention this command mirrors. Named
+// entries in eas overwrite any existing value; every other stored EA is left
+// untouched. An entry with a zero-length Value DELETES that name (the same
+// OS/2 API convention), rather than storing an empty value — OS/2 Workplace
+// Shell issues one SET_PATH_INFO per changed EA (netbeui.pcap 2026-07-14:
+// separate .SUBJECT/.ICON/.COMMENTS/.KEYPHRASES requests on the same file),
+// so a naive full-replace here would silently discard every EA set by an
+// earlier request.
+func (sh *Share) SetEAs(store string, eas []fs.EA) error {
+	m := sh.meta()
+	cur, _ := m.EAs(store)
+	merged := make([]fs.EA, 0, len(cur)+len(eas))
+	merged = append(merged, cur...)
+	for _, e := range eas {
+		idx := -1
+		for i, c := range merged {
+			if c.Name == e.Name {
+				idx = i
+				break
+			}
+		}
+		switch {
+		case len(e.Value) == 0:
+			if idx >= 0 {
+				merged = append(merged[:idx], merged[idx+1:]...)
+			}
+		case idx >= 0:
+			merged[idx] = e
+		default:
+			merged = append(merged, e)
+		}
+	}
+	return m.SetEAs(store, merged)
+}
+
+// longNameEA is the OS/2 HPFS-convention EA name a FAT-mounted volume uses to
+// carry a file's true long name alongside its 8.3 host name. Set via
+// TRANS2_SET_PATH/FILE_INFORMATION SMB_INFO_SET_EAS (netbeui.pcap frame 666).
+const longNameEA = ".LONGNAME"
+
+// eatASCIIMarker is FEA2's typed single-value encoding for a plain-text EA
+// value ([OS/2 EA API] EAT_ASCII = 0xFFFD, little-endian on the wire): 2-byte
+// type, 2-byte length, then the text itself. OS/2 Workplace Shell always
+// writes .LONGNAME this way (netbeui.pcap frame 666: `fd ff 17 00 "This is a
+// new title.exe"`).
+const eatASCIIMarker = 0xFFFD
+
+// longNameText decodes an EA value into its display text: the FEA2 typed
+// EAT_ASCII envelope when present, else the bytes taken as raw text (a bare
+// value, as a non-WPS client or test fixture might set).
+func longNameText(value []byte) string {
+	if len(value) >= 4 {
+		typ := uint16(value[0]) | uint16(value[1])<<8
+		length := int(uint16(value[2]) | uint16(value[3])<<8)
+		if typ == eatASCIIMarker && 4+length <= len(value) {
+			return string(value[4 : 4+length])
+		}
+	}
+	return string(value)
+}
+
+// longNameFor returns the display name stored in store's .LONGNAME EA, or ""
+// when none is set.
+func (sh *Share) longNameFor(store string) string {
+	for _, e := range sh.EAs(store) {
+		if e.Name == longNameEA {
+			return longNameText(e.Value)
+		}
+	}
+	return ""
+}
+
+// foldLongName scans dir for a child whose stored .LONGNAME EA matches want
+// case-insensitively, returning that child's actual host name. This lets an
+// OS/2 client open/list a file by the long name it set via .LONGNAME even
+// though the host entry itself is an 8.3 name.
+func (sh *Share) foldLongName(dir, want string) (string, bool) {
+	entries, err := sh.FS().ReadDir(dir)
+	if err != nil {
+		return "", false
+	}
+	for _, e := range entries {
+		full := e.Name()
+		if dir != "" {
+			full = dir + "/" + full
+		}
+		if long := sh.longNameFor(full); long != "" && strings.EqualFold(long, want) {
+			return e.Name(), true
+		}
+	}
+	return "", false
+}
+
 // codec is the share's FilenameCodec, threaded with the per-request wire charset.
 func (sh *Share) codec() fs.FilenameCodec { return sh.sh.Codec() }
 
@@ -127,6 +230,16 @@ func (sh *Share) codec() fs.FilenameCodec { return sh.sh.Codec() }
 // is never mis-split on a low byte. An element the store charset cannot represent
 // yields fs.ErrUnrepresentable (→ STATUS_OBJECT_NAME_INVALID) rather than a
 // mangled path; an unsupported wire charset yields fs.ErrWireUnsupported.
+//
+// The decoded path is then case-folded to the on-disk casing (fs.ResolveFold)
+// when it differs — SMB filenames are caseless by convention regardless of
+// whether the host filesystem is (netbeui.pcap 2026-07-13 frames 2783/2802:
+// OS/2 WPS SET_PATH_INFO creates "foo.lnk", a later QUERY_PATH_INFO asks for
+// "foo.LNK"). Without folding, every MetaEngine-backed lookup keyed on the
+// exact store path — EAs, DOS attributes, CNID — silently misses on a
+// differently-cased request even though Stat/ReadDir degrade gracefully. A
+// path that does not yet exist (a create/rename target) is returned as
+// typed — ResolveFold's miss case preserves the requested casing.
 func (sh *Share) ResolvePath(wirePath []byte, flags2 uint16) (string, error) {
 	wire := wireFor(flags2)
 
@@ -151,7 +264,59 @@ func (sh *Share) ResolvePath(wirePath []byte, flags2 uint16) (string, error) {
 		}
 		elems = append(elems, el)
 	}
-	return strings.Join(elems, "/"), nil
+	path := strings.Join(elems, "/")
+	if resolved, ok := fs.ResolveFold(sh.FS(), path); ok {
+		path = resolved
+	} else if resolved, ok := sh.resolveLongNames(elems); ok {
+		path = resolved
+	}
+	return path, nil
+}
+
+// resolveLongNames is ResolveFold's OS/2 .LONGNAME-aware fallback: when a plain
+// case-fold does not fully resolve a path, retry component by component,
+// accepting either a case-insensitive host-name match or a match against a
+// child's stored .LONGNAME EA (the true long name an OS/2 client set over an
+// 8.3 host name — netbeui.pcap frame 666 sets .LONGNAME; frames 812/813 then
+// open the file by that long name). ok is false as soon as a component
+// resolves neither way, mirroring ResolveFold's miss contract.
+func (sh *Share) resolveLongNames(elems []string) (string, bool) {
+	resolved := make([]string, 0, len(elems))
+	dir := ""
+	for _, want := range elems {
+		if actual, ok := foldComponentEA(sh, dir, want); ok {
+			resolved = append(resolved, actual)
+			dir = strings.Join(resolved, "/")
+			continue
+		}
+		return "", false
+	}
+	return strings.Join(resolved, "/"), true
+}
+
+// foldComponentEA resolves one path component against dir: an exact or
+// case-folded host-name match first, else a .LONGNAME EA match.
+func foldComponentEA(sh *Share, dir, want string) (string, bool) {
+	full := want
+	if dir != "" {
+		full = dir + "/" + want
+	}
+	if _, err := sh.FS().Stat(full); err == nil {
+		return want, true
+	}
+	entries, err := sh.FS().ReadDir(dir)
+	if err != nil {
+		return "", false
+	}
+	for _, e := range entries {
+		if strings.EqualFold(e.Name(), want) {
+			return e.Name(), true
+		}
+	}
+	if actual, ok := sh.foldLongName(dir, want); ok {
+		return actual, true
+	}
+	return "", false
 }
 
 // splitWirePath splits raw SMB path bytes on the backslash separator as encoded

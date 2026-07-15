@@ -60,6 +60,7 @@ type DiagProvider interface {
 	RegisteredNames() ([]diag.NBPName, error)
 	MacIPLeases() ([]diag.MacIPLease, error)
 	AARPTable() ([]diag.AARPEntry, error)
+	SMBSessions() ([]diag.SMBSession, error)
 }
 
 // SetDiagProvider installs the protocol diagnostics provider (the cmd edge builds it
@@ -104,6 +105,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/registered_names", s.handleRegisteredNames)
 	mux.HandleFunc("/macip_leases", s.handleMacIPLeases)
 	mux.HandleFunc("/aarp_table", s.handleAARPTable)
+	mux.HandleFunc("/smb_sessions", s.handleSMBSessions)
 	mux.HandleFunc("/reconfigure", s.handleReconfigure)
 	mux.HandleFunc("/add_instance", s.handleAddInstance)
 	mux.HandleFunc("/remove_instance", s.handleRemoveInstance)
@@ -675,6 +677,28 @@ func (s *Server) handleAARPTable(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(res)
 }
 
+// handleSMBSessions returns the live SMB circuit table (the drill-down behind SMB's
+// dashboard card): client, MAC, calling NetBIOS name, authenticated user, negotiated
+// dialect, and the client's self-reported OS/LAN Manager identity. 501 when the
+// provider is absent or no SMB service was built (ErrUnavailable).
+func (s *Server) handleSMBSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.diag == nil {
+		http.Error(w, control.ErrUnavailable.Error(), statusForErr(control.ErrUnavailable))
+		return
+	}
+	res, err := s.diag.SMBSessions()
+	if err != nil {
+		http.Error(w, err.Error(), statusForErr(err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
+}
+
 func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1124,6 +1148,15 @@ func (c *AdapterClient) AARPTable(ctx context.Context) ([]diag.AARPEntry, error)
 	_ = ctx
 	var out []diag.AARPEntry
 	err := c.getJSON("/aarp_table", &out)
+	return out, err
+}
+
+// SMBSessions runs the SMB session-table drill-down (the diagnostics-provider route).
+// control.ErrUnavailable when no SMB service is wired.
+func (c *AdapterClient) SMBSessions(ctx context.Context) ([]diag.SMBSession, error) {
+	_ = ctx
+	var out []diag.SMBSession
+	err := c.getJSON("/smb_sessions", &out)
 	return out, err
 }
 

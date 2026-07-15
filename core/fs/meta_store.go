@@ -24,8 +24,9 @@ func init() {
 type metaStoreEngine struct {
 	names   NameEngine // core/fs/name.go's derivedNameEngine
 	cnids   *metastore.CNIDStore
-	attrs   DOSAttrStore // buildDOSAttrStore's native→xattr→sidecar→metastore chain
-	logging log.Logger   // established at construction, never nil; sinks own level filtering
+	attrs   DOSAttrStore      // buildDOSAttrStore's native→xattr→sidecar→metastore chain
+	eas     metastore.EAStore // metastore-backed; shared by every MetaEngine backend
+	logging log.Logger        // established at construction, never nil; sinks own level filtering
 }
 
 // newMetaStoreEngine builds the metastore-backed MetaEngine over store (nil → a
@@ -46,6 +47,7 @@ func newMetaStoreEngine(spec ShareSpec, base FileSystem, store metastore.Store, 
 		names:   NewDerivedNameEngine(store),
 		cnids:   cnids,
 		attrs:   buildDOSAttrStore(dosBackendAuto, base, store, logger.With(log.Str("component", "dosattr"))),
+		eas:     metastore.NewEAStore(store, logger.With(log.Str("component", "eastore"))),
 		logging: logger,
 	}
 }
@@ -116,6 +118,18 @@ func (e *metaStoreEngine) DeleteAttrs(path string) error { return e.attrs.Delete
 
 func (e *metaStoreEngine) RenameAttrs(oldPath, newPath string) error {
 	return e.attrs.Rename(oldPath, newPath)
+}
+
+func (e *metaStoreEngine) EAs(path string) ([]EA, bool) { return e.eas.Get(path) }
+
+func (e *metaStoreEngine) SetEAs(path string, eas []EA) error {
+	return e.eas.Set(path, eas)
+}
+
+func (e *metaStoreEngine) DeleteEAs(path string) error { return e.eas.Delete(path) }
+
+func (e *metaStoreEngine) RenameEAs(oldPath, newPath string) error {
+	return e.eas.Rename(oldPath, newPath)
 }
 
 var _ MetaEngine = (*metaStoreEngine)(nil)

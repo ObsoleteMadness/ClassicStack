@@ -219,6 +219,28 @@ Note the **field widths differ** between the LANMAN and NT forms (SecurityMode 2
 
 **Where:** `core/service/smb/trans2.go` (`supportedFindLevel`, `packFindEntries`, `packFindStandard`); regressions in `trans2_test.go`.
 
+### SMB_INFO_QUERY_EAS_FROM_LIST: requested-but-missing names MUST get a zero-length placeholder FEA, not be omitted — [MS-CIFS] §2.2.8.3.3, confirmed against real IBM Peer traffic
+
+**Spec:** SMB_INFO_QUERY_EAS_FROM_LIST's response is a SMB_FEA_LIST containing "pairs where the AttributeName field values match those that were provided in the request" ([MS-CIFS] §2.2.8.3.3). The spec text doesn't explicitly state whether a requested name absent from the file's EA set must still appear in the response — it is silent on omission vs. placeholder.
+
+**Observed (`captures/ibm-peer-clients.pcapng`, real IBM Peer/OS-2 client ↔ IBM Peer server, 2026-07-15):** frames 505→507 (`\Desktop`, no EAs stored) — the client's GEA list requests `.ICON`/`.APPTYPE`/`.CHECKSUM`/`.ASSOCTABLE`; the real IBM server answers with **all four** as zero-length FEA records (`EA Data Length: 0` each), not an empty/short list. Frames 1428→1432 (`\OS!2 Warp Readme`, has a real icon) — same 4-name request; the response has `.ICON` populated (3041 bytes, EAT_ICON `0xFFF9` marker intact) **and still lists** `.APPTYPE`/`.CHECKSUM`/`.ASSOCTABLE` as zero-length placeholders. The server always answers with one FEA record per requested GEA name, positionally, regardless of whether the file has that EA.
+
+We had initially implemented `filterEAs` to omit not-found names entirely (diagnosed against `netbeui.pcap` frames 554/559 against our own ClassicStack server, where the wire delivery and EA value were confirmed byte-correct but the omission was flagged as a possible cause of an OS/2 WPS icon-not-kept report). The IBM Peer capture settles it: omission is wrong.
+
+**What we do:** `filterEAs` now emits `fs.EA{Name: n}` (zero Value) for any requested name with no stored match, preserving request order — one FEA record per requested GEA name, always.
+
+**Where:** `core/service/smb/trans2.go` (`filterEAs`); regression in `trans2_test.go` (`TestTrans2_QueryEasFromListFiltersByName`).
+
+### SMB_COM_WRITE_AND_CLOSE truncates the file to the write's end — [MS-CIFS] §3.3.5.34 is silent on resize, OS/2 Workplace Shell requires it
+
+**Spec ([MS-CIFS] §3.3.5.34):** WRITE_AND_CLOSE is specified as seek-to-offset, write CountOfBytesToWrite bytes, then close the FID — no mention of resizing the file to the write's extent. Taken literally, a WRITE_AND_CLOSE that writes fewer bytes than the file's current size leaves the file at its old (larger) size, with stale bytes past the new write's end.
+
+**Observed (`netbeui.pcap` 2026-07-15, OS/2 Workplace Shell client 02:60:8c:c6:dc:44):** WPS rewrites its `\WP ROOT. SF` desktop-state file entirely via a single OPEN_ANDX (OpenFunction 0x0011 — open-existing, **no truncate**) + WRITE_AND_CLOSE from offset 0, on a fresh FID each time, and never issues a separate resize (no SET_FILE_INFO EndOfFile, no truncating open). Frame 1044/1045: FID 0x0022, 383 bytes written, file becomes 383 bytes. Frame 1093/1094: FID 0x0023 (same path, freshly reopened non-destructively), only 346 bytes written at offset 0. WRITE_AND_CLOSE alone is WPS's only mechanism for shrinking the file — a spec-literal implementation left 37 stale trailing bytes from the previous write past the new EOF.
+
+**What we do:** `handleWriteAndClose` truncates the file to `offset + bytesWritten` immediately before closing the FID, treating WRITE_AND_CLOSE as this FID's terminal write. `handleWrite` (plain SMB_COM_WRITE, no close) is unaffected — only the write-and-close-in-one-command form resizes.
+
+**Where:** `core/service/smb/fileio.go` (`handleWriteAndClose`); regression in `fileio_test.go` (`TestFS_WriteAndCloseTruncatesShorterOverwrite`, reverted-and-reconfirmed against the bug before restoring the fix).
+
 ## AFP
 
 ### Catalog date epoch (Inside Macintosh: Networking, "AFP date and time")

@@ -326,6 +326,60 @@ func (s *Service) handleWrite(sess *smbSession, h protocol.Header, req []byte) [
 	return reply(h, statusSuccess, 1, w, nil)
 }
 
+// handleWriteAndClose answers SMB_COM_WRITE_AND_CLOSE (0x2C, LAN Manager 1.0;
+// deprecated in favour of WRITE_ANDX but still issued by OS/2 Warp's Workplace
+// Shell — [MS-CIFS] §2.2.4.40, netbeui.pcap 2026-07-13 frame 843). Request
+// words (WCT=6 or 12): FID(2) CountOfBytesToWrite(2) WriteOffsetInBytes(4)
+// LastWriteTime(4) [Reserved[3] ULONG, 12-word form only, MUST be zero — not
+// an EA-list field; WRITE_AND_CLOSE carries no EAs on the wire at any
+// WordCount]. Data rides the byte area as Pad(1) Data[CountOfBytesToWrite],
+// identical to SMB_COM_WRITE. Behaves as WRITE followed by CLOSE. Reply WCT=1
+// (CountOfBytesWritten).
+func (s *Service) handleWriteAndClose(sess *smbSession, h protocol.Header, req []byte) []byte {
+	words, area, ok := reqBody(req)
+	if !ok || len(words) < 12 {
+		return errResponse(h, statusUnsuccessful)
+	}
+	fid := bp.LE16(words[0:2])
+	count := int(bp.LE16(words[2:4]))
+	offset := int64(bp.LE32(words[4:8]))
+
+	var data []byte
+	if count > 0 {
+		if len(area) < 1 {
+			return errResponse(h, statusUnsuccessful)
+		}
+		data = area[1:]
+		if len(data) > count {
+			data = data[:count]
+		}
+	}
+	n, st := s.writeAt(sess, fid, offset, data)
+	if st == statusSuccess {
+		// [MS-CIFS] §3.3.5.34 specifies WRITE_AND_CLOSE as seek+write only, with
+		// no implicit resize — but it predates SetEndOfFile/SetFileSize as a
+		// mechanism, and OS/2 Workplace Shell relies on WRITE_AND_CLOSE alone to
+		// rewrite its "\WP ROOT. SF" state file: it reopens with OpenFunction
+		// 0x0011 (open-existing, no truncate) and issues a single WRITE_AND_CLOSE
+		// of the new (possibly shorter) content from offset 0, never sending a
+		// separate resize. Treating WRITE_AND_CLOSE as this FID's terminal write
+		// and truncating to offset+n at close time matches that expectation;
+		// without it, a shorter rewrite left stale trailing bytes from the
+		// previous write past the new EOF (netbeui.pcap 2026-07-15, WP ROOT. SF
+		// written 383 bytes then 346 bytes on a fresh FID — file stayed 383).
+		if hnd, ok := sess.fileByFID(fid); ok && hnd.file != nil {
+			_ = hnd.file.Truncate(offset + int64(n))
+		}
+	}
+	sess.closeFID(fid)
+	if st != statusSuccess {
+		return errResponse(h, st)
+	}
+	w := make([]byte, 2)
+	bp.PutLE16(w[0:2], uint16(n))
+	return reply(h, statusSuccess, 1, w, nil)
+}
+
 // writeAt writes data at offset to the open FID, returning the byte count and
 // status. A zero-length write truncates the file to offset ([MS-CIFS] §2.2.4.12).
 // A write to a read-only handle is STATUS_ACCESS_DENIED.
@@ -393,6 +447,41 @@ func (s *Service) handleFlush(sess *smbSession, h protocol.Header, req []byte) [
 	}
 	_ = hnd.file.Sync()
 	return successNoData(h)
+}
+
+// handleQueryInformation2 answers SMB_COM_QUERY_INFORMATION2 (0x23), the
+// LANMAN1.0 FID-based sibling of QUERY_INFORMATION (0x08) — DOS/OS2/Win16
+// redirectors query attributes of a file they already hold open by FID instead
+// of re-walking its path. Request words (WCT=1): FID(2). Reply WCT=11:
+// CreationDate/Time(2+2) LastAccessDate/Time(2+2) LastWriteDate/Time(2+2)
+// DataSize(4) AllocationSize(4) Attributes(2) ([LM1.0] "Get File Attributes
+// Using Handle"; unimplemented here answered STATUS_NOT_SUPPORTED, seen as
+// "Invalid function" against real DOS/Win16 clients — netbeui.pcap frame 1766).
+func (s *Service) handleQueryInformation2(sess *smbSession, h protocol.Header, req []byte) []byte {
+	words, _, ok := reqBody(req)
+	if !ok || len(words) < 2 {
+		return errResponse(h, statusUnsuccessful)
+	}
+	fid := bp.LE16(words[0:2])
+	hnd, ok := sess.fileByFID(fid)
+	if !ok {
+		return errResponse(h, statusInvalidHandle)
+	}
+	info, err := hnd.share.FS().Stat(hnd.path)
+	if err != nil {
+		return errResponse(h, mapFSErr(err))
+	}
+	created := dosTimeDate(info.ModTime())
+	w := make([]byte, 22)
+	bp.PutLE32(w[0:4], created)  // CreationDate/Time
+	bp.PutLE32(w[4:8], created)  // LastAccessDate/Time
+	bp.PutLE32(w[8:12], created) // LastWriteDate/Time
+	if !info.IsDir() {
+		bp.PutLE32(w[12:16], uint32(info.Size())) // DataSize
+		bp.PutLE32(w[16:20], uint32(info.Size())) // AllocationSize
+	}
+	bp.PutLE16(w[20:22], hnd.share.AttrsFor(hnd.path, info))
+	return reply(h, statusSuccess, 11, w, nil)
 }
 
 // buildReadAndXResponse builds the SMB_COM_READ_ANDX reply (WCT=12): the andx

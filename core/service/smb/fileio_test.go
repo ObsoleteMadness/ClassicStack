@@ -148,6 +148,122 @@ func TestFS_WriteToReadOnlyHandleDenied(t *testing.T) {
 	}
 }
 
+// TestFS_WriteAndClose proves SMB_COM_WRITE_AND_CLOSE (0x2C, the OS/2 Workplace
+// Shell write path) persists the data and closes the FID in one round trip.
+func TestFS_WriteAndClose(t *testing.T) {
+	svc, sess, tid := fsService(t)
+	payload := []byte("workplace shell state")
+	fid := createFile(t, svc, sess, tid, "wpstate.dat")
+
+	words := make([]byte, 12) // FID(2) Count(2) Offset(4) LastWriteTime(4)
+	bp.PutLE16(words[0:2], fid)
+	bp.PutLE16(words[2:4], uint16(len(payload)))
+	bp.PutLE32(words[4:8], 0)
+	area := make([]byte, 1+len(payload))
+	copy(area[1:], payload)
+	req := smbReq(protocol.CommandWriteAndClose, protocol.Flags2NTStatus, tid, 1, words, area)
+	reply := svc.Dispatch(sess, req)
+	h := respHeader(t, reply)
+	if h.Status != statusSuccess {
+		t.Fatalf("WRITE_AND_CLOSE status = %#x", h.Status)
+	}
+	if n := int(bp.LE16(reply[protocol.HeaderLen+1 : protocol.HeaderLen+3])); n != len(payload) {
+		t.Fatalf("WRITE_AND_CLOSE wrote %d, want %d", n, len(payload))
+	}
+	if _, ok := sess.fileByFID(fid); ok {
+		t.Fatal("FID still open after WRITE_AND_CLOSE")
+	}
+
+	// Re-open and read back to confirm the data landed.
+	ow := make([]byte, 30)
+	ow[0] = protocol.CommandNoAndXCommand
+	bp.PutLE16(ow[6:8], 0)      // read
+	bp.PutLE16(ow[16:18], 0x01) // open existing
+	oreply := svc.Dispatch(sess, smbReq(protocol.CommandOpenAndX, protocol.Flags2NTStatus, tid, 1, ow, ansiPathArea("wpstate.dat")))
+	if oh := respHeader(t, oreply); oh.Status != statusSuccess {
+		t.Fatalf("OPEN_ANDX status = %#x", oh.Status)
+	}
+	rfid := bp.LE16(oreply[protocol.HeaderLen+5 : protocol.HeaderLen+7])
+
+	rw := make([]byte, 24)
+	rw[0] = protocol.CommandNoAndXCommand
+	bp.PutLE16(rw[4:6], rfid)
+	bp.PutLE32(rw[6:10], 0)
+	bp.PutLE16(rw[10:12], uint16(len(payload)+8))
+	rreply := svc.Dispatch(sess, smbReq(protocol.CommandReadAndX, protocol.Flags2NTStatus, tid, 1, rw, nil))
+	if rh := respHeader(t, rreply); rh.Status != statusSuccess {
+		t.Fatalf("READ_ANDX status = %#x", rh.Status)
+	}
+	if got := readAndXData(t, rreply); string(got) != string(payload) {
+		t.Fatalf("read back %q, want %q", got, payload)
+	}
+}
+
+// TestFS_WriteAndCloseTruncatesShorterOverwrite proves WRITE_AND_CLOSE shrinks
+// the file when the new content is shorter than what was there before, even
+// though the file was reopened WITHOUT a truncate OpenFunction. This mirrors
+// OS/2 Workplace Shell rewriting its "\WP ROOT. SF" state file: it reopens
+// with OpenFunction 0x0011 (open-existing, no truncate) on a fresh FID each
+// time and issues a single WRITE_AND_CLOSE of the new content from offset 0,
+// relying on WRITE_AND_CLOSE alone to resize the file — it never sends a
+// separate SetEndOfFile/SetFileSize. Before this fix, a shorter rewrite left
+// stale trailing bytes from the previous (longer) write past the new EOF
+// (netbeui.pcap 2026-07-15: 383-byte write, then a 346-byte write on a new
+// FID, file stayed 383 bytes).
+func TestFS_WriteAndCloseTruncatesShorterOverwrite(t *testing.T) {
+	svc, sess, tid := fsService(t)
+	long := []byte("this is the original, longer payload contents")
+	short := []byte("shorter now")
+	fid := createFile(t, svc, sess, tid, "WP ROOT. SF")
+
+	writeClose := func(fid uint16, payload []byte) []byte {
+		words := make([]byte, 12) // FID(2) Count(2) Offset(4) LastWriteTime(4)
+		bp.PutLE16(words[0:2], fid)
+		bp.PutLE16(words[2:4], uint16(len(payload)))
+		bp.PutLE32(words[4:8], 0)
+		area := make([]byte, 1+len(payload))
+		copy(area[1:], payload)
+		req := smbReq(protocol.CommandWriteAndClose, protocol.Flags2NTStatus, tid, 1, words, area)
+		reply := svc.Dispatch(sess, req)
+		if h := respHeader(t, reply); h.Status != statusSuccess {
+			t.Fatalf("WRITE_AND_CLOSE status = %#x", h.Status)
+		}
+		return reply
+	}
+	writeClose(fid, long)
+
+	// Reopen WITHOUT truncate (OpenFunction 0x0011: open-existing, no resize) —
+	// the exact WPS pattern — and overwrite with shorter content from offset 0.
+	openExisting := func() uint16 {
+		ow := make([]byte, 30)
+		ow[0] = protocol.CommandNoAndXCommand
+		bp.PutLE16(ow[6:8], 0x0121) // AccessMode: read/write
+		bp.PutLE16(ow[16:18], 0x11) // OpenFunction: open-existing, no truncate
+		oreply := svc.Dispatch(sess, smbReq(protocol.CommandOpenAndX, protocol.Flags2NTStatus, tid, 1, ow, ansiPathArea("WP ROOT. SF")))
+		if oh := respHeader(t, oreply); oh.Status != statusSuccess {
+			t.Fatalf("OPEN_ANDX status = %#x", oh.Status)
+		}
+		return bp.LE16(oreply[protocol.HeaderLen+5 : protocol.HeaderLen+7])
+	}
+	fid2 := openExisting()
+	writeClose(fid2, short)
+
+	// Re-open once more and read back: must be exactly `short`, no stale tail.
+	fid3 := openExisting()
+	rw := make([]byte, 24)
+	rw[0] = protocol.CommandNoAndXCommand
+	bp.PutLE16(rw[4:6], fid3)
+	bp.PutLE32(rw[6:10], 0)
+	bp.PutLE16(rw[10:12], uint16(len(long)+8))
+	rreply := svc.Dispatch(sess, smbReq(protocol.CommandReadAndX, protocol.Flags2NTStatus, tid, 1, rw, nil))
+	if rh := respHeader(t, rreply); rh.Status != statusSuccess {
+		t.Fatalf("READ_ANDX status = %#x", rh.Status)
+	}
+	if got := readAndXData(t, rreply); string(got) != string(short) {
+		t.Fatalf("read back %q, want %q (file must be truncated to the shorter write, no stale trailing bytes)", got, short)
+	}
+}
+
 // TestFS_BadTIDRefused proves an FS command on an unbound TID is refused with
 // STATUS_SMB_BAD_TID, not a panic or silent drop.
 func TestFS_BadTIDRefused(t *testing.T) {

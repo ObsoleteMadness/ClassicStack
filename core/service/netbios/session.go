@@ -76,6 +76,16 @@ type SessionCircuit interface {
 	Close()
 }
 
+// NetBIOSNamer is an optional SessionCircuit capability: recording the calling
+// NetBIOS name a transport learned at session establishment (NBF's NAME_QUERY
+// SourceName), for the management session view. SMB's *Conn implements it; a
+// transport that has a calling name type-asserts its circuit against this
+// interface after NewConn rather than the base SessionCircuit carrying it, so
+// AFP/NCP's structurally-identical seams need no change.
+type NetBIOSNamer interface {
+	SetNetBIOSName(name string)
+}
+
 // DatagramEndpoint identifies the transport-level remote a directed NetBIOS
 // datagram reply is sent back to. It is transport-tagged (Transport is one of the
 // TransportNetBEUI/TransportIPX/TransportNBT family strings) so a reply is emitted

@@ -350,6 +350,7 @@ const statusLogonFailure uint32 = 0xC000006D
 // carries NativeOS / NativeLanMan (server name) + PrimaryDomain (workgroup).
 func (s *Service) handleSessionSetup(sess *smbSession, h protocol.Header, req []byte) []byte {
 	user, pass, hashed := parseSessionSetup(req, h.Flags2)
+	nativeOS, nativeLanMan, primaryDomain := parseSessionSetupClientInfo(req, h.Flags2)
 
 	s.mu.Lock()
 	authn := s.auth
@@ -381,6 +382,23 @@ func (s *Service) handleSessionSetup(sess *smbSession, h protocol.Header, req []
 	sess.mu.Lock()
 	sess.uid = sessionGuestUID
 	sess.user = identity
+	if nativeOS != "" {
+		sess.nativeOS = nativeOS
+	}
+	if nativeLanMan != "" {
+		sess.nativeLanMan = nativeLanMan
+	}
+	if primaryDomain != "" {
+		sess.primaryDomain = primaryDomain
+	}
+	// Server.Connection.ClientMaxBufferSize ([MS-CIFS] §3.2.1.2/§3.3.5.43): saved
+	// from the FIRST SESSION_SETUP_ANDX only, never overridden by a later one on
+	// the same connection.
+	if sess.clientMaxBufferSize == 0 {
+		if mbs, ok := parseSessionSetupMaxBufferSize(req); ok && mbs > 0 {
+			sess.clientMaxBufferSize = mbs
+		}
+	}
 	sess.mu.Unlock()
 
 	h.UID = sessionGuestUID
@@ -487,6 +505,59 @@ func parseSessionSetup(req []byte, flags2 uint16) (user, pass string, hashed boo
 	default:
 		return "", "", false
 	}
+}
+
+// parseSessionSetupMaxBufferSize extracts the client's MaxBufferSize field from a
+// SESSION_SETUP_ANDX request ([MS-CIFS] §2.2.4.53.1, word offset 4 in both the
+// WCT=13 NT LM 0.12 form and the older WCT=10 LM 1.0/2.0 form — AndXCommand(1)
+// AndXReserved(1) AndXOffset(2) precede it identically in both). ok is false when
+// the frame is too short to carry the field.
+func parseSessionSetupMaxBufferSize(req []byte) (maxBufferSize uint32, ok bool) {
+	words, _, wok := reqBody(req)
+	if !wok || len(words) < 6 {
+		return 0, false
+	}
+	return uint32(bp.LE16(words[4:6])), true
+}
+
+// parseSessionSetupClientInfo extracts the client-supplied PrimaryDomain, NativeOS,
+// and NativeLanMan strings from a SESSION_SETUP_ANDX request byte area ([smb6.0]
+// 1199-1204, 1262-1267): after the password blob(s) and AccountName, the client
+// appends PrimaryDomain, NativeOS, NativeLanMan in that order. These identify the
+// connecting client/OS for the management session view (§ SMB session tracking);
+// they are informational only and never drive protocol behaviour. A frame we
+// cannot parse yields all-empty strings, matching parseSessionSetup's tolerance.
+func parseSessionSetupClientInfo(req []byte, flags2 uint16) (nativeOS, nativeLanMan, primaryDomain string) {
+	words, area, ok := reqBody(req)
+	if !ok {
+		return "", "", ""
+	}
+	unicode := flags2&protocol.Flags2Unicode != 0
+
+	var off int
+	switch {
+	case len(words) >= 26: // WCT>=13: NT LM 0.12
+		ciPwLen := int(bp.LE16(words[14:16]))
+		csPwLen := int(bp.LE16(words[16:18]))
+		off = ciPwLen + csPwLen
+	case len(words) >= 20: // WCT=10: LM 1.0/2.0
+		off = int(bp.LE16(words[14:16]))
+	default:
+		return "", "", ""
+	}
+	if off > len(area) {
+		return "", "", ""
+	}
+	rest := area[off:]
+
+	_, n := readWireString(rest, unicode) // AccountName
+	rest = rest[min(n, len(rest)):]
+	primaryDomain, n = readWireString(rest, unicode)
+	rest = rest[min(n, len(rest)):]
+	nativeOS, n = readWireString(rest, unicode)
+	rest = rest[min(n, len(rest)):]
+	nativeLanMan, _ = readWireString(rest, unicode)
+	return
 }
 
 // readWireString reads one NUL-terminated string from b in the wire charset

@@ -122,6 +122,35 @@ func TestPathOps_QueryInformation(t *testing.T) {
 	}
 }
 
+// TestPathOps_QueryInformation2 proves SMB_COM_QUERY_INFORMATION2 (0x23) — the
+// FID-based sibling of QUERY_INFORMATION DOS/OS2/Win16 redirectors send after an
+// Open — returns the file's size and attributes instead of "Invalid function"
+// (netbeui.pcap frame 1766: a Win16 client's post-read Query Information2 on an
+// open FID was answered STATUS_NOT_SUPPORTED because the command was unwired).
+func TestPathOps_QueryInformation2(t *testing.T) {
+	svc, sess, tid := fsService(t)
+	fid := createFile(t, svc, sess, tid, "size.bin")
+	writeAll(t, svc, sess, tid, fid, []byte("0123456789"))
+
+	words := make([]byte, 2)
+	bp.PutLE16(words[0:2], fid)
+	reply := svc.Dispatch(sess, ntReq(protocol.CommandQueryInformation2, tid, words, nil))
+	h := respHeader(t, reply)
+	if h.Status != statusSuccess {
+		t.Fatalf("QUERY_INFORMATION2 status = %#x, want success", h.Status)
+	}
+	w := reply[protocol.HeaderLen+1:]
+	size := bp.LE32(w[12:16])
+	attrs := bp.LE16(w[20:22])
+	if size != 10 {
+		t.Errorf("DataSize = %d, want 10", size)
+	}
+	if attrs&attrArchive == 0 {
+		t.Errorf("attrs = %#x, want archive bit set", attrs)
+	}
+	sess.closeFID(fid)
+}
+
 // TestPathOps_ReadOnlyShareDeniesMutation proves a mutating command on a
 // read-only share is refused with STATUS_ACCESS_DENIED.
 func TestPathOps_ReadOnlyShareDeniesMutation(t *testing.T) {

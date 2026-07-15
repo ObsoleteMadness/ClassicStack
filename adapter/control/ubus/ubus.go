@@ -58,6 +58,7 @@ type Server struct {
 // *adapter/control/diag.Provider, kept out of core/control so the neutral plane carries no
 // protocol type. nil leaves those methods reporting unavailable.
 type DiagProvider interface {
+	SMBSessions() ([]diag.SMBSession, error)
 	RegisteredNames() ([]diag.NBPName, error)
 	MacIPLeases() ([]diag.MacIPLease, error)
 	AARPTable() ([]diag.AARPEntry, error)
@@ -352,6 +353,14 @@ func (s *Server) handleConn(conn net.Conn) {
 				methodErr = err
 			} else {
 				res = entries
+			}
+		case "smb_sessions":
+			if s.diag == nil {
+				methodErr = control.ErrUnavailable
+			} else if sessions, err := s.diag.SMBSessions(); err != nil {
+				methodErr = err
+			} else {
+				res = sessions
 			}
 		case "users":
 			users, err := s.plane.Users()

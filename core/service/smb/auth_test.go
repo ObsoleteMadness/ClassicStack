@@ -297,3 +297,42 @@ func TestSMBSessionSetup_UnicodeAndASCIIFields(t *testing.T) {
 		t.Fatalf("Unicode fields mismatch: got %q, want %q, %q, %q", decoded[:3], "MYSERVER", "MYSERVER", "MYWORKGROUP")
 	}
 }
+
+// sessionSetupNTWithMaxBufferSize is sessionSetupNT with the client's
+// MaxBufferSize field (word offset 4, [MS-CIFS] §2.2.4.53.1) set explicitly.
+func sessionSetupNTWithMaxBufferSize(user, pass string, maxBufferSize uint16) []byte {
+	req := sessionSetupNT(user, pass)
+	bp.PutLE16(req[protocol.HeaderLen+1+4:protocol.HeaderLen+1+6], maxBufferSize)
+	return req
+}
+
+// TestSMBSessionSetup_ClientMaxBufferSizeSticky proves the session records the
+// client's SESSION_SETUP_ANDX MaxBufferSize ([MS-CIFS] §3.2.1.2
+// Server.Connection.ClientMaxBufferSize — "This limit applies to all SMB
+// messages sent to the client") from the FIRST request only, falls back to
+// defaultClientMaxBufferSize before any SESSION_SETUP, and is NOT overridden
+// by a later SESSION_SETUP on the same connection (§3.3.5.43: "These values
+// MUST NOT be overridden by values presented in future ... request messages").
+func TestSMBSessionSetup_ClientMaxBufferSizeSticky(t *testing.T) {
+	svc, sess := newDispatchService(t)
+
+	if got := sess.maxBufferSize(); got != defaultClientMaxBufferSize {
+		t.Fatalf("maxBufferSize before SESSION_SETUP = %d, want default %d", got, defaultClientMaxBufferSize)
+	}
+
+	if h := respHeader(t, svc.Dispatch(sess, sessionSetupNTWithMaxBufferSize("alice", "", 8712))); h.Status != statusSuccess {
+		t.Fatalf("first SESSION_SETUP status = %#x, want success", h.Status)
+	}
+	if got := sess.maxBufferSize(); got != 8712 {
+		t.Fatalf("maxBufferSize after first SESSION_SETUP = %d, want 8712", got)
+	}
+
+	// A second SESSION_SETUP on the same connection (e.g. adding a user) must
+	// not change the recorded value.
+	if h := respHeader(t, svc.Dispatch(sess, sessionSetupNTWithMaxBufferSize("alice", "", 2000))); h.Status != statusSuccess {
+		t.Fatalf("second SESSION_SETUP status = %#x, want success", h.Status)
+	}
+	if got := sess.maxBufferSize(); got != 8712 {
+		t.Fatalf("maxBufferSize after second SESSION_SETUP = %d, want unchanged 8712", got)
+	}
+}

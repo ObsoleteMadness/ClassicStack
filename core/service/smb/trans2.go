@@ -6,6 +6,7 @@ import (
 	"unicode/utf16"
 
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 
 	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/smb"
 )
@@ -28,6 +29,8 @@ const (
 	trans2SetFileInfo    = 0x0008 // TRANS2_SET_FILE_INFORMATION
 	infoStandard         = 0x0001 // SMB_INFO_STANDARD (LANMAN2.0 find level — OS/2, DOS LANMAN)
 	infoQueryEaSize      = 0x0002 // SMB_INFO_QUERY_EA_SIZE (SMB_INFO_STANDARD + EaSize)
+	infoQueryEasFromList = 0x0003 // SMB_INFO_QUERY_EAS_FROM_LIST (OS/2 WPS folder-view EA probe)
+	infoQueryAllEAs      = 0x0004 // SMB_INFO_QUERY_ALL_EAS (QUERY_PATH/FILE_INFO only)
 	infoFileBothDirInfo  = 0x0104 // SMB_FIND_FILE_BOTH_DIRECTORY_INFO
 	infoQueryFileBasic   = 0x0101 // SMB_QUERY_FILE_BASIC_INFO
 	infoQueryFileStd     = 0x0102 // SMB_QUERY_FILE_STANDARD_INFO
@@ -35,6 +38,7 @@ const (
 	infoQueryFileName    = 0x0104 // SMB_QUERY_FILE_NAME_INFO (FileNameInformation)
 	infoQueryFileAllInfo = 0x0107 // SMB_QUERY_FILE_ALL_INFO
 	infoSetFileBasic     = 0x0101 // SMB_SET_FILE_BASIC_INFO (FileBasicInformation)
+	infoSetEAs           = 0x0002 // SMB_INFO_SET_EAS (TRANS2_SET_PATH/FILE_INFORMATION)
 
 	// TRANS2_QUERY_FS_INFORMATION information levels ([smb6.0] 4118 table;
 	// [MS-CIFS] §2.2.2.3.4). Levels ≥ 0x102 "are mapped to corresponding calls
@@ -63,16 +67,40 @@ const (
 	// SMB_COM_QUERY_INFORMATION_DISK (pathops.go).
 	fsBytesPerSector = 512
 	fsSectorsPerUnit = 64
+
+	// defaultClientMaxBufferSize is the cap a TRANS2 response is chunked to before
+	// the client's own SESSION_SETUP_ANDX MaxBufferSize has been observed ([MS-CIFS]
+	// "MaxBufferSize": "The server SHOULD provide a MaxBufferSize of 4356 bytes").
+	// Confirmed as the real figure a live IBM Peer server chunks large TRANS2
+	// responses to, independent of what MaxDataCount the client's request offered —
+	// captures/ibm-peer-clients.pcapng frames 633 (request, MaxDataCount 65523) /
+	// 637+641 (response split TotalDataCount=4797 into DataCount 4288+509 at
+	// DataDisplacement 0/4288; Wireshark's own reassembly annotation on frame 637
+	// reads "Reassembled NetBIOS length: 4356").
+	defaultClientMaxBufferSize = 4356
 )
 
 // trans2Request is the parsed TRANS2 sub-request: the subcommand plus its
 // parameter and data blocks. The SET_*_INFORMATION subcommands carry the
 // information level + target in the params and the FileBasicInfo payload in the
-// data block, so both are surfaced.
+// data block, so both are surfaced. totalParams/totalData are the transaction's
+// TotalParameterCount/TotalDataCount — when the primary request carries fewer
+// bytes than those, the remainder arrives in SMB_COM_TRANSACTION2_SECONDARY
+// messages and the transaction reassembles on the session first.
 type trans2Request struct {
-	sub    uint16
-	params []byte
-	data   []byte
+	sub         uint16
+	params      []byte
+	data        []byte
+	totalParams int
+	totalData   int
+}
+
+// incomplete reports whether the request carries fewer parameter/data bytes
+// than the transaction totals — [MS-CIFS] §2.2.4.46.1: the client sends the
+// rest in SMB_COM_TRANSACTION2_SECONDARY messages after the server's interim
+// response.
+func (t2 trans2Request) incomplete() bool {
+	return len(t2.params) < t2.totalParams || len(t2.data) < t2.totalData
 }
 
 // parseTransaction2 decodes the SMB_COM_TRANSACTION2 wrapper ([MS-CIFS]
@@ -94,7 +122,12 @@ func parseTransaction2(req []byte) (trans2Request, bool) {
 	if paramCount < 0 || paramOffset < protocol.HeaderLen || paramOffset+paramCount > len(req) {
 		return trans2Request{}, false
 	}
-	t2 := trans2Request{sub: sub, params: req[paramOffset : paramOffset+paramCount]}
+	t2 := trans2Request{
+		sub:         sub,
+		params:      req[paramOffset : paramOffset+paramCount],
+		totalParams: int(bp.LE16(words[0:2])),
+		totalData:   int(bp.LE16(words[2:4])),
+	}
 	// The data block (DataCount/DataOffset, words[22:24]/[24:26]) carries the
 	// SET_*_INFORMATION payload; surface it when present and in-bounds.
 	dataCount := int(bp.LE16(words[22:24]))
@@ -105,7 +138,14 @@ func parseTransaction2(req []byte) (trans2Request, bool) {
 	return t2, true
 }
 
-// handleTransaction2 answers SMB_COM_TRANSACTION2 by dispatching its subcommand.
+// handleTransaction2 answers SMB_COM_TRANSACTION2. A request whose
+// ParameterCount/DataCount equal the transaction totals dispatches immediately;
+// one that carries less is parked on the session and answered with the interim
+// response (an empty WCT=0/BCC=0 success, [MS-CIFS] §2.2.4.46.2) that tells the
+// client to send its SMB_COM_TRANSACTION2_SECONDARY fragments — OS/2 WPS splits
+// an SMB_INFO_SET_EAS carrying a multi-KB .ICON EA this way (netbeui.pcap
+// 2026-07-14 frame 242: DataCount 4240 of TotalDataCount 6848; answering with
+// an error there aborts the transfer and the icon is never set, frame 243).
 func (s *Service) handleTransaction2(sess *smbSession, h protocol.Header, req []byte) []byte {
 	sh, st := s.treeFor(sess, h)
 	if st != statusSuccess {
@@ -115,24 +155,145 @@ func (s *Service) handleTransaction2(sess *smbSession, h protocol.Header, req []
 	if !ok {
 		return errResponse(h, statusNotSupported)
 	}
+	if t2.incomplete() {
+		if !sess.stashTrans2(trans2Key(h), newPendingTrans2(h, t2)) {
+			return errResponse(h, statusUnsuccessful)
+		}
+		return successNoData(h) // interim response: transaction accepted, send secondaries
+	}
+	return s.dispatchTrans2(sess, sh, h, t2)
+}
+
+// dispatchTrans2 routes a fully-assembled TRANS2 request to its subcommand
+// handler. The data block rides along to the find/query handlers because the
+// SMB_INFO_QUERY_EAS_FROM_LIST level carries its SMB_GEA_LIST name filter
+// there.
+func (s *Service) dispatchTrans2(sess *smbSession, sh *Share, h protocol.Header, t2 trans2Request) []byte {
 	switch t2.sub {
 	case trans2FindFirst2:
-		return s.findFirst2(sess, sh, h, t2.params)
+		return s.findFirst2(sess, sh, h, t2.params, t2.data)
 	case trans2FindNext2:
-		return s.findNext2(sess, sh, h, t2.params)
+		return s.findNext2(sess, sh, h, t2.params, t2.data)
 	case trans2QueryFSInfo:
 		return s.queryFSInfo(sh, h, t2.params)
 	case trans2QueryPathInfo:
-		return s.queryPathInfo(sh, h, t2.params)
+		return s.queryPathInfo(sess, sh, h, t2.params, t2.data)
 	case trans2QueryFileInfo:
-		return s.queryFileInfo(sess, h, t2.params)
+		return s.queryFileInfo(sess, h, t2.params, t2.data)
 	case trans2SetPathInfo:
-		return s.setPathInfo(sh, h, t2.params, t2.data)
+		return s.setPathInfo(sess, sh, h, t2.params, t2.data)
 	case trans2SetFileInfo:
 		return s.setFileInfo(sess, h, t2.params, t2.data)
 	default:
 		return errResponse(h, statusNotSupported)
 	}
+}
+
+// trans2Key derives the session-map key a transaction reassembles under. The
+// PID and MID MUST be the same for all requests of one transaction ([MS-CIFS]
+// §2.2.4.46.1), and one PID+MID pair carries at most one transaction at a time.
+func trans2Key(h protocol.Header) uint32 {
+	return uint32(h.PIDLow)<<16 | uint32(h.MID)
+}
+
+// newPendingTrans2 parks an incomplete primary request: buffers are allocated
+// at the transaction totals and the primary's bytes land at displacement 0.
+// The bytes are copied out of req because the transport owns that buffer.
+func newPendingTrans2(h protocol.Header, t2 trans2Request) *pendingTrans2 {
+	p := &pendingTrans2{
+		sub:         t2.sub,
+		tid:         h.TID,
+		params:      make([]byte, t2.totalParams),
+		data:        make([]byte, t2.totalData),
+		totalParams: t2.totalParams,
+		totalData:   t2.totalData,
+	}
+	p.paramGot = copy(p.params, t2.params)
+	p.dataGot = copy(p.data, t2.data)
+	return p
+}
+
+// handleTransaction2Secondary serves SMB_COM_TRANSACTION2_SECONDARY (0x33,
+// [MS-CIFS] §2.2.4.47.1, WCT=9): one fragment of a transaction parked by
+// handleTransaction2. Its bytes are copied into the pending buffers at their
+// Parameter/DataDisplacement; the fragment itself is never answered (no
+// response is defined for a secondary), and the final fragment executes the
+// assembled transaction, whose response goes out as a normal
+// SMB_COM_TRANSACTION2 response ("the Command for all responses MUST be
+// SMB_COM_TRANSACTION2", §2.2.4.46). A secondary with no transaction in
+// progress, a wrong TID, or out-of-bounds fragment geometry is dropped —
+// abandoning the reassembly in the malformed cases so a broken client times
+// out rather than committing a torn transaction.
+func (s *Service) handleTransaction2Secondary(sess *smbSession, h protocol.Header, req []byte) []byte {
+	words, _, ok := reqBody(req)
+	if !ok || len(words) < 18 { // WCT=9 → 18 param bytes
+		return nil
+	}
+	key := trans2Key(h)
+	p, found := sess.pendingTrans2For(key)
+	if !found || h.TID != p.tid {
+		return nil
+	}
+	// Words: TotalParameterCount(2) TotalDataCount(2) ParameterCount(2)
+	// ParameterOffset(2) ParameterDisplacement(2) DataCount(2) DataOffset(2)
+	// DataDisplacement(2) FID(2, 0xFFFF = none; unused — the parked subcommand
+	// already carries its target).
+	totalParams := int(bp.LE16(words[0:2]))
+	totalData := int(bp.LE16(words[2:4]))
+	paramCount := int(bp.LE16(words[4:6]))
+	paramOffset := int(bp.LE16(words[6:8]))
+	paramDisp := int(bp.LE16(words[8:10]))
+	dataCount := int(bp.LE16(words[10:12]))
+	dataOffset := int(bp.LE16(words[12:14]))
+	dataDisp := int(bp.LE16(words[14:16]))
+
+	// A secondary MAY reduce the totals, never grow them (§2.2.4.47.1).
+	if totalParams < p.totalParams {
+		p.totalParams = totalParams
+	}
+	if totalData < p.totalData {
+		p.totalData = totalData
+	}
+
+	if !copyTrans2Fragment(p.params, paramDisp, req, paramOffset, paramCount) ||
+		!copyTrans2Fragment(p.data, dataDisp, req, dataOffset, dataCount) {
+		sess.dropTrans2(key)
+		return nil
+	}
+	p.paramGot += paramCount
+	p.dataGot += dataCount
+	if !p.complete() {
+		return nil
+	}
+
+	sess.dropTrans2(key)
+	sh, st := s.treeFor(sess, h)
+	if st != statusSuccess {
+		return errResponse(h, st)
+	}
+	h.Command = protocol.CommandTransaction2 // the final response is a TRANS2 response
+	return s.dispatchTrans2(sess, sh, h, trans2Request{
+		sub:         p.sub,
+		params:      p.params[:p.totalParams],
+		data:        p.data[:p.totalData],
+		totalParams: p.totalParams,
+		totalData:   p.totalData,
+	})
+}
+
+// copyTrans2Fragment places one secondary's parameter or data block into the
+// reassembly buffer at its displacement, reporting false when the block's
+// offset/count fall outside the request or the displacement outside the
+// buffer. A zero-count block is trivially fine (its offset may be 0).
+func copyTrans2Fragment(dst []byte, disp int, req []byte, off, count int) bool {
+	if count == 0 {
+		return true
+	}
+	if off < protocol.HeaderLen || off+count > len(req) || disp+count > len(dst) {
+		return false
+	}
+	copy(dst[disp:], req[off:off+count])
+	return true
 }
 
 // setPathInfo serves TRANS2_SET_PATH_INFORMATION. Params ([MS-CIFS] §2.2.6.7.1):
@@ -141,7 +302,8 @@ func (s *Service) handleTransaction2(sess *smbSession, h protocol.Header, req []
 // DOS-attribute store, so a client setting Hidden/System/ReadOnly/Archive sticks
 // even on a host filesystem that cannot represent those bits. A zero attribute
 // word means "no change" ([MS-FSCC] FileBasicInformation), so it is ignored.
-func (s *Service) setPathInfo(sh *Share, h protocol.Header, params, data []byte) []byte {
+func (s *Service) setPathInfo(sess *smbSession, sh *Share, h protocol.Header, params, data []byte) []byte {
+	_ = sess // SET responses are always tiny (EaErrorOffset only) — never chunked
 	if len(params) < 6 {
 		return errResponse(h, statusUnsuccessful)
 	}
@@ -149,6 +311,9 @@ func (s *Service) setPathInfo(sh *Share, h protocol.Header, params, data []byte)
 	store, st := resolvePath(sh, params[6:], h.Flags2)
 	if st != statusSuccess {
 		return errResponse(h, st)
+	}
+	if level == infoSetEAs {
+		return applySetEAs(sh, h, store, data)
 	}
 	return s.applySetBasicInfo(sh, h, store, level, data)
 }
@@ -166,7 +331,27 @@ func (s *Service) setFileInfo(sess *smbSession, h protocol.Header, params, data 
 	if !ok {
 		return errResponse(h, statusInvalidHandle)
 	}
+	if level == infoSetEAs {
+		return applySetEAs(hnd.share, h, hnd.path, data)
+	}
 	return s.applySetBasicInfo(hnd.share, h, hnd.path, level, data)
+}
+
+// applySetEAs serves the SMB_INFO_SET_EAS level of TRANS2_SET_PATH/
+// FILE_INFORMATION ([MS-CIFS] §2.2.8.4.2): the data block is an
+// SMB_FEA_LIST that fully replaces the stored EA list for store. A malformed
+// list is rejected with STATUS_UNSUCCESSFUL/ERRbadealist ([MS-CIFS] §2.2.6.7.2
+// error table); the client-facing EaErrorOffset is left at its zero default
+// (no existing trans2.go error path threads a custom parameter block either).
+func applySetEAs(sh *Share, h protocol.Header, store string, data []byte) []byte {
+	eas, ok, _ := parseFEAList(data)
+	if !ok {
+		return errResponse(h, statusUnsuccessful)
+	}
+	if err := sh.SetEAs(store, eas); err != nil {
+		return errResponse(h, statusUnsuccessful)
+	}
+	return buildTrans2InfoResponse(nil, h, nil)
 }
 
 // applySetBasicInfo persists the attribute word from a FileBasicInfo data block
@@ -179,7 +364,7 @@ func (s *Service) applySetBasicInfo(sh *Share, h protocol.Header, store string, 
 	if level != infoSetFileBasic {
 		// Other set-info levels (allocation, disposition, rename) are not modelled;
 		// answer success so a client's housekeeping set does not fail the operation.
-		return buildTrans2InfoResponse(h, nil)
+		return buildTrans2InfoResponse(nil, h, nil)
 	}
 	if len(data) >= 36 {
 		attrs := uint16(bp.LE32(data[32:36]) & 0xFFFF)
@@ -190,15 +375,18 @@ func (s *Service) applySetBasicInfo(sh *Share, h protocol.Header, store string, 
 			}
 		}
 	}
-	return buildTrans2InfoResponse(h, nil)
+	return buildTrans2InfoResponse(nil, h, nil)
 }
 
 // findFirst2 serves TRANS2_FIND_FIRST2. Params ([MS-CIFS] §2.2.6.2.1):
 // SearchAttributes(2) SearchCount(2) Flags(2) InformationLevel(2)
 // SearchStorageType(4) FileName(SMB_STRING, the wire-charset search path with a
 // trailing wildcard). The directory is resolved through the codec, its entries
-// filtered by the wildcard, snapshotted, and the first batch packed.
-func (s *Service) findFirst2(sess *smbSession, sh *Share, h protocol.Header, params []byte) []byte {
+// filtered by the wildcard, snapshotted, and the first batch packed. reqData is
+// the request's Trans2_Data block — the SMB_GEA_LIST name filter when the level
+// is SMB_INFO_QUERY_EAS_FROM_LIST ([MS-CIFS] §2.2.6.2.1 "MUST be included" for
+// that level), empty otherwise.
+func (s *Service) findFirst2(sess *smbSession, sh *Share, h protocol.Header, params, reqData []byte) []byte {
 	if len(params) < 12 {
 		return errResponse(h, statusNotSupported)
 	}
@@ -207,6 +395,10 @@ func (s *Service) findFirst2(sess *smbSession, sh *Share, h protocol.Header, par
 	infoLevel := bp.LE16(params[6:8])
 	if !supportedFindLevel(infoLevel) {
 		return errResponse(h, statusNotSupported)
+	}
+	geaNames, ok := parseGEAList(reqData)
+	if infoLevel == infoQueryEasFromList && !ok {
+		return errResponse(h, statusUnsuccessful)
 	}
 
 	dirStore, pattern, st := s.resolveSearchPath(sh, params[12:], h.Flags2)
@@ -218,7 +410,7 @@ func (s *Service) findFirst2(sess *smbSession, sh *Share, h protocol.Header, par
 		return errResponse(h, st)
 	}
 
-	data, returned, lastNameOff := packFindEntries(sh, rows, searchCount, infoLevel, flags&findReturnResumeKeys != 0, h.Flags2)
+	data, returned, lastNameOff := packFindEntries(sh, rows, searchCount, infoLevel, flags&findReturnResumeKeys != 0, geaNames, h.Flags2)
 	endOfSearch := returned >= len(rows)
 
 	sid := sess.allocSID(&searchHandle{rows: nil, flags2: h.Flags2})
@@ -230,13 +422,15 @@ func (s *Service) findFirst2(sess *smbSession, sh *Share, h protocol.Header, par
 		sess.dropSearch(sid)
 	}
 
-	return buildFindResponse(h, true, sid, returned, endOfSearch, data, lastNameOff)
+	return buildFindResponse(sess, h, true, sid, returned, endOfSearch, data, lastNameOff)
 }
 
 // findNext2 serves TRANS2_FIND_NEXT2. Params ([MS-CIFS] §2.2.6.3.1): SID(2)
 // SearchCount(2) InformationLevel(2) ResumeKey(4) Flags(2) FileName(SMB_STRING).
-// It streams the next batch from the snapshotted searchHandle.
-func (s *Service) findNext2(sess *smbSession, sh *Share, h protocol.Header, params []byte) []byte {
+// It streams the next batch from the snapshotted searchHandle. reqData carries
+// the SMB_GEA_LIST name filter for the SMB_INFO_QUERY_EAS_FROM_LIST level (the
+// client re-sends it on every FIND_NEXT2, [MS-CIFS] §2.2.6.3.1).
+func (s *Service) findNext2(sess *smbSession, sh *Share, h protocol.Header, params, reqData []byte) []byte {
 	if len(params) < 12 {
 		return errResponse(h, statusNotSupported)
 	}
@@ -245,6 +439,10 @@ func (s *Service) findNext2(sess *smbSession, sh *Share, h protocol.Header, para
 	infoLevel := bp.LE16(params[4:6])
 	if !supportedFindLevel(infoLevel) {
 		return errResponse(h, statusNotSupported)
+	}
+	geaNames, ok := parseGEAList(reqData)
+	if infoLevel == infoQueryEasFromList && !ok {
+		return errResponse(h, statusUnsuccessful)
 	}
 	flags := bp.LE16(params[10:12])
 
@@ -262,7 +460,7 @@ func (s *Service) findNext2(sess *smbSession, sh *Share, h protocol.Header, para
 		return errResponse(h, statusNoMoreFiles)
 	}
 
-	data, returned, lastNameOff := packFindEntries(sh, rows, searchCount, infoLevel, flags&findReturnResumeKeys != 0, h.Flags2)
+	data, returned, lastNameOff := packFindEntries(sh, rows, searchCount, infoLevel, flags&findReturnResumeKeys != 0, geaNames, h.Flags2)
 	endOfSearch := returned >= len(rows)
 
 	sess.mu.Lock()
@@ -273,7 +471,7 @@ func (s *Service) findNext2(sess *smbSession, sh *Share, h protocol.Header, para
 		sess.dropSearch(sid)
 	}
 
-	return buildFindResponse(h, false, 0, returned, endOfSearch, data, lastNameOff)
+	return buildFindResponse(sess, h, false, 0, returned, endOfSearch, data, lastNameOff)
 }
 
 // resolveSearchPath splits a FIND_FIRST2 wire search path into its directory
@@ -303,7 +501,11 @@ func (s *Service) resolveSearchPath(sh *Share, wire []byte, flags2 uint16) (dirS
 }
 
 // listDir reads dirStore and returns the entries matching the wildcard pattern as
-// findRows (name, derived short name, info), sorted by ReadDir order.
+// findRows (name, derived short name, info), sorted by ReadDir order. An entry
+// whose .LONGNAME EA is set (the OS/2 HPFS convention for a true long name
+// over an 8.3 host name) is reported under that name — matched against
+// pattern in place of the host name — with the host name demoted to the
+// row's short name.
 func (s *Service) listDir(sh *Share, dirStore, pattern string) ([]findRow, uint32) {
 	entries, err := sh.FS().ReadDir(dirStore)
 	if err != nil {
@@ -311,7 +513,18 @@ func (s *Service) listDir(sh *Share, dirStore, pattern string) ([]findRow, uint3
 	}
 	rows := make([]findRow, 0, len(entries))
 	for _, e := range entries {
-		name := e.Name()
+		hostName := e.Name()
+		full := hostName
+		if dirStore != "" {
+			full = dirStore + "/" + hostName
+		}
+		name := hostName
+		short := hostName
+		if long := sh.longNameFor(full); long != "" {
+			name = long
+		} else if sn, err := sh.FS().ShortName(full); err == nil && sn != "" {
+			short = sn
+		}
 		if !wildcardMatch(name, pattern) {
 			continue
 		}
@@ -319,22 +532,16 @@ func (s *Service) listDir(sh *Share, dirStore, pattern string) ([]findRow, uint3
 		if err != nil {
 			continue
 		}
-		short := name
-		full := name
-		if dirStore != "" {
-			full = dirStore + "/" + name
-		}
-		if sn, err := sh.FS().ShortName(full); err == nil && sn != "" {
-			short = sn
-		}
 		rows = append(rows, findRow{name: name, shortName: short, store: full, info: info})
 	}
 	return rows, statusSuccess
 }
 
 // queryPathInfo serves TRANS2_QUERY_PATH_INFORMATION. Params ([MS-CIFS]
-// §2.2.6.6.1): InformationLevel(2) Reserved(4) FileName(SMB_STRING).
-func (s *Service) queryPathInfo(sh *Share, h protocol.Header, params []byte) []byte {
+// §2.2.6.6.1): InformationLevel(2) Reserved(4) FileName(SMB_STRING). data is
+// the request's Trans2_Data block — the SMB_GEA_LIST name filter when the
+// level is SMB_INFO_QUERY_EAS_FROM_LIST, empty otherwise.
+func (s *Service) queryPathInfo(sess *smbSession, sh *Share, h protocol.Header, params, data []byte) []byte {
 	if len(params) < 6 {
 		return errResponse(h, statusUnsuccessful)
 	}
@@ -348,18 +555,30 @@ func (s *Service) queryPathInfo(sh *Share, h protocol.Header, params []byte) []b
 		return errResponse(h, statusObjectNameNotFound)
 	}
 	if infoLevel == infoQueryFileName {
-		return buildTrans2InfoResponse(h, packFileNameInfo(store))
+		return buildTrans2InfoResponse(sess, h, packFileNameInfo(store))
 	}
-	data, ok := packQueryInfo(infoLevel, info, sh.AttrsFor(store, info))
+	if infoLevel == infoQueryAllEAs {
+		return buildTrans2InfoResponse(sess, h, packFEAList(sh.EAs(store)))
+	}
+	if infoLevel == infoQueryEasFromList {
+		names, ok := parseGEAList(data)
+		if !ok {
+			return errResponse(h, statusUnsuccessful)
+		}
+		return buildTrans2InfoResponse(sess, h, packFEAList(filterEAs(sh.EAs(store), names)))
+	}
+	out, ok := packQueryInfo(infoLevel, info, sh.AttrsFor(store, info))
 	if !ok {
 		return errResponse(h, statusNotSupported)
 	}
-	return buildTrans2InfoResponse(h, data)
+	return buildTrans2InfoResponse(sess, h, out)
 }
 
 // queryFileInfo serves TRANS2_QUERY_FILE_INFORMATION. Params ([MS-CIFS]
-// §2.2.6.8.1): FID(2) InformationLevel(2). The FID is re-Stat'd live.
-func (s *Service) queryFileInfo(sess *smbSession, h protocol.Header, params []byte) []byte {
+// §2.2.6.8.1): FID(2) InformationLevel(2). The FID is re-Stat'd live. data is
+// the request's Trans2_Data block — the SMB_GEA_LIST name filter when the
+// level is SMB_INFO_QUERY_EAS_FROM_LIST, empty otherwise.
+func (s *Service) queryFileInfo(sess *smbSession, h protocol.Header, params, data []byte) []byte {
 	if len(params) < 4 {
 		return errResponse(h, statusUnsuccessful)
 	}
@@ -374,13 +593,23 @@ func (s *Service) queryFileInfo(sess *smbSession, h protocol.Header, params []by
 		return errResponse(h, statusObjectNameNotFound)
 	}
 	if infoLevel == infoQueryFileName {
-		return buildTrans2InfoResponse(h, packFileNameInfo(hnd.path))
+		return buildTrans2InfoResponse(sess, h, packFileNameInfo(hnd.path))
 	}
-	data, ok := packQueryInfo(infoLevel, info, hnd.share.AttrsFor(hnd.path, info))
+	if infoLevel == infoQueryAllEAs {
+		return buildTrans2InfoResponse(sess, h, packFEAList(hnd.share.EAs(hnd.path)))
+	}
+	if infoLevel == infoQueryEasFromList {
+		names, ok := parseGEAList(data)
+		if !ok {
+			return errResponse(h, statusUnsuccessful)
+		}
+		return buildTrans2InfoResponse(sess, h, packFEAList(filterEAs(hnd.share.EAs(hnd.path), names)))
+	}
+	out, ok := packQueryInfo(infoLevel, info, hnd.share.AttrsFor(hnd.path, info))
 	if !ok {
 		return errResponse(h, statusNotSupported)
 	}
-	return buildTrans2InfoResponse(h, data)
+	return buildTrans2InfoResponse(sess, h, out)
 }
 
 // queryFSInfo serves TRANS2_QUERY_FS_INFORMATION ([smb6.0] 4097; [MS-CIFS]
@@ -469,7 +698,7 @@ func (s *Service) queryFSInfo(sh *Share, h protocol.Header, params []byte) []byt
 	default:
 		return errResponse(h, statusNotSupported)
 	}
-	return buildTrans2Response(h, nil, data)
+	return buildTrans2Response(nil, h, nil, data)
 }
 
 // packFileNameInfo serializes SMB_QUERY_FILE_NAME_INFO ([MS-CIFS] §2.2.8.3.9):
@@ -537,6 +766,38 @@ func (s *Service) handleFindClose2(sess *smbSession, h protocol.Header, req []by
 // Hidden/System bits the host cannot represent are reported.
 func packQueryInfo(level uint16, info stdfs.FileInfo, attrs uint16) ([]byte, bool) {
 	switch level {
+	case infoStandard, infoQueryEaSize:
+		// SMB_INFO_STANDARD / SMB_INFO_QUERY_EA_SIZE ([MS-CIFS] §2.2.8.3.1/
+		// §2.2.8.3.2, LANMAN2.0): SMB_DATE/SMB_TIME creation/access/write
+		// pairs, FileDataSize(4), AllocationSize(4), Attributes(2), and for
+		// the EA_SIZE level a trailing EaSize(4, always 0) — no name, no
+		// ResumeKey, unlike the FIND_FIRST2 records in packFindStandard.
+		// OS/2 WPS issues TRANS2_QUERY_PATH_INFORMATION at this level to
+		// populate folder views; returning statusNotSupported here makes it
+		// treat the whole share as inaccessible even though `dir`/`copy`
+		// (which never ask for this level) work fine.
+		size := 22
+		if level == infoQueryEaSize {
+			size = 26
+		}
+		buf := make([]byte, size)
+		// smbServerTimeDate returns (smbTime, smbDate) — SMB_DATE/SMB_TIME pairs on
+		// the wire are Date-then-Time ([MS-CIFS] §2.2.8.1.1 SMB_INFO_STANDARD), so
+		// the two must be swapped here, not passed through in call order (a prior
+		// cd,ct := smbServerTimeDate(...) bug packed time bits into the date slot
+		// and vice versa — Wireshark decoded the result as e.g. "2046-13-11", an
+		// invalid DOS date, on every TRANS2_QUERY_PATH_INFORMATION SMB_INFO_STANDARD
+		// reply; netbeui.pcap 2026-07-15 frame 752, `\` root query).
+		ct, cd := smbServerTimeDate(info.ModTime())
+		for _, off := range []int{0, 4, 8} {
+			bp.PutLE16(buf[off:off+2], cd)
+			bp.PutLE16(buf[off+2:off+4], ct)
+		}
+		fsize := fileSize(info)
+		bp.PutLE32(buf[12:16], uint32(fsize))
+		bp.PutLE32(buf[16:20], uint32(allocSize(fsize, info.IsDir())))
+		bp.PutLE16(buf[20:22], attrs)
+		return buf, true
 	case infoQueryFileBasic:
 		buf := make([]byte, 40)
 		ft := fileTime(info.ModTime())
@@ -571,10 +832,148 @@ func packQueryInfo(level uint16, info stdfs.FileInfo, attrs uint16) ([]byte, boo
 	}
 }
 
+// eaDataSize is the EaSize field value ([MS-CIFS] §2.2.8.1.2/§2.2.8.3.2): the
+// byte length of a file's EA information, 0 when it has none. Unlike
+// packFEAList's wire length, an empty list reports 0 here, not the 4-byte
+// SizeOfListInBytes header — EaSize measures the EAs themselves, not a
+// container.
+func eaDataSize(eas []fs.EA) int {
+	if len(eas) == 0 {
+		return 0
+	}
+	return len(packFEAList(eas))
+}
+
+// packFEAList renders eas as an SMB_FEA_LIST ([MS-CIFS] §2.2.1.2.2/§2.2.1.2.2.1):
+// ULONG SizeOfListInBytes (counts itself) followed by concatenated SMB_FEA
+// records — ExtendedAttributeFlag(1) AttributeNameLengthInBytes(1)
+// AttributeValueLengthInBytes(2) AttributeName[Len+1, NUL-padded]
+// AttributeValue[Len]. Names/values are OEM bytes per spec — EA names are
+// ASCII well-known tags (".LONGNAME" etc.), never subject to the client's
+// Unicode session flag, so no wire-charset transcoding applies here.
+func packFEAList(eas []fs.EA) []byte {
+	size := 4
+	for _, e := range eas {
+		size += 4 + len(e.Name) + 1 + len(e.Value)
+	}
+	out := make([]byte, size)
+	bp.PutLE32(out[0:4], uint32(size))
+	off := 4
+	for _, e := range eas {
+		if e.NeedEA {
+			out[off] = 0x80 // FILE_NEED_EA
+		}
+		out[off+1] = byte(len(e.Name))
+		bp.PutLE16(out[off+2:off+4], uint16(len(e.Value)))
+		off += 4
+		off += copy(out[off:], e.Name)
+		off++ // NUL pad after AttributeName, not counted in AttributeNameLengthInBytes
+		off += copy(out[off:], e.Value)
+	}
+	return out
+}
+
+// parseFEAList decodes an SMB_FEA_LIST written by a client (TRANS2_SET_PATH/
+// FILE_INFORMATION SMB_INFO_SET_EAS). errOffset is the byte offset of the
+// first malformed SMB_FEA record when ok is false, for EaErrorOffset
+// ([MS-CIFS] §2.2.6.7.2).
+func parseFEAList(b []byte) (eas []fs.EA, ok bool, errOffset uint16) {
+	if len(b) < 4 {
+		return nil, false, 0
+	}
+	total := int(bp.LE32(b[0:4]))
+	if total < 4 || total > len(b) {
+		total = len(b)
+	}
+	off := 4
+	for off < total {
+		if off+4 > total {
+			return nil, false, uint16(off)
+		}
+		needEA := b[off]&0x80 != 0
+		nameLen := int(b[off+1])
+		valueLen := int(bp.LE16(b[off+2 : off+4]))
+		rec := off
+		off += 4
+		if off+nameLen+1+valueLen > total {
+			return nil, false, uint16(rec)
+		}
+		name := string(b[off : off+nameLen])
+		off += nameLen + 1 // skip the NUL pad byte
+		value := append([]byte(nil), b[off:off+valueLen]...)
+		off += valueLen
+		eas = append(eas, fs.EA{Name: name, Value: value, NeedEA: needEA})
+	}
+	return eas, true, 0
+}
+
+// parseGEAList decodes an SMB_GEA_LIST ([MS-CIFS] §2.2.1.2.1) — the
+// SMB_INFO_QUERY_EAS_FROM_LIST request's name filter: ULONG SizeOfListInBytes
+// (counting itself) then SMB_GEA entries, each AttributeNameLengthInBytes(1)
+// AttributeName[len] NUL(1). Returns the requested names in request order. An
+// EMPTY block parses as no names (ok, nil) — the lenient path for a client
+// that sent the level without its list — while a present-but-torn list is
+// rejected.
+func parseGEAList(b []byte) (names []string, ok bool) {
+	if len(b) == 0 {
+		return nil, true
+	}
+	if len(b) < 4 {
+		return nil, false
+	}
+	total := int(bp.LE32(b[0:4]))
+	if total < 4 || total > len(b) {
+		total = len(b)
+	}
+	off := 4
+	for off < total {
+		nameLen := int(b[off])
+		if off+1+nameLen+1 > total {
+			return nil, false
+		}
+		names = append(names, string(b[off+1:off+1+nameLen]))
+		off += 1 + nameLen + 1 // length byte + name + NUL
+	}
+	return names, true
+}
+
+// filterEAs returns one FEA entry per requested GEA name, in request order —
+// SMB_INFO_QUERY_EAS_FROM_LIST returns "pairs where the AttributeName field
+// values match those that were provided in the request" ([MS-CIFS] §2.2.8.3.3),
+// NOT the file's whole list. The match is case-insensitive (OS/2 EA names are
+// caseless, uppercase by convention). A requested name with no stored EA still
+// contributes a zero-length placeholder entry, not nothing: the real IBM Peer
+// server (captures/ibm-peer-clients.pcapng frames 505/507 and 1428/1432, real
+// OS/2-to-OS/2 traffic) always answers with one FEA record per requested name,
+// EA Data Length 0 for ones the file doesn't have — WPS's own GetEAList
+// consumer expects the response positionally keyed to its request, not a
+// variably-shorter list. Honouring the *name* filter (not returning EAs the
+// client didn't ask for) is still load-bearing: OS/2 WPS probes files one name
+// at a time (.ICON1, .SUBJECT — netbeui.pcap 2026-07-14 frame 334) with a
+// 4356-byte client buffer, so returning an unrequested multi-KB .ICON would
+// overflow every probe once an icon is stored.
+func filterEAs(eas []fs.EA, names []string) []fs.EA {
+	var out []fs.EA
+	for _, n := range names {
+		found := false
+		for _, e := range eas {
+			if strings.EqualFold(e.Name, n) {
+				out = append(out, e)
+				found = true
+				break
+			}
+		}
+		if !found {
+			out = append(out, fs.EA{Name: n})
+		}
+	}
+	return out
+}
+
 // supportedFindLevel reports whether a FIND_FIRST2/FIND_NEXT2 information level
 // is one the packers below can encode.
 func supportedFindLevel(level uint16) bool {
-	return level == infoStandard || level == infoQueryEaSize || level == infoFileBothDirInfo
+	return level == infoStandard || level == infoQueryEaSize || level == infoQueryEasFromList || level == infoFileBothDirInfo
 }
 
 // packFindEntries packs up to maxEntries findRows at the requested information
@@ -582,11 +981,11 @@ func supportedFindLevel(level uint16) bool {
 // levels (SMB_INFO_STANDARD / SMB_INFO_QUERY_EA_SIZE) that OS/2 LAN Server and
 // DOS LANMAN redirectors ask for (netbeui.pcap 2026-07-10 frames 308/316 —
 // rejecting them leaves OS/2 unable even to read its message file → SYS0318).
-func packFindEntries(sh *Share, rows []findRow, maxEntries int, infoLevel uint16, resumeKeys bool, flags2 uint16) (data []byte, returned int, lastNameOffset uint16) {
+func packFindEntries(sh *Share, rows []findRow, maxEntries int, infoLevel uint16, resumeKeys bool, geaNames []string, flags2 uint16) (data []byte, returned int, lastNameOffset uint16) {
 	if infoLevel == infoFileBothDirInfo {
 		return packFindBothDir(sh, rows, maxEntries, flags2)
 	}
-	return packFindStandard(sh, rows, maxEntries, infoLevel == infoQueryEaSize, resumeKeys, flags2)
+	return packFindStandard(sh, rows, maxEntries, infoLevel, resumeKeys, geaNames, flags2)
 }
 
 // packFindBothDir packs findRows as SMB_FIND_FILE_BOTH_DIRECTORY_INFO records
@@ -650,14 +1049,25 @@ func packFindBothDir(sh *Share, rows []findRow, maxEntries int, flags2 uint16) (
 }
 
 // packFindStandard packs findRows as SMB_INFO_STANDARD or (withEA)
-// SMB_INFO_QUERY_EA_SIZE records ([MS-CIFS] §2.2.8.1.1/§2.2.8.1.2): optional
-// ResumeKey(4, present only when SMB_FIND_RETURN_RESUME_KEYS was set in the
-// request Flags), SMB_DATE/SMB_TIME creation/access/write pairs,
-// FileDataSize(4), AllocationSize(4), Attributes(2), EaSize(4, EA level only),
-// then FileNameLength(1) and the name in the request wire charset followed by
-// a NUL terminator NOT counted in FileNameLength ([MS-CIFS] <153>/<154>).
-// Records are packed back to back with no alignment.
-func packFindStandard(sh *Share, rows []findRow, maxEntries int, withEA, resumeKeys bool, flags2 uint16) (data []byte, returned int, lastNameOffset uint16) {
+// SMB_INFO_QUERY_EA_SIZE / SMB_INFO_QUERY_EAS_FROM_LIST records ([MS-CIFS]
+// §2.2.8.1.1/§2.2.8.1.2/§2.2.8.1.3): optional ResumeKey(4, present only when
+// SMB_FIND_RETURN_RESUME_KEYS was set in the request Flags), SMB_DATE/SMB_TIME
+// creation/access/write pairs, FileDataSize(4), AllocationSize(4),
+// Attributes(2), then for EA_SIZE a plain EaSize(4) or for EAS_FROM_LIST an
+// SMB_FEA_LIST (ULONG SizeOfListInBytes, ≥4 even when empty, since the field
+// counts itself — a bare 0 there reads as a truncated/invalid list), then
+// FileNameLength(1) and the name in the request wire charset followed by a
+// NUL terminator NOT counted in FileNameLength ([MS-CIFS] <153>/<154>).
+// Records are packed back to back with no alignment. EaSize
+// (SMB_INFO_QUERY_EA_SIZE) is a plain 4-byte length over ALL of a file's EAs;
+// EAS_FROM_LIST embeds the FULL SMB_FEA_LIST (SizeOfListInBytes + the SMB_FEA
+// records themselves, [MS-CIFS] §2.2.8.1.3 — unlike the QUERY_PATH/FILE_INFO
+// EAS_FROM_LIST level, which is size-only), filtered to the geaNames the
+// request's SMB_GEA_LIST asked for (§2.2.8.1.3 returns only the requested
+// names). Both draw on the share's real stored EAs (Share.EAs).
+func packFindStandard(sh *Share, rows []findRow, maxEntries int, infoLevel uint16, resumeKeys bool, geaNames []string, flags2 uint16) (data []byte, returned int, lastNameOffset uint16) {
+	withEaSize := infoLevel == infoQueryEaSize
+	withFeaList := infoLevel == infoQueryEasFromList
 	out := make([]byte, 0, 128)
 	for i := 0; i < len(rows) && returned < maxEntries; i++ {
 		row := rows[i]
@@ -670,12 +1080,23 @@ func packFindStandard(sh *Share, rows []findRow, maxEntries int, withEA, resumeK
 			term = 2
 		}
 
+		var feaList []byte
+		var eas []fs.EA
+		if withEaSize || withFeaList {
+			eas = sh.EAs(row.store)
+		}
+		if withFeaList {
+			feaList = packFEAList(filterEAs(eas, geaNames))
+		}
+
 		fixed := 23 // dates/times(12) + FileDataSize(4) + AllocationSize(4) + Attributes(2) + FileNameLength(1)
 		if resumeKeys {
 			fixed += 4
 		}
-		if withEA {
-			fixed += 4
+		if withEaSize {
+			fixed += 4 // EaSize: a plain length, not the FEA records themselves
+		} else if withFeaList {
+			fixed += len(feaList)
 		}
 		recStart := len(out)
 		rec := make([]byte, fixed+len(nameWire)+term)
@@ -695,9 +1116,13 @@ func packFindStandard(sh *Share, rows []findRow, maxEntries int, withEA, resumeK
 		bp.PutLE32(rec[off+16:off+20], clamp32(allocSize(size, row.info.IsDir())))
 		bp.PutLE16(rec[off+20:off+22], sh.AttrsFor(row.store, row.info))
 		nameLenOff := off + 22
-		if withEA {
-			bp.PutLE32(rec[off+22:off+26], 0) // EaSize: no EAs
+		switch {
+		case withEaSize:
+			bp.PutLE32(rec[off+22:off+26], uint32(eaDataSize(eas)))
 			nameLenOff = off + 26
+		case withFeaList:
+			copy(rec[off+22:off+22+len(feaList)], feaList)
+			nameLenOff = off + 22 + len(feaList)
 		}
 		rec[nameLenOff] = byte(len(nameWire))
 		copy(rec[nameLenOff+1:], nameWire)
@@ -763,7 +1188,7 @@ func clampSearchCount(n int) int {
 // a 2-byte SID (10-byte param block); FIND_NEXT2 omits it (8-byte). The param
 // block is SID? + SearchCount(2) + EndOfSearch(2) + EaErrorOffset(2) +
 // LastNameOffset(2); the data block holds the packed records.
-func buildFindResponse(h protocol.Header, includeSID bool, sid uint16, count int, endOfSearch bool, data []byte, lastNameOffset uint16) []byte {
+func buildFindResponse(sess *smbSession, h protocol.Header, includeSID bool, sid uint16, count int, endOfSearch bool, data []byte, lastNameOffset uint16) []byte {
 	paramLen := 8
 	if includeSID {
 		paramLen = 10
@@ -779,25 +1204,95 @@ func buildFindResponse(h protocol.Header, includeSID bool, sid uint16, count int
 		bp.PutLE16(p[off+2:off+4], 1)
 	}
 	bp.PutLE16(p[off+6:off+8], lastNameOffset)
-	return buildTrans2Response(h, p, data)
+	return buildTrans2Response(sess, h, p, data)
 }
 
 // buildTrans2InfoResponse builds a TRANS2 reply with a 2-byte EaErrorOffset param
 // and the supplied info-level data block (QUERY_PATH/FILE_INFO).
-func buildTrans2InfoResponse(h protocol.Header, data []byte) []byte {
-	return buildTrans2Response(h, make([]byte, 2), data)
+func buildTrans2InfoResponse(sess *smbSession, h protocol.Header, data []byte) []byte {
+	return buildTrans2Response(sess, h, make([]byte, 2), data)
 }
 
 // buildTrans2Response frames an SMB_COM_TRANSACTION2 response (WCT=10) carrying a
 // parameter block and a data block, each at its own header-relative offset
+// ([MS-CIFS] §2.2.4.46.2). When the assembled message would exceed sess's
+// maxBufferSize, the reply is split into multiple TRANS2 response messages —
+// the first is returned directly (as every caller already expects) and any
+// further fragments are queued on sess for ServeMessage to deliver over the
+// push channel right after ([MS-CIFS] §2.2.4.46.2's DataDisplacement/
+// ParameterDisplacement reassembly; confirmed as real server behaviour,
+// independent of the client's offered MaxDataCount, against
+// captures/ibm-peer-clients.pcapng frames 633/637/641 — a live IBM Peer server
+// split a 4797-byte FIND_FIRST2 EAS_FROM_LIST reply into two TRANS2 response
+// messages at its own ~4356-byte outbound buffer limit). sess may be nil (some
+// callers have none, e.g. tests exercising the framer directly); a nil sess
+// always sends the whole reply in one message, matching the pre-chunking
+// behaviour.
+func buildTrans2Response(sess *smbSession, h protocol.Header, params, data []byte) []byte {
+	wordsLen := 20
+	paramOffset := protocol.HeaderLen + 1 + wordsLen + 2
+	paramPad := (2 - paramOffset%2) % 2
+	firstParamOffset := paramOffset + paramPad
+
+	limit := uint32(0)
+	if sess != nil {
+		limit = sess.maxBufferSize()
+	}
+	total := firstParamOffset + len(params) + 2 + len(data) // rough whole-message size, ignoring inter-block padding
+	if limit == 0 || uint32(total) <= limit {
+		return trans2ResponseFragment(h, uint16(len(params)), uint16(len(data)), params, 0, data, 0)
+	}
+
+	// Chunk: fill each fragment's data area up to the budget left after its
+	// parameter slice and fixed overhead, draining params first (matching the
+	// real IBM Peer server's frame 637: full params + a partial data block in
+	// the first fragment) then data-only continuations.
+	const fixedOverhead = 64 // header + WCT/words/BCC + pad slack, conservative
+	frames := make([][]byte, 0, 2)
+	paramSent, dataSent := 0, 0
+	for paramSent < len(params) || dataSent < len(data) || (paramSent == 0 && dataSent == 0) {
+		budget := int(limit) - fixedOverhead
+		if budget < 1 {
+			budget = 1
+		}
+		paramChunk := params[paramSent:]
+		if len(paramChunk) > budget {
+			paramChunk = paramChunk[:budget]
+		}
+		budget -= len(paramChunk)
+		dataChunk := data[dataSent:]
+		if budget > 0 {
+			if len(dataChunk) > budget {
+				dataChunk = dataChunk[:budget]
+			}
+		} else {
+			dataChunk = nil
+		}
+		frame := trans2ResponseFragment(h, uint16(len(params)), uint16(len(data)), paramChunk, uint16(paramSent), dataChunk, uint16(dataSent))
+		frames = append(frames, frame)
+		paramSent += len(paramChunk)
+		dataSent += len(dataChunk)
+		if len(paramChunk) == 0 && len(dataChunk) == 0 {
+			break // budget too small to make progress — stop rather than loop forever
+		}
+	}
+
+	if sess != nil {
+		for _, f := range frames[1:] {
+			sess.queueContinuation(f)
+		}
+	}
+	return frames[0]
+}
+
+// trans2ResponseFragment builds one SMB_COM_TRANSACTION2 response message
+// carrying a slice of the total parameter/data blocks at their displacement
 // ([MS-CIFS] §2.2.4.46.2).
-func buildTrans2Response(h protocol.Header, params, data []byte) []byte {
+func trans2ResponseFragment(h protocol.Header, totalParams, totalData uint16, params []byte, paramDisp uint16, data []byte, dataDisp uint16) []byte {
 	rh := responseHeader(h, statusSuccess)
 	out := rh.Encode(nil)
 	out = append(out, 10) // WCT
 
-	// Layout after WCT: 10 words(20) + BCC(2). Params follow, then data; both are
-	// referenced by header-relative offsets and padded to even boundaries.
 	wordsLen := 20
 	paramOffset := protocol.HeaderLen + 1 + wordsLen + 2
 	paramPad := (2 - paramOffset%2) % 2
@@ -807,12 +1302,14 @@ func buildTrans2Response(h protocol.Header, params, data []byte) []byte {
 	dataOffset += dataPad
 
 	w := make([]byte, wordsLen)
-	bp.PutLE16(w[0:2], uint16(len(params)))  // TotalParameterCount
-	bp.PutLE16(w[2:4], uint16(len(data)))    // TotalDataCount
+	bp.PutLE16(w[0:2], totalParams)          // TotalParameterCount
+	bp.PutLE16(w[2:4], totalData)            // TotalDataCount
 	bp.PutLE16(w[6:8], uint16(len(params)))  // ParameterCount
 	bp.PutLE16(w[8:10], uint16(paramOffset)) // ParameterOffset
+	bp.PutLE16(w[10:12], paramDisp)          // ParameterDisplacement
 	bp.PutLE16(w[12:14], uint16(len(data)))  // DataCount
 	bp.PutLE16(w[14:16], uint16(dataOffset)) // DataOffset
+	bp.PutLE16(w[16:18], dataDisp)           // DataDisplacement
 	out = append(out, w...)
 
 	bcc := paramPad + len(params) + dataPad + len(data)

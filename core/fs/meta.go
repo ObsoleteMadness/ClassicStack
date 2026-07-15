@@ -1,5 +1,12 @@
 package fs
 
+import "github.com/ObsoleteMadness/ClassicStack/core/metastore"
+
+// EA is one named extended-attribute value, re-exported from core/metastore
+// so file services reach it through the fs seam like DOSAttr — see
+// metastore.EA for the full doc.
+type EA = metastore.EA
+
 // MetaEngine is the single per-share interface for everything the storage seam
 // tracks about a path beyond its bytes: derived DOS/AFP names, CNIDs, and DOS
 // attributes/dates a host filesystem cannot natively represent. It plays the
@@ -55,4 +62,14 @@ type MetaEngine interface {
 	// RenameAttrs moves stored attributes from oldPath to newPath (called on
 	// rename), preserving them across a move.
 	RenameAttrs(oldPath, newPath string) error
+
+	// EAs returns the stored OS/2-style named extended attributes for path.
+	// ok is false when nothing is stored.
+	EAs(path string) (eas []EA, ok bool)
+	// SetEAs persists eas for path, replacing any previously stored list.
+	SetEAs(path string, eas []EA) error
+	// DeleteEAs drops any stored EAs for path (called on remove).
+	DeleteEAs(path string) error
+	// RenameEAs moves stored EAs from oldPath to newPath (called on rename).
+	RenameEAs(oldPath, newPath string) error
 }

@@ -17,6 +17,7 @@
 //   GET  /registered_names             NBP name table (NBP stat drill-down)
 //   GET  /macip_leases                 MacIP lease table (MacIP stat drill-down)
 //   GET  /aarp_table                   AARP address mapping table (EtherTalk drill-down)
+//   GET  /smb_sessions                 live SMB session table (SMB drill-down)
 //   GET  /users                        stored identities
 //   POST /set_user|/set_user_disabled|/remove_user
 //   GET  /subscribe?topics=stats,state,log   Server-Sent Events telemetry
@@ -122,6 +123,14 @@ const api = {
   async aarpTable() {
     const r = await fetch("aarp_table");
     if (r.status === 501) throw new Error("EtherTalk not available in this build");
+    if (!r.ok) throw new Error(await errText(r));
+    return r.json();
+  },
+  // smbSessions is the drill-down probe behind the SMB dashboard card: the live
+  // circuit table (client, MAC, NetBIOS name, user, dialect, NativeOS/NativeLanMan).
+  async smbSessions() {
+    const r = await fetch("smb_sessions");
+    if (r.status === 501) throw new Error("SMB not available in this build");
     if (!r.ok) throw new Error(await errText(r));
     return r.json();
   },
@@ -426,10 +435,17 @@ class CsDashboard extends HTMLElement {
     // Nest components that hard-depend on exactly one built parent UNDER that parent
     // (e.g. SMB-TCP → SMB), so a transport child renders inside its service's card
     // rather than as a peer. A component with no (built) parent is a top-level card.
+    // NEVER_NEST excludes components whose DependsOn edge is pure start-order (e.g.
+    // SMB depends on NetBEUI only so it starts after the transport is up) rather than
+    // genuine ownership — SMB is a service in its own right, shared by IPX and NetBEUI
+    // alike, and belongs in its own File & print services card, not folded under
+    // whichever transport happens to be its start-order predecessor.
+    const NEVER_NEST = new Set(["SMB"]);
     const byName = new Map(this.units.map((u) => [u.Name, u]));
     const childrenOf = new Map();
     const isChild = new Set();
     for (const u of this.units) {
+      if (NEVER_NEST.has(u.Name)) continue;
       const parents = (u.DependsOn || []).filter((d) => byName.has(d));
       if (parents.length === 1) {
         const p = parents[0];
@@ -613,6 +629,12 @@ function drillDownFor(name) {
         () => api.aarpTable(), aarpEntryColumns)),
     ]);
   }
+  if (name === "SMB") {
+    return el("div", { class: "kv drill" }, [
+      linkButton("▸ Sessions", () => openProbeModal("SMB sessions",
+        () => api.smbSessions(), smbSessionColumns)),
+    ]);
+  }
   return null;
 }
 
@@ -632,6 +654,18 @@ const aarpEntryColumns = [
   { label: "Port", get: (r) => r.port },
   { label: "AppleTalk", get: (r) => `${r.network}.${r.node}` },
   { label: "MAC", get: (r) => r.mac },
+];
+const smbSessionColumns = [
+  { label: "Client", get: (r) => r.client || "—" },
+  { label: "MAC", get: (r) => r.mac || "—" },
+  { label: "NetBIOS Name", get: (r) => r.netbios_name || "—" },
+  { label: "User", get: (r) => r.user || "guest" },
+  { label: "Dialect", get: (r) => r.dialect || "—" },
+  { label: "Native OS", get: (r) => r.native_os || "—" },
+  { label: "Native LAN Manager", get: (r) => r.native_lanman || "—" },
+  { label: "Domain", get: (r) => r.primary_domain || "—" },
+  { label: "Trees", get: (r) => r.open_trees },
+  { label: "Files", get: (r) => r.open_files },
 ];
 
 // openProbeModal opens a read-only modal that loads rows from a probe fn and renders

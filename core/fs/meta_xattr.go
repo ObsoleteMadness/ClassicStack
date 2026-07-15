@@ -36,6 +36,7 @@ func newMetaXattrEngine(spec ShareSpec, base FileSystem, store metastore.Store, 
 		names:   NewDerivedNameEngine(store),
 		cnids:   cnids,
 		attrs:   buildDOSAttrStore(dosBackendXattr, base, store, logger.With(log.Str("component", "dosattr"))),
+		eas:     metastore.NewEAStore(store, logger.With(log.Str("component", "eastore"))),
 		logging: logger,
 	}
 }

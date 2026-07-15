@@ -63,10 +63,11 @@ type circuitKey struct {
 // (DATA_FIRST_MIDDLE accumulates here until DATA_ONLY_LAST completes it), and the
 // upper-layer SessionCircuit the reassembled SMB messages are served to.
 type circuit struct {
-	mac       [6]byte
-	localNum  uint8
-	remoteNum uint8
-	active    bool
+	mac        [6]byte
+	localNum   uint8
+	remoteNum  uint8
+	active     bool
+	callerName protocol.Name // calling NetBIOS name from the establishing NAME_QUERY (frame.SourceName)
 
 	frag []byte         // accumulated DATA_FIRST_MIDDLE payload
 	conn SessionCircuit // SMB virtual circuit (nil until consumer opens one)
@@ -197,9 +198,10 @@ func (e *sessionEngine) handleNameQuery(srcMAC [6]byte, frame *nbf.Frame) {
 		e.mu.Lock()
 		localNum = e.allocLocalNumLocked()
 		e.circuits[circuitKey{srcMAC, localNum}] = &circuit{
-			mac:       srcMAC,
-			localNum:  localNum,
-			remoteNum: callerSession,
+			mac:        srcMAC,
+			localNum:   localNum,
+			remoteNum:  callerSession,
+			callerName: protocol.Name(frame.SourceName),
 		}
 		e.mu.Unlock()
 	}
@@ -308,6 +310,12 @@ func (e *sessionEngine) handleDataOnlyLast(srcMAC [6]byte, frame *nbf.Frame) {
 			c.conn.SetPushWriter(func(frame []byte) {
 				e.sendSessionData(cMAC, cLocal, cRemote, frame)
 			})
+			// Pass the calling NetBIOS name through to the consumer's management
+			// session view, if it accepts one (SMB's *Conn does; a consumer that
+			// doesn't care simply isn't a NetBIOSNamer).
+			if namer, ok := c.conn.(NetBIOSNamer); ok && c.callerName != (protocol.Name{}) {
+				namer.SetNetBIOSName(c.callerName.String())
+			}
 		}
 	}
 	conn := c.conn

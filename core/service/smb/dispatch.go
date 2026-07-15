@@ -94,10 +94,14 @@ func (s *Service) dispatchOne(sess *smbSession, h protocol.Header, req []byte) [
 		return s.handleWriteAndX(sess, h, req)
 	case protocol.CommandWrite:
 		return s.handleWrite(sess, h, req)
+	case protocol.CommandWriteAndClose:
+		return s.handleWriteAndClose(sess, h, req)
 	case protocol.CommandClose:
 		return s.handleClose(sess, h, req)
 	case protocol.CommandFlush:
 		return s.handleFlush(sess, h, req)
+	case protocol.CommandQueryInformation2:
+		return s.handleQueryInformation2(sess, h, req)
 	case protocol.CommandSeek:
 		return s.handleSeek(sess, h, req)
 
@@ -148,6 +152,8 @@ func (s *Service) dispatchOne(sess *smbSession, h protocol.Header, req []byte) [
 	// --- FS command engine: TRANS2 find/query ---
 	case protocol.CommandTransaction2:
 		return s.handleTransaction2(sess, h, req)
+	case protocol.CommandTransaction2Secondary:
+		return s.handleTransaction2Secondary(sess, h, req)
 	case protocol.CommandFindClose2:
 		return s.handleFindClose2(sess, h, req)
 

@@ -42,6 +42,42 @@ func isAndXRequest(cmd uint8) bool {
 // against a crafted frame whose offsets never terminate.
 const maxAndXChain = 8
 
+// fidGrantingCommands / fidConsumingCommands identify the AndX commands that
+// hand out a FID in their response, and the AndX commands whose request block
+// carries a FID at the same words[4:6] slot ([smb6.0] 1000, rule 5).
+func fidGrantsFID(cmd uint8) bool {
+	return cmd == protocol.CommandOpenAndX || cmd == protocol.CommandNtCreateAndX
+}
+
+func commandConsumesFID(cmd uint8) bool {
+	switch cmd {
+	case protocol.CommandReadAndX, protocol.CommandWriteAndX, protocol.CommandLockingAndX:
+		return true
+	}
+	return false
+}
+
+// grantedFID extracts the FID a successful Open/NtCreate AndX response block
+// just handed out. block is the response bytes starting at the block's
+// WordCount byte. OpenAndX (WCT=15) carries FID at words[4:6]; NtCreateAndX
+// (WCT=34) carries it one word later, at words[5:7].
+func grantedFID(cmd uint8, block []byte) (uint16, bool) {
+	var wordByteOff int // byte offset of the FID within the words area
+	switch cmd {
+	case protocol.CommandOpenAndX:
+		wordByteOff = 4
+	case protocol.CommandNtCreateAndX:
+		wordByteOff = 5
+	default:
+		return 0, false
+	}
+	fidOff := 1 + wordByteOff // skip WordCount byte
+	if len(block) < fidOff+2 {
+		return 0, false
+	}
+	return bp.LE16(block[fidOff : fidOff+2]), true
+}
+
 // processAndXChain serves the secondary commands chained after an AndX request
 // and splices their response blocks onto resp, returning the combined message.
 // resp is the already-built response to the primary command in req.
@@ -51,9 +87,13 @@ const maxAndXChain = 8
 //   - "The server will implicitly use the result of the first command in the
 //     'X' command" (rule 5): the UID granted by SESSION_SETUP_ANDX and the TID
 //     granted by TREE_CONNECT_ANDX are carried into each chained dispatch and
-//     ride out in the single response header. (FID inheritance for chained
-//     OPEN_ANDX → READ_ANDX is not implemented — no client in our
-//     compatibility set chains an open with I/O.)
+//     ride out in the single response header. Likewise "the Fid obtained in the
+//     SMB_COM_OPEN_ANDX would be used in the embedded SMB_COM_READ" ([smb6.0]
+//     1000): OS/2 chains OPEN_ANDX → READ_ANDX in one message (netbeui.pcap
+//     frame 812), and its Read AndX block carries a placeholder FID the client
+//     cannot know in advance — the FID field of a chained Read/Write/Locking
+//     AndX request is overwritten with the FID just granted by a preceding
+//     Open/NtCreate AndX before that chained command is dispatched.
 //   - "The first Command to encounter an error will stop all further
 //     processing of embedded commands" (rule 7); "In all cases the error
 //     information are returned in the SMB header at the start of the response
@@ -102,6 +142,19 @@ func (s *Service) processAndXChain(sess *smbSession, h protocol.Header, req, res
 		ch.Command = next
 		ch.TID = rh.TID
 		ch.UID = rh.UID
+
+		// Rule 5 FID inheritance: a chained Read/Write/Locking AndX carries a
+		// placeholder FID the client filled in before the Open/NtCreate it
+		// follows had actually granted one — overwrite it with the real FID
+		// from the response block just built for that Open/NtCreate.
+		if fidGrantsFID(curCmd) && commandConsumesFID(next) {
+			if fid, ok := grantedFID(curCmd, resp[respOff:]); ok {
+				const chainedFIDOff = protocol.HeaderLen + 1 + 4 // WCT byte + words[4:6]
+				if len(chained) >= chainedFIDOff+2 {
+					bp.PutLE16(chained[chainedFIDOff:chainedFIDOff+2], fid)
+				}
+			}
+		}
 
 		chainResp := s.dispatchOne(sess, ch, chained)
 		if len(chainResp) <= protocol.HeaderLen {
