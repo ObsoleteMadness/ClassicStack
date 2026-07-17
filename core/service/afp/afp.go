@@ -87,9 +87,13 @@ const (
 )
 
 // Default server-info advertised when the service is built with no overrides.
-// AFP 2.2 + the two single-step UAMs the spine accepts.
+// AFP 1.1 through 2.2 + the two single-step UAMs the spine accepts. The old
+// versions must stay listed: the System 6 AppleShare workstation client only
+// speaks "AFPVersion 1.1"/"AFPVersion 2.0" and reports "server version not
+// supported" if neither appears in FPGetSrvrInfo (observed e2e; main's
+// known-good set was {2.0, 2.1}).
 var (
-	defaultAFPVersions = []string{"AFPVersion 2.1", "AFP2.2"}
+	defaultAFPVersions = []string{"AFPVersion 1.1", "AFPVersion 2.0", "AFPVersion 2.1", "AFP2.2"}
 	defaultUAMs        = []string{"No User Authent", "Cleartxt Passwrd"}
 )
 

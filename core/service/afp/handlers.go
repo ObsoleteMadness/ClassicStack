@@ -368,17 +368,22 @@ func volFixedParamsSize(bitmap uint16) int {
 	return size
 }
 
-// afpMaxVolumeBytes is the largest free/total byte count the AFP 2.x volume
-// bitmap can carry: the BytesFree/BytesTotal fields are 32-bit byte counts, so
-// a volume tops out at 4 GiB − 1. (The 64-bit ExtBytesFree/Total fields are an
-// AFP 3.x feature this server does not implement.)
-const afpMaxVolumeBytes uint32 = 0xFFFFFFFF
+// afpMaxVolumeBytes is the largest free/total byte count we report in the
+// 32-bit AFP 2.x BytesFree/BytesTotal fields: 2 GiB − 1, NOT the field's full
+// 4 GiB − 1 range. The classic AppleShare workstation client derives an HFS
+// allocation-block size from BytesTotal (≈ total/65536); at 0xFFFFFFFF that
+// yields 0x10000, which overflows a 16-bit register to zero and the client's
+// next division is the System 7.5 Finder's "divide by zero" crash at mount
+// (observed e2e over LToUDP; see spec/errata.md). Capping at MaxInt32 also
+// dodges clients that treat the count as signed, and matches main's
+// known-good capAFPBytes32. (The 64-bit ExtBytesFree/Total fields are an AFP
+// 3.x feature this server does not implement.)
+const afpMaxVolumeBytes uint32 = 0x7FFFFFFF
 
-// sat32 SATURATES a 64-bit byte count to the 32-bit AFP volume field: a real
-// disk larger than 4 GiB is reported as exactly 4 GiB − 1 (a full, valid value)
-// rather than a uint32 cast, which would WRAP and tell the client a 6 GiB disk
-// has 2 GiB. A capped value is the honest "this protocol can't express more"
-// answer the client expects from a vintage volume.
+// sat32 SATURATES a 64-bit byte count to the reportable AFP volume field
+// range: a real disk larger than the cap is reported as exactly the cap (a
+// full, valid value) rather than a uint32 cast, which would WRAP and tell the
+// client a 6 GiB disk has 2 GiB.
 func sat32(v uint64) uint32 {
 	if v > uint64(afpMaxVolumeBytes) {
 		return afpMaxVolumeBytes
