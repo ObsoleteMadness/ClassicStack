@@ -7,6 +7,7 @@ import (
 	"time"
 
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+	"github.com/ObsoleteMadness/ClassicStack/core/encoding"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
 )
 
@@ -60,6 +61,12 @@ type ServerInfo struct {
 	UAMs        []string
 	Flags       uint16
 }
+
+// srvrInfoSupportsSrvrMsg is the FPGetSrvrInfo Flags bit advertising server-
+// message support (SupportsSrvrMsg, bit 3 — Inside Macintosh: Networking,
+// "GetSrvrInfo reply"; confirmed against an observed AppleShare capture). A
+// client only polls FPGetSrvrMsg / honours message attentions when it is set.
+const srvrInfoSupportsSrvrMsg uint16 = 0x0008
 
 // serverInfoBlock packs the FPGetSrvrInfo reply block. Layout (Inside Macintosh:
 // Networking, "GetSrvrInfo reply"):
@@ -146,8 +153,7 @@ func (s *Service) afpLogin(a *afpSession, args []byte) ([]byte, int32) {
 	case "No User Authent":
 		// Guest login: no credential, no user store consulted. Admitted as guest;
 		// the session then only sees guest-open volumes.
-		a.loggedIn = true
-		a.user = ""
+		a.setLogin("", true)
 		return nil, afpNoErr
 	case "Cleartxt Passwrd":
 		// Cleartext UAM: username (pstring) then an 8-byte password field (Inside
@@ -170,8 +176,7 @@ func (s *Service) afpLogin(a *afpSession, args []byte) ([]byte, int32) {
 
 		if authn == nil || username == "" {
 			// No store, or an anonymous cleartext attempt → guest.
-			a.loggedIn = true
-			a.user = ""
+			a.setLogin("", true)
 			return nil, afpNoErr
 		}
 		okCred, err := authn.Authenticate(username, password)
@@ -185,8 +190,7 @@ func (s *Service) afpLogin(a *afpSession, args []byte) ([]byte, int32) {
 		if !okCred {
 			return nil, afpErrUserNotAuth
 		}
-		a.loggedIn = true
-		a.user = username
+		a.setLogin(username, true)
 		return nil, afpNoErr
 	default:
 		return nil, afpErrBadUAM
@@ -240,6 +244,16 @@ const (
 // 3 = Variable Directory ID. A mountable hierarchical volume advertises Fixed.
 const volSignatureFixedDirID uint16 = 2
 
+// NOTE: AFP 2.x has NO volume block-size field — the classic AppleShare client
+// derives the HFS allocation block size itself from the reported BytesTotal
+// with 16-bit block math (block ≈ total/65536, rounded up). The volume bitmap
+// bits above bit 8 (Name) belong to AFP 3.x (ExtBytesFree/ExtBytesTotal/
+// BlockSize) and are never requested by classic clients; an earlier revision
+// served a "block size" under bit 9, which is actually AFP 3.x ExtBytesFree —
+// dead and mislabeled, now removed. The ONLY lever over the Finder's per-file
+// "size on disk" granularity is the reported volume size (see
+// defaultVolumeSizeLimit).
+
 // afpOpenVol opens a volume by name and packs the requested volume parameters.
 //
 // Request: cmd(1) pad(1) bitmap(2) pstring VolName [password...].
@@ -285,10 +299,7 @@ func (s *Service) afpOpenVol(a *afpSession, block []byte) ([]byte, int32) {
 // fields. Writing the Pascal string inline — where the offset belongs — makes
 // every real client mis-read the name pointer and truncates the reply.
 func packVolParams(out []byte, vol *Volume, bitmap uint16) []byte {
-	var total, free uint64
-	if t, f, err := vol.FS().DiskUsage(""); err == nil {
-		total, free = t, f
-	}
+	total, free := reportVolBytes(vol)
 	// The name offset is relative to the parameters block, so it counts the
 	// fixed fields only (the name's own 2-byte pointer included) but NOT the
 	// bitmap word that precedes this block.
@@ -309,7 +320,14 @@ func packVolParams(out []byte, vol *Volume, bitmap uint16) []byte {
 		fixed = bp.AppendBE32(fixed, macTime(afpEpoch))
 	}
 	if bitmap&volBitmapModDate != 0 {
-		fixed = bp.AppendBE32(fixed, macTime(afpEpoch))
+		// Real root mod-date, not the constant epoch: classic Finders poll the
+		// volume mod-date to decide when to re-read open windows (AFP has no
+		// change push), and an observed AppleShare server reports a live date.
+		mod := afpEpoch
+		if fi, err := vol.FS().Stat(""); err == nil && fi.ModTime().After(afpEpoch) {
+			mod = fi.ModTime()
+		}
+		fixed = bp.AppendBE32(fixed, macTime(mod))
 	}
 	if bitmap&volBitmapBackupDate != 0 {
 		fixed = bp.AppendBE32(fixed, noBackupDate)
@@ -380,6 +398,32 @@ func volFixedParamsSize(bitmap uint16) int {
 // 3.x feature this server does not implement.)
 const afpMaxVolumeBytes uint32 = 0x7FFFFFFF
 
+// defaultVolumeSizeLimit is the volume size reported to AFP clients when a
+// volume has no size_limit configured: 512 MiB. The classic AppleShare client
+// derives the HFS allocation block size from the reported bytes with 16-bit
+// block math (block ≈ bytes/65536, rounded up), so the reported size sets the
+// Finder's per-file "size on disk" granularity: reporting the saturated 2 GiB
+// cap yields 32 KiB blocks (a 1 KB file shows as "32K on disk"); 512 MiB
+// yields 8 KiB — a period-typical hard disk. Presentation only: it does not
+// limit what the host stores.
+const defaultVolumeSizeLimit uint64 = 512 << 20
+
+// reportVolBytes computes the BytesTotal/BytesFree PRESENTATION values for a
+// volume: the host figures clamped to the volume's reported size (size_limit,
+// default defaultVolumeSizeLimit). A backend that cannot report usage (memfs's
+// 0/0, or a DiskUsage error) presents an empty virtual disk of the reported
+// size, so the Finder still shows usable space. sat32 at the pack site remains
+// the final wire guard for an operator limit above 2 GiB − 1.
+func reportVolBytes(vol *Volume) (total, free uint64) {
+	limit := vol.SizeLimit()
+	total, free = limit, limit
+	if t, f, err := vol.FS().DiskUsage(""); err == nil && t > 0 {
+		total = min(t, limit)
+		free = min(f, total)
+	}
+	return total, free
+}
+
 // sat32 SATURATES a 64-bit byte count to the reportable AFP volume field
 // range: a real disk larger than the cap is reported as exactly the cap (a
 // full, valid value) rather than a uint32 cast, which would WRAP and tell the
@@ -432,22 +476,64 @@ func (s *Service) afpMapName(a *afpSession, block []byte) ([]byte, int32) {
 	return bp.AppendBE32(nil, 0), afpNoErr
 }
 
-// afpGetSrvrMsg returns a server or login message (FPGetSrvrMsg, cmd 38). The
-// Finder issues it during mount; this server carries no messages, so it echoes
-// the requested message type with an empty message. Ported from main.
+// Server-message constants (FPGetSrvrMsg, cmd 38). From an observed capture of a
+// real AppleShare server: the client fetches the login message (type 0)
+// unprompted right after FPOpenVol, and the server message (type 1) after each
+// SPAttention carrying the AspAttnMsg bit; the reply bitmap always carries the
+// message-as-text bit.
+const (
+	srvrMsgTypeLogin  uint16 = 0      // login (greeting) message, fetched at mount
+	srvrMsgTypeServer uint16 = 1      // server (operator) message, announced by attention
+	srvrMsgBitmap     uint16 = 0x0001 // MessageBitmap bit 0: message as text (bit 1 = UTF-8, not served)
+	// maxSrvrMsgLen is the AFP server-message length limit (199 bytes).
+	maxSrvrMsgLen = 199
+)
+
+// srvrMsgBytes renders message text for the wire: MacRoman, truncated to the AFP
+// limit. An unmappable rune degrades to '?' rather than failing the reply.
+func srvrMsgBytes(text string) []byte {
+	b, err := encoding.UTF8ToMacRoman(text)
+	if err != nil {
+		b = make([]byte, 0, len(text))
+		for _, r := range text {
+			if rb, rerr := encoding.UTF8ToMacRoman(string(r)); rerr == nil {
+				b = append(b, rb...)
+			} else {
+				b = append(b, '?')
+			}
+		}
+	}
+	if len(b) > maxSrvrMsgLen {
+		b = b[:maxSrvrMsgLen]
+	}
+	return b
+}
+
+// afpGetSrvrMsg returns a server or login message (FPGetSrvrMsg, cmd 38). Type 0
+// is the configured login greeting the Finder fetches during mount; type 1 is
+// the session's pending operator message a preceding SPAttention (AspAttnMsg)
+// announced. An unconfigured/absent message answers with an empty string, the
+// pre-message behaviour.
 //
 // Request: cmd(1) pad(1) messageType(2) bitmap(2).
 // Reply:   messageType(2) bitmap(2) pstring(message).
 func (s *Service) afpGetSrvrMsg(a *afpSession, block []byte) ([]byte, int32) {
-	var msgType, bitmap uint16
+	var msgType uint16
 	if len(block) >= 6 {
 		msgType = bp.BE16(block[2:4])
-		bitmap = bp.BE16(block[4:6])
 	}
-	out := make([]byte, 0, 5)
+	var text string
+	switch msgType {
+	case srvrMsgTypeLogin:
+		text = s.loginMessage()
+	case srvrMsgTypeServer:
+		text = a.serverMessage()
+	}
+	msg := srvrMsgBytes(text)
+	out := make([]byte, 0, 5+len(msg))
 	out = bp.AppendBE16(out, msgType)
-	out = bp.AppendBE16(out, bitmap)
-	out = putPString(out, nil) // no message
+	out = bp.AppendBE16(out, srvrMsgBitmap)
+	out = putPString(out, msg)
 	return out, afpNoErr
 }
 
@@ -467,9 +553,11 @@ func (s *Service) afpGetVolParms(a *afpSession, block []byte) ([]byte, int32) {
 	if !ok {
 		return nil, afpErrParamErr
 	}
-	// Always answer at least the volume id so the reply is well-formed even if the
-	// client asked for nothing, matching afpOpenVol.
-	bitmap := bp.BE16(block[4:6]) | volBitmapID
+	// Echo exactly the requested bitmap. An observed AppleShare server answers a
+	// GetVolParms bitmap 0x0048 with 0x0048 — it does NOT inject unrequested
+	// fields; our earlier forced VolumeID (reply 0x0068) was a parity divergence.
+	// (FPOpenVol keeps its forced ID: the mount handshake needs the id.)
+	bitmap := bp.BE16(block[4:6])
 	out := make([]byte, 0, 64)
 	out = bp.AppendBE16(out, bitmap)
 	out = packVolParams(out, vol, bitmap)

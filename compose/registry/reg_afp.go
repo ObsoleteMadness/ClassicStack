@@ -66,6 +66,11 @@ func init() {
 						cache[p] = em
 					}
 					vs.ExtMap = em
+					// Reported volume size (size_limit, MiB → bytes); 0/negative
+					// leaves the service's classic-friendly default.
+					if mb := secs[i].SizeLimitMB; mb > 0 {
+						vs.SizeLimit = uint64(mb) << 20
+					}
 				}
 				out = append(out, vs)
 			}
@@ -89,6 +94,9 @@ func init() {
 		}
 		svc.SetZone(zone)
 		svc.SetTransports(srv.Transports)
+		// Opt-in login greeting: clients fetch and display it when mounting a volume
+		// (FPGetSrvrMsg type 0). Empty serves no greeting.
+		svc.SetLoginMessage(srv.LoginMessage)
 		// Bind the shared AppleTalk router so the AFP/ASP service replies and the
 		// runtime root can RegisterService it on its DDP socket. nil (a standalone
 		// build with no router) leaves it unrouted, the historical default. The classic

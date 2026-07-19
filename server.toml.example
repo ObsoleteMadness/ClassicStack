@@ -151,11 +151,28 @@ iface = "br-lan"
 enabled = false
 
 
+# --- AFP server (build tag `afp`) --------------------------------------------
+# Singleton server-level settings: the advertised Chooser identity, the
+# transport bindings, and the opt-in login greeting.
+#   server_name    Chooser/NBP name (blank = identity.hostname, then "ClassicStack")
+#   zone           AppleTalk zone to advertise into (blank = router default)
+#   transports     which stacks to bind: "ddp" (classic) / "tcp" (DSI, future);
+#                  empty = bind all built transports
+#   tcp_addr       DSI/TCP listen address (":548"); blank = no DSI/TCP.
+#                  Inert until the DSI transport lands.
+#   login_message  opt-in greeting clients display when mounting a volume
+#                  (FPGetSrvrMsg login message; max 199 chars; blank = none)
+# [AFP]
+# server_name = ""
+# zone = ""
+# transports = ["ddp"]
+# tcp_addr = ""
+# login_message = "Welcome to ClassicStack."
+
+
 # --- AFP volumes (build tag `afp`) -------------------------------------------
 # One [[afpvolumes]] table per exported volume. The AFP service is present when
-# built; it serves the volumes listed here (zero volumes = no shares). There is
-# no top-level [AFP] enable/protocol block in the current model — DDP vs TCP
-# transport follows which AppleTalk/network transports are up.
+# built; it serves the volumes listed here (zero volumes = no shares).
 #   name           volume display name (max 31 chars)
 #   path           host directory
 #   fs_type        filesystem backend: local_fs (default), memfs, …
@@ -164,6 +181,11 @@ enabled = false
 #   read_only      true makes the whole volume read-only
 #   allowed_users  access allow-list (empty = guest/world)
 #   options        backend-specific "key=value" params (e.g. for an image backend)
+#   size_limit     volume size REPORTED to clients, in MiB (0/unset = 512).
+#                  Classic Macs derive their allocation-block size from this
+#                  (≈ size/65536), so it sets the Finder's "size on disk"
+#                  granularity: 512 → 8 KiB blocks, 2047 → 32 KiB. Presentation
+#                  only — it does not limit what the host stores.
 [[afpvolumes]]
 name = "Public"
 fs_type = "local_fs"
@@ -234,7 +256,7 @@ read_only = false
 # the NIC binding, and [[etherdfsdrives]] maps drive letters to backends.
 # There is NO authentication: any client that can reach the server's MAC may use
 # any drive (gated only by read_only / allowed_users). See spec/18-etherdfs.md.
-[etherdfs]
+[EtherDFS]
 enabled = true
 iface = "br-lan"          # the bridge/uplink to bind (empty = the default interface)
 # mac = "00:11:22:aa:bb:cc"   # optional station MAC override (empty = the NIC's own)
@@ -257,6 +279,40 @@ path = "/srv/dosfiles"
 read_only = false
 # meta_backend = ""
 
+
+# --- Netboot (classic Mac ROM network boot, build tag `netboot`) --------------
+# Serves the AppleTalk Boot Protocol (ABP) that the `.netBOOT`/`.ATBOOT` ROM
+# drivers speak (Mac Classic, IIci, SuperMario-era ROMs), plus Elliot Nunn's
+# ChainBoot extension that streams a full-size read/write HFS image to the
+# chain-loaded driver. Rides the AppleTalk router on DDP sockets 10 (boot) and
+# 11 (ChainBoot), so any LocalTalk/EtherTalk segment in [router].members serves
+# boots. Discovery is NBP type "BootServer" (any object matched). The payload's
+# Snefru self-authentication trailer is appended at load when missing.
+# Section keys are exact-case: [Netboot], not [netboot].
+# See spec/19-netboot.md.
+#
+# Two serving shapes:
+#   RAM disk  — payload = a BootWrapper/romdrv-style driver stub, image = the
+#               (read-only) HFS disk image; the server concatenates and hashes
+#               them at load. Or point payload at a fully pre-built file and
+#               omit image. Size limit ~2 MB and ≤ ¼ of client RAM.
+#   ChainBoot — payload = ChainLoader.bin (block_size 256), disk = a full-size
+#               HFS image streamed read/WRITE over Elliot Nunn's extension; no
+#               size limit, one booted client at a time.
+# [Netboot]
+# enabled = true
+# payload = "/srv/netboot/BootWrapper.bin"  # boot payload or driver stub (ABP)
+# image = "/srv/netboot/system607.dsk"      # RAM-disk image appended to the stub
+# block_size = 512          # ABP block size: 512 for RAM-disk payloads,
+#                           # 256 for ChainLoader (0 = 512)
+# disk = "/srv/netboot/system71.dsk"  # ChainBoot streamed image (excludes image=)
+# pace_ms = 2               # ABP block-send inter-packet delay (0 = 2 ms)
+# chain_pace_ms = 10        # ChainBoot read-reply BASE inter-packet delay (0 = 10 ms;
+#                           # real LocalTalk is ~18 ms/frame). The server backs off
+#                           # automatically on chunk-read retries, so this rarely
+#                           # needs tuning.
+# name = "0000"             # NBP object shown in the registry (matching is any-object)
+# zone = "*"                # NBP zone to register in
 
 # --- Web-admin credential (§4-ter) -------------------------------------------
 # [adminauth] is written by the FIRST-RUN setup of the web-admin UI (it stores a

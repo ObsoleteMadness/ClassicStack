@@ -2,6 +2,7 @@ package afp
 
 import (
 	"strconv"
+	"sync"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
 )
@@ -194,10 +195,51 @@ type afpSession struct {
 	openVols map[uint16]*Volume
 	forks    *forkTable
 	dt       *dtTable // Desktop reference numbers handed out by FPOpenDT
+
+	// idMu guards the fields other goroutines touch: the login identity snapshot
+	// (Service.Sessions on the management plane) and the pending server message
+	// (set by SendMessage/Disconnect/Stop, read by FPGetSrvrMsg). The dispatch
+	// goroutine may keep reading loggedIn/user directly — every write goes through
+	// setLogin on that same goroutine, so only cross-goroutine readers need the lock.
+	idMu sync.Mutex
+	// serverMsg is the pending server (operator) message a client fetches with
+	// FPGetSrvrMsg type 1 after an SPAttention carrying the AspAttnMsg bit. It is
+	// kept (not cleared) on read — an observed AppleShare server re-serves the
+	// same text on every fetch — and the latest set wins.
+	serverMsg string
 }
 
 func newAFPSession() *afpSession {
 	return &afpSession{openVols: make(map[uint16]*Volume), forks: newForkTable(), dt: newDTTable()}
+}
+
+// setLogin records the session's login identity under idMu so cross-goroutine
+// readers (Service.Sessions) see a consistent snapshot.
+func (a *afpSession) setLogin(user string, loggedIn bool) {
+	a.idMu.Lock()
+	a.user, a.loggedIn = user, loggedIn
+	a.idMu.Unlock()
+}
+
+// identity snapshots the login state for cross-goroutine readers.
+func (a *afpSession) identity() (user string, loggedIn bool) {
+	a.idMu.Lock()
+	defer a.idMu.Unlock()
+	return a.user, a.loggedIn
+}
+
+// setServerMsg stores the pending server message (latest wins).
+func (a *afpSession) setServerMsg(msg string) {
+	a.idMu.Lock()
+	a.serverMsg = msg
+	a.idMu.Unlock()
+}
+
+// serverMessage returns the pending server message, if any.
+func (a *afpSession) serverMessage() string {
+	a.idMu.Lock()
+	defer a.idMu.Unlock()
+	return a.serverMsg
 }
 
 // dispatchAFP decodes one AFP command block, runs the matching handler against
@@ -249,7 +291,7 @@ func (s *Service) dispatchAFP(a *afpSession, block []byte) (reply []byte, result
 		// without a pending multi-step UAM is a parameter error.
 		return nil, afpErrParamErr
 	case cmdLogout:
-		a.loggedIn = false
+		a.setLogin("", false)
 		return nil, afpNoErr
 	case cmdGetSrvrParms:
 		if !a.loggedIn {

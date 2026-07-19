@@ -376,6 +376,14 @@ func crossWireRouter(rtr *router.RouterImpl, comps map[string]component.Componen
 		if svc, ok := c.(router.Service); ok {
 			rtr.RegisterService(svc)
 		}
+		// A service owning more than one DDP socket (netboot: ABP boot socket +
+		// the ChainBoot EBP socket) exposes the extra bindings as thin shim
+		// services; register them on their sockets alongside the component.
+		if extra, ok := c.(interface{ ExtraRouterServices() []router.Service }); ok {
+			for _, es := range extra.ExtraRouterServices() {
+				rtr.RegisterService(es)
+			}
+		}
 		if p, ok := c.(router.RoutedPort); ok && rsec.IsMember(name) {
 			members = append(members, p)
 		}

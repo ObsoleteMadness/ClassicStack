@@ -62,3 +62,43 @@ func TestAttentionPacket_MarshalUserData(t *testing.T) {
 		t.Fatalf("MarshalUserData = %#08x, want %#08x", got, want)
 	}
 }
+
+// TestAttentionCodes_ObservedValues pins the composed attention words to the
+// values an observed AppleShare server sends: 0x2000 announces a server
+// message, 0xB001 a shutdown in 1 minute with a message, 0xB000 the same now.
+func TestAttentionCodes_ObservedValues(t *testing.T) {
+	t.Parallel()
+	if AspAttnMsg != 0x2000 {
+		t.Fatalf("AspAttnMsg = %#04x, want 0x2000", AspAttnMsg)
+	}
+	warn := AspAttnServerGoingDown | AspAttnMsg | AspAttnNoReconnect | AspAttnTime(1)
+	if warn != 0xB001 {
+		t.Fatalf("shutdown-in-1-minute word = %#04x, want 0xB001", warn)
+	}
+	now := AspAttnServerGoingDown | AspAttnMsg | AspAttnNoReconnect | AspAttnTime(0)
+	if now != 0xB000 {
+		t.Fatalf("shutdown-now word = %#04x, want 0xB000", now)
+	}
+}
+
+// TestAspAttnTime_Clamps pins the countdown clamp to the 12-bit time field.
+func TestAspAttnTime_Clamps(t *testing.T) {
+	t.Parallel()
+	if got := AspAttnTime(-3); got != 0 {
+		t.Fatalf("AspAttnTime(-3) = %#04x, want 0", got)
+	}
+	if got := AspAttnTime(0x5000); got != AspAttnTimeMask {
+		t.Fatalf("AspAttnTime(0x5000) = %#04x, want %#04x", got, AspAttnTimeMask)
+	}
+}
+
+// TestCloseSessPacket_MarshalUserData pins the server-initiated CloseSession
+// TReq user bytes: [0]=SPFuncCloseSess [1]=SessionID [2:3]=0 (observed capture).
+func TestCloseSessPacket_MarshalUserData(t *testing.T) {
+	t.Parallel()
+	p := CloseSessPacket{SessionID: 0x02}
+	const want uint32 = uint32(SPFuncCloseSess)<<24 | 0x02<<16
+	if got := p.MarshalUserData(); got != want {
+		t.Fatalf("MarshalUserData = %#08x, want %#08x", got, want)
+	}
+}

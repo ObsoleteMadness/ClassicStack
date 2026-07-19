@@ -55,6 +55,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/service/nbp"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/ncp"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/netbios"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/netboot"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/rip"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/sap"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/smb"
@@ -197,6 +198,11 @@ func wireMacIP(comps map[string]component.Component, egressOpener MacIPEgressOpe
 		// invisible to name discovery — the "zone shows but no server" symptom.
 		if af := afpService(comps); af != nil {
 			af.SetNBP(names)
+		}
+		// Netboot advertises its any-object BootServer name via NBP; booting ROMs
+		// look up their PRAM serverNum against type "BootServer" before speaking ABP.
+		if nb := netbootService(comps); nb != nil {
+			nb.SetNBP(names)
 		}
 	}
 
@@ -598,6 +604,16 @@ func smbService(comps map[string]component.Component) *smb.Service {
 func macipService(comps map[string]component.Component) *macip.Service {
 	if c, ok := comps[macip.Name]; ok {
 		if s, ok := c.(*macip.Service); ok {
+			return s
+		}
+	}
+	return nil
+}
+
+// netbootService returns the built netboot service, or nil when none was built.
+func netbootService(comps map[string]component.Component) *netboot.Service {
+	if c, ok := comps[netboot.Name]; ok {
+		if s, ok := c.(*netboot.Service); ok {
 			return s
 		}
 	}

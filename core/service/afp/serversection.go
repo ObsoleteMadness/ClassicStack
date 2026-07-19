@@ -60,6 +60,11 @@ type ServerSection struct {
 	// TCPAddr overrides the modern DSI/TCP (:548) listen address. Empty = do not bind
 	// DSI/TCP (no implicit :548). Inert until the DSI/TCP transport lands.
 	TCPAddr string `toml:"tcp_addr"`
+	// LoginMessage is the opt-in greeting served as the AFP login message
+	// (FPGetSrvrMsg type 0): clients fetch and display it when mounting a volume.
+	// Empty (the default) serves no greeting. Truncated on the wire to the AFP
+	// 199-byte limit, MacRoman-encoded.
+	LoginMessage string `toml:"login_message"`
 }
 
 // compile-time assertion: *ServerSection satisfies config.Section.

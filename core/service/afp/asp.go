@@ -482,6 +482,17 @@ func (s *Service) sendAttention(sess *session, code uint16) {
 	s.routeToWorkstation(sess, h.Encode(make([]byte, 0, atp.HeaderSize)))
 }
 
+// sendCloseSession sends a server-initiated SPCloseSession TReq to the
+// workstation, ending the session from the server side (operator disconnect,
+// service stop) — the sequence an observed AppleShare server performs after its
+// final shutdown attention. Best-effort: the workstation TResp-acks it, but no
+// reply is awaited.
+func (s *Service) sendCloseSession(sess *session) {
+	ud := asp.CloseSessPacket{SessionID: sess.id}.MarshalUserData()
+	h := atp.Header{Control: atp.TREQ, Bitmap: 0x01, TransID: 0, UserData: ud}
+	s.routeToWorkstation(sess, h.Encode(make([]byte, 0, atp.HeaderSize)))
+}
+
 // handleDataResponse collects phase-2b write data: the workstation's TResp to the
 // aspDataWrite TReq the server sent. Packets are accumulated in arrival order; on
 // the end-of-message packet (or once want bytes are in hand) the FPWrite command

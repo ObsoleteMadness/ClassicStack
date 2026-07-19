@@ -144,3 +144,36 @@ func TestFileDirParams_DataForkLenReflectsWrites(t *testing.T) {
 		t.Fatalf("DataForkLen = %d, want 4", got)
 	}
 }
+
+// TestFileDirParams_ForkLenSaturatesAt32BitMax proves that fork sizes larger
+// than 2 GiB − 1 (the AFP 32-bit field maximum) are capped rather than wrapped.
+// A file reported as negative size indicates an overflow (uint32 cast of a
+// too-large value). Saturation preserves the invariant that reported sizes are
+// never negative.
+func TestFileDirParams_ForkLenSaturatesAt32BitMax(t *testing.T) {
+	// The max reportable size is 0x7FFFFFFF (2 GiB − 1), matching sat32.
+	const maxSize = uint32(0x7FFFFFFF)
+	tests := []struct {
+		name       string
+		actualSize int64
+		want       uint32
+	}{
+		{"Small", 1024, 1024},
+		{"Boundary", int64(maxSize), maxSize},
+		{"Overflow by 1", int64(maxSize) + 1, maxSize},
+		{"Large overflow", int64(maxSize) * 2, maxSize},
+		{"Max int64", 1 << 62, maxSize},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sat32(uint64(tc.actualSize))
+			if got != tc.want {
+				t.Errorf("sat32(%d) = %#08x, want %#08x", tc.actualSize, got, tc.want)
+			}
+			// Ensure the result is never negative when interpreted as signed.
+			if int32(got) < 0 {
+				t.Errorf("sat32(%d) = %#08x which is negative when signed", tc.actualSize, got)
+			}
+		})
+	}
+}

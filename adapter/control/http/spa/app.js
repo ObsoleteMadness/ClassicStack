@@ -18,6 +18,9 @@
 //   GET  /macip_leases                 MacIP lease table (MacIP stat drill-down)
 //   GET  /aarp_table                   AARP address mapping table (EtherTalk drill-down)
 //   GET  /smb_sessions                 live SMB session table (SMB drill-down)
+//   GET  /afp_sessions                 live AFP session table (AFP drill-down)
+//   POST /afp_message                  {session_id,text} push message (0 = all sessions)
+//   POST /afp_disconnect               {session_id,text,minutes} disconnect with message
 //   GET  /users                        stored identities
 //   POST /set_user|/set_user_disabled|/remove_user
 //   GET  /subscribe?topics=stats,state,log   Server-Sent Events telemetry
@@ -133,6 +136,29 @@ const api = {
     if (r.status === 501) throw new Error("SMB not available in this build");
     if (!r.ok) throw new Error(await errText(r));
     return r.json();
+  },
+  // afpSessions / afpSendMessage / afpDisconnect drive the AFP dashboard card: the live
+  // ASP session table plus the server-message actions (the client shows the text via the
+  // AFP attention → FPGetSrvrMsg flow). session_id 0 addresses every session.
+  async afpSessions() {
+    const r = await fetch("afp_sessions");
+    if (r.status === 501) throw new Error("AFP not available in this build");
+    if (!r.ok) throw new Error(await errText(r));
+    return r.json();
+  },
+  async afpSendMessage(sessionId, text) {
+    const r = await fetch("afp_message", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, text }),
+    });
+    if (!r.ok) throw new Error(await errText(r));
+  },
+  async afpDisconnect(sessionId, text, minutes) {
+    const r = await fetch("afp_disconnect", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, text, minutes }),
+    });
+    if (!r.ok) throw new Error(await errText(r));
   },
   // setInterface / removeInterface edit the interface NAMESPACE (Model.Interfaces): the
   // named NIC/serial/bridge entries a port binds to (distinct from interfaces(), which
@@ -635,6 +661,11 @@ function drillDownFor(name) {
         () => api.smbSessions(), smbSessionColumns)),
     ]);
   }
+  if (name === "AFP") {
+    return el("div", { class: "kv drill" }, [
+      linkButton("▸ Sessions", () => openAFPSessionsModal()),
+    ]);
+  }
   return null;
 }
 
@@ -694,6 +725,70 @@ async function openProbeModal(title, load, columns) {
     }
     const head = el("tr", {}, columns.map((c) => th(c.label)));
     const trs = rows.map((r) => el("tr", {}, columns.map((c) => el("td", {}, [String(c.get(r) ?? "")]))));
+    body.replaceChildren(el("table", {}, [el("thead", {}, [head]), el("tbody", {}, trs)]));
+  }
+  run();
+}
+
+// openAFPSessionsModal is the AFP sessions drill-down: the live ASP session table
+// with the operator message actions — per-session "Message"/"Disconnect…" plus a
+// "Message all" broadcast. The AFP service delivers the text via a server attention;
+// the client fetches and displays it with FPGetSrvrMsg. Disconnect follows the
+// AppleShare two-phase flow: a countdown warning (minutes; 0 = now), then the final
+// attention and a server-initiated CloseSession.
+async function openAFPSessionsModal() {
+  const overlay = el("div", { class: "modal-overlay" });
+  const body = el("div", { class: "modal-body" }, [el("p", { class: "muted" }, ["loading…"])]);
+  const close = () => overlay.remove();
+
+  const promptMessage = (who) => prompt(`Message to ${who}:`, "");
+  const sendTo = async (id, who) => {
+    const text = promptMessage(who);
+    if (!text) return;
+    try { await api.afpSendMessage(id, text); } catch (e) { alert(e.message); }
+  };
+  const disconnect = async (id, who) => {
+    const text = promptMessage(`${who} (shown with the disconnect warning; blank = none)`) ?? "";
+    const mins = parseInt(prompt("Minutes until disconnect (0 = now):", "1") || "", 10);
+    if (Number.isNaN(mins) || mins < 0) return;
+    try { await api.afpDisconnect(id, text, mins); run(); } catch (e) { alert(e.message); }
+  };
+
+  overlay.append(el("div", { class: "modal" }, [
+    el("div", { class: "modal-head" }, [el("h2", {}, ["AFP sessions"]), button("✕", "modal-close", close)]),
+    body,
+    el("div", { class: "modal-foot" }, [
+      button("Message all…", "", () => sendTo(0, "all sessions")),
+      button("Refresh", "", () => run()),
+      button("Close", "primary", close),
+    ]),
+  ]));
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  document.body.append(overlay);
+
+  async function run() {
+    body.replaceChildren(el("p", { class: "muted" }, ["loading…"]));
+    let rows;
+    try { rows = await api.afpSessions(); }
+    catch (e) { body.replaceChildren(el("p", { class: "err" }, [e.message])); return; }
+    if (!rows || !rows.length) {
+      body.replaceChildren(el("p", { class: "muted" }, ["No sessions."]));
+      return;
+    }
+    const cols = [
+      { label: "Session", get: (r) => r.id },
+      { label: "AppleTalk", get: (r) => `${r.network}.${r.node}` },
+      { label: "User", get: (r) => (r.logged_in ? (r.user || "guest") : "(not logged in)") },
+      { label: "Last seen", get: (r) => (r.last_seen ? new Date(r.last_seen / 1e6).toLocaleTimeString() : "—") },
+    ];
+    const head = el("tr", {}, [...cols.map((c) => th(c.label)), th("")]);
+    const trs = rows.map((r) => el("tr", {}, [
+      ...cols.map((c) => el("td", {}, [String(c.get(r) ?? "")])),
+      el("td", {}, [el("div", { class: "row" }, [
+        button("Message…", "", () => sendTo(r.id, `session ${r.id}`)),
+        button("Disconnect…", "", () => disconnect(r.id, `session ${r.id}`)),
+      ])]),
+    ]));
     body.replaceChildren(el("table", {}, [el("thead", {}, [head]), el("tbody", {}, trs)]));
   }
   run();

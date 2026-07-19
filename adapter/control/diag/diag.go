@@ -23,6 +23,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/control"
 	"github.com/ObsoleteMadness/ClassicStack/core/port/ethertalk"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/afp"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/macip"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/nbp"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/smb"
@@ -127,6 +128,82 @@ func (p *Provider) SMBSessions() ([]SMBSession, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Client < out[j].Client })
 	return out, nil
+}
+
+// AFPSession is the management view of one live AFP (ASP) session: the id the
+// message/disconnect actions address, the client's AppleTalk address, the login
+// identity, and the last-activity timestamp. Owned by this adapter (not
+// core/control), so the neutral plane carries no AFP type.
+type AFPSession struct {
+	ID       uint8  `json:"id"`
+	Network  uint16 `json:"network"`
+	Node     uint8  `json:"node"`
+	User     string `json:"user"` // "" = guest
+	LoggedIn bool   `json:"logged_in"`
+	LastSeen int64  `json:"last_seen"` // UnixNano of the last inbound packet
+}
+
+// AFPSessions returns the live AFP session table, sorted by session id.
+// control.ErrUnavailable when no AFP service was built.
+func (p *Provider) AFPSessions() ([]AFPSession, error) {
+	svc := p.afp()
+	if svc == nil {
+		return nil, control.ErrUnavailable
+	}
+	raw := svc.Sessions()
+	out := make([]AFPSession, 0, len(raw))
+	for _, s := range raw {
+		var lastSeen int64
+		if !s.LastSeen.IsZero() {
+			lastSeen = s.LastSeen.UnixNano()
+		}
+		out = append(out, AFPSession{
+			ID:       s.ID,
+			Network:  s.Network,
+			Node:     s.Node,
+			User:     s.User,
+			LoggedIn: s.LoggedIn,
+			LastSeen: lastSeen,
+		})
+	}
+	return out, nil
+}
+
+// AFPSendMessage pushes a server message to one logged-in AFP client
+// (sessionID) or every client (sessionID 0): the service stores the text and
+// sends the attention that makes the client fetch and display it.
+// control.ErrUnavailable when no AFP service was built.
+func (p *Provider) AFPSendMessage(sessionID uint8, text string) error {
+	svc := p.afp()
+	if svc == nil {
+		return control.ErrUnavailable
+	}
+	return svc.SendMessage(sessionID, text)
+}
+
+// AFPDisconnect disconnects one AFP client (sessionID; 0 = every client) with
+// an optional message and a countdown in minutes (0 = now): the observed
+// AppleShare two-phase shutdown-attention flow ending in a server-initiated
+// CloseSession. control.ErrUnavailable when no AFP service was built.
+func (p *Provider) AFPDisconnect(sessionID uint8, text string, minutes int) error {
+	svc := p.afp()
+	if svc == nil {
+		return control.ErrUnavailable
+	}
+	return svc.Disconnect(sessionID, text, minutes)
+}
+
+// afp resolves the live AFP service, or nil when none was built.
+func (p *Provider) afp() *afp.Service {
+	if p.src == nil {
+		return nil
+	}
+	if c := p.src.Component(afp.Name); c != nil {
+		if s, ok := c.(*afp.Service); ok {
+			return s
+		}
+	}
+	return nil
 }
 
 // smb resolves the live SMB service, or nil when none was built.

@@ -405,6 +405,12 @@ thanks to:
   sender-hardware to the egress MAC so AppleTalk bridges onto Wi-Fi) behind our
   proxy-AARP Wi-Fi/tunnel bridge, cross-checked against the Linux kernel's
   `net/appletalk/aarp.c` `proxies[]` table. https://github.com/jcs/atalk-proxy
+- **NetBoot** by **Elliot Nunn** — the reverse engineering of the classic Mac
+  `.netBOOT`/`.ATBOOT` ROM boot protocol (with the mac68k forum), the reference
+  Python servers and ChainBoot extension our netboot service re-implements, and
+  the Python Snefru-128 port behind `core/hash/snefru` (S-boxes from Ralph C.
+  Merkle's Snefru / Xerox). Payload/PRAM groundwork by **Rob Braun (bbraun)**.
+  Cross-checked against Apple's SuperMario `os/netboot` source.
 
 ## License
 

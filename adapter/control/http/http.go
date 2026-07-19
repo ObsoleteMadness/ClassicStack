@@ -61,6 +61,9 @@ type DiagProvider interface {
 	MacIPLeases() ([]diag.MacIPLease, error)
 	AARPTable() ([]diag.AARPEntry, error)
 	SMBSessions() ([]diag.SMBSession, error)
+	AFPSessions() ([]diag.AFPSession, error)
+	AFPSendMessage(sessionID uint8, text string) error
+	AFPDisconnect(sessionID uint8, text string, minutes int) error
 }
 
 // SetDiagProvider installs the protocol diagnostics provider (the cmd edge builds it
@@ -106,6 +109,9 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/macip_leases", s.handleMacIPLeases)
 	mux.HandleFunc("/aarp_table", s.handleAARPTable)
 	mux.HandleFunc("/smb_sessions", s.handleSMBSessions)
+	mux.HandleFunc("/afp_sessions", s.handleAFPSessions)
+	mux.HandleFunc("/afp_message", s.handleAFPMessage)
+	mux.HandleFunc("/afp_disconnect", s.handleAFPDisconnect)
 	mux.HandleFunc("/reconfigure", s.handleReconfigure)
 	mux.HandleFunc("/add_instance", s.handleAddInstance)
 	mux.HandleFunc("/remove_instance", s.handleRemoveInstance)
@@ -699,6 +705,82 @@ func (s *Server) handleSMBSessions(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(res)
 }
 
+// handleAFPSessions returns the live AFP (ASP) session table (the drill-down behind
+// AFP's dashboard card): session id, client AppleTalk address, login identity, and
+// last activity. 501 when the provider is absent or no AFP service was built.
+func (s *Server) handleAFPSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.diag == nil {
+		http.Error(w, control.ErrUnavailable.Error(), statusForErr(control.ErrUnavailable))
+		return
+	}
+	res, err := s.diag.AFPSessions()
+	if err != nil {
+		http.Error(w, err.Error(), statusForErr(err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
+}
+
+// handleAFPMessage pushes a server message to one AFP session (session_id) or every
+// session (0): the client fetches and displays it via the FPGetSrvrMsg flow. 501
+// when the provider is absent or no AFP service was built.
+func (s *Server) handleAFPMessage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.diag == nil {
+		http.Error(w, control.ErrUnavailable.Error(), statusForErr(control.ErrUnavailable))
+		return
+	}
+	var body struct {
+		SessionID uint8  `json:"session_id"`
+		Text      string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.diag.AFPSendMessage(body.SessionID, body.Text); err != nil {
+		http.Error(w, err.Error(), statusForErr(err))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleAFPDisconnect disconnects one AFP session (session_id; 0 = every session)
+// with an optional message and countdown in minutes (0 = now). 501 when the
+// provider is absent or no AFP service was built.
+func (s *Server) handleAFPDisconnect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.diag == nil {
+		http.Error(w, control.ErrUnavailable.Error(), statusForErr(control.ErrUnavailable))
+		return
+	}
+	var body struct {
+		SessionID uint8  `json:"session_id"`
+		Text      string `json:"text"`
+		Minutes   int    `json:"minutes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.diag.AFPDisconnect(body.SessionID, body.Text, body.Minutes); err != nil {
+		http.Error(w, err.Error(), statusForErr(err))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1158,6 +1240,35 @@ func (c *AdapterClient) SMBSessions(ctx context.Context) ([]diag.SMBSession, err
 	var out []diag.SMBSession
 	err := c.getJSON("/smb_sessions", &out)
 	return out, err
+}
+
+// AFPSessions runs the AFP session-table drill-down (the diagnostics-provider route).
+// control.ErrUnavailable when no AFP service is wired.
+func (c *AdapterClient) AFPSessions(ctx context.Context) ([]diag.AFPSession, error) {
+	_ = ctx
+	var out []diag.AFPSession
+	err := c.getJSON("/afp_sessions", &out)
+	return out, err
+}
+
+// AFPSendMessage pushes a server message to one AFP session (0 = all).
+func (c *AdapterClient) AFPSendMessage(ctx context.Context, sessionID uint8, text string) error {
+	_ = ctx
+	return c.post("/afp_message", struct {
+		SessionID uint8  `json:"session_id"`
+		Text      string `json:"text"`
+	}{SessionID: sessionID, Text: text})
+}
+
+// AFPDisconnect disconnects one AFP session (0 = all) with an optional message
+// and countdown in minutes (0 = now).
+func (c *AdapterClient) AFPDisconnect(ctx context.Context, sessionID uint8, text string, minutes int) error {
+	_ = ctx
+	return c.post("/afp_disconnect", struct {
+		SessionID uint8  `json:"session_id"`
+		Text      string `json:"text"`
+		Minutes   int    `json:"minutes"`
+	}{SessionID: sessionID, Text: text, Minutes: minutes})
 }
 
 // Users lists stored identities (control.ErrUnavailable when no store is wired).

@@ -58,6 +58,13 @@ type VolumeSection struct {
 	// zero bytes). The file is read at the cmd/compose edge (core does no file I/O for
 	// config) and parsed via afp.ParseExtensionMap.
 	ExtMapPath string `toml:"extmap_path"`
+	// SizeLimitMB is the volume size REPORTED to AFP clients, in MiB (netatalk's
+	// volsizelimit). 0 = the classic-friendly 512 MiB default. Classic clients
+	// derive their HFS allocation-block size from the reported size with 16-bit
+	// block math, so this sets the Finder's per-file "size on disk" granularity
+	// (512 MiB → 8 KiB blocks; the 2 GiB wire cap → 32 KiB). Presentation only —
+	// it does not limit what the host stores.
+	SizeLimitMB int64 `toml:"size_limit"`
 }
 
 // compile-time assertions: *VolumeSection is a NamedSection and a SecretMasker.

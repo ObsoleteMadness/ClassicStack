@@ -79,8 +79,11 @@ func TestASP_OversizedCommandRejected(t *testing.T) {
 }
 
 // TestASP_StopSendsServerGoingDown proves Stop notifies every live session with an
-// SPAttention(ServerGoingDown) before tearing down.
+// SPAttention carrying the ServerGoingDown flag — now with the message bit set too
+// (Stop announces a shutdown message the client may fetch during the grace) —
+// before ending the session with a server-initiated CloseSession.
 func TestASP_StopSendsServerGoingDown(t *testing.T) {
+	shortGrace(t)
 	svc, r := newRunningService(t)
 	login(t, svc, r) // one live session
 
@@ -101,8 +104,8 @@ func TestASP_StopSendsServerGoingDown(t *testing.T) {
 		}
 		if uint8(h.UserData>>24) == asp.SPFuncAttention {
 			sawAttn = true
-			if code := uint16(h.UserData); code != asp.AspAttnServerGoingDown {
-				t.Errorf("attention code = %#x, want ServerGoingDown %#x", code, asp.AspAttnServerGoingDown)
+			if code := uint16(h.UserData); code&asp.AspAttnServerGoingDown == 0 {
+				t.Errorf("attention code = %#x, want the ServerGoingDown flag %#x set", code, asp.AspAttnServerGoingDown)
 			}
 			if d.DestSocket != 200 {
 				t.Errorf("attention DestSocket = %d, want 200 (WSS)", d.DestSocket)

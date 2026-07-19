@@ -298,6 +298,46 @@ A volume whose backend does **not** advertise `Capabilities().CatSearch` (or doe
 
 **Where:** `core/service/afp/{handlers.go,afp.go}` (`afpLogin`, `SetAuthenticator`, `afpGetSrvrParms`, `afpOpenVol`); the store + PBKDF2 in `core/auth` + `adapter/auth/local`; the allow-list in `core/share/permissions.go`.
 
+### Volume byte counts must cap at 2 GiB − 1, not the field's 4 GiB − 1 (FPOpenVol / FPGetVolParms)
+
+**Spec:** The AFP 2.x volume bitmap's `BytesFree`/`BytesTotal` are unsigned 32-bit byte counts, so the wire format can express up to 4 GiB − 1.
+
+**Observed (System 7.5 in snow over LToUDP, 2026-07-18):** Reporting a saturated `BytesTotal = 0xFFFFFFFF` crashes the classic AppleShare workstation client at mount with the Finder's "divide by zero" alert. The client derives an HFS allocation-block size from `BytesTotal` (≈ total/65536 → 0x10000), which overflows a 16-bit register to **zero**, and its next division faults. Whether a client is exposed depends on its FPOpenVol request bitmap: the crashing 7.5 client requested `0x01FF` (bytes included) at mount; the EtherTalk-side client in the same test period requested only `0x0020` (VolumeID) at mount and read sizes later via FPGetVolParms without crashing — so the failure looked transport-specific (LToUDP-only) when it was really client-version-specific.
+
+**What we do:** `sat32` saturates both fields at **`0x7FFFFFFF`** (2 GiB − 1) — main's proven `capAFPBytes32` behaviour — which keeps the derived allocation-block size within 16 bits (0x8000) and also protects clients that treat the count as signed. A disk larger than the cap reports exactly the cap ("volume full-size"), never a wrapped value.
+
+**Where:** `core/service/afp/handlers.go` — `afpMaxVolumeBytes`, `sat32` (used by `packVolParams` for both FPOpenVol and FPGetVolParms).
+
+### Reported volume size drives the client's "size on disk" granularity (no AFP 2.x block-size field)
+
+**Spec:** The AFP 2.x volume bitmap ends at bit 8 (Name); there is NO field for the allocation block size. Bits 9–11 are AFP 3.x additions (ExtBytesFree, ExtBytesTotal, BlockSize). The classic AppleShare workstation client derives the HFS allocation block size itself from the reported byte counts with 16-bit block math (block ≈ BytesTotal/65536, rounded up).
+
+**Observed:** With BytesFree/BytesTotal saturated at the 2 GiB − 1 crash-safety cap (see the previous entry), every classic client derives 32 KiB allocation blocks, so the Finder shows every file's "size on disk" rounded up to a 32 KiB multiple — a 1 KB file reads "32K on disk". A capture comparing a real AppleShare server against ClassicStack on the same client shows the real server reporting its actual HFS figures (hundreds of MB) while we reported `0x7FFFFFFF`. The same frames showed two more divergences: the real server echoes a GetVolParms request bitmap exactly (0x0048 → 0x0048; we injected an unrequested VolumeID field, answering 0x0068), and reports a live volume ModDate (we reported the constant 2000 epoch). An earlier revision also served a "block size" under volume-bitmap bit 9 — which is actually AFP 3.x ExtBytesFree — dead code no classic client ever requested.
+
+**What we do:** The reported figures are presentation values, not the host's: `reportVolBytes` clamps BytesTotal to the volume's configured `size_limit` (MiB, netatalk `volsizelimit` parity) — default **512 MiB**, giving 8 KiB blocks, a period-typical disk — and BytesFree to min(host free, total). A backend that cannot report usage presents an empty virtual disk of the reported size. The mislabeled bit-9 field is removed; FPGetVolParms echoes the requested bitmap verbatim (FPOpenVol keeps its forced VolumeID — the mount handshake needs it); the volume ModDate is the root directory's mtime when available. `sat32`'s 2 GiB − 1 cap remains the final wire guard for an operator limit set higher.
+
+**Where:** `core/service/afp/handlers.go` (`reportVolBytes`, `defaultVolumeSizeLimit`, `afpGetVolParms`, `packVolParams`), `volume.go` (`SizeLimit`), `config.go` (`SizeLimitMB`), `compose/registry/reg_afp.go`; regressions in `core/service/afp/handlers_test.go` (`TestReportVolBytes_DefaultAndClamp`, `TestGetVolParms_EchoesRequestedBitmap`).
+
+### FPGetSrvrInfo must keep advertising the pre-2.1 AFP version strings
+
+**Spec:** FPGetSrvrInfo lists the AFP version strings the server accepts in FPLogin; the client picks the newest it shares.
+
+**Observed:** The System 6 AppleShare workstation client only speaks `AFPVersion 1.1` / `AFPVersion 2.0`. A server whose FPGetSrvrInfo lists nothing older than `AFPVersion 2.1` is reported to the user as "the AFP server version is not supported" before FPLogin is ever attempted. The M7 spine's default list (`AFPVersion 2.1`, `AFP2.2`) silently dropped 2.0 that main's known-good set (`AFPVersion 2.0`, `AFPVersion 2.1`) carried.
+
+**What we do:** The default advertisement is `AFPVersion 1.1`, `AFPVersion 2.0`, `AFPVersion 2.1`, `AFP2.2` (the netatalk-style span). The 2.x dispatch serves the older dialects unchanged — an old client simply never issues the newer commands.
+
+**Where:** `core/service/afp/afp.go` — `defaultAFPVersions`; `supportsVersion` gates FPLogin against the advertised list.
+
+### AFP attention codes / FPGetSrvrMsg (observed AppleShare capture vs AFP_Connection_Flow.md)
+
+**Spec:** An earlier revision of `spec/AFP_Connection_Flow.md` gave `0x4000` as the "server is shutting down" attention code and did not document FPGetSrvrMsg or the message-push flow. Inside Macintosh documents the attention mechanism but not the AFP attention word's bit layout in the sections we hold.
+
+**Observed (real AppleShare server):** The attention word is a bit field matching netatalk's `AFPATTN_*` constants — bit 15 `0x8000` = shutting down, bit 14 `0x4000` = crashed, bit 13 `0x2000` = server message waiting, bit 12 `0x1000` = don't reconnect, low 12 bits = minutes until shutdown. Observed words: `0x2000` (message push), `0xB001` (shutdown in 1 minute + message + no-reconnect), `0xB000` (the same, now). The attention TReq is sent **ALO** (XO clear), bitmap `0x01`, from the server session socket to the client's workstation session socket, with the entire ASP payload in the 4 ATP user bytes; the client acks with a 4-zero-byte TResp. After the final attention the server ends the session itself with a server-initiated `ASPCloseSession` TReq (user bytes `01 | SessionID | 00 00`), which the client TResp-acks. On the AFP side, the client fetches the login message (type 0) unprompted right after `FPOpenVol` and the server message (type 1) after each message attention; the reply's `MessageBitmap` is always `0x0001` (text), and the capability gate is `FPGetSrvrInfo` Flags **bit 3** (`0x0008`, SupportsSrvrMsg). Fetching a message does not clear it — the observed server re-serves the same text on every poll.
+
+**What we do:** `spec/AFP_Connection_Flow.md` is corrected (shutdown = `0x8000`) and gains a "Server Messages & Attention" section. The service advertises `0x0008` always, serves the configured `login_message` as type 0 and the per-session pending operator message as type 1 (kept until replaced, MacRoman, capped at 199 bytes), sends message attentions as `0x2000`, and disconnects with the observed two-phase sequence (`ShutDown|Msg|NoReconnect|minutes` → final time-zero attention → fetch grace → server-initiated CloseSession). `Stop()` announces `0xA000` (shutdown + message), keeps serving for a short fetch grace, then closes every session.
+
+**Where:** `core/protocol/asp/asp.go` (`AspAttn*`, `CloseSessPacket.MarshalUserData`); `core/service/afp/message.go` (`SendMessage`, `Disconnect`, `Sessions`), `handlers.go` (`afpGetSrvrMsg`, `srvrInfoSupportsSrvrMsg`), `asp.go` (`sendAttention`, `sendCloseSession`), `afp.go` (`Stop`); regressions in `core/service/afp/message_test.go` and `core/protocol/asp/asp_test.go`.
+
 ## Config codecs (§4)
 
 ### UCI empty-quoted-value tokenizer (M8)

@@ -60,9 +60,37 @@ const (
 	SPErrorNoAck          = -1075 // $FBCD — server end only
 )
 
-// AspAttnServerGoingDown is the AFP attention word sent via SPFuncAttention
-// when the server is shutting down; bit 15 is the "server is going down" flag.
-const AspAttnServerGoingDown uint16 = 0x8000
+// AFP attention codes carried in the SPFuncAttention word. The high nibble is a
+// set of flag bits and the low 12 bits carry a shutdown countdown in minutes
+// (from an observed capture of a real AppleShare server; names follow netatalk's
+// AFPATTN_* constants). A "server message waiting" attention prompts the client
+// to fetch the text with FPGetSrvrMsg (message type 1).
+const (
+	// AspAttnServerGoingDown is the "server is going down" flag (bit 15).
+	AspAttnServerGoingDown uint16 = 0x8000
+	// AspAttnCrash is the "server crashed / no clean shutdown" flag (bit 14).
+	AspAttnCrash uint16 = 0x4000
+	// AspAttnMsg is the "server message waiting" flag (bit 13); the client
+	// fetches the text with FPGetSrvrMsg.
+	AspAttnMsg uint16 = 0x2000
+	// AspAttnNoReconnect tells the client not to attempt reconnection (bit 12).
+	AspAttnNoReconnect uint16 = 0x1000
+	// AspAttnTimeMask masks the low 12 bits: minutes until the announced
+	// shutdown (0 = now).
+	AspAttnTimeMask uint16 = 0x0FFF
+)
+
+// AspAttnTime clamps a shutdown countdown (minutes) into the low 12 bits of an
+// attention word.
+func AspAttnTime(minutes int) uint16 {
+	if minutes < 0 {
+		minutes = 0
+	}
+	if minutes > int(AspAttnTimeMask) {
+		minutes = int(AspAttnTimeMask)
+	}
+	return uint16(minutes)
+}
 
 // ATP-derived size constants.
 const (
@@ -136,6 +164,14 @@ func ParseCloseSessPacket(userData uint32) CloseSessPacket {
 
 // CloseSessReplyUserData returns the ATP UserData for a CloseSess reply (zero).
 func CloseSessReplyUserData() uint32 { return 0 }
+
+// MarshalUserData encodes a server-initiated CloseSess TReq into the 4-byte ATP
+// UserData: [0] SPFuncCloseSess [1] SessionID [2:3] 0. An AppleShare server ends
+// a session it is disconnecting (operator disconnect, shutdown) by sending this
+// to the workstation's session socket, which TResp-acks it (observed capture).
+func (p CloseSessPacket) MarshalUserData() uint32 {
+	return (uint32(SPFuncCloseSess) << 24) | (uint32(p.SessionID) << 16)
+}
 
 // GetStatusPacket represents an incoming ASP GetStatus request. UserData beyond
 // the SPFunction is zero per spec.

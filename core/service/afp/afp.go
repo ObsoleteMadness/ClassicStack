@@ -49,6 +49,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
@@ -120,7 +121,9 @@ type Service struct {
 	resolver   func() ([]VolumeSpec, error) // re-resolves the desired volume set from the model; set at wire time for hot-apply
 	busFor     func(fs.ShareSpec) bus.Bus   // resolves the shared FS-mutation bus for a share's host path (§10d); nil = isolated
 	reactor    *share.Reactor               // §10d coordination consumer; subscribes to same-path buses on Start
+	loginMsg   string                       // greeting served as the login message (FPGetSrvrMsg type 0); "" = none
 	running    bool
+	stopping   bool // Stop's client-notice phase is underway (still serving; a second Stop is a no-op)
 }
 
 // Authenticator validates a (username, cleartext password) credential. It is the
@@ -548,7 +551,7 @@ func (s *Service) ReconcileVolumes(desired []VolumeSpec) error {
 		if s.busFor != nil {
 			b = s.busFor(spec.Share)
 		}
-		v, err := NewVolumeWithBus(VolumeSpec{ID: id, Name: spec.Name, Share: spec.Share}, b)
+		v, err := NewVolumeWithBus(VolumeSpec{ID: id, Name: spec.Name, Share: spec.Share, SizeLimit: spec.SizeLimit}, b)
 		if err != nil {
 			return err
 		}
@@ -574,6 +577,10 @@ func (s *Service) serverInfo() ServerInfo {
 	if len(info.UAMs) == 0 {
 		info.UAMs = defaultUAMs
 	}
+	// Server messages (FPGetSrvrMsg + attention) are always implemented, so the
+	// capability bit is always advertised — without it clients ignore message
+	// attentions and never fetch the login greeting.
+	info.Flags |= srvrInfoSupportsSrvrMsg
 	return info
 }
 
@@ -673,22 +680,47 @@ func (s *Service) subscribeReactorLocked() {
 	}
 }
 
-// Stop brings the service down. Safe after failed/partial Start (§3).
+// Stop brings the service down. Safe after failed/partial Start (§3). Connected
+// clients are told first, the way an observed AppleShare server shuts down: a
+// shutdown SPAttention with the message bit set announces the stop, the service
+// keeps answering for a short grace so each client can fetch and display the
+// text (FPGetSrvrMsg), then every session is ended with a server-initiated
+// CloseSession. With no clients connected the notice phase is skipped and Stop
+// is as immediate as before.
 func (s *Service) Stop(ctx context.Context) error {
 	_ = ctx
 	s.mu.Lock()
-	if !s.running {
+	if !s.running || s.stopping {
 		s.mu.Unlock()
 		return nil
 	}
-	s.running = false
-	// Withdraw the NBP advertisement so a stopped server stops answering Chooser lookups.
+	s.stopping = true
+	// Withdraw the NBP advertisement so a stopping server stops answering Chooser lookups.
 	if s.names != nil {
 		obj, zone := s.nbpTupleLocked()
 		if len(zone) != 0 {
 			s.names.UnregisterName(obj, afpServerType, zone)
 		}
 	}
+	s.mu.Unlock()
+
+	// Notice phase: announce the shutdown (message bit set so clients fetch the
+	// text) and keep serving through the fetch grace.
+	if ids := s.sessions.ids(); len(ids) > 0 {
+		for _, id := range ids {
+			if sess, ok := s.sessions.get(id); ok {
+				if sess.conn != nil {
+					sess.conn.afp.setServerMsg(defaultShutdownMessage)
+				}
+				s.sendAttention(sess, asp.AspAttnServerGoingDown|asp.AspAttnMsg)
+			}
+		}
+		time.Sleep(messageFetchGrace)
+	}
+
+	s.mu.Lock()
+	s.running = false
+	s.stopping = false
 	reactor := s.reactor
 	// Snapshot the live volumes so their backends can be closed after the lock drops.
 	// Stop is definitive teardown (no session can still hold a volume), so closing each
@@ -698,12 +730,12 @@ func (s *Service) Stop(ctx context.Context) error {
 	drainStop := s.drainStop
 	s.mu.Unlock()
 
-	// Tell every live client the server is going down (best-effort SPAttention),
-	// then unblock and wait out the per-session maintenance + write-retry
-	// goroutines so none outlive Stop.
+	// End every session from the server side (CloseSession, the observed shutdown
+	// sequence), then unblock and wait out the per-session maintenance +
+	// write-retry goroutines so none outlive Stop.
 	for _, id := range s.sessions.ids() {
 		if sess, ok := s.sessions.get(id); ok {
-			s.sendAttention(sess, asp.AspAttnServerGoingDown)
+			s.sendCloseSession(sess)
 			s.teardownSession(sess)
 		}
 	}

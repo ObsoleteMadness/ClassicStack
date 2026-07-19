@@ -3,6 +3,7 @@ server_name = 'ClassicStack'
 zone = ''
 transports = ['ddp']
 tcp_addr = ''
+login_message = 'Welcome to ClassicStack - enjoy your stay.'
 
 [EtherDFS]
 enabled = true
@@ -124,7 +125,7 @@ seed_zone = 'LToUDP Network'
 device = ''
 baud = 0
 ipx_frame_type = ''
-capture = 'ltoudp.pcap'
+capture = 'ltoudp-netboot.pcap'
 capture_snaplen = 0
 
 [[ncpvolumes]]
@@ -171,3 +172,32 @@ path = 'C:\mac\food'
 read_only = false
 allowed_users = []
 options = []
+
+# --- Netboot (classic Mac ROM network boot, build tag `netboot`) --------------
+# Serves the AppleTalk Boot Protocol (ABP) that the `.netBOOT`/`.ATBOOT` ROM
+# drivers speak (Mac Classic, IIci, SuperMario-era ROMs), plus Elliot Nunn's
+# ChainBoot extension that streams a full-size read/write HFS image to the
+# chain-loaded driver. Rides the AppleTalk router on DDP sockets 10 (boot) and
+# 11 (ChainBoot), so any LocalTalk/EtherTalk segment in [router].members serves
+# boots. Discovery is NBP type "BootServer" (any object matched). The payload's
+# Snefru self-authentication trailer is appended at load when missing.
+# See spec/19-netboot.md.
+[Netboot]
+enabled = true
+#payload = 'C:\Users\pgodw\OneDrive\Documents\GitHub\NetBoot\BootWrapper.bin'
+#block_size = 512          # ABP block size: 256 for ChainLoader, 512 for
+                          # BootWrapper-style RAM-disk payloads (0 = 512)
+#image = 'C:\Users\pgodw\OneDrive\Documents\GitHub\NetBoot\alt-disk-image-1.dsk'  # RAM-disk image appended to the stub
+payload = 'C:\Users\pgodw\OneDrive\Documents\GitHub\NetBoot\ChainLoader.bin'  # executable boot payload (ABP)
+block_size = 256          # ABP block size: 256 for ChainLoader, 512 for
+                          # BootWrapper-style RAM-disk payloads (0 = 512)
+disk = 'C:\Users\pgodw\OneDrive\Documents\GitHub\NetBoot\A608.dsk'  # writable HFS image streamed via ChainBoot
+                           # (opened read-write; ONE booted client at a time)
+pace_ms = 2               # ABP block-flood inter-packet delay (0 = 2 ms)
+chain_pace_ms = 10        # ChainBoot read-reply BASE inter-packet delay (0 = 10 ms;
+                          # real LocalTalk is ~18 ms/frame). The server backs
+                          # off automatically when a client re-requests the
+                          # same chunk (slow/real-speed clients drop mid-burst
+                          # packets), so this rarely needs tuning.
+name = "0000"             # NBP object shown in the registry (matching is any-object)
+zone = "*"                # NBP zone to register in

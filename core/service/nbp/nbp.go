@@ -39,11 +39,15 @@ var zoneWildcard = []byte{nbp.ZoneWildcard}
 
 // RegisteredName is one name this router will answer NBP lookups for: the
 // object:type@zone entity plus the DDP socket the named service lives on.
+// AnyObject marks a wildcard-object registration (see RegisterNameAnyObject):
+// the entry matches a query for ANY object of its type, and the reply tuple
+// echoes the requested object.
 type RegisteredName struct {
-	Object []byte
-	Type   []byte
-	Zone   []byte
-	Socket uint8
+	Object    []byte
+	Type      []byte
+	Zone      []byte
+	Socket    uint8
+	AnyObject bool
 }
 
 type item struct {
@@ -103,6 +107,30 @@ func (s *Service) RegisterName(obj, typ, zone []byte, socket uint8) {
 		Type:   append([]byte(nil), typ...),
 		Zone:   append([]byte(nil), zone...),
 		Socket: socket,
+	})
+}
+
+// RegisterNameAnyObject registers a name that answers a lookup for ANY object
+// of the given type: the LkUp-Rply tuple echoes the object the querier asked
+// for, falling back to obj for wildcard ("=") queries. Needed by services whose
+// advertised object name is client-chosen — the netboot BootServer object is
+// the client's PRAM serverNum in hex, so a fixed registration cannot know it.
+func (s *Service) RegisterNameAnyObject(obj, typ, zone []byte, socket uint8) {
+	s.nameMu.Lock()
+	defer s.nameMu.Unlock()
+	for i, n := range s.names {
+		if bytes.EqualFold(n.Object, obj) && bytes.EqualFold(n.Type, typ) && bytes.EqualFold(n.Zone, zone) {
+			s.names[i].Socket = socket
+			s.names[i].AnyObject = true
+			return
+		}
+	}
+	s.names = append(s.names, RegisteredName{
+		Object:    append([]byte(nil), obj...),
+		Type:      append([]byte(nil), typ...),
+		Zone:      append([]byte(nil), zone...),
+		Socket:    socket,
+		AnyObject: true,
 	})
 }
 
@@ -349,7 +377,21 @@ func (s *Service) replyMatches(obj, typ, zone []byte, nbpID byte, from router.Ro
 	s.nameMu.RLock()
 	var matches []RegisteredName
 	for _, n := range s.names {
-		if nbp.NameMatch(obj, n.Object) && nbp.NameMatch(typ, n.Type) && nbp.ZoneMatch(zone, n.Zone) {
+		if !nbp.NameMatch(typ, n.Type) || !nbp.ZoneMatch(zone, n.Zone) {
+			continue
+		}
+		switch {
+		case n.AnyObject:
+			// Wildcard-object registration: match any object and echo the
+			// requested one back (a literal query object names the entity the
+			// client expects in the reply tuple); wildcard queries fall back to
+			// the registered object.
+			m := n
+			if len(obj) > 0 && (len(obj) != 1 || obj[0] != nbp.NameWildcard) {
+				m.Object = append([]byte(nil), obj...)
+			}
+			matches = append(matches, m)
+		case nbp.NameMatch(obj, n.Object):
 			matches = append(matches, n)
 		}
 	}

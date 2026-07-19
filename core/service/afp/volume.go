@@ -34,6 +34,20 @@ type Volume struct {
 	dt     *desktopDB // lazily-built Desktop database (icons + APPL mappings)
 
 	extMap *ExtensionMap // default type/creator by extension; nil = none
+
+	// sizeLimit is the volume size reported to AFP clients, in bytes; 0 = the
+	// classic-friendly default (defaultVolumeSizeLimit). Presentation only —
+	// classic clients derive their allocation-block size from the reported
+	// BytesTotal, so this sets the Finder's "size on disk" granularity.
+	sizeLimit uint64
+}
+
+// SizeLimit returns the volume size reported to AFP clients, in bytes.
+func (v *Volume) SizeLimit() uint64 {
+	if v.sizeLimit == 0 {
+		return defaultVolumeSizeLimit
+	}
+	return v.sizeLimit
 }
 
 // meta returns the share's mandatory MetaEngine — the single source of CNID
@@ -55,6 +69,9 @@ type VolumeSpec struct {
 	// files with no stored Finder info. Built by the compose/cmd edge (which reads the
 	// configured ExtMapPath file); nil = no defaulting.
 	ExtMap *ExtensionMap
+	// SizeLimit is the reported volume size in bytes (the section's size_limit,
+	// MiB, converted at the compose edge); 0 = the classic-friendly default.
+	SizeLimit uint64
 }
 
 // NewVolume builds one Volume from a spec with no FS-mutation bus (the bus-less
@@ -92,7 +109,7 @@ func NewVolumeWithBus(spec VolumeSpec, b bus.Bus) (*Volume, error) {
 	meta := sh.FS().Meta()
 	meta.EnsureCNID("")
 
-	return &Volume{id: spec.ID, sh: sh}, nil
+	return &Volume{id: spec.ID, sh: sh, sizeLimit: spec.SizeLimit}, nil
 }
 
 // ID returns the AFP volume id.

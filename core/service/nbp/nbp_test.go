@@ -163,6 +163,78 @@ func TestLkUpNoMatchNoReply(t *testing.T) {
 	}
 }
 
+// TestLkUpAnyObjectEchoes: an any-object registration (netboot's BootServer)
+// matches a LkUp for an arbitrary object of its type, and the reply tuple
+// echoes the requested object rather than the registered one.
+func TestLkUpAnyObjectEchoes(t *testing.T) {
+	r := startedRouter(t)
+	p := newFakePort("LToUDP", 10, 0x80, 10, 10)
+	if err := r.Attach(p); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	svc := New(r, nil)
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("svc Start: %v", err)
+	}
+	defer svc.Stop(context.Background())
+
+	svc.RegisterNameAnyObject([]byte("0000"), []byte("BootServer"), []byte("*"), 10)
+
+	// The booting ROM looks up its PRAM serverNum in hex — "BABE" here.
+	svc.Inbound(ddp.Datagram{
+		DestNetwork: 10, SrcNetwork: 10, DestNode: 0x80, SrcNode: 0x81,
+		DestSocket: Socket, SrcSocket: Socket, DDPType: DDPType,
+		Data: buildLkUp(0x07, 0x81, 10, "BABE", "BootServer", "*"),
+	}, p)
+
+	got := p.waitUnicast(1)
+	if len(got) != 1 {
+		t.Fatalf("got %d replies, want 1", len(got))
+	}
+	pkt, err := protonbp.ParsePacket(got[0].Data)
+	if err != nil {
+		t.Fatalf("parse reply: %v", err)
+	}
+	if string(pkt.Tuple.Object) != "BABE" {
+		t.Errorf("reply object = %q, want the echoed BABE", pkt.Tuple.Object)
+	}
+	if string(pkt.Tuple.Type) != "BootServer" || pkt.Tuple.Socket != 10 {
+		t.Errorf("reply tuple = %q socket %d", pkt.Tuple.Type, pkt.Tuple.Socket)
+	}
+
+	// A wildcard-object query falls back to the registered object name.
+	svc.Inbound(ddp.Datagram{
+		DestNetwork: 10, SrcNetwork: 10, DestNode: 0x80, SrcNode: 0x81,
+		DestSocket: Socket, SrcSocket: Socket, DDPType: DDPType,
+		Data: buildLkUp(0x08, 0x81, 10, "=", "BootServer", "*"),
+	}, p)
+	got = p.waitUnicast(2)
+	if len(got) != 2 {
+		t.Fatalf("got %d replies, want 2", len(got))
+	}
+	pkt, err = protonbp.ParsePacket(got[1].Data)
+	if err != nil {
+		t.Fatalf("parse reply: %v", err)
+	}
+	if string(pkt.Tuple.Object) != "0000" {
+		t.Errorf("wildcard reply object = %q, want the registered 0000", pkt.Tuple.Object)
+	}
+
+	// An unrelated type still gets nothing.
+	svc.Inbound(ddp.Datagram{
+		DestNetwork: 10, SrcNetwork: 10, DestNode: 0x80, SrcNode: 0x81,
+		DestSocket: Socket, SrcSocket: Socket, DDPType: DDPType,
+		Data: buildLkUp(0x09, 0x81, 10, "BABE", "AFPServer", "*"),
+	}, p)
+	for range 50 {
+		runtime.Gosched()
+		time.Sleep(time.Millisecond)
+	}
+	if got := p.waitUnicast(2); len(got) != 2 {
+		t.Errorf("unrelated type matched an any-object entry: %d replies", len(got))
+	}
+}
+
 // TestRegisterUnregister verifies the name table mutates and dedups by entity.
 func TestRegisterUnregister(t *testing.T) {
 	svc := New(startedRouter(t), nil)
