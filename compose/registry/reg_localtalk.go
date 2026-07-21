@@ -78,6 +78,7 @@ func registerLocalTalk(key string, openerFor segmentOpener, respondToEnq bool) {
 			EnableClaim:  true,
 			RespondToEnq: respondToEnq,
 			SeedNetwork:  sec.SeedNetwork,
+			Logger:       logger,
 		}
 
 		comp, err := localtalk.NewInstanceFromOpener(sec, open, framer, ctx.Router, logger)

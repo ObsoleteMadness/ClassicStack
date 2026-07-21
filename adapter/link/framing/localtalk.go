@@ -3,10 +3,12 @@ package framing
 import (
 	"errors"
 	"math/rand"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/ddp"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/llap"
 )
@@ -40,7 +42,7 @@ var (
 	// ErrShortLLAP is returned (and surfaced as a skipped frame) for a frame too
 	// small to hold the 3-byte LLAP header.
 	ErrShortLLAP = errors.New("framing: LocalTalk frame too short for LLAP header")
-	// ErrLLAPControl marks an LLAP control frame (ENQ/ACK/RTS/CTS) — not a DDP
+	// ErrLLAPControl marks an LLAP control frame (ENQ/ACK) — not a DDP
 	// datagram. The read loop services it (node-claim) then skips it; it never
 	// surfaces as a datagram.
 	ErrLLAPControl = errors.New("framing: LocalTalk LLAP control frame (no DDP)")
@@ -124,6 +126,11 @@ type LocalTalk struct {
 	// RandNode supplies the engine's reroll RNG (a pseudo-random uint8); nil → a
 	// default source so simultaneous routers diverge.
 	RandNode func() uint8
+	// Logger, when non-nil, narrates the LLAP node-claim (ENQ/ACK sent and received)
+	// at Debug level. The claim dance is otherwise invisible except in a packet
+	// capture, so this makes an ENQ storm / stuck claim diagnosable from the log
+	// (spec/09 §"Node Address Acquisition"). nil disables the narration entirely.
+	Logger log.Logger
 }
 
 // staticAddr is a trivial Addr for a fixed network/node (tests, or a port that
@@ -190,7 +197,7 @@ func (e *LocalTalk) Framing(fl link.FrameLink) (link.DatagramLink, error) {
 	if fl == nil {
 		return nil, errors.New("framing: nil FrameLink")
 	}
-	d := &ltDatagramLink{fl: fl, addr: e.Addr, calcChecksum: e.CalcChecksum}
+	d := &ltDatagramLink{fl: fl, addr: e.Addr, calcChecksum: e.CalcChecksum, logger: e.Logger}
 
 	if e.EnableClaim && e.Live != nil {
 		d.live = e.Live
@@ -227,6 +234,7 @@ type ltDatagramLink struct {
 	fl           link.FrameLink
 	addr         Addr
 	calcChecksum bool
+	logger       log.Logger // nil → no node-claim narration
 
 	// Node-claim state (nil/zero when EnableClaim is off — the plain framer path).
 	// The engine is touched by both the claim goroutine and the read loop's
@@ -292,11 +300,41 @@ func (d *ltDatagramLink) serviceControl(frame []byte) {
 	if err != nil {
 		return
 	}
+	d.logControl("LLAP rx", c)
 	d.engineMu.Lock()
 	reply, hasReply, _ := d.engine.Inbound(c)
 	d.engineMu.Unlock()
 	if hasReply {
+		d.logControl("LLAP tx", reply)
 		_ = d.fl.Write(llap.EncodeControl(reply))
+	}
+}
+
+// logControl narrates one LLAP control (ENQ/ACK) frame at Debug: the direction
+// (dir, e.g. "LLAP rx"/"LLAP tx"), the frame type name, and its dst/src nodes. It
+// is the only visibility into the node-claim dance outside a packet capture, so a
+// stuck claim or an ENQ storm shows up in the log. A nil logger (or a level no sink
+// wants) costs nothing.
+func (d *ltDatagramLink) logControl(dir string, c llap.ControlFrame) {
+	if d.logger == nil || !d.logger.Enabled(log.Debug) {
+		return
+	}
+	d.logger.Log(log.Debug, dir,
+		log.Str("type", llapTypeName(c.Type)),
+		log.Int("dst", int64(c.Dst)),
+		log.Int("src", int64(c.Src)))
+}
+
+// llapTypeName renders an LLAP control type byte for the log; unknown types show
+// the raw value so nothing is hidden.
+func llapTypeName(typ uint8) string {
+	switch typ {
+	case llapENQ:
+		return "ENQ"
+	case llapACK:
+		return "ACK"
+	default:
+		return "0x" + strconv.FormatUint(uint64(typ), 16)
 	}
 }
 
@@ -368,6 +406,7 @@ func (d *ltDatagramLink) probeBurst() bool {
 			}
 			return true
 		}
+		d.logControl("LLAP tx", enq)
 		_ = d.fl.Write(llap.EncodeControl(enq))
 
 		select {
