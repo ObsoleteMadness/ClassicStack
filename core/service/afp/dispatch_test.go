@@ -435,6 +435,86 @@ func TestDispatch_SubdirDIDRoundTrips(t *testing.T) {
 	}
 }
 
+// TestDispatch_EnumeratePagingSkipsHiddenEntriesWithoutDuplicates pins the paging
+// window to the CLIENT-VISIBLE entries. The client asks for the next page at
+// startIndex + actCount, counting only what it was handed, so if the server
+// indexes into the raw directory listing every hidden ._sidecar it skipped over
+// shifts the next page backwards and the client lists the same file twice.
+func TestDispatch_EnumeratePagingSkipsHiddenEntriesWithoutDuplicates(t *testing.T) {
+	svc, r := newRunningService(t)
+	from := fakePort{}
+
+	vol := svc.Volumes()[0]
+	// "._aaa.txt" sorts ahead of every visible name, so it lands inside page 1.
+	mustCreate(t, vol, "._aaa.txt")
+	want := []string{"aaa.txt", "bbb.txt", "ccc.txt", "ddd.txt"}
+	for _, name := range want {
+		mustCreate(t, vol, name)
+	}
+	// Guard the premise: the sidecar must really be in the raw listing, else this
+	// test would pass without exercising the filter.
+	raw, err := vol.Enumerate("")
+	if err != nil {
+		t.Fatalf("Enumerate: %v", err)
+	}
+	var rawNames []string
+	for _, de := range raw {
+		rawNames = append(rawNames, de.Name())
+	}
+	if !contains(rawNames, "._aaa.txt") {
+		t.Skipf("backend hides ._ sidecars from ReadDir (%v); nothing to page past", rawNames)
+	}
+
+	sessID := login(t, svc, r)
+
+	r.reset()
+	openVol := []byte{cmdOpenVol, 0}
+	openVol = bp.AppendBE16(openVol, volBitmapID)
+	openVol = putPString(openVol, []byte("Share"))
+	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 3), openVol)), from)
+	volID := bp.BE16(respPayload(r.lastReply())[2:4])
+
+	// Walk the directory two entries at a time, exactly as a client does.
+	const pageSize = 2
+	var got []string
+	startIndex := uint16(1)
+	for seq := uint16(4); ; seq++ {
+		r.reset()
+		enum := []byte{cmdEnumerate, 0}
+		enum = bp.AppendBE16(enum, volID)
+		enum = bp.AppendBE32(enum, 2) // dirID = root
+		enum = bp.AppendBE16(enum, fdBitmapLongName)
+		enum = bp.AppendBE16(enum, fdBitmapLongName)
+		enum = bp.AppendBE16(enum, pageSize)
+		enum = bp.AppendBE16(enum, startIndex)
+		enum = bp.AppendBE16(enum, 4624)
+		enum = append(enum, PathTypeUTF8Names)
+		svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, seq), enum)), from)
+		res := int32(respUserData(r.lastReply()))
+		if res == afpErrObjectNotFnd {
+			break // end of directory
+		}
+		if res != afpNoErr {
+			t.Fatalf("Enumerate startIndex=%d = %d, want 0", startIndex, res)
+		}
+		reply := respPayload(r.lastReply())
+		actCount := bp.BE16(reply[4:6])
+		if actCount == 0 {
+			t.Fatalf("Enumerate startIndex=%d returned actCount 0 with NoErr", startIndex)
+		}
+		got = append(got, decodeEnumNames(t, reply[6:], int(actCount))...)
+		startIndex += actCount
+		if len(got) > 4*len(want) {
+			t.Fatalf("Enumerate never terminated; names so far = %v", got)
+		}
+	}
+
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		t.Fatalf("paged Enumerate names = %v, want %v (duplicates mean startIndex was applied to the unfiltered listing)", got, want)
+	}
+}
+
 // TestDispatch_GetFileDirParmsParentOfRootByVolumeName reproduces the Finder's
 // mount probe: FPGetFileDirParms DID=1 (parent-of-root) Name="<volume name>". It
 // must resolve to the volume root, not kFPDirNotFound (-5029) — the regression

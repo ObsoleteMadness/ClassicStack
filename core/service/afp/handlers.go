@@ -549,7 +549,19 @@ func (s *Service) afpGetVolParms(a *afpSession, block []byte) ([]byte, int32) {
 	if len(block) < 6 {
 		return nil, afpErrParamErr
 	}
-	vol, ok := a.openVols[bp.BE16(block[2:4])]
+	volID := bp.BE16(block[2:4])
+	reqBitmap := bp.BE16(block[4:6])
+	// FPGetVolParms is the first call the Finder makes after mounting; a client
+	// that never gets a well-formed reply here retries it forever (observed in
+	// ltoudp-netboot.pcap: the same request re-sent every ~2s for the whole
+	// session). Logging the volume + requested bitmap makes that stall visible in
+	// the log, not just in a capture. spec/AFP §"FPGetVolParms".
+	if s.logger != nil && s.logger.Enabled(log.Debug) {
+		s.logger.Log(log.Debug, "AFP FPGetVolParms request",
+			log.Int("volID", int64(volID)),
+			log.Int("bitmap", int64(reqBitmap)))
+	}
+	vol, ok := a.openVols[volID]
 	if !ok {
 		return nil, afpErrParamErr
 	}
@@ -557,7 +569,7 @@ func (s *Service) afpGetVolParms(a *afpSession, block []byte) ([]byte, int32) {
 	// GetVolParms bitmap 0x0048 with 0x0048 — it does NOT inject unrequested
 	// fields; our earlier forced VolumeID (reply 0x0068) was a parity divergence.
 	// (FPOpenVol keeps its forced ID: the mount handshake needs the id.)
-	bitmap := bp.BE16(block[4:6])
+	bitmap := reqBitmap
 	out := make([]byte, 0, 64)
 	out = bp.AppendBE16(out, bitmap)
 	out = packVolParams(out, vol, bitmap)
@@ -739,9 +751,22 @@ func (s *Service) afpEnumerate(a *afpSession, block []byte) ([]byte, int32) {
 		return nil, code
 	}
 
-	entries, err := vol.Enumerate(store)
+	listing, err := vol.Enumerate(store)
 	if err != nil {
 		return nil, mapStatErr(err)
+	}
+	// Hidden entries MUST be filtered out before startIndex is applied. The client
+	// pages by asking for startIndex + actCount next, counting only the entries it
+	// was given, so indexing into the raw directory listing shifts every page after
+	// the first back by the number of hidden entries it skipped over — the client
+	// then redraws the overlap and shows the same file twice. (main filters first
+	// too, in packEnumerateEntries.)
+	entries := make([]stdfs.DirEntry, 0, len(listing))
+	for _, de := range listing {
+		if isMetadataName(de.Name()) {
+			continue // hide ._sidecars, .AppleDouble and EA/stream shadow paths
+		}
+		entries = append(entries, de)
 	}
 	// AFP start index is 1-based.
 	start := max(startIndex-1, 0)
@@ -754,9 +779,6 @@ func (s *Service) afpEnumerate(a *afpSession, block []byte) ([]byte, int32) {
 	actual := 0
 	for i := start; i < len(entries) && actual < reqCount; i++ {
 		de := entries[i]
-		if isMetadataName(de.Name()) {
-			continue // hide ._sidecars and EA/stream shadow paths
-		}
 		childStore := joinStore(store, de.Name())
 		info, err := de.Info()
 		if err != nil {
