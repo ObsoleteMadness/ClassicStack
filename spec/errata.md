@@ -241,6 +241,18 @@ We had initially implemented `filterEAs` to omit not-found names entirely (diagn
 
 **Where:** `core/service/smb/fileio.go` (`handleWriteAndClose`); regression in `fileio_test.go` (`TestFS_WriteAndCloseTruncatesShorterOverwrite`, reverted-and-reconfirmed against the bug before restoring the fix).
 
+## LocalTalk / LLAP
+
+### ZIP GetZoneList/GetLocalZones must set LastFlag on an empty page
+
+**Spec (Inside AppleTalk, ZIP GetZoneList):** the reply's `LastFlag` byte tells the client no further pages remain. A paging client re-requests from the next start index until it sees `LastFlag == 1`.
+
+**Observed:** our responder set `LastFlag` only when it emitted the final non-empty zone tuple. An **empty** page — an empty ZIT, or a `startIndex` past the end of the list — returned `numZones = 0` with `LastFlag = 0`, a *successful* reply that says "ask again." A paging client (the Mac Chooser, the Network control panel, and our own `AtalkGetZones` loop) then re-asks forever with no error and no timeout — the same "successful reply that never completes" freeze shape as the RTS bug, one layer up.
+
+**What we do:** `handleGetZoneList` sets `LastFlag = 1` whenever `len(zones) == 0` after applying the start-index skip. The e2e client also defensively breaks its paging loop on a zero-zone page even if a buggy router forgot the flag.
+
+**Where:** `core/service/zip/responding.go` (`handleGetZoneList`); client guard in `tools/end-to-end/macos/src/afp/atalk.c` (`AtalkGetZones`).
+
 ## AFP
 
 ### Catalog date epoch (Inside Macintosh: Networking, "AFP date and time")

@@ -371,6 +371,12 @@ func (s *RespondingService) handleGetZoneList(d ddp.Datagram, rx router.RoutedPo
 	}
 
 	lastFlag := byte(0)
+	if len(zones) == 0 {
+		// LastFlag must be set on an empty page (empty ZIT, or startIndex past
+		// the end) or paging clients (Chooser, Network CP) loop re-asking
+		// forever — the reply is a success, so no client timeout ever fires.
+		lastFlag = 1
+	}
 	var zoneList []byte
 	numZones := 0
 	const atpHdrLen = 8
