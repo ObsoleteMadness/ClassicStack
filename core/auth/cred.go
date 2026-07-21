@@ -75,6 +75,7 @@ func ParseCredential(saltHex, hashHex string) (Credential, error) {
 	return Credential{Salt: salt, Hash: hash}, nil
 }
 
+// TODO: Move this to are shared binaryprimitives
 // --- hand-rolled hex (encoding/hex transitively imports reflect; §1). ---
 
 const hexDigits = "0123456789abcdef"
