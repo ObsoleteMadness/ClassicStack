@@ -461,13 +461,34 @@ func BuildShare(spec ShareSpec, b bus.Bus) (ForkFS, error) {
 		return nil, err
 	}
 
+	return WrapBase(base, spec, store)
+}
+
+// WrapBase assembles the mandatory per-share fork/meta/codec stack OVER an
+// already-constructed base FileSystem, returning the ForkFS. It is the tail half of
+// BuildShare, factored out so a caller that constructs its own base FS — most
+// importantly a protocol CLIENT, whose base FS is a remote AFP/SMB/NCP/EtherDFS
+// volume rather than a registered fs_type — layers the EXACT same AppleDouble fork
+// adapter and MetaEngine the server side layers over a local backend. The two rings
+// (fs.BuildShare and client.Connect) therefore read the same and cannot drift: a
+// remote SMB share gets resource forks from the same sidecar adapter a local share
+// does, and DOS-attr/8.3-name derivation works identically.
+//
+// spec supplies ForkBackend / MetaBackend / FilenameCodec / ReadOnly exactly as for
+// a locally-built share (withDefaults is applied here so a zero-valued spec is
+// valid); store is the metastore backing CNIDs and the "metastore" MetaEngine
+// backend. Callers that do not need a persistent metastore pass an in-memory one
+// (metastore.Open("mem", "")).
+func WrapBase(base FileSystem, spec ShareSpec, store metastore.Store) (ForkFS, error) {
+	spec = withDefaults(spec)
+
 	codec, err := codecByName(spec.FilenameCodec)
 	if err != nil {
 		return nil, err
 	}
-	// A fork adapter is MANDATORY: BuildShare always resolves exactly one over the
-	// fork-unaware base FS (withDefaults sets "appledouble" when unspecified; "nofork"
-	// is the explicit no-forks choice). An unknown name is a hard error.
+	// A fork adapter is MANDATORY: always resolve exactly one over the fork-unaware
+	// base FS (withDefaults sets "appledouble" when unspecified; "nofork" is the
+	// explicit no-forks choice). An unknown name is a hard error.
 	forkEngine, err := forkAdapterByName(spec.ForkBackend, spec, base)
 	if err != nil {
 		return nil, err

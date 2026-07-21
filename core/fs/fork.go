@@ -60,6 +60,19 @@ func init() {
 	RegisterForkAdapter("nofork", nofork)
 	RegisterForkAdapter("null", nofork)
 	RegisterForkAdapter("none", nofork)
+
+	// "passthrough" forwards to a base FileSystem that ALREADY implements ForkEngine
+	// natively — used by the AFP CLIENT, whose remote volume speaks OpenFork(Resource)
+	// / Finder-info on the wire, so its forks must NOT be re-derived from AppleDouble
+	// sidecars. A base that does not implement ForkEngine degrades to nofork (no
+	// sidecar synthesis), so the name is safe to select on any base.
+	RegisterForkAdapter("passthrough", func(spec ShareSpec, base FileSystem) (ForkEngine, error) {
+		_ = spec
+		if fe, ok := base.(ForkEngine); ok {
+			return fe, nil
+		}
+		return NewNoForkAdapter(), nil
+	})
 }
 
 // netatalkSidecarPath is the default "._name" sidecar beside each file.

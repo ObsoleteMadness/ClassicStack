@@ -1,0 +1,59 @@
+//go:build pcap
+
+package link
+
+import (
+	"fmt"
+	"net"
+
+	"github.com/ObsoleteMadness/ClassicStack/adapter/link/framing"
+	"github.com/ObsoleteMadness/ClassicStack/adapter/link/pcap"
+	"github.com/ObsoleteMadness/ClassicStack/core/link"
+)
+
+// openPcapFrame opens a NIC via libpcap as a raw FrameLink using the SAME
+// adapter/link/pcap the servers use — no capture code is duplicated here, only the
+// per-protocol Config. filter is the kernel BPF narrowing the handle to the protocol's
+// frames ("" captures everything); EtherDFS/IPX/NetBEUI pass their own filter, so they
+// are NOT constrained to the EtherTalk "atalk or aarp" preset. The caller's framer
+// deframes what survives.
+func openPcapFrame(device, filter string) (link.FrameLink, error) {
+	if device == "" {
+		return nil, fmt.Errorf("pcap transport needs a NIC device name")
+	}
+	cfg := pcap.DefaultEtherTalkConfig(device) // promiscuous + immediate defaults
+	cfg.Filter = filter                        // override the EtherTalk-only BPF
+	fl, err := pcap.Open(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("open pcap %s: %w", device, err)
+	}
+	return fl, nil
+}
+
+// openPcapDDP opens an EtherTalk NIC via libpcap with Ethernet/SNAP DDP framing
+// (mirrors atlink.openPcap): the AFP-over-EtherTalk path. It keeps the EtherTalk BPF
+// filter so the handle only surfaces DDP + AARP.
+func openPcapDDP(device string, network uint16, srcNode uint8) (link.DatagramLink, error) {
+	_ = network
+	_ = srcNode
+	fl, err := openPcapFrame(device, pcap.EtherTalkBPFFilter)
+	if err != nil {
+		return nil, err
+	}
+	framer := &framing.EtherTalk{SrcMAC: interfaceMAC(device)}
+	dl, err := framer.Framing(fl)
+	if err != nil {
+		_ = fl.Close()
+		return nil, fmt.Errorf("frame EtherTalk: %w", err)
+	}
+	return dl, nil
+}
+
+// interfaceMAC resolves the named interface's hardware address, or nil if it cannot
+// be resolved (the EtherTalk framer then stamps a zero source MAC).
+func interfaceMAC(name string) []byte {
+	if ifi, err := net.InterfaceByName(name); err == nil && len(ifi.HardwareAddr) == 6 {
+		return append([]byte(nil), ifi.HardwareAddr...)
+	}
+	return nil
+}
