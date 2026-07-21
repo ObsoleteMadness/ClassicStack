@@ -56,6 +56,7 @@ read_only = false
 allowed_users = []
 options = []
 extmap_path = ''
+size_limit = 50000
 
 [[etherdfsdrives]]
 name = 'C'
