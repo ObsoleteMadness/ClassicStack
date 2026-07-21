@@ -17,10 +17,8 @@
 /tools/*
 /tmp/
 
-# ...except the MSVC 1.x/NT SDK kits: legacy compilers that are effectively
-# unobtainable now, small (~37 MB), and required to rebuild the Win16/Win32
-# tools — so they are pinned in-repo.
-!/tools/msvc/
+# (The specific tooling to keep is re-included at the bottom of this file, after
+# all other rules, so those negations have the last word.)
 
 # --- Build outputs -----------------------------------------------------------
 # Scoped to our source dirs on purpose: a global *.exe/*.obj/*.lib would also
@@ -51,9 +49,22 @@ windows/win32/script.txt
 # Per-run output written next to the .EXE
 results.txt
 
-# --- Pin the ENTIRE MSVC kit (must be the LAST word) -------------------------
-# The repo-root .gitignore ignores *.exe and *.dll, which would strip the MSVC
-# compilers/linkers (CL.EXE, LINK.EXE, the C1/C2 passes, runtime DLLs). This
-# negation comes after every other rule so it wins: everything under the pinned
-# msvc kit is committed verbatim, artifact-extension or not.
+# --- Pin legacy tooling that must travel with the repo (LAST word) -----------
+# The repo-root .gitignore ignores *.exe and *.dll, and /tools/* above ignores
+# these dirs; these negations come after every other rule so they win. Each is
+# pinned in-repo because it is small, effectively unobtainable, and required to
+# build/pack the e2e floppies — committed verbatim, artifact-extension or not.
+#
+#   msvc/    — legacy MSVC 1.x/NT compilers/linkers (CL/LINK/C1/C2, runtime DLLs)
+#   mtools/  — FAT12 image manipulation (mcopy/mformat...) + source tarball
+#   flopgen  — the floppy-image packer (win + posix binaries) + source tarball
+#
+# Still ignored: the emulators (86box, minivmac, snow) and the big MPW/SDK disk
+# images and archives.
+!/tools/msvc/
 !/tools/msvc/**
+!/tools/mtools/
+!/tools/mtools/**
+!/tools/flopgen
+!/tools/flopgen.exe
+!/tools/Flopgen-0.1.0.tar.gz
