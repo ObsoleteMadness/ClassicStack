@@ -1,0 +1,18 @@
+; Module-definition file for SMBE2E.EXE (Win16 QuickWin application).
+; Modelled on the SDK's CL.DEF QuickWin template.
+NAME            SMBE2E
+DESCRIPTION     'ClassicStack SMB end-to-end test (Win16)'
+EXETYPE         WINDOWS
+CODE            PRELOAD MOVEABLE DISCARDABLE
+; DATA must NOT be MULTIPLE for a QuickWin C app — MULTIPLE is the DLL /
+; multi-instance model and breaks the large-model CRT's single-DGROUP startup.
+; No STUB line: the linker supplies its own DOS stub (and our trimmed build PATH
+; can't find WINSTUB.EXE anyway). Matches the SDK's CL.DEF QuickWin template.
+DATA            PRELOAD MOVEABLE
+HEAPSIZE        1024
+; 32 KB stack (not the template's 8 KB): SmbCopyDir/SmbDeleteTree RECURSE, and
+; each frame is fat (~3 KB — names[128][14]=1792 + isdir[128] + pattern[300] +
+; per-iter s[300]+d[300]). 8 KB overflowed at ~3 levels deep (the subren/subcopy
+; nested-dir case crashed here). 32 KB covers the shallow trees these e2e
+; scripts build with comfortable headroom.
+STACKSIZE       32768
