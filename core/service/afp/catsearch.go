@@ -112,7 +112,9 @@ func (s *Service) afpCatSearch(a *afpSession, block []byte) ([]byte, int32) {
 	capped := false
 	for _, m := range results {
 		rec := vol.packCatSearchRecord(m, fileBitmap, dirBitmap)
-		if len(out)-countOff-4+len(rec) > catSearchMaxData {
+		// Always emit at least one record so a single over-large record still makes
+		// progress rather than stalling the search (the FPEnumerate convention).
+		if actual > 0 && len(out)-countOff-4+len(rec) > catSearchMaxData {
 			capped = true // payload cap reached before the backend's page ended
 			break
 		}
@@ -122,20 +124,28 @@ func (s *Service) afpCatSearch(a *afpSession, block []byte) ([]byte, int32) {
 
 	// Determine the reply cursor. If we packed every result the backend gave us
 	// and the backend reported no continuation, the search is done: last page,
-	// kFPEOFErr, zero cursor (the AFP/Netatalk convention). Otherwise carry the
-	// backend's cursor so the client resumes — and if WE capped the page below the
-	// backend's, the backend cursor already points past what we packed only when
-	// we consumed all results, so a mid-page cap falls back to re-running the
-	// search (acceptable: the catalog is stable between paged calls).
+	// kFPEOFErr, zero cursor (the AFP/Netatalk convention). Otherwise carry a
+	// cursor that resumes AFTER the records we actually delivered.
 	var replyPos [16]byte
 	result := afpErrEOFErr
-	if len(next) > 0 && !capped {
+	switch {
+	case capped:
+		// We packed fewer records than the backend handed us, so the backend's own
+		// cursor points past results the client never saw. Re-run the search bounded
+		// to what we DID deliver: the backend then reports the cursor that resumes
+		// after them. Echoing the request's cursor instead re-delivers this page
+		// verbatim on every follow-up call — the client never advances, so a search
+		// with more matches than fit one reply repeats forever.
+		capCrit := crit
+		capCrit.Max = actual
+		if _, capNext, err := searcher.CatSearch(capCrit, cursor); err == nil && len(capNext) > 0 {
+			replyPos = encodeCatCursor(capNext)
+			result = afpNoErr
+		}
+		// A backend that cannot produce a mid-page cursor ends the search here
+		// (zero cursor + kFPEOFErr): dropping the tail beats looping forever.
+	case len(next) > 0:
 		replyPos = encodeCatCursor(next)
-		result = afpNoErr
-	} else if capped {
-		// We stopped before the backend's page ended; resume the backend's search
-		// from the same cursor next time (the unpacked results re-appear).
-		replyPos = pos
 		result = afpNoErr
 	}
 	copy(out[0:16], replyPos[:])

@@ -1,6 +1,7 @@
 package afp
 
 import (
+	"fmt"
 	"testing"
 
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
@@ -183,5 +184,58 @@ func TestCatSearch_Paged(t *testing.T) {
 		if contains(page1, n) {
 			t.Fatalf("CatSearch page 2 repeats %q from page 1", n)
 		}
+	}
+}
+
+// TestCatSearch_PayloadCapPagesForward is the regression for a search whose
+// matches exceed one reply's ResultsRecord budget (catSearchMaxData) rather than
+// reqMatches. The handler packs fewer records than the backend handed it, so the
+// backend's own cursor points past results the client never saw; echoing the
+// REQUEST's cursor instead re-delivers the identical page on every follow-up call
+// and the client never advances — "Find File" repeats the same hits forever. The
+// reply cursor must resume after the records actually delivered, so the search
+// pages forward and terminates covering every match exactly once.
+func TestCatSearch_PayloadCapPagesForward(t *testing.T) {
+	svc, r := newRunningService(t)
+	vol := svc.Volumes()[0]
+	// Enough matches that the packed records blow past catSearchMaxData well
+	// before reqMatches is reached.
+	const nFiles = 300
+	for i := range nFiles {
+		mustCreate(t, vol, fmt.Sprintf("hit-%03d-with-a-long-name.txt", i))
+	}
+	sessID, volID := openVolForFork(t, svc, r)
+
+	var cursor [16]byte
+	seen := map[string]bool{}
+	packed := 0
+	pages := 0
+	for seq := uint16(9); ; seq++ {
+		req := catSearchReq(volID, 1000, cursor, fdBitmapLongName, 0, true, "hit-")
+		code, reply := sendCmd(t, svc, r, sessID, seq, req)
+		pages++
+		if pages > 20 {
+			t.Fatalf("CatSearch never terminated: %d pages, %d records packed (cursor not advancing)", pages, packed)
+		}
+		packed += int(bp.BE32(reply[20:24]))
+		for _, n := range catSearchNames(t, reply) {
+			if seen[n] {
+				t.Fatalf("CatSearch page %d repeats %q from an earlier page", pages, n)
+			}
+			seen[n] = true
+		}
+		if code == afpErrEOFErr {
+			break
+		}
+		if code != afpNoErr {
+			t.Fatalf("CatSearch page %d result = %d, want NoErr or EOFErr", pages, code)
+		}
+		copy(cursor[:], reply[0:16])
+	}
+	if pages < 2 {
+		t.Fatalf("CatSearch finished in %d page(s); the payload cap was never exercised", pages)
+	}
+	if packed != nFiles {
+		t.Fatalf("CatSearch packed %d records across %d pages, want %d (each match exactly once)", packed, pages, nFiles)
 	}
 }
