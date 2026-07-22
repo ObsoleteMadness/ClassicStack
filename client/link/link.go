@@ -21,6 +21,7 @@ package link
 
 import (
 	"fmt"
+	"math/rand"
 	"net"
 	"strings"
 
@@ -79,9 +80,45 @@ type Opener struct {
 	datagram link.DatagramLink
 }
 
-// NewOpener builds an Opener for spec with a default asserted AppleTalk address.
+// LLAP node-ID ranges (Inside AppleTalk, 2nd ed., §1 "LocalTalk Link Access Protocol",
+// Node ID assignment). LLAP node IDs are 8-bit, partitioned so that transient client
+// nodes cannot collide with persistent services:
+//
+//	0x00        reserved — "not allowed (unknown)"; never a deliverable address
+//	0x01..0x7F  USER node IDs — workstations and clients (switched on/off frequently)
+//	0x80..0xFE  SERVER node IDs — routers and persistent services (rarely restarted)
+//	0xFF        broadcast
+//
+// The spec draws this line deliberately: "Excluding user (nonserver) node IDs from the
+// server node ID range eliminates the possibility that user nodes ... will conflict with
+// server nodes." A ClassicStack router/AFP server acquires from the server range and
+// typically sits at 0xFE, so a client MUST take its node from the user range.
+const (
+	llapNodeReserved  uint8 = 0x00
+	llapUserNodeMin   uint8 = 0x01
+	llapUserNodeMax   uint8 = 0x7F
+	llapBroadcastNode uint8 = 0xFF // for reference; a client never sources from here
+)
+
+// pickClientNode returns a random USER-range node id (0x01..0x7F) for a client that
+// asserts an address without running a full LLAP ENQ/ACK acquisition. Staying in the
+// user range guarantees it never collides with the server's node (server range,
+// typically 0xFE); randomising within it means two concurrent clients on the same
+// segment are unlikely to pick the same node. This is the "guess a candidate" step of
+// the spec's acquisition algorithm without the ENQ verification burst — sufficient for a
+// short-lived probe/file-client session on a simulated segment, and the seam a real
+// LLAP node-claim would replace.
+func pickClientNode() uint8 {
+	span := int(llapUserNodeMax - llapUserNodeMin + 1) // 127 candidates
+	return llapUserNodeMin + uint8(rand.Intn(span))
+}
+
+// NewOpener builds an Opener for spec with a default asserted AppleTalk address. The
+// node is a random USER-range LLAP node (never 0, never the server range) so DDP replies
+// are deliverable and do not collide with the server; callers that run a real node-claim
+// or need a specific node set Opener.Node afterwards.
 func NewOpener(spec Spec) *Opener {
-	return &Opener{Spec: spec, Net: 0, Node: 0}
+	return &Opener{Spec: spec, Net: 0, Node: pickClientNode()}
 }
 
 // NewInmemOpener builds an Opener whose FrameLink is one end of an in-memory pair;
