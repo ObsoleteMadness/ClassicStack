@@ -2,6 +2,7 @@ package smb
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -16,6 +17,18 @@ import (
 // ParameterCount/Offset and a SetupCount=1 with the subcommand following.
 func trans2Req(tid, sub uint16, params []byte) []byte {
 	return trans2ReqWithData(tid, sub, params, nil)
+}
+
+// trans2ReqMaxData is trans2Req with an explicit MaxDataCount (words[6:8]) — the
+// largest data block the client will accept in the reply. A connectionless client
+// (SMB over IPX) sets this small so a FIND reply fits one datagram and pages via
+// FIND_NEXT2; a stream client leaves it 0xFFFF (unbounded). trans2Req uses 0, i.e.
+// no byte cap.
+func trans2ReqMaxData(tid, sub, maxData uint16, params []byte) []byte {
+	req := trans2ReqWithData(tid, sub, params, nil)
+	words := req[protocol.HeaderLen+1:] // after WCT
+	bp.PutLE16(words[6:8], maxData)
+	return req
 }
 
 // trans2ReqWithData is trans2Req plus a data block (DataCount/DataOffset,
@@ -405,6 +418,69 @@ func TestTrans2_FindFirst2NextPaginates(t *testing.T) {
 	drained := svc.Dispatch(sess, trans2Req(tid, trans2FindNext2, findNext2Params(sid, 100, 0)))
 	if h := respHeader(t, drained); h.Status != statusNoMoreFiles {
 		t.Fatalf("drained FIND_NEXT2 status = %#x, want NO_MORE_FILES", h.Status)
+	}
+}
+
+// TestTrans2_FindFirst2MaxDataCountPages proves a small MaxDataCount forces
+// byte-budget paging even when SearchCount is large: the connectionless direct-IPX
+// path sets MaxDataCount so a FIND reply fits one datagram, so the server returns a
+// partial first batch (end-of-search clear) and the client pages the rest via
+// FIND_NEXT2. Regression for the live SMB-over-IPX hang where the server packed the
+// whole directory into one 4434-byte datagram that exceeded the Ethernet MTU and was
+// never transmitted (spec/errata.md).
+func TestTrans2_FindFirst2MaxDataCountPages(t *testing.T) {
+	svc, sess, tid := fsService(t)
+	const nfiles = 20
+	names := make(map[string]bool, nfiles)
+	for i := 0; i < nfiles; i++ {
+		name := fmt.Sprintf("file-with-a-fairly-long-name-%02d.dat", i)
+		sess.closeFID(createFile(t, svc, sess, tid, name))
+		names[name] = true
+	}
+
+	// SearchCount 256 (would pack all 20 in one message), but MaxDataCount 512 caps the
+	// data block to ~one small datagram, so only a few records fit per reply.
+	first := svc.Dispatch(sess, trans2ReqMaxData(tid, trans2FindFirst2, 512, findFirst2Params(256, 0, "*")))
+	if h := respHeader(t, first); h.Status != statusSuccess {
+		t.Fatalf("FIND_FIRST2 status = %#x", h.Status)
+	}
+	batch, sid, eos := findReplyNames(t, first, true)
+	if eos {
+		t.Fatal("FIND_FIRST2 end-of-search set despite a MaxDataCount smaller than the full listing")
+	}
+	if len(batch) == 0 || len(batch) >= nfiles {
+		t.Fatalf("first batch had %d names, want a partial batch (1..%d)", len(batch), nfiles-1)
+	}
+
+	// Page the rest via FIND_NEXT2 (same MaxDataCount) until end-of-search.
+	seen := map[string]bool{}
+	for _, n := range batch {
+		seen[n] = true
+	}
+	for i := 0; i < nfiles && !eos; i++ {
+		next := svc.Dispatch(sess, trans2ReqMaxData(tid, trans2FindNext2, 512, findNext2Params(sid, 256, 0)))
+		if h := respHeader(t, next); h.Status != statusSuccess {
+			t.Fatalf("FIND_NEXT2 status = %#x", h.Status)
+		}
+		var more []string
+		more, _, eos = findReplyNames(t, next, false)
+		if len(more) == 0 {
+			t.Fatal("FIND_NEXT2 returned an empty batch before end-of-search")
+		}
+		for _, n := range more {
+			seen[n] = true
+		}
+	}
+	if !eos {
+		t.Fatal("paging did not reach end-of-search")
+	}
+	if len(seen) != nfiles {
+		t.Fatalf("paged listing saw %d distinct names, want %d", len(seen), nfiles)
+	}
+	for n := range names {
+		if !seen[n] {
+			t.Errorf("name %q missing from the paged listing", n)
+		}
 	}
 }
 

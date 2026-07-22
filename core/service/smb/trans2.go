@@ -93,6 +93,7 @@ type trans2Request struct {
 	data        []byte
 	totalParams int
 	totalData   int
+	maxData     int // MaxDataCount: the largest data block the client will accept in the reply
 }
 
 // incomplete reports whether the request carries fewer parameter/data bytes
@@ -127,6 +128,7 @@ func parseTransaction2(req []byte) (trans2Request, bool) {
 		params:      req[paramOffset : paramOffset+paramCount],
 		totalParams: int(bp.LE16(words[0:2])),
 		totalData:   int(bp.LE16(words[2:4])),
+		maxData:     int(bp.LE16(words[6:8])), // MaxDataCount ([MS-CIFS] §2.2.4.46.1)
 	}
 	// The data block (DataCount/DataOffset, words[22:24]/[24:26]) carries the
 	// SET_*_INFORMATION payload; surface it when present and in-bounds.
@@ -171,9 +173,9 @@ func (s *Service) handleTransaction2(sess *smbSession, h protocol.Header, req []
 func (s *Service) dispatchTrans2(sess *smbSession, sh *Share, h protocol.Header, t2 trans2Request) []byte {
 	switch t2.sub {
 	case trans2FindFirst2:
-		return s.findFirst2(sess, sh, h, t2.params, t2.data)
+		return s.findFirst2(sess, sh, h, t2.params, t2.data, t2.maxData)
 	case trans2FindNext2:
-		return s.findNext2(sess, sh, h, t2.params, t2.data)
+		return s.findNext2(sess, sh, h, t2.params, t2.data, t2.maxData)
 	case trans2QueryFSInfo:
 		return s.queryFSInfo(sh, h, t2.params)
 	case trans2QueryPathInfo:
@@ -386,7 +388,7 @@ func (s *Service) applySetBasicInfo(sh *Share, h protocol.Header, store string, 
 // the request's Trans2_Data block — the SMB_GEA_LIST name filter when the level
 // is SMB_INFO_QUERY_EAS_FROM_LIST ([MS-CIFS] §2.2.6.2.1 "MUST be included" for
 // that level), empty otherwise.
-func (s *Service) findFirst2(sess *smbSession, sh *Share, h protocol.Header, params, reqData []byte) []byte {
+func (s *Service) findFirst2(sess *smbSession, sh *Share, h protocol.Header, params, reqData []byte, maxData int) []byte {
 	if len(params) < 12 {
 		return errResponse(h, statusNotSupported)
 	}
@@ -410,7 +412,7 @@ func (s *Service) findFirst2(sess *smbSession, sh *Share, h protocol.Header, par
 		return errResponse(h, st)
 	}
 
-	data, returned, lastNameOff := packFindEntries(sh, rows, searchCount, infoLevel, flags&findReturnResumeKeys != 0, geaNames, h.Flags2)
+	data, returned, lastNameOff := packFindEntriesBudget(sh, rows, searchCount, findDataBudget(maxData), infoLevel, flags&findReturnResumeKeys != 0, geaNames, h.Flags2)
 	endOfSearch := returned >= len(rows)
 
 	sid := sess.allocSID(&searchHandle{rows: nil, flags2: h.Flags2})
@@ -430,7 +432,7 @@ func (s *Service) findFirst2(sess *smbSession, sh *Share, h protocol.Header, par
 // It streams the next batch from the snapshotted searchHandle. reqData carries
 // the SMB_GEA_LIST name filter for the SMB_INFO_QUERY_EAS_FROM_LIST level (the
 // client re-sends it on every FIND_NEXT2, [MS-CIFS] §2.2.6.3.1).
-func (s *Service) findNext2(sess *smbSession, sh *Share, h protocol.Header, params, reqData []byte) []byte {
+func (s *Service) findNext2(sess *smbSession, sh *Share, h protocol.Header, params, reqData []byte, maxData int) []byte {
 	if len(params) < 12 {
 		return errResponse(h, statusNotSupported)
 	}
@@ -460,7 +462,7 @@ func (s *Service) findNext2(sess *smbSession, sh *Share, h protocol.Header, para
 		return errResponse(h, statusNoMoreFiles)
 	}
 
-	data, returned, lastNameOff := packFindEntries(sh, rows, searchCount, infoLevel, flags&findReturnResumeKeys != 0, geaNames, h.Flags2)
+	data, returned, lastNameOff := packFindEntriesBudget(sh, rows, searchCount, findDataBudget(maxData), infoLevel, flags&findReturnResumeKeys != 0, geaNames, h.Flags2)
 	endOfSearch := returned >= len(rows)
 
 	sess.mu.Lock()
@@ -976,16 +978,43 @@ func supportedFindLevel(level uint16) bool {
 	return level == infoStandard || level == infoQueryEaSize || level == infoQueryEasFromList || level == infoFileBothDirInfo
 }
 
-// packFindEntries packs up to maxEntries findRows at the requested information
-// level: the NT SMB_FIND_FILE_BOTH_DIRECTORY_INFO or the pre-NT LANMAN2.0
-// levels (SMB_INFO_STANDARD / SMB_INFO_QUERY_EA_SIZE) that OS/2 LAN Server and
-// DOS LANMAN redirectors ask for (netbeui.pcap 2026-07-10 frames 308/316 —
-// rejecting them leaves OS/2 unable even to read its message file → SYS0318).
-func packFindEntries(sh *Share, rows []findRow, maxEntries int, infoLevel uint16, resumeKeys bool, geaNames []string, flags2 uint16) (data []byte, returned int, lastNameOffset uint16) {
+// packFindEntriesBudget packs up to maxEntries findRows at the requested information
+// level: the NT SMB_FIND_FILE_BOTH_DIRECTORY_INFO or the pre-NT LANMAN2.0 levels
+// (SMB_INFO_STANDARD / SMB_INFO_QUERY_EA_SIZE) that OS/2 LAN Server and DOS LANMAN
+// redirectors ask for (netbeui.pcap 2026-07-10 frames 308/316 — rejecting them leaves
+// OS/2 unable even to read its message file → SYS0318).
+//
+// maxBytes is an explicit data-block BYTE budget: packing stops once the accumulated
+// records would exceed it (0 = no byte cap, entry-count-only). A connectionless
+// transport (direct SMB over IPX) has no reply reassembly, so the whole FIND data block
+// must fit one datagram; the client's MaxDataCount ([MS-CIFS] §2.2.4.46.1) drives this
+// cap and the client pages the rest via FIND_NEXT2. A stream transport (TCP/NBT) sends
+// MaxDataCount 0xFFFF, which yields no byte cap, leaving the single-message behaviour
+// unchanged. At least one record is always packed (a lone over-budget entry still goes
+// out) so a search never stalls with zero progress.
+func packFindEntriesBudget(sh *Share, rows []findRow, maxEntries, maxBytes int, infoLevel uint16, resumeKeys bool, geaNames []string, flags2 uint16) (data []byte, returned int, lastNameOffset uint16) {
 	if infoLevel == infoFileBothDirInfo {
-		return packFindBothDir(sh, rows, maxEntries, flags2)
+		return packFindBothDir(sh, rows, maxEntries, maxBytes, flags2)
 	}
-	return packFindStandard(sh, rows, maxEntries, infoLevel, resumeKeys, geaNames, flags2)
+	return packFindStandard(sh, rows, maxEntries, maxBytes, infoLevel, resumeKeys, geaNames, flags2)
+}
+
+// findDataBudget converts a request's MaxDataCount into the byte budget the FIND
+// packer fills, reserving headroom for the TRANS2 response's parameter block and
+// fixed framing so the WHOLE assembled message — not just the data block — fits the
+// client's advertised buffer (and, over IPX, one datagram). A zero or absurdly large
+// MaxDataCount (the 0xFFFF a reassembling TCP/NBT client sends) yields 0 = "no byte
+// cap", preserving the single-message reply on stream transports.
+func findDataBudget(maxData int) int {
+	if maxData <= 0 || maxData >= 0xFFFF {
+		return 0 // no cap: entry-count-only (stream transport / unbounded client)
+	}
+	const trans2ReplyOverhead = 64 // header + WCT/words/BCC + param block + pad slack
+	budget := maxData - trans2ReplyOverhead
+	if budget < 1 {
+		budget = 1
+	}
+	return budget
 }
 
 // packFindBothDir packs findRows as SMB_FIND_FILE_BOTH_DIRECTORY_INFO records
@@ -999,7 +1028,7 @@ func packFindEntries(sh *Share, rows []findRow, maxEntries int, infoLevel uint16
 // and length 0 when no distinct valid 8.3 name exists. Returns the data block,
 // the count packed, and the offset of the last record's FileName field (the
 // resume hint).
-func packFindBothDir(sh *Share, rows []findRow, maxEntries int, flags2 uint16) (data []byte, returned int, lastNameOffset uint16) {
+func packFindBothDir(sh *Share, rows []findRow, maxEntries, maxBytes int, flags2 uint16) (data []byte, returned int, lastNameOffset uint16) {
 	out := make([]byte, 0, 128)
 	for i := 0; i < len(rows) && returned < maxEntries; i++ {
 		row := rows[i]
@@ -1018,6 +1047,12 @@ func packFindBothDir(sh *Share, rows []findRow, maxEntries int, flags2 uint16) (
 		const fixed = 94
 		recLen := fixed + len(nameWire) + term
 		pad := (4 - recLen%4) % 4
+		// Byte budget: stop before a record that would overflow the client's
+		// MaxDataCount, but always pack at least one (a lone over-budget entry still
+		// goes out, so a search never stalls). The client pages the rest via FIND_NEXT2.
+		if maxBytes > 0 && returned > 0 && len(out)+recLen+pad > maxBytes {
+			break
+		}
 		recStart := len(out)
 		last := i == len(rows)-1 || returned == maxEntries-1
 		next := uint32(recLen + pad)
@@ -1045,6 +1080,12 @@ func packFindBothDir(sh *Share, rows []findRow, maxEntries int, flags2 uint16) (
 		lastNameOffset = uint16(recStart + fixed)
 		returned++
 	}
+	// If a byte-budget or entry-count stop left the final packed record with a
+	// non-zero NextEntryOffset (it was not the row-list's last), clear it so the
+	// client's record walk terminates cleanly at the end of this batch.
+	if returned > 0 {
+		bp.PutLE32(out[uint32(lastNameOffset)-94:uint32(lastNameOffset)-90], 0)
+	}
 	return out, returned, lastNameOffset
 }
 
@@ -1065,7 +1106,7 @@ func packFindBothDir(sh *Share, rows []findRow, maxEntries int, flags2 uint16) (
 // EAS_FROM_LIST level, which is size-only), filtered to the geaNames the
 // request's SMB_GEA_LIST asked for (§2.2.8.1.3 returns only the requested
 // names). Both draw on the share's real stored EAs (Share.EAs).
-func packFindStandard(sh *Share, rows []findRow, maxEntries int, infoLevel uint16, resumeKeys bool, geaNames []string, flags2 uint16) (data []byte, returned int, lastNameOffset uint16) {
+func packFindStandard(sh *Share, rows []findRow, maxEntries, maxBytes int, infoLevel uint16, resumeKeys bool, geaNames []string, flags2 uint16) (data []byte, returned int, lastNameOffset uint16) {
 	withEaSize := infoLevel == infoQueryEaSize
 	withFeaList := infoLevel == infoQueryEasFromList
 	out := make([]byte, 0, 128)
@@ -1097,6 +1138,12 @@ func packFindStandard(sh *Share, rows []findRow, maxEntries int, infoLevel uint1
 			fixed += 4 // EaSize: a plain length, not the FEA records themselves
 		} else if withFeaList {
 			fixed += len(feaList)
+		}
+		// Byte budget: stop before a record that would overflow the client's
+		// MaxDataCount, but always pack at least one so a search never stalls; the
+		// client pages the rest via FIND_NEXT2 (see packFindEntriesBudget).
+		if maxBytes > 0 && returned > 0 && len(out)+fixed+len(nameWire)+term > maxBytes {
+			break
 		}
 		recStart := len(out)
 		rec := make([]byte, fixed+len(nameWire)+term)
