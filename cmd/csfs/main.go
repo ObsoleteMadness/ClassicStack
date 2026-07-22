@@ -12,9 +12,15 @@
 //
 // Interactive: csfs afp://server/Vol   (no command → REPL)
 //
-// Global flags select the transport (-iface, -ifacetype) and the host fork container
-// (-fork). The -ifacetype is validated against the URI scheme's declared transports, so
-// an invalid combo (e.g. smb over ltoudp) is rejected up front.
+// Global flags select the transport (-iface, -ifacetype), the host fork container
+// (-fork), and — for the raw-Ethernet SMB-over-IPX transport — the virtual station's
+// hardware address (-mac, empty = a synthesised locally-administered random MAC, so the
+// client never borrows the host NIC's identity). The -ifacetype is validated against the
+// URI scheme's declared transports, so an invalid combo (e.g. smb over ltoudp) is
+// rejected up front.
+//
+//	csfs -iface eth0 ls "smb://server/Share"          # SMB over IPX (pcap, default)
+//	csfs -mac 02:11:22:33:44:55 -iface eth0 ls smb://server/Share
 package main
 
 import (
@@ -25,6 +31,7 @@ import (
 
 	// Register the client schemes. Each blank import plugs a scheme into the registry.
 	_ "github.com/ObsoleteMadness/ClassicStack/client/afp"
+	_ "github.com/ObsoleteMadness/ClassicStack/client/smb"
 )
 
 func main() {

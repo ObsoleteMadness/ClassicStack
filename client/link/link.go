@@ -70,6 +70,12 @@ type Opener struct {
 	// client/atalk), in which case it opens a FrameLink and frames it itself.
 	Net  uint16
 	Node uint8
+	// MAC, when non-zero, is the hardware address a raw-Ethernet client transport
+	// (SMB-over-IPX, EtherDFS) presents as its virtual station's source node. The client
+	// is a distinct station on the segment the pcap device bridges, not the host itself,
+	// so it must NOT borrow the host NIC's MAC; a zero value tells the transport to
+	// synthesise a locally-administered random MAC (the default). A CLI -mac flag pins it.
+	MAC [6]byte
 	// inmemPeer, when set, is the loopback peer a KindInmem opener hands back so an
 	// in-process test can wire the client to a server over one frame pair.
 	inmemFrame link.FrameLink

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/ObsoleteMadness/ClassicStack/client"
@@ -15,6 +16,7 @@ type config struct {
 	ifaceType string // ltoudp | tashtalk | pcap | tcp
 	iface     string // interface/device/host
 	fork      string // host fork container
+	mac       string // virtual-station MAC for raw-Ethernet transports (empty = random)
 }
 
 // parseGlobalFlags peels the leading -flag/value pairs off args (a hand-rolled parser
@@ -45,6 +47,8 @@ func parseGlobalFlags(args []string) (config, []string, error) {
 			cfg.iface = val
 		case "fork":
 			cfg.fork = val
+		case "mac":
+			cfg.mac = val
 		default:
 			return cfg, nil, fmt.Errorf("unknown flag -%s", name)
 		}
@@ -80,7 +84,28 @@ func openerFor(cfg config, target uri.Target) (*clientlink.Opener, error) {
 	}
 
 	spec := clientlink.Spec{Kind: kind, Name: cfg.iface}
-	return clientlink.NewOpener(spec), nil
+	opener := clientlink.NewOpener(spec)
+	if cfg.mac != "" {
+		mac, err := parseMAC(cfg.mac)
+		if err != nil {
+			return nil, err
+		}
+		opener.MAC = mac
+	}
+	return opener, nil
+}
+
+// parseMAC parses a colon-, dash-, or bare-hex MAC address into a 6-byte array for the
+// virtual-station source node of a raw-Ethernet transport (SMB-over-IPX). An empty -mac
+// flag never reaches here (the transport then synthesises a random one).
+func parseMAC(s string) ([6]byte, error) {
+	hw, err := net.ParseMAC(s)
+	if err != nil || len(hw) != 6 {
+		return [6]byte{}, fmt.Errorf("invalid -mac %q: want a 6-byte MAC (aa:bb:cc:dd:ee:ff)", s)
+	}
+	var mac [6]byte
+	copy(mac[:], hw)
+	return mac, nil
 }
 
 // isLinkKind reports whether s names a client/link transport kind (so a URI-embedded
