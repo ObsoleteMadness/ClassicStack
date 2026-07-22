@@ -72,6 +72,11 @@ type Opener struct {
 	// inmemPeer, when set, is the loopback peer a KindInmem opener hands back so an
 	// in-process test can wire the client to a server over one frame pair.
 	inmemFrame link.FrameLink
+	// datagram, when set, is a pre-built DDP DatagramLink DatagramLinkDDP returns as-is
+	// (bypassing framing). It is the in-process e2e seam: a test bridges this straight to
+	// a running server's Inbound, so the whole AFP client stack (ATP requester, ASP
+	// session, fs adapter) runs against the real service without a wire.
+	datagram link.DatagramLink
 }
 
 // NewOpener builds an Opener for spec with a default asserted AppleTalk address.
@@ -84,6 +89,13 @@ func NewOpener(spec Spec) *Opener {
 // loopback so client↔server frames flow without hardware.
 func NewInmemOpener(clientEnd link.FrameLink) *Opener {
 	return &Opener{Spec: Spec{Kind: KindInmem}, inmemFrame: clientEnd}
+}
+
+// NewDatagramOpener builds an Opener that returns dl directly from DatagramLinkDDP,
+// bypassing all framing. It is the in-process e2e seam: a test bridges dl to a running
+// server's Inbound so the AFP client stack runs against the real service without a wire.
+func NewDatagramOpener(dl link.DatagramLink) *Opener {
+	return &Opener{Spec: Spec{Kind: KindInmem}, datagram: dl}
 }
 
 // FrameLink opens the raw L2 frame transport for the Opener's Spec: an EtherTalk /
@@ -110,6 +122,9 @@ func (o *Opener) FrameLink(filter string) (link.FrameLink, error) {
 // DatagramLinkDDP opens a DDP-framed datagram transport for the Opener's Spec, over
 // LToUDP, TashTalk, EtherTalk (pcap), or an in-memory pair. This is the AFP/NBP path.
 func (o *Opener) DatagramLinkDDP() (link.DatagramLink, error) {
+	if o.datagram != nil {
+		return o.datagram, nil
+	}
 	switch o.Spec.Kind {
 	case KindLToUDP, "":
 		return openLToUDP(o.Spec.Name, o.Net, o.Node)

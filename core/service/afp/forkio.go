@@ -81,7 +81,12 @@ func (s *Service) afpOpenFork(a *afpSession, block []byte) ([]byte, int32) {
 	writable := accessMode&accessWrite != 0
 	flag := os.O_RDONLY
 	if writable {
-		flag = os.O_RDWR
+		// A write-mode fork open CREATES the fork if absent — this is AFP semantics
+		// (a Mac opens a resource fork for write on a file that has none, then writes
+		// it). Without O_CREATE the AppleDouble adapter returns ErrNotExist for a
+		// not-yet-existing resource fork, so a client could never create one through
+		// FPOpenFork (data fork is the file itself, already created by FPCreateFile).
+		flag = os.O_RDWR | os.O_CREATE
 	}
 
 	f, err := vol.FS().OpenFork(store, fork, flag)

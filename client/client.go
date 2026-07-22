@@ -64,12 +64,41 @@ type Options struct {
 // the session at Close; Connect's ForkFS forwards Close through to it.
 type Factory func(ctx context.Context, target uri.Target, opts Options) (fs.FileSystem, error)
 
-// registeredClient is one scheme's factory plus its declared default fork backend and
-// param schema, mirroring core/fs.registeredFS.
+// registeredClient is one scheme's factory plus its declared default fork backend,
+// accepted transports, and param schema, mirroring core/fs.registeredFS.
 type registeredClient struct {
 	factory     Factory
 	defaultFork string
+	transports  Transports
 	params      []fs.Param
+}
+
+// Transports declares which client/link transport kinds a scheme accepts and which one
+// is its default when -ifacetype is omitted. It lets the CLI reject an invalid
+// scheme×ifacetype combo up front (e.g. ltoudp/tashtalk are AFP-over-DDP only; SMB has
+// no LToUDP transport) with a clear message rather than failing deep in a dial.
+type Transports struct {
+	// Kinds are the client/link.Kind names this scheme can run over (e.g. "ltoudp",
+	// "pcap", "tashtalk" for AFP; "pcap", "tcp" for SMB). Empty means "no constraint"
+	// (the CLI does not validate).
+	Kinds []string
+	// Default is the kind used when the user gives no -ifacetype. It must appear in
+	// Kinds. Empty means the CLI requires an explicit -ifacetype.
+	Default string
+}
+
+// Accepts reports whether kind is a transport this scheme accepts (case-insensitive).
+// An empty Kinds set accepts anything (no declared constraint).
+func (t Transports) Accepts(kind string) bool {
+	if len(t.Kinds) == 0 {
+		return true
+	}
+	for _, k := range t.Kinds {
+		if strings.EqualFold(k, kind) {
+			return true
+		}
+	}
+	return false
 }
 
 var (
@@ -80,12 +109,26 @@ var (
 // RegisterClient registers a scheme's client factory, mirroring fs.RegisterFS. name is
 // the URI scheme ("afp", "smb", "ncp", "etherdfs"). defaultFork is the fork backend
 // Connect uses when Options.ForkBackend is empty ("passthrough" for a native-fork
-// protocol, "appledouble" otherwise). params declares the credentials/volume keys a UI
-// could render (like fs.Param); it may be nil.
-func RegisterClient(name, defaultFork string, f Factory, params ...fs.Param) {
+// protocol, "appledouble" otherwise). transports declares the accepted client/link
+// transport kinds + default (so the CLI can validate -ifacetype). params declares the
+// credentials/volume keys a UI could render (like fs.Param); it may be nil.
+func RegisterClient(name, defaultFork string, transports Transports, f Factory, params ...fs.Param) {
 	clientMu.Lock()
 	defer clientMu.Unlock()
-	clientRegs[strings.ToLower(name)] = registeredClient{factory: f, defaultFork: defaultFork, params: params}
+	clientRegs[strings.ToLower(name)] = registeredClient{
+		factory:     f,
+		defaultFork: defaultFork,
+		transports:  transports,
+		params:      params,
+	}
+}
+
+// TransportsFor returns a scheme's declared transports (accepted kinds + default). The
+// zero value (no constraint) is returned for an unknown scheme.
+func TransportsFor(scheme string) Transports {
+	clientMu.RLock()
+	defer clientMu.RUnlock()
+	return clientRegs[strings.ToLower(scheme)].transports
 }
 
 // Schemes returns the registered scheme names, sorted, mirroring fs.Types.
