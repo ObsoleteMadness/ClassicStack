@@ -19,8 +19,23 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/ObsoleteMadness/ClassicStack/client/trace"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	proto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ncp"
 )
+
+// ncpTrace narrates the NCP attach flow at log.Trace through the shared client/trace
+// sink, so `csfs -v` shows CreateConnection / NegotiateBuffer / Login / GetVolumeNumber /
+// AllocDirHandle alongside every other transport's trace.
+var ncpTrace = trace.Logger("ncp")
+
+// ncptracef narrates one NCP wire-trace line at log.Trace (no-op unless -v is on).
+func ncptracef(format string, args ...any) {
+	if !ncpTrace.Enabled(log.Trace) {
+		return
+	}
+	ncpTrace.Log0(log.Trace, fmt.Sprintf(format, args...))
+}
 
 // clientTask is the NetWare task number stamped on every request. A single-threaded
 // file client uses one stable task; the server echoes it and does not key state on it.
@@ -88,14 +103,18 @@ func Open(tr Transport, p DialParams) (*Session, error) {
 
 	// 1. CreateConnection — the server allocates a service connection and returns its
 	// number, which every later request header carries.
+	ncptracef("CreateConnection")
 	if err := s.createConnection(); err != nil {
 		return nil, err
 	}
+	ncptracef("connection %d assigned", s.conn)
 	// 2. Negotiate Buffer Size — agree the max read/write packet so a reply fits one
 	// datagram. A failure here is non-fatal (older servers may not answer); fall back
 	// to the proposed size.
 	s.negotiateBuffer()
+	ncptracef("NegotiateBuffer → %d bytes", s.rwBuffer)
 	// 3. Login — cleartext (guest when the user is empty).
+	ncptracef("Login user=%q", p.User)
 	if err := s.login(p.User, p.Password); err != nil {
 		s.destroyConnection()
 		return nil, err
@@ -105,12 +124,14 @@ func Open(tr Transport, p DialParams) (*Session, error) {
 		s.destroyConnection()
 		return nil, err
 	}
+	ncptracef("volume %q resolved", p.Volume)
 	// 5. Allocate a permanent directory handle at the volume root ("VOL:"), the anchor
 	// every file operation resolves its relative path against.
 	if err := s.allocRootHandle(); err != nil {
 		s.destroyConnection()
 		return nil, err
 	}
+	ncptracef("root directory handle allocated — volume mounted")
 	return s, nil
 }
 

@@ -216,6 +216,7 @@ func (t *frameTransport) readLoop() {
 		if !t.haveServer {
 			t.serverMAC = f.SrcMAC
 			t.haveServer = true
+			edfstracef("learned server MAC %s from first reply", macTraceEDFS(f.SrcMAC))
 		}
 		t.mu.Unlock()
 

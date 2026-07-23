@@ -2,33 +2,42 @@ package atalk
 
 import (
 	"fmt"
-	"os"
-	"sync/atomic"
+
+	"github.com/ObsoleteMadness/ClassicStack/client/trace"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 )
 
-// verbose.go is an opt-in wire-trace for the AppleTalk client stack: when enabled it
-// prints each NBP lookup, ATP transaction (TReq send, per-attempt timeout, TResp
-// arrival), and the resolved server address to stderr, so a stuck connect (e.g. an ATP
-// transaction that times out) can be diagnosed without a packet capture. It is off by
-// default; the csfs `-v` flag turns it on via SetVerbose. Kept as a package-level toggle
-// (not a threaded logger) so the existing constructors — NewEndpoint/NewATP/Open — need
-// no signature change.
+// verbose.go is the AppleTalk client stack's wire-trace, now built on the shared
+// client/trace facility (which wraps the server's core/log library) rather than an ad-hoc
+// printf. When verbose is on it narrates each NBP lookup, ATP transaction (TReq send,
+// per-attempt timeout, TResp arrival), and the resolved server address, so a stuck
+// connect (e.g. an ATP transaction that times out) is diagnosable without a packet
+// capture. It stays a package-level facility (no threaded logger) so the existing
+// constructors — NewEndpoint/NewATP/Open — need no signature change; the verbose toggle
+// lives in client/trace and governs every transport at once (see trace.SetVerbose).
 
-// verboseOn is the atomic verbose toggle (0 = off, 1 = on).
-var verboseOn atomic.Bool
+// atalkLog is the scope-named core/log.Logger the AppleTalk client narrates through. It
+// shares client/trace's one verbose-gated stderr sink, so `csfs -v` turns it on with
+// every other transport's trace.
+var atalkLog = trace.Logger("atalk")
 
-// SetVerbose enables or disables the client's wire-trace output on stderr.
-func SetVerbose(on bool) { verboseOn.Store(on) }
+// SetVerbose enables or disables the client's wire-trace output. Retained for
+// compatibility with callers that toggled the AppleTalk trace specifically; it delegates
+// to the shared client/trace toggle, so it governs every transport's trace, not only
+// AppleTalk. New code should call client/trace.SetVerbose directly.
+func SetVerbose(on bool) { trace.SetVerbose(on) }
 
 // Verbose reports whether wire-trace output is enabled.
-func Verbose() bool { return verboseOn.Load() }
+func Verbose() bool { return trace.Verbose() }
 
-// tracef prints a wire-trace line to stderr when verbose is enabled. The lines are
-// prefixed so they are distinguishable from the command's normal output.
+// tracef narrates one wire-trace line at log.Trace. The Enabled guard means a disabled
+// trace builds no message; the "atalk" scope prefixes the output so it is distinguishable
+// from the command's normal stdout.
 func tracef(format string, args ...any) {
-	if verboseOn.Load() {
-		fmt.Fprintf(os.Stderr, "[atalk] "+format+"\n", args...)
+	if !atalkLog.Enabled(log.Trace) {
+		return
 	}
+	atalkLog.Log0(log.Trace, fmt.Sprintf(format, args...))
 }
 
 // String renders an address as net.node:socket for trace output.

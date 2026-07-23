@@ -17,6 +17,7 @@ type config struct {
 	iface     string // interface/device/host
 	fork      string // host fork container
 	mac       string // virtual-station MAC for raw-Ethernet transports (empty = random)
+	transport string // pcap sub-carrier for SMB: ipx (default) | nbipx | nbf
 	verbose   bool   // -v: print client wire-trace (NBP/ATP/ASP) to stderr
 }
 
@@ -57,6 +58,8 @@ func parseGlobalFlags(args []string) (config, []string, error) {
 			cfg.fork = val
 		case "mac":
 			cfg.mac = val
+		case "transport":
+			cfg.transport = strings.ToLower(val)
 		default:
 			return cfg, nil, fmt.Errorf("unknown flag -%s", name)
 		}
@@ -91,7 +94,7 @@ func openerFor(cfg config, target uri.Target) (*clientlink.Opener, error) {
 			kind, target.Scheme, strings.Join(transports.Kinds, ", "))
 	}
 
-	spec := clientlink.Spec{Kind: kind, Name: cfg.iface}
+	spec := clientlink.Spec{Kind: kind, Name: cfg.iface, Carrier: cfg.transport}
 	opener := clientlink.NewOpener(spec)
 	if cfg.mac != "" {
 		mac, err := parseMAC(cfg.mac)

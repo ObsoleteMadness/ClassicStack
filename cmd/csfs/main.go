@@ -29,7 +29,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/ObsoleteMadness/ClassicStack/client/atalk"
+	"github.com/ObsoleteMadness/ClassicStack/client/trace"
 
 	// Register the client schemes. Each blank import plugs a scheme into the registry.
 	_ "github.com/ObsoleteMadness/ClassicStack/client/afp"
@@ -48,8 +48,10 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, "csfs:", err)
 		return 2
 	}
-	// -v turns on the AppleTalk client wire-trace (NBP/ATP/ASP steps to stderr).
-	atalk.SetVerbose(cfg.verbose)
+	// -v turns on the client wire-trace across EVERY transport (AppleTalk NBP/ATP/ASP,
+	// direct-IPX, NBIPX, NBF, NCP, EtherDFS) — one shared verbose toggle on the core/log
+	// library, rendered to stderr.
+	trace.SetVerbose(cfg.verbose)
 	if len(rest) == 0 {
 		usage()
 		return 2
@@ -100,6 +102,8 @@ Commands:
 Flags:
   -ifacetype  transport: ltoudp | tashtalk | pcap | tcp (scheme-validated)
   -iface      interface: IPv4 addr (ltoudp), device (pcap), COM3//dev/tty (tashtalk), host (tcp)
+  -transport  SMB pcap carrier: ipx (default) | nbipx | nbf
+  -mac        virtual-station MAC for raw-Ethernet SMB carriers (empty = random)
   -fork       host fork container: appledouble | applesingle | macbinary | derez | native | nofork
   -v          verbose: print the client wire-trace (NBP/ATP/ASP) to stderr
 

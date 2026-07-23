@@ -5,8 +5,36 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/ObsoleteMadness/ClassicStack/client/trace"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	proto "github.com/ObsoleteMadness/ClassicStack/core/protocol/etherdfs"
 )
+
+// edfsTrace narrates the EtherDFS drive-open probe at log.Trace through the shared
+// client/trace sink, so `csfs -v` shows the AL_DISKSPACE discovery alongside every other
+// transport's trace.
+var edfsTrace = trace.Logger("etherdfs")
+
+// edfstracef narrates one EtherDFS wire-trace line at log.Trace (no-op unless -v is on).
+func edfstracef(format string, args ...any) {
+	if !edfsTrace.Enabled(log.Trace) {
+		return
+	}
+	edfsTrace.Log0(log.Trace, fmt.Sprintf(format, args...))
+}
+
+// macTraceEDFS renders a MAC as aa:bb:cc:dd:ee:ff for trace lines.
+func macTraceEDFS(mac [6]byte) string {
+	const hexd = "0123456789abcdef"
+	b := make([]byte, 0, 17)
+	for i, x := range mac {
+		if i > 0 {
+			b = append(b, ':')
+		}
+		b = append(b, hexd[x>>4], hexd[x&0x0f])
+	}
+	return string(b)
+}
 
 // session.go holds the EtherDFS client session: the bound drive number, the transport,
 // and the request/reply serialisation. EtherDFS has no login or connection handshake —
@@ -42,9 +70,11 @@ func Open(tr Transport, p DialParams) (*Session, error) {
 	// Discovery: an AL_DISKSPACE query for the drive draws a reply from the server,
 	// which the transport uses to learn the server MAC. The reply's AX is the fixed
 	// DiskSpaceStatus data value (not an error), so any reply confirms the server.
+	edfstracef("AL_DISKSPACE probe for drive %s (num %d)", p.Drive, num)
 	if _, _, err := s.tr.Send(num, proto.OpDiskspace, nil); err != nil {
 		return nil, fmt.Errorf("etherdfs: discover drive %s: %w", p.Drive, err)
 	}
+	edfstracef("server answered — drive %s bound", p.Drive)
 	return s, nil
 }
 

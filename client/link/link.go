@@ -45,6 +45,14 @@ type Spec struct {
 	Kind string // pcap | ltoudp | tashtalk | tcp | inmem
 	Name string // device / interface / host, as the kind interprets it
 	Baud uint   // tashtalk only; 0 → adapter default
+	// Carrier is an optional protocol-native sub-transport within a link Kind, for
+	// schemes that ride more than one carrier over the same L2 device. SMB over a pcap
+	// NIC, for one, runs either direct-hosted straight on IPX (the default) or over a
+	// NetBIOS session — NetBIOS-over-IPX (NBIPX) or raw NetBIOS-over-802.2 (NBF) — all on
+	// the same pcap FrameLink. Empty lets the scheme pick its default carrier; the CLI
+	// -transport flag threads a value here. Uninterpreted by client/link (it only opens
+	// the L2 link); the scheme's factory reads it.
+	Carrier string
 }
 
 // ParseSpec parses "kind:name" (or a bare kind for inmem) into a Spec. The name may

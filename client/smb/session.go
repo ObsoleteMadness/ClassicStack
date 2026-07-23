@@ -4,8 +4,23 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/ObsoleteMadness/ClassicStack/client/trace"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	proto "github.com/ObsoleteMadness/ClassicStack/core/protocol/smb"
 )
+
+// smbTrace narrates the transport-agnostic SMB session steps (NEGOTIATE / SESSION_SETUP /
+// TREE_CONNECT) at log.Trace through the shared client/trace sink, so `csfs -v` shows the
+// SMB handshake regardless of which carrier (IPX/NBIPX/NBF/TCP) it rides.
+var smbTrace = trace.Logger("smb")
+
+// smbtracef narrates one SMB wire-trace line at log.Trace (no-op unless -v is on).
+func smbtracef(format string, args ...any) {
+	if !smbTrace.Enabled(log.Trace) {
+		return
+	}
+	smbTrace.Log0(log.Trace, fmt.Sprintf(format, args...))
+}
 
 // clientMaxBuffer is the largest response this client asks the server to send in one
 // message (its SESSION_SETUP MaxBufferSize). 16 KiB matches the server's own
@@ -103,6 +118,7 @@ func (s *Session) negotiate() (proto.NegotiateResult, error) {
 	// by command+MID, so NEGOTIATE and SESSION_SETUP must not share a MID. NEGOTIATE
 	// still carries no UID/TID and offers the ANSI dialect list (Unicode not yet set).
 	s.builder.NextMID()
+	smbtracef("NEGOTIATE")
 	resp, err := s.tr.Send(s.builder.BuildNegotiate())
 	if err != nil {
 		return proto.NegotiateResult{}, fmt.Errorf("smb: negotiate: %w", err)
@@ -111,6 +127,7 @@ func (s *Session) negotiate() (proto.NegotiateResult, error) {
 	if err != nil {
 		return proto.NegotiateResult{}, fmt.Errorf("smb: negotiate: %w", err)
 	}
+	smbtracef("NEGOTIATE ok — dialect %q", neg.Dialect)
 	return neg, nil
 }
 
@@ -118,6 +135,7 @@ func (s *Session) negotiate() (proto.NegotiateResult, error) {
 // builder so every later request carries it.
 func (s *Session) sessionSetup(user, password, domain string) error {
 	s.builder.NextMID()
+	smbtracef("SESSION_SETUP_ANDX user=%q", user)
 	resp, err := s.tr.Send(s.builder.BuildSessionSetup(user, password, domain, clientMaxBuffer))
 	if err != nil {
 		return fmt.Errorf("smb: session setup: %w", err)
@@ -127,6 +145,7 @@ func (s *Session) sessionSetup(user, password, domain string) error {
 		return fmt.Errorf("smb: session setup: %w", err)
 	}
 	s.builder.UID = res.UID
+	smbtracef("SESSION_SETUP_ANDX ok — UID %d", res.UID)
 	return nil
 }
 
@@ -137,6 +156,7 @@ func (s *Session) treeConnect(server, share string) error {
 		server = "SERVER"
 	}
 	s.builder.NextMID()
+	smbtracef("TREE_CONNECT_ANDX \\\\%s\\%s", server, share)
 	resp, err := s.tr.Send(s.builder.BuildTreeConnect(server, share))
 	if err != nil {
 		return fmt.Errorf("smb: tree connect %q: %w", share, err)
@@ -146,6 +166,7 @@ func (s *Session) treeConnect(server, share string) error {
 		return fmt.Errorf("smb: tree connect %q: %w", share, err)
 	}
 	s.builder.TID = tid
+	smbtracef("TREE_CONNECT_ANDX ok — TID %d (share mounted)", tid)
 	return nil
 }
 

@@ -7,9 +7,24 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ObsoleteMadness/ClassicStack/client/trace"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	ipxproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx"
 )
+
+// ipxTrace narrates the direct-hosted-SMB-over-IPX transport at log.Trace through the
+// shared client/trace sink (scope "ipx"), so `csfs -v` shows the connectionless
+// server-node/CID learning alongside every other transport's trace.
+var ipxTrace = trace.Logger("ipx")
+
+// ipxtracef narrates one direct-IPX wire-trace line at log.Trace (no-op unless -v is on).
+func ipxtracef(format string, args ...any) {
+	if !ipxTrace.Enabled(log.Trace) {
+		return
+	}
+	ipxTrace.Log0(log.Trace, fmt.Sprintf(format, args...))
+}
 
 // ipx.go is the SMB direct-hosted-over-IPX CLIENT transport: the client mirror of the
 // server's core/service/smb.DirectIPX. SMB rides straight on IPX (socket 0x0550, type 4
@@ -280,6 +295,7 @@ func (t *ipxTransport) readLoop() {
 			t.serverNode = d.SrcNode
 			t.serverNet = d.SrcNet
 			t.haveServer = true
+			ipxtracef("learned server node %s from first reply", macTrace(d.SrcNode))
 		}
 		// Learn/refresh the CID the server stamped, so later requests echo it.
 		if len(msg) >= smbCIDOffset+2 {
