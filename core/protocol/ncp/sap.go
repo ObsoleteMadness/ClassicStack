@@ -113,3 +113,37 @@ func UnmarshalSAPQuery(b []byte) (*SAPQuery, error) {
 func (q *SAPQuery) WantsType(want uint16) bool {
 	return q.ServiceType == want || q.ServiceType == SAPServerTypeWildcard
 }
+
+// MarshalQuery appends a SAP query packet (operation + service type) to dst — the
+// CLIENT-direction marshaller a discovery probe broadcasts. op is SAPGeneralQuery
+// ("who offers service type X?") or SAPNearestQuery ("nearest server of type X?").
+func MarshalQuery(op, serviceType uint16, dst []byte) []byte {
+	return append(dst, byte(op>>8), byte(op), byte(serviceType>>8), byte(serviceType))
+}
+
+// ParseSAPResponse parses a SAP response packet (operation + one or more 64-byte
+// service entries) — the CLIENT-direction parser a discovery probe reads. It returns
+// the operation and the advertised entries; a response with a partial trailing entry
+// stops at the last whole one. It returns ErrShortSAP for a buffer too short to hold
+// the operation word.
+func ParseSAPResponse(b []byte) (op uint16, entries []SAPEntry, err error) {
+	if len(b) < 2 {
+		return 0, nil, ErrShortSAP
+	}
+	op = uint16(b[0])<<8 | uint16(b[1])
+	p := 2
+	for p+SAPEntryLen <= len(b) {
+		e := b[p : p+SAPEntryLen]
+		entry := SAPEntry{
+			Type: uint16(e[0])<<8 | uint16(e[1]),
+			Name: trimNUL(e[2 : 2+sapNameLen]),
+			Hops: uint16(e[62])<<8 | uint16(e[63]),
+		}
+		copy(entry.Network[:], e[50:54])
+		copy(entry.Node[:], e[54:60])
+		copy(entry.Socket[:], e[60:62])
+		entries = append(entries, entry)
+		p += SAPEntryLen
+	}
+	return op, entries, nil
+}

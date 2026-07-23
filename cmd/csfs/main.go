@@ -31,6 +31,8 @@ import (
 
 	// Register the client schemes. Each blank import plugs a scheme into the registry.
 	_ "github.com/ObsoleteMadness/ClassicStack/client/afp"
+	_ "github.com/ObsoleteMadness/ClassicStack/client/etherdfs"
+	_ "github.com/ObsoleteMadness/ClassicStack/client/ncp"
 	_ "github.com/ObsoleteMadness/ClassicStack/client/smb"
 )
 
