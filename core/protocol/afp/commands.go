@@ -1,6 +1,8 @@
 package afp
 
 import (
+	"strings"
+
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 )
 
@@ -36,12 +38,20 @@ type LoginRequest struct {
 	Pass       string
 }
 
-// Marshal encodes the FPLogin command block.
+// Marshal encodes the FPLogin command block. The cleartext credential trailer (a
+// username Pascal string + an 8-byte password field) is appended for every UAM EXCEPT
+// the guest "No User Authent" — keyed on the UAM being non-guest rather than an exact
+// match against UAMCleartext, because a server advertises the cleartext UAM under its
+// own spelling/case ("Cleartxt passwrd" vs "Cleartxt Passwrd") and the client sends
+// that exact string back (a classic Mac ignores an FPLogin naming a UAM it did not
+// advertise). Matching the capital-P constant here dropped the credentials whenever the
+// server used the lower-case spelling, so the login carried no username/password and the
+// server silently discarded it (observed against System 7.5 — see spec/errata.md).
 func (r LoginRequest) Marshal() []byte {
 	out := []byte{CmdLogin}
 	out = PutPString(out, []byte(r.AFPVersion))
 	out = PutPString(out, []byte(r.UAM))
-	if r.UAM == UAMCleartext {
+	if !strings.EqualFold(r.UAM, UAMNoUserAuthent) {
 		out = PutPString(out, []byte(r.User))
 		// 8-byte cleartext password field, space-padded then NUL-filled to 8.
 		var pw [8]byte

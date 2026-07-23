@@ -3,6 +3,7 @@ package afp
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -12,6 +13,7 @@ import (
 	clientlink "github.com/ObsoleteMadness/ClassicStack/client/link"
 	"github.com/ObsoleteMadness/ClassicStack/client/uri"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
+	proto "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 )
 
 // register.go plugs the AFP client into the client scheme registry. Importing this
@@ -46,34 +48,8 @@ const afpListeningSocket uint8 = 251
 // volume — returning the *FS (an fs.FileSystem + native fs.ForkEngine).
 func connect(ctx context.Context, target uri.Target, opts client.Options) (fs.FileSystem, error) {
 	_ = ctx
-	dl, err := opts.Opener.DatagramLinkDDP()
+	ep, sess, _, err := dialAndLogin(target, opts)
 	if err != nil {
-		return nil, fmt.Errorf("afp: open transport: %w", err)
-	}
-	// The workstation asserts the opener's node; a real deployment runs an LLAP/AARP
-	// claim above the FrameLink first (the LToUDP/EtherTalk framer already carries the
-	// claimed node). For the in-process transport a static node is fine.
-	ep := atalk.NewEndpoint(dl, atalk.Addr{Network: opts.Opener.Net, Node: opts.Opener.Node})
-
-	srv, err := resolveServer(ep, target.Server)
-	if err != nil {
-		_ = ep.Close()
-		return nil, err
-	}
-	sls := atalk.Addr{Network: srv.Network, Node: srv.Node, Socket: afpListeningSocket}
-	if srv.Socket != 0 {
-		sls.Socket = srv.Socket
-	}
-
-	a := atalk.NewATP(ep)
-	sess, err := aspclient.Open(ep, a, sls)
-	if err != nil {
-		_ = ep.Close()
-		return nil, err
-	}
-	if err := Login(sess, target.User, target.Pass, ""); err != nil {
-		_ = sess.Close()
-		_ = ep.Close()
 		return nil, err
 	}
 	f, err := Open(sess, target.Volume)
@@ -86,6 +62,67 @@ func connect(ctx context.Context, target uri.Target, opts client.Options) (fs.Fi
 	// it to also close the endpoint.
 	f.onClose = func() { _ = ep.Close() }
 	return f, nil
+}
+
+// dialAndLogin runs the AFP connect prologue shared by a volume mount (connect) and a
+// server-root browse (Browse): open the DDP transport, resolve the server, negotiate the
+// login from FPGetSrvrInfo, open the ASP session, and log in. It returns the endpoint,
+// the live session, and the parsed server info. On any failure it tears down what it
+// built and returns the error, so the caller only closes on success.
+func dialAndLogin(target uri.Target, opts client.Options) (*atalk.Endpoint, *aspclient.Session, proto.ServerInfo, error) {
+	dl, err := opts.Opener.DatagramLinkDDP()
+	if err != nil {
+		return nil, nil, proto.ServerInfo{}, fmt.Errorf("afp: open transport: %w", err)
+	}
+	// The workstation asserts the opener's node; a real deployment runs an LLAP/AARP
+	// claim above the FrameLink first (the LToUDP/EtherTalk framer already carries the
+	// claimed node). For the in-process transport a static node is fine.
+	ep := atalk.NewEndpoint(dl, atalk.Addr{Network: opts.Opener.Net, Node: opts.Opener.Node})
+
+	srv, err := resolveServer(ep, target.Server)
+	if err != nil {
+		_ = ep.Close()
+		return nil, nil, proto.ServerInfo{}, err
+	}
+	sls := atalk.Addr{Network: srv.Network, Node: srv.Node, Socket: afpListeningSocket}
+	if srv.Socket != 0 {
+		sls.Socket = srv.Socket
+	}
+	if atalk.Verbose() {
+		fmt.Fprintf(os.Stderr, "[afp] resolved server %q → SLS %s (local %s)\n",
+			target.Server, sls, ep.LocalAddr())
+	}
+
+	a := atalk.NewATP(ep)
+
+	// Negotiate the login from the server's own FPGetSrvrInfo: a classic Mac server
+	// SILENTLY IGNORES an FPLogin that names an AFP version string or UAM it did not
+	// advertise (observed: System 7.5 offers "AFPVersion 2.1", not "AFP2.2", and
+	// "Cleartxt passwrd" with a lower-case p — spec/errata.md). GetStatus needs no
+	// session, so it runs before OpenSession. A GetStatus failure is non-fatal — the
+	// login falls back to the client defaults.
+	var srvInfo proto.ServerInfo
+	if status, gerr := aspclient.GetStatus(a, sls); gerr == nil {
+		srvInfo, _ = proto.ParseServerInfo(status)
+		if atalk.Verbose() {
+			fmt.Fprintf(os.Stderr, "[afp] server %q machine=%q versions=%v uams=%v\n",
+				srvInfo.ServerName, srvInfo.MachineType, srvInfo.AFPVersions, srvInfo.UAMs)
+		}
+	} else if atalk.Verbose() {
+		fmt.Fprintf(os.Stderr, "[afp] GetStatus failed (%v); using default version/UAM\n", gerr)
+	}
+
+	sess, err := aspclient.Open(ep, a, sls)
+	if err != nil {
+		_ = ep.Close()
+		return nil, nil, proto.ServerInfo{}, err
+	}
+	if err := LoginNegotiated(sess, target.User, target.Pass, srvInfo); err != nil {
+		_ = sess.Close()
+		_ = ep.Close()
+		return nil, nil, proto.ServerInfo{}, err
+	}
+	return ep, sess, srvInfo, nil
 }
 
 // resolveServer turns the URI server field into an AppleTalk address. A literal

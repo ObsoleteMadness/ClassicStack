@@ -29,6 +29,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/ObsoleteMadness/ClassicStack/client/atalk"
+
 	// Register the client schemes. Each blank import plugs a scheme into the registry.
 	_ "github.com/ObsoleteMadness/ClassicStack/client/afp"
 	_ "github.com/ObsoleteMadness/ClassicStack/client/etherdfs"
@@ -46,6 +48,8 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, "csfs:", err)
 		return 2
 	}
+	// -v turns on the AppleTalk client wire-trace (NBP/ATP/ASP steps to stderr).
+	atalk.SetVerbose(cfg.verbose)
 	if len(rest) == 0 {
 		usage()
 		return 2
@@ -97,6 +101,7 @@ Flags:
   -ifacetype  transport: ltoudp | tashtalk | pcap | tcp (scheme-validated)
   -iface      interface: IPv4 addr (ltoudp), device (pcap), COM3//dev/tty (tashtalk), host (tcp)
   -fork       host fork container: appledouble | applesingle | macbinary | derez | native | nofork
+  -v          verbose: print the client wire-trace (NBP/ATP/ASP) to stderr
 
 URI grammar:
   <scheme>://[[user][:pass]@]<server>[,<transport>]/<volume>[/<path>]

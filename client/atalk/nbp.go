@@ -48,6 +48,7 @@ func (e *Endpoint) Lookup(object, typ, zone string) ([]NBPEntity, error) {
 	defer e.Unbind(NamesInfoSocket)
 
 	local := e.LocalAddr()
+	tracef("NBP BrRq %q:%q@%q from %s → broadcast", string(obj), string(tp), string(zn), local)
 	pkt := nbp.BuildLkUp(nbp.CtrlBrRq, nbpID(), local.Network, local.Node, NamesInfoSocket, obj, tp, zn)
 	dst := Addr{Network: local.Network, Node: nbpBroadcastNode, Socket: NamesInfoSocket}
 	if err := e.Send(dst, NamesInfoSocket, nbp.DDPType, pkt); err != nil {

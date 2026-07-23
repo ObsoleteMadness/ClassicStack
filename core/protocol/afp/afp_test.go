@@ -37,6 +37,83 @@ func TestLoginMarshal(t *testing.T) {
 	}
 }
 
+// TestLoginMarshalServerUAMSpelling is the regression for the credential trailer being
+// keyed on the guest UAM rather than an exact match against the capital-P UAMCleartext
+// constant: a real server advertises the cleartext UAM under its own spelling
+// ("Cleartxt passwrd", lower-case p) and the client echoes that exact string, so the
+// username + 8-byte password MUST still be appended. Keying on == UAMCleartext dropped
+// them for the lower-case spelling and the login carried no credentials (System 7.5
+// silently discarded it).
+func TestLoginMarshalServerUAMSpelling(t *testing.T) {
+	const serverUAM = "Cleartxt passwrd" // the lower-case spelling a real Mac advertises
+	blk := LoginRequest{AFPVersion: AFPVersion21, UAM: serverUAM, User: "pete", Pass: ""}.Marshal()
+
+	_, o2, _ := PString(blk, 1)      // version
+	uam, o3, _ := PString(blk, o2)   // uam
+	user, o4, ok := PString(blk, o3) // username
+	if string(uam) != serverUAM {
+		t.Fatalf("uam = %q, want %q", uam, serverUAM)
+	}
+	if !ok || string(user) != "pete" {
+		t.Fatalf("username missing: user=%q ok=%v (credential trailer was dropped)", user, ok)
+	}
+	if len(blk)-o4 != 8 {
+		t.Fatalf("password field = %d bytes, want 8 (empty password still needs the field)", len(blk)-o4)
+	}
+}
+
+// TestParseServerInfo parses an FPGetSrvrInfo block shaped like a real System 7.5 Mac's
+// and checks version/UAM extraction plus PickVersion choosing the newest advertised. The
+// block is assembled append-style with the offset header patched afterwards, mirroring
+// the wire layout ParseServerInfo reads.
+func TestParseServerInfo(t *testing.T) {
+	name := "vmac1"
+	machine := "Macintosh"
+	versions := []string{"AFPVersion 1.1", "AFPVersion 2.0", "AFPVersion 2.1"}
+	uams := []string{"Cleartxt passwrd", "Randnum exchange"}
+
+	const headerLen = 10
+	b := make([]byte, headerLen) // 4 offsets + Flags, patched below
+	b = PutPString(b, []byte(name))
+	if len(b)%2 != 0 {
+		b = append(b, 0) // pad ServerName to an even boundary
+	}
+	machineOff := len(b)
+	b = PutPString(b, []byte(machine))
+	versOff := len(b)
+	b = append(b, byte(len(versions)))
+	for _, v := range versions {
+		b = PutPString(b, []byte(v))
+	}
+	uamOff := len(b)
+	b = append(b, byte(len(uams)))
+	for _, u := range uams {
+		b = PutPString(b, []byte(u))
+	}
+	// Patch the offset header.
+	b[0], b[1] = byte(machineOff>>8), byte(machineOff)
+	b[2], b[3] = byte(versOff>>8), byte(versOff)
+	b[4], b[5] = byte(uamOff>>8), byte(uamOff)
+	b[8], b[9] = 0x00, 0x01 // Flags
+
+	si, ok := ParseServerInfo(b)
+	if !ok {
+		t.Fatal("ParseServerInfo returned ok=false")
+	}
+	if si.ServerName != name || si.MachineType != machine {
+		t.Errorf("name/machine = %q/%q, want %q/%q", si.ServerName, si.MachineType, name, machine)
+	}
+	if len(si.AFPVersions) != 3 || si.AFPVersions[2] != "AFPVersion 2.1" {
+		t.Errorf("versions = %v", si.AFPVersions)
+	}
+	if !si.HasUAM("Cleartxt passwrd") {
+		t.Errorf("HasUAM(Cleartxt passwrd) = false; uams=%v", si.UAMs)
+	}
+	if got := si.PickVersion(); got != "AFPVersion 2.1" {
+		t.Errorf("PickVersion = %q, want AFPVersion 2.1", got)
+	}
+}
+
 // TestGetSrvrParmsRoundTrip marshals a reply the way the server would and parses it.
 func TestGetSrvrParmsRoundTrip(t *testing.T) {
 	// Build a server-shaped reply: time + 2 volumes.

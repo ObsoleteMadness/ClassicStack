@@ -93,17 +93,34 @@ func (a *ATP) Request(dst Addr, userData uint32, reqData []byte, xo bool, maxRes
 	var eomSeq = -1 // sequence number of the EOM packet, once seen
 	var respUserData uint32
 
-	// haveAll reports whether every packet up to (and including) the EOM has arrived.
+	// contiguousLen returns how many packets have arrived contiguously from seq 0.
+	contiguousLen := func() int {
+		n := 0
+		for n < len(gotPacket) && gotPacket[n] {
+			n++
+		}
+		return n
+	}
+
+	// haveAll reports whether the response is complete. It is complete either when the
+	// EOM packet and everything before it has arrived, OR when every packet the request
+	// bitmap asked for has arrived — a responder that fills the whole requested set need
+	// not set EOM. ERRATA: a real System 7.x ASP responder answers a single-packet
+	// OpenSession/Command reply (a full 1-packet request) WITHOUT setting EOM
+	// (captures/ltoudp vmac1 2026-07-23: control 0x80, EOM clear); requiring EOM here
+	// deadlocked the requester so no session to a real Mac ever opened. Completing on a
+	// full requested bitmap fixes it while the EOM path still handles a responder that
+	// ends a multi-packet message short. See spec/errata.md.
 	haveAll := func() bool {
-		if eomSeq < 0 {
-			return false
-		}
-		for i := 0; i <= eomSeq; i++ {
-			if !gotPacket[i] {
-				return false
+		if eomSeq >= 0 {
+			for i := 0; i <= eomSeq; i++ {
+				if !gotPacket[i] {
+					return false
+				}
 			}
+			return true
 		}
-		return true
+		return contiguousLen() >= maxResp
 	}
 	// missingMask returns the bitmap of packets still needed. Before EOM is known it
 	// re-requests the full set; after, only the gaps up to EOM.
@@ -129,12 +146,17 @@ func (a *ATP) Request(dst Addr, userData uint32, reqData []byte, xo bool, maxRes
 		return m
 	}
 
+	tracef("ATP request → %s transID=%d userData=0x%08x reqLen=%d xo=%t maxResp=%d srcSock=%d",
+		dst, transID, userData, len(reqData), xo, maxResp, srcSocket)
+
 	for attempt := 0; attempt <= atpMaxRetries; attempt++ {
 		mask := fullMask
 		if attempt > 0 {
 			mask = missingMask()
 			drain(ch)
 		}
+		tracef("ATP TReq → %s transID=%d attempt=%d/%d bitmap=0x%02x",
+			dst, transID, attempt+1, atpMaxRetries+1, mask)
 		if err := a.sendTReq(dst, srcSocket, transID, mask, userData, reqData, xo); err != nil {
 			return Response{}, err
 		}
@@ -168,18 +190,29 @@ func (a *ATP) Request(dst Addr, userData uint32, reqData []byte, xo bool, maxRes
 					if resp.eom {
 						eomSeq = int(resp.seq)
 					}
+					tracef("ATP TResp ← transID=%d seq=%d eom=%t userData=0x%08x len=%d",
+						transID, resp.seq, resp.eom, resp.userData, len(resp.payload))
 				}
 				if haveAll() {
 					break collect
 				}
 			case <-deadline:
+				tracef("ATP timeout transID=%d attempt=%d/%d (no complete response in %s)",
+					transID, attempt+1, atpMaxRetries+1, atpRetryInterval)
 				break collect // retry
 			}
 		}
 
 		if haveAll() {
+			// Reassemble in order up to the EOM, or — when the response completed on a
+			// full requested bitmap without EOM (real-Mac single-packet reply) — up to the
+			// contiguous run received.
+			last := eomSeq
+			if last < 0 {
+				last = contiguousLen() - 1
+			}
 			var data []byte
-			for i := 0; i <= eomSeq; i++ {
+			for i := 0; i <= last; i++ {
 				data = append(data, received[i]...)
 			}
 			if xo {

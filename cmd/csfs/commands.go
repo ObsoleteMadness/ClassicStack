@@ -81,6 +81,11 @@ func cmdLs(cfg config, args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: csfs ls <uri>")
 		return 2
 	}
+	// A server-root AFP URI (afp://server/ with no volume) lists the server's volumes
+	// and info instead of opening a volume (which would fail with an empty name).
+	if done, code := maybeBrowseServer(cfg, args[0]); done {
+		return code
+	}
 	ep, err := resolveEndpoint(cfg, args[0])
 	if err != nil {
 		return fail(err)

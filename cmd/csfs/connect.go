@@ -17,6 +17,7 @@ type config struct {
 	iface     string // interface/device/host
 	fork      string // host fork container
 	mac       string // virtual-station MAC for raw-Ethernet transports (empty = random)
+	verbose   bool   // -v: print client wire-trace (NBP/ATP/ASP) to stderr
 }
 
 // parseGlobalFlags peels the leading -flag/value pairs off args (a hand-rolled parser
@@ -31,7 +32,14 @@ func parseGlobalFlags(args []string) (config, []string, error) {
 			break
 		}
 		name := strings.TrimLeft(a, "-")
-		// Support -flag=value and -flag value.
+		// A boolean flag (-v / -verbose) takes no value; handle it before consuming the
+		// next token so it may sit anywhere among the flags.
+		if base, _, _ := strings.Cut(name, "="); base == "v" || base == "verbose" {
+			cfg.verbose = true
+			i++
+			continue
+		}
+		// Support -flag=value and -flag value for value-taking flags.
 		var val string
 		if eq := strings.IndexByte(name, '='); eq >= 0 {
 			val = name[eq+1:]

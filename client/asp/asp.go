@@ -34,8 +34,9 @@ type Session struct {
 	wss uint8 // our workstation session socket
 	id  uint8 // session id assigned by the server
 
-	seqMu sync.Mutex
-	seq   uint16 // ASP request sequence number
+	seqMu   sync.Mutex
+	seq     uint16 // next ASP request sequence number to use
+	seqInit bool   // whether seq has been handed out at least once
 
 	// pending holds the write data awaiting the server's aspDataWrite pull, keyed by
 	// the ASP request sequence number the phase-1 ASPWrite used. serveWSS consumes it
@@ -103,10 +104,20 @@ func Open(ep *atalk.Endpoint, a *atalk.ATP, sls atalk.Addr) (*Session, error) {
 // SessionID returns the server-assigned session id.
 func (s *Session) SessionID() uint8 { return s.id }
 
-// nextSeq returns the next ASP request sequence number.
+// nextSeq returns the next ASP request sequence number. The FIRST Command/Write on a
+// session MUST use sequence number 0 and each subsequent one increments — a real
+// System 7.x ASP server tracks the expected sequence and SILENTLY DROPS a Command whose
+// sequence it did not expect (ground truth: captures/vmac-to-vmac.pcapng, the real Mac
+// workstation's first Command is seq 0, then 1, 2, …). Starting at 1 left every Command
+// unanswered. See spec/errata.md.
 func (s *Session) nextSeq() uint16 {
 	s.seqMu.Lock()
 	defer s.seqMu.Unlock()
+	if !s.seqInit {
+		s.seqInit = true
+		s.seq = 0
+		return 0
+	}
 	s.seq++
 	return s.seq
 }
