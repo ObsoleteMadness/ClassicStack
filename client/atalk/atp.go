@@ -57,10 +57,39 @@ func (t *transactor) id() uint16 {
 type ATP struct {
 	ep *Endpoint
 	tx transactor
+
+	// retryInterval and maxRetries override the default retry policy when non-zero.
+	// ASP leaves them zero (the aggressive atpRetryInterval/atpMaxRetries defaults suit a
+	// session); a one-shot probe like csgetzones sets them via SetRetryPolicy so a -timeout
+	// bounds the whole transaction instead of waiting 6×2s to fail against a dead segment.
+	retryInterval time.Duration
+	maxRetries    int
 }
 
 // NewATP builds an ATP requester over ep.
 func NewATP(ep *Endpoint) *ATP { return &ATP{ep: ep} }
+
+// SetRetryPolicy overrides the per-attempt wait and retry count for this requester. A
+// zero interval or negative count restores the default (atpRetryInterval/atpMaxRetries).
+// A probe tool uses this to honour a short -timeout; session callers (ASP) leave the
+// defaults, which tolerate a lossy segment across a whole AFP session.
+func (a *ATP) SetRetryPolicy(interval time.Duration, retries int) {
+	a.retryInterval = interval
+	a.maxRetries = retries
+}
+
+// policy returns the effective retry interval and count, falling back to the package
+// defaults when this requester has not overridden them.
+func (a *ATP) policy() (time.Duration, int) {
+	interval, retries := a.retryInterval, a.maxRetries
+	if interval <= 0 {
+		interval = atpRetryInterval
+	}
+	if retries <= 0 {
+		retries = atpMaxRetries
+	}
+	return interval, retries
+}
 
 // Request runs one ATP transaction to dst and returns the reassembled response.
 //   - userData is the 4-byte ATP UserData (the ASP function/session/seq).
@@ -146,22 +175,23 @@ func (a *ATP) Request(dst Addr, userData uint32, reqData []byte, xo bool, maxRes
 		return m
 	}
 
+	retryInterval, maxRetries := a.policy()
 	tracef("ATP request → %s transID=%d userData=0x%08x reqLen=%d xo=%t maxResp=%d srcSock=%d",
 		dst, transID, userData, len(reqData), xo, maxResp, srcSocket)
 
-	for attempt := 0; attempt <= atpMaxRetries; attempt++ {
+	for attempt := 0; attempt <= maxRetries; attempt++ {
 		mask := fullMask
 		if attempt > 0 {
 			mask = missingMask()
 			drain(ch)
 		}
 		tracef("ATP TReq → %s transID=%d attempt=%d/%d bitmap=0x%02x",
-			dst, transID, attempt+1, atpMaxRetries+1, mask)
+			dst, transID, attempt+1, maxRetries+1, mask)
 		if err := a.sendTReq(dst, srcSocket, transID, mask, userData, reqData, xo); err != nil {
 			return Response{}, err
 		}
 
-		deadline := deadlineTimer(atpRetryInterval)
+		deadline := deadlineTimer(retryInterval)
 	collect:
 		for {
 			select {
@@ -198,7 +228,7 @@ func (a *ATP) Request(dst Addr, userData uint32, reqData []byte, xo bool, maxRes
 				}
 			case <-deadline:
 				tracef("ATP timeout transID=%d attempt=%d/%d (no complete response in %s)",
-					transID, attempt+1, atpMaxRetries+1, atpRetryInterval)
+					transID, attempt+1, maxRetries+1, retryInterval)
 				break collect // retry
 			}
 		}
@@ -221,7 +251,7 @@ func (a *ATP) Request(dst Addr, userData uint32, reqData []byte, xo bool, maxRes
 			return Response{UserData: respUserData, Data: data}, nil
 		}
 	}
-	return Response{}, fmt.Errorf("%w after %d attempts", ErrATPTimeout, atpMaxRetries+1)
+	return Response{}, fmt.Errorf("%w after %d attempts", ErrATPTimeout, maxRetries+1)
 }
 
 // sendTReq builds and sends a TReq. xo sets the exactly-once bit and a TRel timeout.

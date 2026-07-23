@@ -36,10 +36,21 @@ type NBPEntity struct {
 }
 
 // Lookup broadcasts a BrRq for object:type in zone and returns every LkUp-Rply tuple
-// received within the lookup window. An empty object or type is the '=' wildcard; an
-// empty zone is the '*' (this zone) wildcard. This is the discovery primitive
+// received within the default lookup window. An empty object or type is the '=' wildcard;
+// an empty zone is the '*' (this zone) wildcard. This is the discovery primitive
 // `csfs discover afp` uses.
 func (e *Endpoint) Lookup(object, typ, zone string) ([]NBPEntity, error) {
+	return e.LookupTimeout(object, typ, zone, nbpLookupTimeout)
+}
+
+// LookupTimeout is Lookup with a caller-chosen collection window, so a probe (csnbp) can
+// honour its -timeout while the default Lookup keeps the fixed discovery window. NBP has
+// no "no more replies" signal, so the requester always waits the whole window before
+// returning what it collected; a timeout of 0 falls back to the default.
+func (e *Endpoint) LookupTimeout(object, typ, zone string, window time.Duration) ([]NBPEntity, error) {
+	if window <= 0 {
+		window = nbpLookupTimeout
+	}
 	obj := wildcardBytes(object, nbp.NameWildcard)
 	tp := wildcardBytes(typ, nbp.NameWildcard)
 	zn := wildcardBytes(zone, nbp.ZoneWildcard)
@@ -57,7 +68,7 @@ func (e *Endpoint) Lookup(object, typ, zone string) ([]NBPEntity, error) {
 
 	var out []NBPEntity
 	seen := map[string]bool{}
-	deadline := time.After(nbpLookupTimeout)
+	deadline := time.After(window)
 	for {
 		select {
 		case d, ok := <-ch:
