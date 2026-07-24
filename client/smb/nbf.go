@@ -119,6 +119,7 @@ type nbfTransport struct {
 	// Phase signalling and response reassembly.
 	recognizedCh chan uint8    // server session number from NAME_RECOGNIZED (CALL phase)
 	uaCh         chan struct{} // UA received (LLC2 up)
+	rrCh         chan struct{} // RR received (the server's F-response to our poll)
 	confirmCh    chan struct{} // SESSION_CONFIRM received
 	frag         []byte        // accumulated DATA_FIRST_MIDDLE payload
 	respCh       chan []byte   // a reassembled SMB response message
@@ -140,6 +141,7 @@ func DialNBF(fl link.FrameLink, srcMAC [6]byte, serverName string) (Transport, e
 		localNum:     nbfClientSessionNum,
 		recognizedCh: make(chan uint8, 1),
 		uaCh:         make(chan struct{}, 1),
+		rrCh:         make(chan struct{}, 1),
 		confirmCh:    make(chan struct{}, 1),
 		respCh:       make(chan []byte, 2),
 		stop:         make(chan struct{}),
@@ -176,8 +178,23 @@ func (t *nbfTransport) establish() error {
 	}
 	nbftracef("UA received (LLC2 up)")
 
-	// 4. SESSION_INITIALIZE → SESSION_CONFIRM.
-	nbftracef("SESSION_INITIALIZE (I-frame)")
+	// 3a. RR poll → RR final. Ground truth (captures/nt-98-nbf.pcap, frames 208/209:
+	// WINNT351-NBF → WIN98-NBF): immediately after UA the caller sends an RR command with
+	// the Poll bit set and the server answers RR with the Final bit set, BEFORE any
+	// I-frame flows. This resets the LLC2 checkpoint (N(R) exchange) so the send window is
+	// open; Win98 does not process the SESSION_INITIALIZE I-frame until this poll/final
+	// round has completed. (The older code went straight from UA to the I-frame, which
+	// Win98 silently dropped — no SESSION_CONFIRM ever came back.)
+	nbftracef("RR (poll) → server, awaiting RR (final)")
+	if err := t.waitFor(t.sendRRPoll, t.rrCh, "RR final (LLC2 checkpoint)"); err != nil {
+		return err
+	}
+	nbftracef("RR (final) received — LLC2 window open")
+
+	// 4. SESSION_INITIALIZE → SESSION_CONFIRM. The INITIALIZE I-frame carries the Poll bit
+	// (frame 210 is "I P"): the server checkpoints on it and answers with its
+	// SESSION_CONFIRM I-frame.
+	nbftracef("SESSION_INITIALIZE (I-frame, poll)")
 	if err := t.waitFor(t.sendSessionInitialize, t.confirmCh, "SESSION_CONFIRM"); err != nil {
 		return err
 	}
@@ -323,19 +340,44 @@ func (t *nbfTransport) sendSABME() error {
 	return t.sendU(nbfLLCSABME)
 }
 
-// sendSessionInitialize sends SESSION_INITIALIZE as an I-frame, carrying our and the
-// server's session numbers.
+// SESSION_INITIALIZE / SESSION_CONFIRM Data1 option flags (IBM SC30-3587 Table 5-28;
+// ground truth captures/nt-98-nbf.pcap frame 210, WINNT351 → WIN98). Bit layout
+// B'wxxxxxxv': w = HANDLE SEND.NO.ACK supported, xxxx = Largest-Frame code (7 =
+// 65535/no limit), v = NetBIOS 2.00-or-higher. The MS redirector caller sends 0x8f;
+// we advertise Largest-Frame + version 2.00 but NOT SEND.NO.ACK, so the conventional
+// DATA_ACK contract this transport implements is preserved.
+const (
+	nbfInitLargestFrameMax uint8 = 0x0E // xxxx = 111. → Largest-Frame code 7 (65535)
+	nbfInitVersion2        uint8 = 0x01 // v → NetBIOS 2.00 or higher
+	nbfInitFlags                 = nbfInitLargestFrameMax | nbfInitVersion2
+)
+
+// nbfMaxRecvSize is the "Maximum data receive size" advertised in SESSION_INITIALIZE /
+// SESSION_CONFIRM (Data2). It bounds a single received I-field; the MS caller advertises
+// 1482. We advertise our own max I-field so the server never sends a segment we cannot
+// hold in one frame.
+const nbfMaxRecvSize = nbfMaxIField
+
+// sendSessionInitialize sends SESSION_INITIALIZE as an LLC2 I-frame WITH THE POLL BIT SET
+// (frame 210 is "I P"): the server checkpoints on the poll and answers SESSION_CONFIRM.
+// Data1 carries the option flags (Largest-Frame + version 2.00); Data2 the max receive
+// size; the session numbers address the half-open circuit from the CALL NAME_RECOGNIZED.
 func (t *nbfTransport) sendSessionInitialize() error {
 	t.mu.Lock()
 	remoteNum, localNum := t.remoteNum, t.localNum
 	t.mu.Unlock()
 	f := &nbfproto.Frame{
 		Command:      nbfproto.CmdSessionInitialize,
-		Data2:        nbfMaxIField, // advertise our max I-field
+		Data1:        nbfInitFlags,
+		Data2:        nbfMaxRecvSize,
 		DestNumber:   remoteNum,
 		SourceNumber: localNum,
 	}
-	return t.sendSession(f)
+	body, err := f.Encode()
+	if err != nil {
+		return err
+	}
+	return t.sendIFramePoll(body)
 }
 
 // sendSession encodes an NBF session-command frame and transmits it as an LLC2 I-frame.
@@ -391,9 +433,22 @@ func (t *nbfTransport) sendU(ctrl byte) error {
 	return t.fl.Write(nbfPad(out))
 }
 
-// sendIFrame writes an NBF session body as an LLC2 I-frame with the current N(S)/N(R),
-// advancing N(S). ctrl0 = N(S)<<1 (low bit 0 marks an I-frame); ctrl1 = N(R)<<1 (P=0).
+// sendIFrame writes an NBF session body as an LLC2 I-frame with the current N(S)/N(R)
+// and the Poll bit clear — the normal data path.
 func (t *nbfTransport) sendIFrame(body []byte) error {
+	return t.sendIFrameCtl(body, false)
+}
+
+// sendIFramePoll writes an I-frame with the Poll bit SET, prompting the peer to
+// checkpoint and respond. SESSION_INITIALIZE uses this (frame 210 = "I P").
+func (t *nbfTransport) sendIFramePoll(body []byte) error {
+	return t.sendIFrameCtl(body, true)
+}
+
+// sendIFrameCtl writes an NBF session body as an LLC2 I-frame with the current N(S)/N(R),
+// advancing N(S). ctrl0 = N(S)<<1 (low bit 0 marks an I-frame); ctrl1 = N(R)<<1 | P, so
+// poll sets bit 0 of the second control byte.
+func (t *nbfTransport) sendIFrameCtl(body []byte, poll bool) error {
 	dst := t.dstMAC()
 	const llcLen = 4
 	payloadLen := llcLen + len(body)
@@ -409,7 +464,28 @@ func (t *nbfTransport) sendIFrame(body []byte) error {
 	t.nS = (t.nS + 1) & 0x7F
 	t.mu.Unlock()
 	out[16] = nS << 1 // I-frame ctrl0: N(S)<<1, low bit 0
-	out[17] = nR << 1 // I-frame ctrl1: N(R)<<1, P=0
+	out[17] = nR << 1 // I-frame ctrl1: N(R)<<1
+	if poll {
+		out[17] |= 0x01 // P=1
+	}
+	return t.fl.Write(nbfPad(out))
+}
+
+// sendRRPoll writes a 4-byte LLC RR COMMAND with the Poll bit set, advertising our
+// current N(R). The caller sends this right after UA (frame 208) to prompt the server's
+// RR-final, opening the LLC2 send window before the SESSION_INITIALIZE I-frame flows.
+func (t *nbfTransport) sendRRPoll() error {
+	dst := t.dstMAC()
+	t.mu.Lock()
+	nR := t.nR
+	t.mu.Unlock()
+	out := make([]byte, nbfEthHdrLen+4)
+	copy(out[0:6], dst[:])
+	copy(out[6:12], t.srcMAC[:])
+	out[12], out[13] = 0x00, 0x04
+	out[14], out[15] = nbfLLCDSAP, nbfLLCSSAPCmd // SSAP command (C/R = command) for a poll
+	out[16] = nbfLLCRR
+	out[17] = (nR << 1) | 0x01 // N(R)<<1 | P=1
 	return t.fl.Write(nbfPad(out))
 }
 
@@ -484,8 +560,18 @@ func (t *nbfTransport) handleFrame(frame []byte) {
 	}
 
 	// S-frames (control low two bits = 01): RR/RNR/REJ from the server. They ack our
-	// I-frames; a client with no retransmit machinery needs no action beyond noting it.
+	// I-frames; a client with no retransmit machinery needs no further action. But an RR is
+	// also the server's Final response to the caller's post-UA RR poll (frame 209) — the
+	// LLC2 checkpoint that gates the SESSION_INITIALIZE I-frame. Signal establish() so it
+	// proceeds. (Only frames addressed to us; ignore the C/R bit — command or response RR
+	// both satisfy the checkpoint.)
 	if ctrl&0x03 == 0x01 {
+		if dstMAC == t.srcMAC {
+			select {
+			case t.rrCh <- struct{}{}:
+			default:
+			}
+		}
 		return
 	}
 

@@ -689,3 +689,32 @@ With all four fixed, `csfs ls "afp://pete:@vmac1:*/System 7.5.3"` mounts and lis
 **Verbose tracing is now shared across every client transport via the server's `core/log` library.** The prior AppleTalk-only `-v` used an ad-hoc stderr printf (`client/atalk/verbose.go`); it now — with direct-IPX, NBIPX, NBF, NCP, and EtherDFS — narrates through one process-wide `core/log` stderr sink whose threshold a single `client/trace.SetVerbose` flips to `log.Trace`. Each transport holds a scope-named `core/log.Logger` (`trace.Logger("nbipx")` etc.), so `csfs -v` shows a uniform `scope [trace] …` narration of the whole connect (NBIPX SESSION_INITIALIZE, NBF NAME_QUERY/SABME, the transport-agnostic SMB NEGOTIATE/SESSION_SETUP/TREE_CONNECT) across all of them.
 
 **Where:** `client/smb/{nbipx.go,nbf.go,register.go,ipx.go,session.go}`, `client/link/link.go` (`Spec.Carrier`), `cmd/csfs/{connect.go,main.go}` (`-transport`), `client/trace/trace.go` (shared `core/log` trace), `client/atalk/verbose.go` (ported onto `core/log`), `client/{ncp/session.go,etherdfs/session.go}` (trace). Coverage: `client/smb/{nbipx_e2e_test.go,nbf_e2e_test.go}` (whole SMB session over the REAL engines + real ports on an inmem Ethernet pair, forks + Finder metadata round-trip) and `client/smb/nbframing_test.go` (caller frame shapes).
+
+### NBF caller: the LLC2 window needs an RR poll/final after UA, and SESSION_INITIALIZE must poll — real Win98 vs. our own server
+
+**Context:** the SMB-over-NBF caller above establishes fine against our own responder e2e (inmem pair), but hung against a **real Windows 98 file server** (`WIN98-NBF`, `00:86:b0:a4:b8:81`): NAME_QUERY/RECOGNIZED, SABME/UA all completed, then `csfs -v` stopped at "SESSION_INITIALIZE (I-frame)" and timed out — Win98 never sent SESSION_CONFIRM. Our own server was too lenient to expose the gap.
+
+**Observed (`captures/nt-98-nbf.pcap`, the real MS redirector `WINNT351-NBF` `00:00:d8:50:ae:d3` calling the SAME Win98 box, frames 204–214):**
+
+```
+204 NT→98  UI    NAME_QUERY  (CALL, Local Session 0x05) WIN98-NBF<20>
+205 98→NT  UI    NAME_RECOGNIZED (Local Session 0xE0)
+206 NT→98  SABME (P=1)
+207 98→NT  UA    (F=1)
+208 NT→98  RR    COMMAND, P=1, N(R)=0      ← caller polls immediately after UA
+209 98→NT  RR    RESPONSE, F=1, N(R)=0     ← server's final answer opens the window
+210 NT→98  I P   N(S)=0  SESSION_INITIALIZE (Data1 flags 0x8f, max-recv 1482)
+211 98→NT  I P   N(S)=0  SESSION_CONFIRM   ← only NOW does Win98 confirm
+212 NT→98  RR    F, N(R)=1
+214 NT→98  I P   N(S)=1  DATA_ONLY_LAST → SMB Negotiate
+```
+
+Two faults in the caller, both invisible against our own server:
+
+1. **No RR poll/final checkpoint after UA.** The MS caller sends an **RR command with P=1** (frame 208) and waits for the server's **RR response with F=1** (frame 209) BEFORE any I-frame. This is the LLC2 checkpoint that opens the send window; Win98 will not process the SESSION_INITIALIZE I-frame until it has completed. Our caller went straight from UA to the I-frame, which Win98 silently dropped.
+
+2. **SESSION_INITIALIZE must set the Poll bit** (frame 210 is `I P`), and carry sane option flags. Win98 checkpoints on the poll and answers with its SESSION_CONFIRM I-frame; a non-poll INITIALIZE (our old `ctrl1 = N(R)<<1`, P=0) does not prompt the confirm. We now set P=1 and Data1 = Largest-Frame(7) | version-2.00 (`0x0F`; the redirector sends `0x8f`, but we omit SEND.NO.ACK to keep the conventional DATA_ACK contract this transport implements) and Data2 = our max-recv size.
+
+**What we do:** `establish()` now runs SABME→UA, then `sendRRPoll` (RR command, P=1) waiting for the server's returning RR (S-frame addressed to us) on `rrCh`, then `sendSessionInitialize` as an I-frame with the Poll bit set, then waits for SESSION_CONFIRM. The read loop's S-frame branch, which previously dropped every RR, now signals `rrCh` for an RR addressed to us.
+
+**Where:** `client/smb/nbf.go` (`establish` RR-poll phase, `sendRRPoll`, `sendIFramePoll`/`sendIFrameCtl` poll bit, `nbfInitFlags`/`nbfMaxRecvSize`, `handleFrame` S-frame → `rrCh`). The prior section's "SABME → UA → SESSION_INITIALIZE" flow description is superseded by the poll/final-plus-poll flow here.
