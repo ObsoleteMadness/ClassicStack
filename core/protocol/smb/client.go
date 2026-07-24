@@ -36,6 +36,19 @@ type Builder struct {
 	PID     uint16
 	MID     uint16
 	Unicode bool // SMB_FLAGS2_UNICODE: pack names UTF-16LE (else OEM/ANSI)
+	// NTStatus selects the header status dialect: when true the request sets
+	// SMB_FLAGS2_NT_STATUS and advertises CAP_STATUS32, and responses carry 32-bit
+	// NTSTATUS; when false the request uses DOS error codes and omits CAP_STATUS32. It is
+	// set from the server's NEGOTIATE capabilities (NegotiateResult.SupportsNTStatus). A
+	// Win9x File & Print server negotiates NT LM 0.12 but WITHOUT CAP_STATUS32 and silently
+	// drops a request that claims NT status, so this must follow the server, not be assumed.
+	NTStatus bool
+	// SessionKey is the server's SessionKey from NEGOTIATE, which SESSION_SETUP echoes
+	// verbatim ([MS-CIFS] §3.2.4.2.4). A Win9x File & Print server generates a non-zero
+	// key and silently DISCARDS a SESSION_SETUP that carries 0 instead of echoing it
+	// (observed: the request was NBF-DATA_ACKed but never answered at SMB). Set from
+	// NegotiateResult.SessionKey.
+	SessionKey uint32
 
 	// MaxTransactBytes caps the MaxDataCount a TRANS2 request advertises — the largest
 	// reply the server may return in one transaction. Zero means "no client cap" (the
@@ -50,7 +63,10 @@ type Builder struct {
 // request with the Unicode bit set sends UTF-16LE names and reads UTF-16LE strings
 // back.
 func (b *Builder) flags2() uint16 {
-	f := Flags2KnowsLongNames | Flags2NTStatus
+	f := Flags2KnowsLongNames | Flags2EAS
+	if b.NTStatus {
+		f |= Flags2NTStatus
+	}
 	if b.Unicode {
 		f |= Flags2Unicode
 	}
@@ -58,10 +74,12 @@ func (b *Builder) flags2() uint16 {
 }
 
 // header builds the request header for command cmd, bumping MID is the caller's
-// concern (NextMID). Flags is 0 (a request never sets SMB_FLAGS_REPLY).
+// concern (NextMID). Flags carries the standard request bits (canonicalized,
+// case-insensitive paths — FlagsRequest); a request never sets SMB_FLAGS_REPLY.
 func (b *Builder) header(cmd uint8) Header {
 	return Header{
 		Command: cmd,
+		Flags:   FlagsRequest,
 		Flags2:  b.flags2(),
 		TID:     b.TID,
 		PIDLow:  b.PID,
@@ -181,7 +199,18 @@ type NegotiateResult struct {
 	Family       DialectFamily
 	UserSecurity bool   // server advertised SECURITY_MODE_USER_SECURITY (send credentials)
 	MaxBuffer    uint32 // server MaxBufferSize (the largest single request it accepts)
+	Capabilities uint32 // server Capabilities word (NT family only; 0 for older dialects)
+	SessionKey   uint32 // server SessionKey; the client echoes it in SESSION_SETUP
 }
+
+// SupportsNTStatus reports whether the negotiated server speaks 32-bit NTSTATUS in its
+// headers (CAP_STATUS32). A server that does NOT — e.g. Windows 9x File & Print Sharing,
+// which negotiates NT LM 0.12 but advertises Capabilities without CAP_STATUS32 and replies
+// in DOS error codes — will silently DISCARD a request whose header sets SMB_FLAGS2_NT_STATUS
+// (ground truth captures/nt-98-nbf.pcap: the MS redirector talking to that same Win98 box
+// sends DOS-code Flags2 and gets a reply; our NT-status request was DATA_ACKed but never
+// answered at SMB). So the client keys its Flags2 NT-status bit on this.
+func (r NegotiateResult) SupportsNTStatus() bool { return r.Capabilities&CapNTStatus != 0 }
 
 // ParseNegotiate parses an SMB_COM_NEGOTIATE response. The wire format is keyed by the
 // selected dialect family ([MS-CIFS] §2.2.4.52.2): Core WCT=1 (DialectIndex only),
@@ -207,12 +236,16 @@ func ParseNegotiate(resp []byte) (NegotiateResult, error) {
 
 	switch res.Family {
 	case DialectFamilyNT:
-		// WCT=17: DialectIndex(2) SecurityMode(1) ... MaxBufferSize at words[7:11].
+		// WCT=17: DialectIndex(2) SecurityMode(1) MaxMpxCount(2) MaxVcs(2)
+		// MaxBufferSize(4, words[7:11]) MaxRawSize(4) SessionKey(4) Capabilities(4,
+		// words[19:23]) ...
 		if len(words) < 34 {
 			return res, ErrShortResponse
 		}
 		res.UserSecurity = words[2]&0x01 != 0
 		res.MaxBuffer = bp.LE32(words[7:11])
+		res.SessionKey = bp.LE32(words[15:19])
+		res.Capabilities = bp.LE32(words[19:23])
 	case DialectFamilyLanMan:
 		// WCT=13: DialectIndex(2) SecurityMode(2) MaxBufferSize(2, 16-bit).
 		if len(words) < 6 {
@@ -237,10 +270,19 @@ func ParseNegotiate(resp []byte) (NegotiateResult, error) {
 // maxBuffer is the client's own MaxBufferSize (the largest response it will accept);
 // the server saves it from the first setup ([MS-CIFS] §3.3.5.43).
 func (b *Builder) BuildSessionSetup(user, password, domain string, maxBuffer uint16) []byte {
-	// Case-insensitive password: cleartext bytes + NUL (the server trims the NUL).
-	var ciPass []byte
-	if password != "" {
-		ciPass = append([]byte(password), 0)
+	// Case-insensitive (LM/ANSI) password: cleartext bytes + NUL. When no password is
+	// given, send a SINGLE NUL byte (length 1), NOT a zero-length field: the "null
+	// password" for a guest/share-level logon is one NUL. Ground truth
+	// captures/nt-98-nbf.pcap frame 217 — the MS redirector logs into the same Win98 box
+	// with ANSI Password Length 1 (a lone 0x00) and Win98 grants the session; a length-0
+	// field is silently rejected. The server trims the trailing NUL either way.
+	ciPass := append([]byte(password), 0)
+
+	// Capabilities: advertise CAP_STATUS32 only when the session uses NT status (so a
+	// non-NT-status Win9x server is not told we speak a status dialect it does not).
+	caps := negotiateClientCaps
+	if !b.NTStatus {
+		caps &^= CapNTStatus
 	}
 
 	words := make([]byte, 26) // WCT=13
@@ -250,11 +292,11 @@ func (b *Builder) BuildSessionSetup(user, password, domain string, maxBuffer uin
 	bp.PutLE16(words[4:6], maxBuffer)             // MaxBufferSize
 	bp.PutLE16(words[6:8], 1)                     // MaxMpxCount
 	bp.PutLE16(words[8:10], 0)                    // VcNumber
-	bp.PutLE32(words[10:14], 0)                   // SessionKey
+	bp.PutLE32(words[10:14], b.SessionKey)        // SessionKey (echo the server's NEGOTIATE key)
 	bp.PutLE16(words[14:16], uint16(len(ciPass))) // CaseInsensitivePasswordLength
 	bp.PutLE16(words[16:18], 0)                   // CaseSensitivePasswordLength (no NTLM)
 	bp.PutLE32(words[18:22], 0)                   // Reserved
-	bp.PutLE32(words[22:26], negotiateClientCaps) // Capabilities
+	bp.PutLE32(words[22:26], caps)                // Capabilities
 
 	var area []byte
 	area = append(area, ciPass...)
@@ -274,8 +316,9 @@ func (b *Builder) BuildSessionSetup(user, password, domain string, maxBuffer uin
 
 // negotiateClientCaps is the Capabilities word the client advertises in
 // SESSION_SETUP: NT SMBs + 32-bit status + NT find + large files, mirroring the
-// server's negotiateCapabilities so both agree on the NT feature set.
-const negotiateClientCaps = 0x00000010 | 0x00000040 | 0x00000200 | 0x00000008
+// server's negotiateCapabilities so both agree on the NT feature set. CAP_STATUS32 is
+// masked out at build time when the negotiated server does not support it (Win9x).
+const negotiateClientCaps uint32 = CapNTSMBs | CapNTStatus | CapNTFind | CapLargeFiles
 
 // SessionSetupResult is the parsed SESSION_SETUP_ANDX response: the granted UID (from
 // the response header) and whether the server logged the client in as guest.

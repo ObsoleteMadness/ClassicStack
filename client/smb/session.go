@@ -93,11 +93,21 @@ func Open(tr Transport, p DialParams) (*Session, error) {
 	// 1. NEGOTIATE — no UID/TID yet; select the dialect. The reply is parsed for
 	// success/dialect but the client stays on ANSI paths (Unicode is left off) so it
 	// interoperates with every share codec (see the doc comment above).
-	if _, err := s.negotiate(); err != nil {
+	neg, err := s.negotiate()
+	if err != nil {
 		return nil, err
 	}
 	s.unicode = false
 	s.builder.Unicode = false
+	// Speak the server's status dialect: 32-bit NTSTATUS only when the server advertised
+	// CAP_STATUS32, else DOS error codes. A Win9x File & Print server negotiates NT LM 0.12
+	// but WITHOUT CAP_STATUS32 and silently drops a request whose header claims NT status
+	// (observed: SESSION_SETUP was NBF-acked but never answered), so this must follow the
+	// server rather than always assert NT status.
+	s.builder.NTStatus = neg.SupportsNTStatus()
+	// Echo the server's SessionKey in SESSION_SETUP; a Win9x server drops a setup that
+	// carries 0 instead of the key it just issued.
+	s.builder.SessionKey = neg.SessionKey
 
 	// 2. SESSION_SETUP_ANDX — obtain a UID (guest or named).
 	if err := s.sessionSetup(p.User, p.Password, p.Domain); err != nil {
@@ -131,9 +141,18 @@ func (s *Session) negotiate() (proto.NegotiateResult, error) {
 	return neg, nil
 }
 
+// guestAccount is the account name sent when the caller supplies no username. A Win9x
+// File & Print server (share-level) expects a NON-EMPTY account in SESSION_SETUP even for
+// a null-password logon — the MS redirector sends its logged-on user; an empty account is
+// rejected. "GUEST" is the conventional anonymous account name.
+const guestAccount = "GUEST"
+
 // sessionSetup sends SMB_COM_SESSION_SETUP_ANDX and records the granted UID on the
 // builder so every later request carries it.
 func (s *Session) sessionSetup(user, password, domain string) error {
+	if user == "" {
+		user = guestAccount
+	}
 	s.builder.NextMID()
 	smbtracef("SESSION_SETUP_ANDX user=%q", user)
 	resp, err := s.tr.Send(s.builder.BuildSessionSetup(user, password, domain, clientMaxBuffer))

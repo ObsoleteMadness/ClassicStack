@@ -116,6 +116,13 @@ type nbfTransport struct {
 	nS uint8
 	nR uint8
 
+	// respCorrelator is the NBF-layer request id set in each request DATA frame's Response
+	// Correlator field; the server echoes it in the reply's Transmit Correlator. It must be
+	// NON-ZERO and increment per request — the MS redirector sends 0x0001, 0x0002, …
+	// (captures/nt-98-nbf.pcap frames 214/217). Starts at 0 and is pre-incremented, so the
+	// first request carries 1.
+	respCorrelator uint16
+
 	// Phase signalling and response reassembly.
 	recognizedCh chan uint8    // server session number from NAME_RECOGNIZED (CALL phase)
 	uaCh         chan struct{} // UA received (LLC2 up)
@@ -292,11 +299,32 @@ func (t *nbfTransport) Send(req []byte) ([]byte, error) {
 func (t *nbfTransport) MaxResponse() int { return nbfMaxResponse }
 
 // sendSMB frames req into DATA_FIRST_MIDDLE/DATA_ONLY_LAST NBF frames at the max I-field
-// and sends each as an LLC2 I-frame. The final frame is DATA_ONLY_LAST.
+// and sends each as an LLC2 I-frame. The final frame is DATA_ONLY_LAST, sent with the LLC
+// Poll bit set so the server checkpoints and reliably returns its response (matching the
+// MS redirector, captures/nt-98-nbf.pcap frame 214). The DATA_ONLY_LAST carries the NBF
+// ACK_WITH_DATA_ALLOWED flag (Data1 0x04) so the server may acknowledge with its response
+// data frame, as the redirector does.
 func (t *nbfTransport) sendSMB(req []byte, localNum, remoteNum uint8) error {
+	// Allocate this request's NBF Response Correlator (non-zero, incrementing). The server
+	// echoes it in the reply's Transmit Correlator; a zero correlator is why Win98 DATA_ACKed
+	// the request without returning a data reply.
+	t.mu.Lock()
+	t.respCorrelator++
+	if t.respCorrelator == 0 {
+		t.respCorrelator = 1 // never wrap to 0
+	}
+	rsp := t.respCorrelator
+	t.mu.Unlock()
+
 	if len(req) == 0 {
-		f := &nbfproto.Frame{Command: nbfproto.CmdDataOnlyLast, DestNumber: remoteNum, SourceNumber: localNum}
-		return t.sendSession(f)
+		f := &nbfproto.Frame{
+			Command:       nbfproto.CmdDataOnlyLast,
+			Data1:         nbfproto.DataAckWithDataAllowed,
+			RspCorrelator: rsp,
+			DestNumber:    remoteNum,
+			SourceNumber:  localNum,
+		}
+		return t.sendSessionCtl(f, true /*poll*/)
 	}
 	for off := 0; off < len(req); off += nbfMaxIField {
 		end := off + nbfMaxIField
@@ -305,16 +333,23 @@ func (t *nbfTransport) sendSMB(req []byte, localNum, remoteNum uint8) error {
 			end = len(req)
 		}
 		cmd := nbfproto.CmdDataFirstMiddle
+		var data1 uint8
+		var rspCorr uint16
 		if last {
 			cmd = nbfproto.CmdDataOnlyLast
+			data1 = nbfproto.DataAckWithDataAllowed
+			rspCorr = rsp // the correlator rides the completing (LAST) frame
 		}
 		f := &nbfproto.Frame{
-			Command:      cmd,
-			DestNumber:   remoteNum,
-			SourceNumber: localNum,
-			Payload:      req[off:end],
+			Command:       cmd,
+			Data1:         data1,
+			RspCorrelator: rspCorr,
+			DestNumber:    remoteNum,
+			SourceNumber:  localNum,
+			Payload:       req[off:end],
 		}
-		if err := t.sendSession(f); err != nil {
+		// Poll on the last frame only (the checkpoint that flushes the response).
+		if err := t.sendSessionCtl(f, last); err != nil {
 			return err
 		}
 	}
@@ -382,9 +417,19 @@ func (t *nbfTransport) sendSessionInitialize() error {
 
 // sendSession encodes an NBF session-command frame and transmits it as an LLC2 I-frame.
 func (t *nbfTransport) sendSession(f *nbfproto.Frame) error {
+	return t.sendSessionCtl(f, false)
+}
+
+// sendSessionCtl encodes an NBF session-command frame and transmits it as an LLC2 I-frame,
+// with the LLC Poll bit set when poll is true (used on the final DATA_ONLY_LAST of an SMB
+// request so the server checkpoints and flushes its response).
+func (t *nbfTransport) sendSessionCtl(f *nbfproto.Frame, poll bool) error {
 	body, err := f.Encode()
 	if err != nil {
 		return err
+	}
+	if poll {
+		return t.sendIFramePoll(body)
 	}
 	return t.sendIFrame(body)
 }
@@ -489,8 +534,19 @@ func (t *nbfTransport) sendRRPoll() error {
 	return t.fl.Write(nbfPad(out))
 }
 
-// sendRR writes a 4-byte LLC RR response advertising our current N(R), acknowledging the
-// server's I-frames.
+// sendRR writes a 4-byte LLC RR COMMAND (P=0) advertising our current N(R),
+// acknowledging the server's I-frames.
+//
+// CRITICAL: this MUST be an RR COMMAND with the Poll bit clear (SSAP 0xF0, ctrl1 =
+// N(R)<<1), NOT an RR response with Final set. Ground truth captures/nt-98-nbf.pcap
+// (WINNT351-NBF → WIN98-NBF, frames 214–266): the caller acks the server's data frames
+// by carrying N(R) on its own command frames and, when it must ack standalone, sends an
+// RR/DATA_ACK COMMAND — never an unsolicited RR RESPONSE with F=1. An RR with F=1 is a
+// checkpoint RESPONSE, valid only as the answer to a command carrying Poll=1; sending one
+// unsolicited desynchronises the peer's LLC2 machine. Against real Win98 this wedged the
+// link right after NEGOTIATE (whose response was already in flight), so SESSION_SETUP's
+// reply was never delivered — "no response within 5s". (Our own responder tolerated the
+// stray F-bit, so the e2e never caught it.)
 func (t *nbfTransport) sendRR() error {
 	dst := t.dstMAC()
 	t.mu.Lock()
@@ -500,7 +556,27 @@ func (t *nbfTransport) sendRR() error {
 	copy(out[0:6], dst[:])
 	copy(out[6:12], t.srcMAC[:])
 	out[12], out[13] = 0x00, 0x04
-	out[14], out[15] = nbfLLCDSAP, nbfLLCSSAPRsp
+	out[14], out[15] = nbfLLCDSAP, nbfLLCSSAPCmd // SSAP command (C/R = command)
+	out[16] = nbfLLCRR
+	out[17] = nR << 1 // N(R)<<1, P=0 — a plain ack, not a checkpoint response
+	return t.fl.Write(nbfPad(out))
+}
+
+// sendRRFinal writes a 4-byte LLC RR RESPONSE with the Final bit set, advertising our
+// current N(R). This is the ANSWER to an inbound RR-command-with-Poll (the peer's
+// checkpoint of us) — the sole legitimate use of the F-bit RR. Win98 polls after acking a
+// request and blocks on this response before sending the reply data (live capture, frame
+// 16).
+func (t *nbfTransport) sendRRFinal() error {
+	dst := t.dstMAC()
+	t.mu.Lock()
+	nR := t.nR
+	t.mu.Unlock()
+	out := make([]byte, nbfEthHdrLen+4)
+	copy(out[0:6], dst[:])
+	copy(out[6:12], t.srcMAC[:])
+	out[12], out[13] = 0x00, 0x04
+	out[14], out[15] = nbfLLCDSAP, nbfLLCSSAPRsp // SSAP response (C/R = response)
 	out[16] = nbfLLCRR
 	out[17] = (nR << 1) | 0x01 // N(R)<<1 | F=1
 	return t.fl.Write(nbfPad(out))
@@ -559,30 +635,45 @@ func (t *nbfTransport) handleFrame(frame []byte) {
 		return
 	}
 
-	// S-frames (control low two bits = 01): RR/RNR/REJ from the server. They ack our
-	// I-frames; a client with no retransmit machinery needs no further action. But an RR is
-	// also the server's Final response to the caller's post-UA RR poll (frame 209) — the
-	// LLC2 checkpoint that gates the SESSION_INITIALIZE I-frame. Signal establish() so it
-	// proceeds. (Only frames addressed to us; ignore the C/R bit — command or response RR
-	// both satisfy the checkpoint.)
+	// S-frames (control low two bits = 01): RR/RNR/REJ. In the extended (mod-128) control
+	// field the P/F bit and N(R) live in the SECOND control byte (body[3]); the SSAP C/R
+	// bit (body[1]) distinguishes a command from a response.
 	if ctrl&0x03 == 0x01 {
-		if dstMAC == t.srcMAC {
-			select {
-			case t.rrCh <- struct{}{}:
-			default:
-			}
+		if dstMAC != t.srcMAC {
+			return
+		}
+		isCommand := body[1] == nbfLLCSSAPCmd // 0xF0 command vs 0xF1 response
+		pollFinal := body[3]&0x01 != 0
+		// An RR COMMAND with the Poll bit set is the peer checkpointing US: it wants an RR
+		// RESPONSE carrying our N(R) with the Final bit set before it will proceed. Ground
+		// truth (live /tmp/live.pcap, WIN98 → us, frame 16): after acking our NEGOTIATE
+		// request Win98 polls with "RR cmd P=1" and WAITS for our RR-final before sending the
+		// NEGOTIATE response. Not answering wedges the exchange — Win98 retransmits the poll
+		// forever and the response never comes. This is the ONE legitimate use of an F-bit
+		// RR (answering a poll); we must not send F=1 unsolicited (see sendRR).
+		if isCommand && pollFinal {
+			_ = t.sendRRFinal()
+			return
+		}
+		// Otherwise it is an ack (RR command P=0) or the server's Final response to our own
+		// poll (RR response F=1) — the post-UA checkpoint that gates SESSION_INITIALIZE.
+		// Signal establish() so it proceeds; harmless after establishment (nothing reads).
+		select {
+		case t.rrCh <- struct{}{}:
+		default:
 		}
 		return
 	}
 
 	// I-frame (control low bit = 0): a session-command NBF body inside the LLC2
-	// connection. Advance N(R) to ack it, deliver, then RR to acknowledge (a client with
-	// no held frames always answers RR to keep the server's send window open, regardless
-	// of the poll bit).
+	// connection. Advance N(R) to ack it, deliver, then acknowledge at the LLC layer. If
+	// the inbound I-frame set the Poll bit (body[3] bit 0), the peer is checkpointing us
+	// and REQUIRES an RR-response-final; otherwise a plain RR-command ack suffices.
 	if ctrl&0x01 == 0 {
 		if dstMAC != t.srcMAC {
 			return
 		}
+		poll := body[3]&0x01 != 0
 		remoteNS := ctrl >> 1
 		t.mu.Lock()
 		expected := t.nR
@@ -591,18 +682,29 @@ func (t *nbfTransport) handleFrame(frame []byte) {
 		}
 		t.mu.Unlock()
 		// A retransmit of a frame we already consumed (the server's LLC2 T1 checkpoint
-		// re-sent an I-frame whose RR ack it had not yet seen): re-ack with RR but do NOT
-		// re-deliver, or the SMB response would be doubled into the stream and every later
-		// Send would read the wrong (shifted) reply. Only an in-order frame advances N(R)
-		// and is delivered.
+		// re-sent an I-frame whose RR ack it had not yet seen): re-ack but do NOT re-deliver,
+		// or the SMB response would be doubled into the stream and every later Send would read
+		// the wrong (shifted) reply. Only an in-order frame advances N(R) and is delivered.
 		if remoteNS != expected {
 			nbftracef("duplicate I-frame N(S)=%d (expected %d) — re-ack, drop (pcap-duplicate artifact)", remoteNS, expected)
-			_ = t.sendRR()
+			t.ackInbound(poll)
 			return
 		}
 		t.deliverNBF(srcMAC, body[4:])
-		_ = t.sendRR()
+		t.ackInbound(poll)
 	}
+}
+
+// ackInbound acknowledges an inbound I-frame at the LLC layer: an RR-response-final when
+// the frame carried the Poll bit (the peer is checkpointing us), else a plain RR-command
+// ack. Answering a poll with anything but an F-response, or sending F=1 unsolicited, both
+// desync the peer's LLC2 machine (see sendRR / sendRRFinal).
+func (t *nbfTransport) ackInbound(poll bool) {
+	if poll {
+		_ = t.sendRRFinal()
+		return
+	}
+	_ = t.sendRR()
 }
 
 // handleUA signals the LLC2 connection is up (the server acknowledged our SABME).

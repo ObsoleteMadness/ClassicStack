@@ -194,14 +194,33 @@ func hexByte(b uint8) string {
 
 // Flags (offset 9) bits ([MS-CIFS] §2.2.3.1).
 const (
-	FlagReply = 0x80 // SMB_FLAGS_REPLY: message is a server response
+	FlagCaseInsensitive   = 0x08 // SMB_FLAGS_CASE_INSENSITIVE: paths are case-insensitive
+	FlagCanonicalizePaths = 0x10 // SMB_FLAGS_CANONICALIZED_PATHS: paths are in canonical form
+	FlagReply             = 0x80 // SMB_FLAGS_REPLY: message is a server response
 )
+
+// FlagsRequest is the Flags byte a client request carries: canonicalized, case-insensitive
+// paths — what every DOS/Windows redirector sets (0x18). Ground truth captures/nt-98-nbf.pcap
+// frame 217: the MS redirector's SESSION_SETUP has Flags 0x18; our Flags 0x00 was one of the
+// header differences a strict Win98 server did not answer.
+const FlagsRequest = FlagCaseInsensitive | FlagCanonicalizePaths
 
 // Flags2 (offset 10) bits.
 const (
 	Flags2KnowsLongNames uint16 = 0x0001 // SMB_FLAGS2_KNOWS_LONG_NAMES
+	Flags2EAS            uint16 = 0x0002 // SMB_FLAGS2_EAS: extended attributes supported
 	Flags2Unicode        uint16 = 0x8000 // SMB_FLAGS2_UNICODE
 	Flags2NTStatus       uint16 = 0x4000 // SMB_FLAGS2_NT_STATUS
+)
+
+// NEGOTIATE/SESSION_SETUP Capabilities bits ([MS-CIFS] §2.2.4.52.2 SMB_CAP_*). Only the
+// ones this stack reasons about are named.
+const (
+	CapUnicode    uint32 = 0x00000004 // CAP_UNICODE: server/client speak UTF-16LE strings
+	CapLargeFiles uint32 = 0x00000008 // CAP_LARGE_FILES: 64-bit file offsets
+	CapNTSMBs     uint32 = 0x00000010 // CAP_NT_SMBS: the NT-family request set
+	CapNTStatus   uint32 = 0x00000040 // CAP_STATUS32: 32-bit NTSTATUS in headers (else DOS codes)
+	CapNTFind     uint32 = 0x00000200 // CAP_NT_FIND: TRANS2 FIND_FIRST2/FIND_NEXT2
 )
 
 // SMB dialect strings ([MS-CIFS] 2.2.4.52; [smb6.0] §"list of SMB protocol dialects").
