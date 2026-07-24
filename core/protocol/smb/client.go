@@ -290,7 +290,7 @@ func (b *Builder) BuildSessionSetup(user, password, domain string, maxBuffer uin
 	words[1] = 0x00
 	bp.PutLE16(words[2:4], 0)                     // AndXOffset (no chaining)
 	bp.PutLE16(words[4:6], maxBuffer)             // MaxBufferSize
-	bp.PutLE16(words[6:8], 1)                     // MaxMpxCount
+	bp.PutLE16(words[6:8], sessionSetupMaxMpx)    // MaxMpxCount
 	bp.PutLE16(words[8:10], 0)                    // VcNumber
 	bp.PutLE32(words[10:14], b.SessionKey)        // SessionKey (echo the server's NEGOTIATE key)
 	bp.PutLE16(words[14:16], uint16(len(ciPass))) // CaseInsensitivePasswordLength
@@ -313,6 +313,11 @@ func (b *Builder) BuildSessionSetup(user, password, domain string, maxBuffer uin
 
 	return b.frame(CommandSessionSetupAndX, words, area)
 }
+
+// sessionSetupMaxMpx is the MaxMpxCount advertised in SESSION_SETUP. The MS redirector
+// sends 2 against this Win98 box (captures/nt-98-nbf.pcap frame 217); a client should not
+// exceed the server's advertised count but 2 is within Win98's own advert.
+const sessionSetupMaxMpx = 2
 
 // negotiateClientCaps is the Capabilities word the client advertises in
 // SESSION_SETUP: NT SMBs + 32-bit status + NT find + large files, mirroring the

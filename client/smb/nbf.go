@@ -782,6 +782,26 @@ func (t *nbfTransport) handleSessionConfirm(f *nbfproto.Frame) {
 	}
 }
 
+// sendDataAck sends an NBF DATA_ACK (0x14) whose Transmit Correlator echoes the server's
+// Response Correlator, acknowledging a server DATA frame that asked to be acked. The MS
+// redirector piggybacks this ACK_INCLUDED on its NEXT request; a standalone DATA_ACK is the
+// equivalent explicit form. CRITICAL against real Win98: its NEGOTIATE response carries a
+// non-zero Response Correlator (0x28) and it WITHHOLDS the reply to the next request
+// (SESSION_SETUP) until that response is acknowledged — without this it DATA_ACKs our
+// SESSION_SETUP but never sends the SMB reply.
+func (t *nbfTransport) sendDataAck(xmitCorrelator uint16) error {
+	t.mu.Lock()
+	remoteNum, localNum := t.remoteNum, t.localNum
+	t.mu.Unlock()
+	f := &nbfproto.Frame{
+		Command:        nbfproto.CmdDataAck,
+		XmitCorrelator: xmitCorrelator,
+		DestNumber:     remoteNum,
+		SourceNumber:   localNum,
+	}
+	return t.sendSession(f)
+}
+
 // handleData accumulates a DATA_FIRST_MIDDLE segment or, on DATA_ONLY_LAST, completes
 // the SMB response message and delivers it to the pending Send.
 func (t *nbfTransport) handleData(f *nbfproto.Frame, last bool) {
@@ -799,6 +819,13 @@ func (t *nbfTransport) handleData(f *nbfproto.Frame, last bool) {
 		msg = append([]byte(nil), f.Payload...)
 	}
 	t.mu.Unlock()
+
+	// If the server's response asked to be acknowledged (non-zero Response Correlator),
+	// send a DATA_ACK echoing it. Win98 withholds the NEXT request's reply until its prior
+	// response is acked, so this must happen as the response arrives, not lazily.
+	if f.RspCorrelator != 0 {
+		_ = t.sendDataAck(f.RspCorrelator)
+	}
 
 	select {
 	case t.respCh <- msg:

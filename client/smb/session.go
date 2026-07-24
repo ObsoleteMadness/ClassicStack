@@ -48,9 +48,10 @@ const smbReplyOverhead = 128
 // and the Unicode charset). All requests on the circuit are serialised so the Builder's
 // MID and the request→response transport stay consistent.
 type Session struct {
-	tr      Transport
-	unicode bool
-	maxIO   int // largest READ_ANDX/WRITE_ANDX payload (bounded by the transport)
+	tr           Transport
+	unicode      bool
+	maxIO        int    // largest READ_ANDX/WRITE_ANDX payload (bounded by the transport)
+	negMaxBuffer uint32 // server MaxBufferSize from NEGOTIATE; the SESSION_SETUP MaxBuffer
 
 	mu      sync.Mutex
 	builder proto.Builder
@@ -108,6 +109,9 @@ func Open(tr Transport, p DialParams) (*Session, error) {
 	// Echo the server's SessionKey in SESSION_SETUP; a Win9x server drops a setup that
 	// carries 0 instead of the key it just issued.
 	s.builder.SessionKey = neg.SessionKey
+	// Advertise a MaxBufferSize no larger than the server's own (the redirector echoes the
+	// server's — 2920 for Win98); asking for more than the server offers can be rejected.
+	s.negMaxBuffer = neg.MaxBuffer
 
 	// 2. SESSION_SETUP_ANDX — obtain a UID (guest or named).
 	if err := s.sessionSetup(p.User, p.Password, p.Domain); err != nil {
@@ -153,9 +157,15 @@ func (s *Session) sessionSetup(user, password, domain string) error {
 	if user == "" {
 		user = guestAccount
 	}
+	// Advertise the server's MaxBufferSize (bounded to what we can actually hold), never
+	// more than it offered.
+	maxBuf := uint16(clientMaxBuffer)
+	if s.negMaxBuffer > 0 && s.negMaxBuffer < clientMaxBuffer {
+		maxBuf = uint16(s.negMaxBuffer)
+	}
 	s.builder.NextMID()
 	smbtracef("SESSION_SETUP_ANDX user=%q", user)
-	resp, err := s.tr.Send(s.builder.BuildSessionSetup(user, password, domain, clientMaxBuffer))
+	resp, err := s.tr.Send(s.builder.BuildSessionSetup(user, password, domain, maxBuf))
 	if err != nil {
 		return fmt.Errorf("smb: session setup: %w", err)
 	}
