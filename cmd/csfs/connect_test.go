@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	_ "github.com/ObsoleteMadness/ClassicStack/client/afp" // register "afp" + its transports
+	_ "github.com/ObsoleteMadness/ClassicStack/client/smb" // register "smb" + its pcap carriers
 	"github.com/ObsoleteMadness/ClassicStack/client/uri"
 )
 
@@ -35,6 +36,49 @@ func TestOpenerForValidatesTransport(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not valid for afp") {
 		t.Errorf("error = %q, want a clear scheme-mismatch message", err)
+	}
+}
+
+// TestOpenerForURICarrier asserts the URI ",<transport>" tail selects the SMB pcap
+// carrier (Spec.Carrier) when it is not a link kind, that an explicit -transport flag
+// still wins, and that a link-kind tail (",tcp") selects the opener Kind — not a carrier.
+func TestOpenerForURICarrier(t *testing.T) {
+	// smb://host,nbf/share over pcap: the ",nbf" tail (not a link kind) → Carrier=nbf.
+	nbf, _ := uri.Parse("smb://host,nbf/share")
+	op, err := openerFor(config{ifaceType: "pcap"}, nbf)
+	if err != nil {
+		t.Fatalf("smb ,nbf opener: %v", err)
+	}
+	if op.Spec.Kind != "pcap" || op.Spec.Carrier != "nbf" {
+		t.Errorf("Kind=%q Carrier=%q, want pcap/nbf", op.Spec.Kind, op.Spec.Carrier)
+	}
+
+	// No -ifacetype: kind falls back to the scheme default (pcap), carrier still from URI.
+	op, err = openerFor(config{}, nbf)
+	if err != nil {
+		t.Fatalf("smb ,nbf default-ifacetype opener: %v", err)
+	}
+	if op.Spec.Kind != "pcap" || op.Spec.Carrier != "nbf" {
+		t.Errorf("default-ifacetype Kind=%q Carrier=%q, want pcap/nbf", op.Spec.Kind, op.Spec.Carrier)
+	}
+
+	// Explicit -transport wins over the URI tail.
+	op, err = openerFor(config{ifaceType: "pcap", transport: "nbipx"}, nbf)
+	if err != nil {
+		t.Fatalf("smb -transport override opener: %v", err)
+	}
+	if op.Spec.Carrier != "nbipx" {
+		t.Errorf("Carrier=%q, want nbipx (-transport flag wins over URI tail)", op.Spec.Carrier)
+	}
+
+	// A link-kind tail (",tcp") selects the Kind, NOT the carrier.
+	tcp, _ := uri.Parse("smb://host,tcp/share")
+	op, err = openerFor(config{}, tcp)
+	if err != nil {
+		t.Fatalf("smb ,tcp opener: %v", err)
+	}
+	if op.Spec.Kind != "tcp" || op.Spec.Carrier != "" {
+		t.Errorf("Kind=%q Carrier=%q, want tcp/empty", op.Spec.Kind, op.Spec.Carrier)
 	}
 }
 

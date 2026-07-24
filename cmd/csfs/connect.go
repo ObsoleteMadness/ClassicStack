@@ -94,7 +94,16 @@ func openerFor(cfg config, target uri.Target) (*clientlink.Opener, error) {
 			kind, target.Scheme, strings.Join(transports.Kinds, ", "))
 	}
 
-	spec := clientlink.Spec{Kind: kind, Name: cfg.iface, Carrier: cfg.transport}
+	// Resolve the pcap sub-carrier (Spec.Carrier). The explicit -transport flag wins;
+	// otherwise a URI ",<transport>" tail that is NOT a link kind (e.g. smb://host,nbf/)
+	// names the carrier — the URI grammar's documented way to pick ipx|nbipx|nbf without
+	// the flag. (A link-kind tail like ",tcp" already selected `kind` above.)
+	carrier := cfg.transport
+	if carrier == "" && target.Transport != "" && !isLinkKind(target.Transport) {
+		carrier = target.Transport
+	}
+
+	spec := clientlink.Spec{Kind: kind, Name: cfg.iface, Carrier: carrier}
 	opener := clientlink.NewOpener(spec)
 	if cfg.mac != "" {
 		mac, err := parseMAC(cfg.mac)
