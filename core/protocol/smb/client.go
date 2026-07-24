@@ -358,6 +358,21 @@ func ParseSessionSetup(resp []byte) (SessionSetupResult, error) {
 // TREE_CONNECT_ANDX form we use (Flags bit for Unicode paths is left clear), matching
 // the server's parseTreeConnectShareName which splits OEM NUL strings.
 func (b *Builder) BuildTreeConnect(server, share string) []byte {
+	return b.buildTreeConnect(server, share, "?????")
+}
+
+// ServiceIPC is the Service string for the inter-process-communication pipe share
+// (IPC$), over which RAP transactions (NetShareEnum) ride.
+const ServiceIPC = "IPC"
+
+// BuildTreeConnectIPC builds a TREE_CONNECT_ANDX to the server's IPC$ pipe share,
+// declaring Service "IPC" so the server binds the transaction pipe rather than a disk
+// tree. It is the tree the RAP NetShareEnum transaction runs on.
+func (b *Builder) BuildTreeConnectIPC(server string) []byte {
+	return b.buildTreeConnect(server, "IPC$", ServiceIPC)
+}
+
+func (b *Builder) buildTreeConnect(server, share, service string) []byte {
 	words := make([]byte, 8) // WCT=4
 	words[0] = CommandNoAndXCommand
 	words[1] = 0x00
@@ -370,7 +385,7 @@ func (b *Builder) BuildTreeConnect(server, share string) []byte {
 	area = append(area, 0)                  // Password: one NUL (length 1, matches PasswordLength)
 	area = append(area, []byte(unc)...)     // Path (OEM/ASCII)
 	area = append(area, 0)                  // Path NUL
-	area = append(area, []byte("?????")...) // Service: "?????" = any type
+	area = append(area, []byte(service)...) // Service ("?????" any / "IPC" pipe)
 	area = append(area, 0)
 	return b.frame(CommandTreeConnectAndX, words, area)
 }
@@ -384,6 +399,210 @@ func ParseTreeConnect(resp []byte) (tid uint16, err error) {
 		return 0, err
 	}
 	return h.TID, nil
+}
+
+// --- RAP NetShareEnum (share list over IPC$ \PIPE\LANMAN) ---
+
+// RAP (Remote Administration Protocol, [MS-RAP]) constants for the NetShareEnum call
+// carried in an SMB_COM_TRANSACTION on the IPC$ \PIPE\LANMAN pipe.
+const (
+	rapNetShareEnum uint16 = 0x0000 // NetShareEnum function code
+	// The RAP descriptor strings for NetShareEnum level 1: ParamDesc "WrLeh" (share
+	// level W, receive buffer r/L, entries-read e, available h) and ReturnDesc "B13BWz"
+	// (SHARE_INFO_1: netname B13, pad B, type W, remark pointer z) — the format the
+	// server's buildNetShareEnumResponse produces (20-byte records + remark heap).
+	rapNetShareEnumParamDesc  = "WrLeh"
+	rapNetShareEnumReturnDesc = "B13BWz"
+	rapShareInfo1Level        = 1     // detail level 1 → SHARE_INFO_1
+	rapReceiveBufferLen       = 65535 // ask for the largest reply the server will pack
+	// rapNetShareEnumReplyParamLen is the reply's parameter block size: Status(2) +
+	// Converter(2) + EntriesReturned(2) + EntriesAvailable(2) = 8. This is the request's
+	// MaxParameterCount — a too-large value (e.g. the receive-buffer length) makes Win98
+	// misframe the reply (it echoed 0xFFFF back as TotalParameterCount, corrupting the
+	// param/data split).
+	rapNetShareEnumReplyParamLen = 8
+)
+
+const lanmanPipe = `\PIPE\LANMAN`
+
+// shareInfo1Size is the on-wire SHARE_INFO_1 record: netname(13)+pad(1)+type(2)+
+// remark-pointer(4) = 20 bytes ([MS-RAP] SHARE_INFO_1), matching the server.
+const shareInfo1Size = 20
+
+// STYPE_* share types ([MS-SRVS]) reported in SHARE_INFO_1.shi1_type.
+const (
+	ShareTypeDisk uint16 = 0x0000 // STYPE_DISKTREE
+	ShareTypeIPC  uint16 = 0x0003 // STYPE_IPC
+)
+
+// ShareInfo is one enumerated share: its name, STYPE_* type, and remark/comment.
+type ShareInfo struct {
+	Name    string
+	Type    uint16
+	Comment string
+}
+
+// BuildNetShareEnum builds the SMB_COM_TRANSACTION request that carries a RAP
+// NetShareEnum (level 1) over the IPC$ \PIPE\LANMAN pipe. The transaction's parameter
+// area is the RAP request: function code + ParamDesc + ReturnDesc + Level +
+// ReceiveBufferLength; there is no transaction data. The TID must already name the IPC$
+// tree.
+func (b *Builder) BuildNetShareEnum() []byte {
+	// RAP request parameter block.
+	rap := make([]byte, 0, 32)
+	rap = bp.AppendLE16(rap, rapNetShareEnum)
+	rap = append(rap, []byte(rapNetShareEnumParamDesc)...)
+	rap = append(rap, 0)
+	rap = append(rap, []byte(rapNetShareEnumReturnDesc)...)
+	rap = append(rap, 0)
+	rap = bp.AppendLE16(rap, rapShareInfo1Level)
+	rap = bp.AppendLE16(rap, rapReceiveBufferLen)
+
+	name := lanmanPipe + "\x00" // the transaction Name (the pipe), OEM/ASCII
+
+	// SMB_COM_TRANSACTION request, WCT=14 ([MS-CIFS] §2.2.4.33.1). Setup words = 0. The
+	// byte area is: Name\0 [pad] Parameters [Data]. Parameter/Data offsets are
+	// header-relative.
+	const wct = 14
+	words := make([]byte, wct*2)
+	bp.PutLE16(words[0:2], uint16(len(rap)))             // TotalParameterCount
+	bp.PutLE16(words[2:4], 0)                            // TotalDataCount
+	bp.PutLE16(words[4:6], rapNetShareEnumReplyParamLen) // MaxParameterCount (reply param block)
+	bp.PutLE16(words[6:8], rapReceiveBufferLen)          // MaxDataCount (max reply data — the share records)
+	words[8] = 0                                         // MaxSetupCount
+	// words[9] Reserved; words[10:12] Flags = 0; words[12:16] Timeout = 0; words[16:18] Reserved.
+	bp.PutLE16(words[18:20], uint16(len(rap))) // ParameterCount
+	// ParameterOffset / DataOffset computed below once we know the byte-area layout.
+	bp.PutLE16(words[22:24], 0) // DataCount
+	words[26] = 0               // SetupCount (no setup words)
+	// words[27] Reserved.
+
+	// Byte area: Name\0, then (2-byte aligned) the RAP parameters.
+	area := make([]byte, 0, len(name)+1+len(rap))
+	area = append(area, []byte(name)...)
+	// Parameters must start on an even offset from the SMB header. Compute the current
+	// header-relative offset and pad to align.
+	base := HeaderLen + 1 + wct*2 + 2 // header + WCT + words + ByteCount
+	paramOff := base + len(area)
+	if paramOff%2 != 0 {
+		area = append(area, 0)
+		paramOff++
+	}
+	area = append(area, rap...)
+
+	bp.PutLE16(words[20:22], uint16(paramOff))          // ParameterOffset
+	bp.PutLE16(words[24:26], uint16(paramOff+len(rap))) // DataOffset (no data; points past params)
+
+	return b.frame(CommandTransaction, words, area)
+}
+
+// ParseNetShareEnum parses the SMB_COM_TRANSACTION response to a RAP NetShareEnum. The
+// transaction parameter block is Status(2)+Converter(2)+EntriesReturned(2)+
+// EntriesAvailable(2); the data block is EntriesReturned SHARE_INFO_1 records (20 bytes
+// each) followed by a remark heap. Each record's remark pointer low word is the offset
+// of its NUL-terminated comment within the data block, adjusted by the Converter word
+// ([MS-RAP]: the server may bias heap pointers; Converter is subtracted). A non-zero RAP
+// Status is returned as an error.
+func ParseNetShareEnum(resp []byte) ([]ShareInfo, error) {
+	_, _, _, err := respBody(CommandTransaction, resp)
+	if err != nil {
+		return nil, err
+	}
+	params, data, err := transactionResponse(resp)
+	if err != nil {
+		return nil, err
+	}
+	if len(params) < 8 {
+		return nil, ErrShortResponse
+	}
+	status := bp.LE16(params[0:2])
+	if status != 0 {
+		return nil, &RAPError{Status: status}
+	}
+	converter := bp.LE16(params[2:4])
+	entries := int(bp.LE16(params[4:6]))
+
+	out := make([]ShareInfo, 0, entries)
+	for i := 0; i < entries; i++ {
+		base := i * shareInfo1Size
+		if base+shareInfo1Size > len(data) {
+			break
+		}
+		rec := data[base : base+shareInfo1Size]
+		name := oemString(rec[0:13]) // netname, NUL-padded within 13
+		typ := bp.LE16(rec[14:16])
+		remark := ""
+		// The remark pointer (low word) is a data-relative offset once the Converter bias
+		// is removed.
+		ptr := bp.LE16(rec[16:18])
+		if ptr >= converter {
+			off := int(ptr - converter)
+			if off >= 0 && off < len(data) {
+				remark = oemStringZ(data[off:])
+			}
+		}
+		out = append(out, ShareInfo{Name: name, Type: typ, Comment: remark})
+	}
+	return out, nil
+}
+
+// RAPError is a non-zero RAP Status returned in a TRANSACTION reply's parameter block.
+type RAPError struct{ Status uint16 }
+
+func (e *RAPError) Error() string { return "smb: RAP status " + hex16(e.Status) }
+
+// hex16 formats a uint16 as four uppercase hex digits.
+func hex16(v uint16) string {
+	const d = "0123456789ABCDEF"
+	return string([]byte{d[v>>12&0xF], d[v>>8&0xF], d[v>>4&0xF], d[v&0xF]})
+}
+
+// transactionResponse extracts the parameter and data blocks from an SMB_COM_TRANSACTION
+// response (WCT=10) using its header-relative ParameterOffset/DataOffset.
+func transactionResponse(resp []byte) (params, data []byte, err error) {
+	if len(resp) < HeaderLen+1 {
+		return nil, nil, ErrShortResponse
+	}
+	wct := int(resp[HeaderLen])
+	wStart := HeaderLen + 1
+	if wct < 10 || wStart+2*wct+2 > len(resp) {
+		return nil, nil, ErrShortResponse
+	}
+	w := resp[wStart : wStart+2*wct]
+	pCount := int(bp.LE16(w[6:8]))
+	pOff := int(bp.LE16(w[8:10]))
+	dCount := int(bp.LE16(w[12:14]))
+	dOff := int(bp.LE16(w[14:16]))
+	if pOff+pCount > len(resp) || dOff+dCount > len(resp) {
+		return nil, nil, ErrShortResponse
+	}
+	return resp[pOff : pOff+pCount], resp[dOff : dOff+dCount], nil
+}
+
+// oemString reads a NUL-padded OEM/ASCII string from a fixed-width field.
+func oemString(b []byte) string {
+	if i := indexZero(b); i >= 0 {
+		b = b[:i]
+	}
+	return string(b)
+}
+
+// oemStringZ reads a NUL-terminated OEM/ASCII string from the start of b.
+func oemStringZ(b []byte) string {
+	if i := indexZero(b); i >= 0 {
+		return string(b[:i])
+	}
+	return string(b)
+}
+
+// indexZero returns the index of the first NUL byte in b, or -1.
+func indexZero(b []byte) int {
+	for i, c := range b {
+		if c == 0 {
+			return i
+		}
+	}
+	return -1
 }
 
 // --- TREE_DISCONNECT / LOGOFF ---

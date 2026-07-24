@@ -67,7 +67,12 @@ func run(args []string) int {
 	case "ls", "cp", "get", "put", "mv", "rm", "attrib", "type", "creator":
 		return runOneShot(cfg, cmd, rest[1:])
 	default:
-		// A bare URI (or host path) with no command → interactive REPL against it.
+		// A bare URI naming a server but no share/volume → display server details and
+		// enumerate its shares/volumes (SMB NetShareEnum / AFP volume list), matching
+		// `ls smb://server/`. A URI that names a share/path opens an interactive REPL.
+		if done, code := maybeBrowseServer(cfg, cmd); done {
+			return code
+		}
 		if looksLikeTarget(cmd) {
 			return runREPL(cfg, cmd)
 		}

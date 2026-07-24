@@ -5,6 +5,7 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/client"
 	clientafp "github.com/ObsoleteMadness/ClassicStack/client/afp"
+	clientsmb "github.com/ObsoleteMadness/ClassicStack/client/smb"
 	"github.com/ObsoleteMadness/ClassicStack/client/uri"
 )
 
@@ -24,8 +25,10 @@ func maybeBrowseServer(cfg config, arg string) (bool, int) {
 	if err != nil {
 		return false, 0 // let the normal path report the parse error
 	}
-	// Only AFP supports a server-root browse, and only when no volume/path was given.
-	if target.Scheme != "afp" || target.Volume != "" || target.Path != "" {
+	// A server-root browse applies only when no volume/path was given. AFP lists volumes;
+	// SMB lists shares (RAP NetShareEnum over IPC$). Other schemes address a share/drive
+	// directly in the URI.
+	if target.Volume != "" || target.Path != "" {
 		return false, 0
 	}
 
@@ -33,12 +36,75 @@ func maybeBrowseServer(cfg config, arg string) (bool, int) {
 	if err != nil {
 		return true, fail(err)
 	}
-	listing, err := clientafp.Browse(target, client.Options{Opener: opener, ForkBackend: cfg.fork})
-	if err != nil {
-		return true, fail(err)
+	opts := client.Options{Opener: opener, ForkBackend: cfg.fork}
+
+	switch target.Scheme {
+	case "afp":
+		listing, err := clientafp.Browse(target, opts)
+		if err != nil {
+			return true, fail(err)
+		}
+		printServerListing(target, listing)
+		return true, 0
+	case "smb":
+		listing, err := clientsmb.Browse(target, opts)
+		if err != nil {
+			return true, fail(err)
+		}
+		printSMBListing(target, listing)
+		return true, 0
 	}
-	printServerListing(target, listing)
-	return true, 0
+	return false, 0
+}
+
+// printSMBListing prints the server label and one line per share, with the full smb:// URI
+// to connect to each (the input URI's server verbatim, the share as the path). The IPC$
+// pipe is shown but marked, since it is not a mountable file share.
+func printSMBListing(target uri.Target, l clientsmb.ServerListing) {
+	name := l.ServerName
+	if name == "" {
+		name = target.Server
+	}
+	fmt.Printf("Server:  %s\n", name)
+	if l.Dialect != "" {
+		fmt.Printf("Dialect: %s\n", l.Dialect)
+	}
+
+	if len(l.Shares) == 0 {
+		fmt.Println("\nNo shares available to this login.")
+		return
+	}
+	fmt.Printf("\nShares (%d):\n", len(l.Shares))
+	for _, sh := range l.Shares {
+		kind := "disk"
+		uriStr := smbShareURI(target, sh.Name)
+		if sh.IsIPC {
+			kind = "IPC$"
+			uriStr = ""
+		}
+		remark := sh.Comment
+		if remark != "" {
+			remark = "  — " + remark
+		}
+		fmt.Printf("  %-16s %-6s %s%s\n", sh.Name, kind, uriStr, remark)
+	}
+}
+
+// smbShareURI builds the full smb:// URI to connect to a share: the input URI's
+// credentials, server (with any ,transport tail), and the share as the path.
+func smbShareURI(target uri.Target, share string) string {
+	cred := ""
+	switch {
+	case target.User != "" && target.Pass != "":
+		cred = target.User + ":" + target.Pass + "@"
+	case target.User != "":
+		cred = target.User + ":@"
+	}
+	server := target.Server
+	if target.Transport != "" {
+		server += "," + target.Transport
+	}
+	return fmt.Sprintf("smb://%s%s/%s", cred, server, share)
 }
 
 // printServerListing prints the server info header and one line per volume with the

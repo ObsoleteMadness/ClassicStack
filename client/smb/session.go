@@ -52,10 +52,14 @@ type Session struct {
 	unicode      bool
 	maxIO        int    // largest READ_ANDX/WRITE_ANDX payload (bounded by the transport)
 	negMaxBuffer uint32 // server MaxBufferSize from NEGOTIATE; the SESSION_SETUP MaxBuffer
+	dialect      string // the dialect selected at NEGOTIATE (for display)
 
 	mu      sync.Mutex
 	builder proto.Builder
 }
+
+// Dialect returns the SMB dialect the server selected at NEGOTIATE (e.g. "NT LM 0.12").
+func (s *Session) Dialect() string { return s.dialect }
 
 // DialParams carries what Open needs beyond the transport: the credentials and the
 // UNC target (server label + share). The server label is only used to build the
@@ -80,41 +84,8 @@ type DialParams struct {
 // share while a Unicode one does not. The Unicode session bit is therefore left clear;
 // the server's per-request wireFor() keys off that bit and uses ANSI to match.
 func Open(tr Transport, p DialParams) (*Session, error) {
-	s := &Session{tr: tr, builder: proto.Builder{PID: clientPID}}
-
-	// Bound every reply to what the transport can carry back in one exchange. A
-	// connectionless transport (SMB over IPX) has no reassembly, so the whole response
-	// must fit one datagram; the session caps TRANS2 MaxDataCount and READ/WRITE sizes
-	// by the transport's MaxResponse (minus SMB + per-command overhead) so a directory
-	// listing pages through FIND_NEXT2 and a large file reads in chunks rather than
-	// asking for a reply too big to transmit. A stream transport reports a large cap, so
-	// this is a no-op there beyond the existing maxIO ceiling.
-	s.applyTransportLimits(tr.MaxResponse())
-
-	// 1. NEGOTIATE — no UID/TID yet; select the dialect. The reply is parsed for
-	// success/dialect but the client stays on ANSI paths (Unicode is left off) so it
-	// interoperates with every share codec (see the doc comment above).
-	neg, err := s.negotiate()
+	s, err := establishSession(tr, p)
 	if err != nil {
-		return nil, err
-	}
-	s.unicode = false
-	s.builder.Unicode = false
-	// Speak the server's status dialect: 32-bit NTSTATUS only when the server advertised
-	// CAP_STATUS32, else DOS error codes. A Win9x File & Print server negotiates NT LM 0.12
-	// but WITHOUT CAP_STATUS32 and silently drops a request whose header claims NT status
-	// (observed: SESSION_SETUP was NBF-acked but never answered), so this must follow the
-	// server rather than always assert NT status.
-	s.builder.NTStatus = neg.SupportsNTStatus()
-	// Echo the server's SessionKey in SESSION_SETUP; a Win9x server drops a setup that
-	// carries 0 instead of the key it just issued.
-	s.builder.SessionKey = neg.SessionKey
-	// Advertise a MaxBufferSize no larger than the server's own (the redirector echoes the
-	// server's — 2920 for Win98); asking for more than the server offers can be rejected.
-	s.negMaxBuffer = neg.MaxBuffer
-
-	// 2. SESSION_SETUP_ANDX — obtain a UID (guest or named).
-	if err := s.sessionSetup(p.User, p.Password, p.Domain); err != nil {
 		return nil, err
 	}
 
@@ -123,6 +94,78 @@ func Open(tr Transport, p DialParams) (*Session, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// establishSession runs NEGOTIATE + SESSION_SETUP_ANDX (no tree connect) and returns the
+// authenticated session, shared by Open (which then mounts a disk share) and OpenIPC
+// (which connects the IPC$ pipe for RAP enumeration).
+func establishSession(tr Transport, p DialParams) (*Session, error) {
+	s := &Session{tr: tr, builder: proto.Builder{PID: clientPID}}
+
+	// Bound every reply to what the transport can carry back in one exchange (see Open).
+	s.applyTransportLimits(tr.MaxResponse())
+
+	// 1. NEGOTIATE — no UID/TID yet; select the dialect. The client stays on ANSI paths.
+	neg, err := s.negotiate()
+	if err != nil {
+		return nil, err
+	}
+	s.unicode = false
+	s.builder.Unicode = false
+	s.dialect = neg.Dialect
+	// Speak the server's status dialect: 32-bit NTSTATUS only when the server advertised
+	// CAP_STATUS32, else DOS error codes (a Win9x server negotiates NT LM 0.12 WITHOUT
+	// CAP_STATUS32 and silently drops an NT-status header).
+	s.builder.NTStatus = neg.SupportsNTStatus()
+	// Echo the server's SessionKey; a Win9x server drops a setup carrying 0.
+	s.builder.SessionKey = neg.SessionKey
+	// Advertise no more than the server's own MaxBufferSize.
+	s.negMaxBuffer = neg.MaxBuffer
+
+	// 2. SESSION_SETUP_ANDX — obtain a UID (guest or named).
+	if err := s.sessionSetup(p.User, p.Password, p.Domain); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// OpenIPC runs NEGOTIATE + SESSION_SETUP_ANDX and connects the server's IPC$ pipe tree,
+// returning a Session ready for a RAP transaction (EnumShares) — the browse path for a
+// URI that names a server but no share.
+func OpenIPC(tr Transport, p DialParams) (*Session, error) {
+	s, err := establishSession(tr, p)
+	if err != nil {
+		return nil, err
+	}
+	s.builder.NextMID()
+	smbtracef("TREE_CONNECT_ANDX \\\\%s\\IPC$ (pipe)", p.ServerName)
+	resp, err := s.tr.Send(s.builder.BuildTreeConnectIPC(p.ServerName))
+	if err != nil {
+		return nil, fmt.Errorf("smb: tree connect IPC$: %w", err)
+	}
+	tid, err := proto.ParseTreeConnect(resp)
+	if err != nil {
+		return nil, fmt.Errorf("smb: tree connect IPC$: %w", err)
+	}
+	s.builder.TID = tid
+	smbtracef("TREE_CONNECT_ANDX ok — TID %d (IPC$)", tid)
+	return s, nil
+}
+
+// EnumShares runs a RAP NetShareEnum over the connected IPC$ pipe and returns the server's
+// share list. The session must have been opened with OpenIPC.
+func (s *Session) EnumShares() ([]proto.ShareInfo, error) {
+	smbtracef("NetShareEnum")
+	resp, err := s.send(func(b *proto.Builder) []byte { return b.BuildNetShareEnum() })
+	if err != nil {
+		return nil, fmt.Errorf("smb: NetShareEnum: %w", err)
+	}
+	shares, err := proto.ParseNetShareEnum(resp)
+	if err != nil {
+		return nil, fmt.Errorf("smb: NetShareEnum: %w", err)
+	}
+	smbtracef("NetShareEnum ok — %d shares", len(shares))
+	return shares, nil
 }
 
 // negotiate sends SMB_COM_NEGOTIATE and parses the selected dialect.

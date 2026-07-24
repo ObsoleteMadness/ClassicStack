@@ -719,44 +719,51 @@ Two faults in the caller, both invisible against our own server:
 
 **Where:** `client/smb/nbf.go` (`establish` RR-poll phase, `sendRRPoll`, `sendIFramePoll`/`sendIFrameCtl` poll bit, `nbfInitFlags`/`nbfMaxRecvSize`, `handleFrame` S-frame → `rrCh`). The prior section's "SABME → UA → SESSION_INITIALIZE" flow description is superseded by the poll/final-plus-poll flow here.
 
-### NBF caller: acknowledge inbound data with an RR COMMAND (P=0), never an unsolicited RR RESPONSE (F=1) — and poll the request DATA_ONLY_LAST
+### NBF caller: LLC2 ack/poll discipline — RR-final answers a poll, RR-command acks data, request DATA_ONLY_LAST polls
 
-**Context:** with the establishment fixed (previous section), against the real Win98 box the session came up and SMB NEGOTIATE completed ("NT LM 0.12"), but the very next request — SESSION_SETUP_ANDX — timed out with "no response within 5s". Win98 went silent: the link was wedged at the LLC2 layer, not the SMB layer.
+**Context:** with establishment fixed, SMB NEGOTIATE round-tripped against the real Win98 box but the next request hung. Two LLC2 faults, both invisible against our own lenient responder.
 
-**Observed (`captures/nt-98-nbf.pcap`, WINNT351-NBF → WIN98-NBF, frames 214–266) vs. our code:** the MS redirector acknowledges the server's data frames by carrying N(R) on its own COMMAND frames (SSAP 0xF0) — its next request I-frame, or an explicit DATA_ACK (0x14) — all with the Poll bit clear. The only F-bit (RESPONSE, SSAP 0xF1) frames the caller emits are answers to a Win98 *poll*. Our caller instead fired an **RR RESPONSE with the Final bit set** (SSAP 0xF1, `N(R)<<1 | F`) after *every* inbound I-frame, unsolicited. An RR with F=1 is a checkpoint RESPONSE, valid only as the reply to a command carrying Poll=1; sending it unsolicited is an LLC2 protocol error. Win98's link machine tolerated it through NEGOTIATE (whose response was already in flight) but was desynchronised by the time SESSION_SETUP's reply was due, so that reply was never delivered. Our own responder ignored the stray F-bit, so no e2e caught it.
+**Observed (`captures/nt-98-nbf.pcap`, WINNT351-NBF → WIN98-NBF, frames 214–266, plus live captures of our client → Win98):** the MS redirector's LLC2 discipline is precise about the P/F bit:
+- It acknowledges the server's data by carrying N(R) on its own COMMAND frames (SSAP 0xF0, Poll clear) — the next request I-frame or an explicit DATA_ACK (0x14).
+- It emits an **RR RESPONSE with Final set** (SSAP 0xF1) **only** to answer a server *poll* — an inbound RR-command with Poll set. Win98 polls (RR command, P=1) after acking a request and BLOCKS, refusing to send the reply until it receives the RR-final.
+- It polls its own request DATA_ONLY_LAST (frame 214 = "I P") so the server checkpoints and flushes the reply.
 
-**A second gap:** our request DATA_ONLY_LAST frames went out with the LLC Poll bit clear. The redirector polls its request (frame 214 = "I P"), so the server checkpoints and reliably flushes the response. Relying on lazy delivery (P=0) is fragile against a strict peer.
+Our caller had this backwards: it fired an unsolicited RR-response-Final after *every* inbound I-frame (an LLC2 protocol error — F=1 is valid only as a poll answer), never answered Win98's poll, and left its request DATA frames Poll-clear.
 
-**What we do:**
-1. `sendRR` (the post-data ack) is now an RR **COMMAND with P=0** (SSAP 0xF0, `N(R)<<1`) — a plain "received up to N(R)" ack, not a checkpoint response.
-2. `sendSMB` sends the final DATA_ONLY_LAST with the LLC **Poll bit set** (`sendSessionCtl(f, true)`) and the NBF `ACK_WITH_DATA_ALLOWED` flag (Data1 0x04), matching the redirector; the server's returning RR-final is harmlessly absorbed (nothing reads `rrCh` post-establish) while `Send` waits on the reassembled data response.
+**What we do (`client/smb/nbf.go`):**
+- `sendRR` — the plain data ack — is an RR **COMMAND, P=0** (`N(R)<<1`), never an unsolicited F=1.
+- `sendRRFinal` — an RR **RESPONSE, F=1** — is emitted *only* to answer an inbound poll. The S-frame handler detects an RR-command-with-Poll and replies with it; `ackInbound(poll)` answers a Poll-set inbound I-frame with RR-final, else RR-command. So the F-bit is emitted iff it answers a poll — never unsolicited, never withheld when demanded.
+- `sendSMB` sends the final DATA_ONLY_LAST with the LLC **Poll bit set** and the NBF `ACK_WITH_DATA_ALLOWED` flag (Data1 0x04), matching the redirector.
 
-**Where:** `client/smb/nbf.go` (`sendRR` command/P=0, `sendSMB` poll + Data1 ack flag, `sendSession`/`sendSessionCtl` poll variant).
+### NBF caller: DATA_ACK the server's Response Correlator — Win98 withholds the next reply until its response is acknowledged
 
-### NBF caller: answer an inbound RR-command-poll with an RR-response-final (live Win98)
+**Context:** with the LLC2 discipline correct, NEGOTIATE and SESSION_SETUP were delivered and NBF-acked at the LLC layer, but Win98 still sent no SMB reply to SESSION_SETUP — only a bare NBF DATA_ACK. This was the true blocker, at the NBF *session* layer (not LLC2, not SMB content).
 
-**Context:** with the acks corrected to RR-command (previous section), NEGOTIATE *regressed* — it too now timed out. Live capture (`/tmp/live2.pcap`, our client → real Win98) frame 16: after acking our NEGOTIATE request Win98 sends an **RR COMMAND with the Poll bit set** and BLOCKS, waiting for our RR-final before it sends the NEGOTIATE response. Our earlier over-correction had removed all F-bit RR emission, so we never answered the poll; Win98 retransmitted it forever and the response never came.
+**Observed (`captures/nt-98-nbf.pcap` frames 216/217 and live):** Win98's NEGOTIATE response DATA frame carries a **non-zero NBF Response Correlator** (e.g. 0x28) and Flags 0x0c (ACK_INCLUDED | ACK_WITH_DATA_ALLOWED) — it is asking to be acknowledged. Win98 WITHHOLDS the reply to the *next* request until that response is acknowledged. The redirector piggybacks the ack as ACK_INCLUDED + Transmit Correlator on its next request; we never acknowledged it at all, so Win98 sat waiting forever.
 
-**What we do:** the S-frame handler now distinguishes an inbound **RR command with Poll set** (SSAP 0xF0, second control byte bit 0) — the peer checkpointing us — and answers it with an **RR response, Final set** (`sendRRFinal`). Every other RR (command P=0 ack, or response F=1 answering our own poll) is just noted. The I-frame ack path is likewise poll-aware (`ackInbound`): an inbound I-frame with Poll set is answered with RR-final, else RR-command. So the F-bit is emitted if and only if it answers a poll — never unsolicited, never withheld when demanded.
+**What we do (`client/smb/nbf.go`):** each request DATA_ONLY_LAST carries a non-zero, incrementing NBF **Response Correlator** (`respCorrelator`, 0x0001, 0x0002, …) so the server can correlate the reply; and when an inbound DATA response carries a non-zero Response Correlator, we send an NBF **DATA_ACK (0x14) whose Transmit Correlator echoes it** (`sendDataAck`, called from `handleData`) — the explicit equivalent of the redirector's piggybacked ACK_INCLUDED. With this, SESSION_SETUP is answered and the whole SMB handshake completes.
 
-**Where:** `client/smb/nbf.go` (`handleFrame` S-frame poll branch, `sendRRFinal`, `ackInbound`, I-frame poll detection).
+### SMB client: follow the server's NEGOTIATE (status dialect, SessionKey, header Flags, null-password) rather than assuming NT
 
-### SMB client SESSION_SETUP against Win9x: follow the server's status dialect, echo its SessionKey, set request Flags — Win98 silently drops a mismatched header
+**Observed (Win98 `00:86:b0:a4:b8:81` NEGOTIATE response):** Security Mode 0x02 (SHARE-level, encrypted challenge/response offered), Capabilities `0x00000203` — **no CAP_STATUS32, no CAP_UNICODE** — and a per-connection **SessionKey**. The MS redirector logs into this same box (`captures/nt-98-nbf.pcap` frame 217) with header **Flags 0x18** (canonicalized + case-insensitive) and **Flags2 DOS error codes** (NOT NT status), the **SessionKey echoed** from NEGOTIATE, **ANSI Password Length 1** (a lone `0x00` — the null password, not length 0), and a **non-empty Account**. Win98 answers Success (a null-password logon), proving no LM hashing is needed — a plaintext/null password is accepted despite the "encrypted" advertisement.
 
-**Context:** with the NBF/LLC2 transport fully correct (establishment + NEGOTIATE round-trip cleanly on real Win98), SESSION_SETUP_ANDX was delivered and NBF-**DATA_ACKed** by Win98 but never answered at the SMB layer (no DATA reply frame followed) — the request was being discarded inside Win98's SMB server. The client was speaking an NT-dialect header to a server that negotiated NT LM 0.12 but advertises none of the NT header features.
-
-**Observed (Win98 `00:86:b0:a4:b8:81` NEGOTIATE response):** Security Mode 0x02 (SHARE-level, encrypted challenge/response offered), Capabilities `0x00000203` — **no CAP_STATUS32, no CAP_UNICODE** — and a per-connection **SessionKey** (e.g. `0x800000f3`). The MS redirector logs into this same box (ground truth `captures/nt-98-nbf.pcap` frame 217) with: header **Flags 0x18** (canonicalized + case-insensitive) and **Flags2 DOS error codes** (NOT NT status); **SessionKey echoed** from NEGOTIATE; **ANSI Password Length 1** (a lone `0x00` null-password byte, not length 0); a **non-empty Account**. Win98 answers Success (a null-password logon), proving no LM hashing is needed — a plaintext/null password is accepted despite the "encrypted" advertisement.
-
-Our client diverged on every one of those: it hard-set SMB_FLAGS2_NT_STATUS + advertised CAP_STATUS32 (Win98 is a DOS-error server), sent SessionKey 0, sent a zero-length password, empty Account, and Flags 0x00.
+Our client had hard-set SMB_FLAGS2_NT_STATUS + CAP_STATUS32 (Win98 is a DOS-error server), SessionKey 0, a zero-length password, empty Account, and Flags 0x00. A Win9x server silently discards a request whose header claims a dialect it did not negotiate.
 
 **What we do (all keyed off the NEGOTIATE reply):**
-- `NegotiateResult` now surfaces `Capabilities` and `SessionKey`; `SupportsNTStatus()` reports CAP_STATUS32.
-- `Builder.NTStatus` (set from `SupportsNTStatus()`) gates the SMB_FLAGS2_NT_STATUS header bit AND the CAP_STATUS32 capability advertised in SESSION_SETUP — so a non-NT-status server is not told we speak a status dialect it does not.
-- `Builder.SessionKey` (set from `NegotiateResult.SessionKey`) is echoed in SESSION_SETUP.
-- The request header carries `FlagsRequest` (0x18) and Flags2 gains `Flags2EAS`, matching the redirector.
-- The case-insensitive password is always at least one NUL (length 1, the null-password form) — never length 0.
-- The client sends a non-empty Account (`GUEST` when the caller gave no user).
+- `NegotiateResult` surfaces `Capabilities`, `SessionKey`, and `MaxBuffer`; `SupportsNTStatus()` reports CAP_STATUS32.
+- `Builder.NTStatus` (from `SupportsNTStatus()`) gates the SMB_FLAGS2_NT_STATUS header bit AND CAP_STATUS32 in SESSION_SETUP.
+- `Builder.SessionKey` is echoed in SESSION_SETUP; MaxBufferSize/MaxMpxCount follow the server (never exceed what it offered).
+- The request header carries `FlagsRequest` (0x18) + Flags2 `Flags2EAS`.
+- The case-insensitive password is always at least one NUL (length 1); the Account defaults to `GUEST` when none is given.
 
-STATUS: these header/field corrections bring our SESSION_SETUP byte-close to the working NT reference and are independently correct (verified: build + all client/core SMB tests green; live Win98 NEGOTIATE still round-trips). Whether they fully unblock the Win98 SESSION_SETUP reply is still under live diagnosis — Win98 continued to DATA_ACK-without-replying through these fixes, so at least one further SESSION_SETUP-content difference remains (candidate: the NBF-layer Response Correlator, which the redirector sends non-zero and incrementing while we send 0). Documented here so the header posture is not regressed while that is chased.
+With these plus the two NBF sections above, the SMB-over-NBF client completes NEGOTIATE → SESSION_SETUP → TREE_CONNECT against real Win98 and lists a mounted share's contents.
 
-**Where:** `core/protocol/smb/smb.go` (`CapUnicode`/`CapLargeFiles`/`CapNTSMBs`/`CapNTStatus`/`CapNTFind`, `FlagCaseInsensitive`/`FlagCanonicalizePaths`/`FlagsRequest`, `Flags2EAS`), `core/protocol/smb/client.go` (`NegotiateResult.Capabilities`/`SessionKey`/`SupportsNTStatus`, `Builder.NTStatus`/`SessionKey`, `flags2()`, `header()` Flags, `BuildSessionSetup` caps/key/null-password), `client/smb/session.go` (`Open` sets NTStatus+SessionKey from NEGOTIATE; `sessionSetup` guest account).
+### SMB client: RAP NetShareEnum MaxParameterCount must be the reply-param size (8), not the receive-buffer length
+
+**Context:** the server-root browse (`smb://server/`, no share) connects the IPC$ pipe and runs a RAP NetShareEnum over `\PIPE\LANMAN`. The transaction completed but parsed **0 shares**.
+
+**Observed (live):** our SMB_COM_TRANSACTION request set **MaxParameterCount = 65535** (the same large value as MaxDataCount). Win98 echoed `0xFFFF` back as the reply's TotalParameterCount and misframed the parameter/data split, so the SHARE_INFO_1 records never landed where the reply header pointed.
+
+**What we do:** `BuildNetShareEnum` sets **MaxParameterCount = 8** (the RAP reply param block: Status + Converter + EntriesReturned + EntriesAvailable) and MaxDataCount = the receive-buffer length (the share records). Win98 then returns a correctly-framed reply; the client parses the SHARE_INFO_1 records (20-byte netname/type + remark-heap pointer, Converter-biased) into the share list. `csfs smb://win98-nbf,nbf/` now prints the server + its shares, each with a ready-to-paste URI, and `csfs ls smb://win98-nbf,nbf/C-DRIVE` lists the drive.
+
+**Where:** `core/protocol/smb/smb.go` (`Cap*`, `Flag*`/`FlagsRequest`, `Flags2EAS`, `ShareType*`), `core/protocol/smb/client.go` (`NegotiateResult` fields + `SupportsNTStatus`, `Builder.{NTStatus,SessionKey}`, `flags2()`, `header()` Flags, `BuildSessionSetup`, `BuildTreeConnectIPC`, `BuildNetShareEnum`/`ParseNetShareEnum`), `client/smb/{session.go,browse.go}` (`establishSession`, `OpenIPC`, `EnumShares`, `Browse`), `client/smb/nbf.go` (`sendRR`/`sendRRFinal`/`ackInbound`, `respCorrelator`, `sendDataAck`), `cmd/csfs/{browse.go,main.go}` (SMB server-root listing). Coverage: `core/protocol/smb/netshareenum_test.go`.
