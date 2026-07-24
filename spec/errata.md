@@ -669,3 +669,111 @@ Observed DataStreamType values are a small set: `0x01` FIND.NAME, `0x02` NAME.RE
 **What we do:** an INTERFACE is now only the uplink bridge (pcap/tap/raw over a host NIC). Serial and multicast are no longer interface objects. A TashTalk port carries its serial `Device`/`Baud` on the PORT section (`port.Section.Device`/`Baud`); the TashTalk factory reads them directly (falling back to `Iface` as the device path for an older section). An LToUDP port rides host-wide multicast, with `Iface` an optional bind address. This REVERSES the §3b/D7 serial-as-interface move. The web UI reflects it: the Interfaces tab manages only bridge/uplink entries; the TashTalk port editor shows a serial-port dropdown + baud; EtherTalk/IPX/NetBEUI show a bridge dropdown; LToUDP shows neither.
 
 **Where:** `core/port/section.go` (`Device`/`Baud`), `compose/registry/reg_localtalk.go` (`tashtalkLinkOpener` reads the port section; `effectiveSerialInterface` removed from `compose/registry/dispatch.go`), `adapter/control/http/spa/app.js` (`instanceForm`/`openInstanceModal` model-aware port widgets; `openInterfaceModal` bridge-only).
+
+### AFP client: connecting to a real System 7.x Mac — four wire deviations (client)
+
+**Observed (real Macintosh System 7.5.3 over LToUDP, 2026-07-23, `csfs -v` + loopback captures cross-referenced against `captures/vmac-to-vmac.pcapng`, a real Mac↔Mac AFP session):** the `client/` AFP stack could open no session to a genuine classic Mac — the ASP OpenSession's ATP transaction timed out — and after that was fixed the login was silently ignored, then dropped. Four independent deviations from a real Mac's behaviour, none exercised by the in-process e2e (our own server is stricter/looser in exactly the compensating ways):
+
+1. **A single-packet ATP response may carry EOM CLEAR.** A real Mac answers a one-packet OpenSession/GetStatus/Command reply with control `0x80` (TRESP, **EOM not set**), the payload in the ATP UserData. Our requester only completed a transaction once it had seen an EOM packet, so the very first transaction hung forever. Fix: the transaction is also complete when every packet the request BITMAP asked for has arrived (a responder that fills the requested set need not set EOM). Our own server always sets EOM, so the e2e never caught it. `client/atalk/atp.go`.
+
+2. **FPLogin must name a version/UAM the server ADVERTISED, verbatim.** The client hardcoded `"AFP2.2"` + `"Cleartxt Passwrd"`. System 7.5 offers `AFPVersion 1.1/2.0/2.1` (note the space, and NO 2.2) and `Cleartxt passwrd` (**lower-case p**). A classic Mac SILENTLY IGNORES an FPLogin whose version string or UAM name it never advertised. Fix: call FPGetSrvrInfo (ASPGetStatus) first, parse the version/UAM lists (`core/protocol/afp/srvrinfo.go` `ParseServerInfo`/`PickVersion`), and log in with the server's exact strings (`client/afp` `LoginNegotiated`).
+
+3. **The FPLogin credential trailer was keyed on the capital-P constant.** `LoginRequest.Marshal` appended the username + 8-byte password only when `UAM == "Cleartxt Passwrd"` (exact match). Once we echoed the server's lower-case `"Cleartxt passwrd"`, the block carried the UAM with NO credentials, and the Mac discarded it. Fix: append the trailer for any non-guest UAM (`!= "No User Authent"`). `core/protocol/afp/commands.go`.
+
+4. **The first ASP Command sequence number must be 0.** Ground truth (`captures/vmac-to-vmac.pcapng`): the real Mac workstation's first Command is sequence 0, then 1, 2, … A real Mac SERVER tracks the expected sequence and SILENTLY DROPS a Command whose sequence it did not expect. Our client's `nextSeq` pre-incremented, so the first Command was sequence 1 and every Command went unanswered (only the tickles flowed). Fix: the first Command/Write uses sequence 0. `client/asp/asp.go`.
+
+With all four fixed, `csfs ls "afp://pete:@vmac1:*/System 7.5.3"` mounts and lists a real System 7.5 volume (data + resource-fork sizes + Finder type/creator). A server-root URI with no volume (`afp://server/`) now lists the server info + volumes via FPGetSrvrParms instead of failing FPOpenVol with an empty name (`client/afp/browse.go`).
+
+**Where:** `client/atalk/atp.go`, `client/asp/asp.go`, `client/afp/{login.go,register.go,browse.go}`, `core/protocol/afp/{srvrinfo.go,commands.go}`; `csfs -v` wire-trace in `client/atalk/verbose.go`.
+
+### SMB-over-NBIPX and SMB-over-NBF client transports + pcap duplicate frames — observation-based
+
+**Context:** the client SDK (`client/smb`) grew two more SMB carriers beyond direct-hosted-IPX and TCP: **NBIPX** (NetBIOS-over-IPX / NWLink, the sequenced NB-IPX session on socket 0x0455) and **NBF** (raw NetBIOS-over-802.2 / NetBEUI). Both are the CALLER side of the responder engines in `core/service/netbios` (`nbipx.go` / `nbf.go`) and the LLC2 responder in `core/port/netbeui`; there was no prior client-direction implementation, so the caller flow is written to mirror the wire the responders expect (cross-checked against the same `captures/ipx.pcap` / `captures/netbeui.pcap` the server side was built from). Selected by `csfs -transport nbipx|nbf` (default `ipx` = direct-hosted); `client/link.Spec.Carrier` threads the choice.
+
+**NBIPX caller (`client/smb/nbipx.go`).** The client opens the circuit with a DATA frame (`DataStreamType 0x06`) whose `DestConnID` is the unassigned sentinel `0xFFFF` and `SourceConnID` is its own circuit id, `SendSeq 0`, `ConnCtrlFlag = ACK|CONFIRM (0x41)`, payload `[called<20> || calling<00> || 6-byte trailer]` — exactly what `handleSessionRequest` keys on. The server's accept is `SYS|CONFIRM (0x81)`, `RecvSeq 1`, teaching the client the server node and its `SourceConnID`. SMB then rides sequenced DATA (client `SendSeq` from 1, server's first data frame `SendSeq 0`), reassembled by EOM. The client drops an out-of-window inbound frame (`SendSeq != recvSeq`), which is what prevents a duplicate from double-delivering.
+
+**NBF caller (`client/smb/nbf.go`).** This is the CALLER half of **both** the LLC2 Type-2 machine and the NBF session layer, which the server splits between the port (LLC2 responder) and the engine (NBF session responder). Flow: broadcast `NAME_QUERY` for `SERVER<20>` carrying our Local Session No. (a CALL, Data2 low byte != 0) → `NAME_RECOGNIZED` (learns server MAC + its session number) → `SABME` (P=1) → `UA` → `SESSION_INITIALIZE` (I-frame) → `SESSION_CONFIRM` → SMB as `DATA_ONLY_LAST`/`DATA_FIRST_MIDDLE` I-frames. The client sequences its own I-frames (mod-128 N(S)/N(R)), acks the server's with RR, and implements no T1/checkpoint recovery (a lost frame surfaces as a Send timeout the caller retries — sufficient for a client).
+
+**pcap delivers duplicate frames — the caller MUST dedup by sequence.** During NBF e2e bring-up every SMB response was delivered TWICE, shifting the response stream by one so the *next* command read the previous reply (surfacing as `smb: response shorter than command format requires` at the first command whose reply shape differed). The duplicate is a **pcap/NIC artifact** (a frame the capture surfaces more than once, or the server's LLC2 T1 checkpoint re-sending an I-frame whose RR ack it had not yet processed), NOT a protocol error — so the caller cannot assume one-delivery-per-frame. Fix (`handleFrame` I-frame branch): only an **in-order** I-frame (`N(S) == our N(R)`) advances N(R) and is delivered to the SMB layer; a frame whose `N(S)` we already consumed is re-acked with RR but **not** re-delivered. NBIPX's existing out-of-window drop already had this property. This is the SMB-over-NBF analogue of the NBIPX "discard + re-ack a duplicate without re-serving" rule the server side documents.
+
+**Verbose tracing is now shared across every client transport via the server's `core/log` library.** The prior AppleTalk-only `-v` used an ad-hoc stderr printf (`client/atalk/verbose.go`); it now — with direct-IPX, NBIPX, NBF, NCP, and EtherDFS — narrates through one process-wide `core/log` stderr sink whose threshold a single `client/trace.SetVerbose` flips to `log.Trace`. Each transport holds a scope-named `core/log.Logger` (`trace.Logger("nbipx")` etc.), so `csfs -v` shows a uniform `scope [trace] …` narration of the whole connect (NBIPX SESSION_INITIALIZE, NBF NAME_QUERY/SABME, the transport-agnostic SMB NEGOTIATE/SESSION_SETUP/TREE_CONNECT) across all of them.
+
+**Where:** `client/smb/{nbipx.go,nbf.go,register.go,ipx.go,session.go}`, `client/link/link.go` (`Spec.Carrier`), `cmd/csfs/{connect.go,main.go}` (`-transport`), `client/trace/trace.go` (shared `core/log` trace), `client/atalk/verbose.go` (ported onto `core/log`), `client/{ncp/session.go,etherdfs/session.go}` (trace). Coverage: `client/smb/{nbipx_e2e_test.go,nbf_e2e_test.go}` (whole SMB session over the REAL engines + real ports on an inmem Ethernet pair, forks + Finder metadata round-trip) and `client/smb/nbframing_test.go` (caller frame shapes).
+
+### NBF caller: the LLC2 window needs an RR poll/final after UA, and SESSION_INITIALIZE must poll — real Win98 vs. our own server
+
+**Context:** the SMB-over-NBF caller above establishes fine against our own responder e2e (inmem pair), but hung against a **real Windows 98 file server** (`WIN98-NBF`, `00:86:b0:a4:b8:81`): NAME_QUERY/RECOGNIZED, SABME/UA all completed, then `csfs -v` stopped at "SESSION_INITIALIZE (I-frame)" and timed out — Win98 never sent SESSION_CONFIRM. Our own server was too lenient to expose the gap.
+
+**Observed (`captures/nt-98-nbf.pcap`, the real MS redirector `WINNT351-NBF` `00:00:d8:50:ae:d3` calling the SAME Win98 box, frames 204–214):**
+
+```
+204 NT→98  UI    NAME_QUERY  (CALL, Local Session 0x05) WIN98-NBF<20>
+205 98→NT  UI    NAME_RECOGNIZED (Local Session 0xE0)
+206 NT→98  SABME (P=1)
+207 98→NT  UA    (F=1)
+208 NT→98  RR    COMMAND, P=1, N(R)=0      ← caller polls immediately after UA
+209 98→NT  RR    RESPONSE, F=1, N(R)=0     ← server's final answer opens the window
+210 NT→98  I P   N(S)=0  SESSION_INITIALIZE (Data1 flags 0x8f, max-recv 1482)
+211 98→NT  I P   N(S)=0  SESSION_CONFIRM   ← only NOW does Win98 confirm
+212 NT→98  RR    F, N(R)=1
+214 NT→98  I P   N(S)=1  DATA_ONLY_LAST → SMB Negotiate
+```
+
+Two faults in the caller, both invisible against our own server:
+
+1. **No RR poll/final checkpoint after UA.** The MS caller sends an **RR command with P=1** (frame 208) and waits for the server's **RR response with F=1** (frame 209) BEFORE any I-frame. This is the LLC2 checkpoint that opens the send window; Win98 will not process the SESSION_INITIALIZE I-frame until it has completed. Our caller went straight from UA to the I-frame, which Win98 silently dropped.
+
+2. **SESSION_INITIALIZE must set the Poll bit** (frame 210 is `I P`), and carry sane option flags. Win98 checkpoints on the poll and answers with its SESSION_CONFIRM I-frame; a non-poll INITIALIZE (our old `ctrl1 = N(R)<<1`, P=0) does not prompt the confirm. We now set P=1 and Data1 = Largest-Frame(7) | version-2.00 (`0x0F`; the redirector sends `0x8f`, but we omit SEND.NO.ACK to keep the conventional DATA_ACK contract this transport implements) and Data2 = our max-recv size.
+
+**What we do:** `establish()` now runs SABME→UA, then `sendRRPoll` (RR command, P=1) waiting for the server's returning RR (S-frame addressed to us) on `rrCh`, then `sendSessionInitialize` as an I-frame with the Poll bit set, then waits for SESSION_CONFIRM. The read loop's S-frame branch, which previously dropped every RR, now signals `rrCh` for an RR addressed to us.
+
+**Where:** `client/smb/nbf.go` (`establish` RR-poll phase, `sendRRPoll`, `sendIFramePoll`/`sendIFrameCtl` poll bit, `nbfInitFlags`/`nbfMaxRecvSize`, `handleFrame` S-frame → `rrCh`). The prior section's "SABME → UA → SESSION_INITIALIZE" flow description is superseded by the poll/final-plus-poll flow here.
+
+### NBF caller: LLC2 ack/poll discipline — RR-final answers a poll, RR-command acks data, request DATA_ONLY_LAST polls
+
+**Context:** with establishment fixed, SMB NEGOTIATE round-tripped against the real Win98 box but the next request hung. Two LLC2 faults, both invisible against our own lenient responder.
+
+**Observed (`captures/nt-98-nbf.pcap`, WINNT351-NBF → WIN98-NBF, frames 214–266, plus live captures of our client → Win98):** the MS redirector's LLC2 discipline is precise about the P/F bit:
+- It acknowledges the server's data by carrying N(R) on its own COMMAND frames (SSAP 0xF0, Poll clear) — the next request I-frame or an explicit DATA_ACK (0x14).
+- It emits an **RR RESPONSE with Final set** (SSAP 0xF1) **only** to answer a server *poll* — an inbound RR-command with Poll set. Win98 polls (RR command, P=1) after acking a request and BLOCKS, refusing to send the reply until it receives the RR-final.
+- It polls its own request DATA_ONLY_LAST (frame 214 = "I P") so the server checkpoints and flushes the reply.
+
+Our caller had this backwards: it fired an unsolicited RR-response-Final after *every* inbound I-frame (an LLC2 protocol error — F=1 is valid only as a poll answer), never answered Win98's poll, and left its request DATA frames Poll-clear.
+
+**What we do (`client/smb/nbf.go`):**
+- `sendRR` — the plain data ack — is an RR **COMMAND, P=0** (`N(R)<<1`), never an unsolicited F=1.
+- `sendRRFinal` — an RR **RESPONSE, F=1** — is emitted *only* to answer an inbound poll. The S-frame handler detects an RR-command-with-Poll and replies with it; `ackInbound(poll)` answers a Poll-set inbound I-frame with RR-final, else RR-command. So the F-bit is emitted iff it answers a poll — never unsolicited, never withheld when demanded.
+- `sendSMB` sends the final DATA_ONLY_LAST with the LLC **Poll bit set** and the NBF `ACK_WITH_DATA_ALLOWED` flag (Data1 0x04), matching the redirector.
+
+### NBF caller: DATA_ACK the server's Response Correlator — Win98 withholds the next reply until its response is acknowledged
+
+**Context:** with the LLC2 discipline correct, NEGOTIATE and SESSION_SETUP were delivered and NBF-acked at the LLC layer, but Win98 still sent no SMB reply to SESSION_SETUP — only a bare NBF DATA_ACK. This was the true blocker, at the NBF *session* layer (not LLC2, not SMB content).
+
+**Observed (`captures/nt-98-nbf.pcap` frames 216/217 and live):** Win98's NEGOTIATE response DATA frame carries a **non-zero NBF Response Correlator** (e.g. 0x28) and Flags 0x0c (ACK_INCLUDED | ACK_WITH_DATA_ALLOWED) — it is asking to be acknowledged. Win98 WITHHOLDS the reply to the *next* request until that response is acknowledged. The redirector piggybacks the ack as ACK_INCLUDED + Transmit Correlator on its next request; we never acknowledged it at all, so Win98 sat waiting forever.
+
+**What we do (`client/smb/nbf.go`):** each request DATA_ONLY_LAST carries a non-zero, incrementing NBF **Response Correlator** (`respCorrelator`, 0x0001, 0x0002, …) so the server can correlate the reply; and when an inbound DATA response carries a non-zero Response Correlator, we send an NBF **DATA_ACK (0x14) whose Transmit Correlator echoes it** (`sendDataAck`, called from `handleData`) — the explicit equivalent of the redirector's piggybacked ACK_INCLUDED. With this, SESSION_SETUP is answered and the whole SMB handshake completes.
+
+### SMB client: follow the server's NEGOTIATE (status dialect, SessionKey, header Flags, null-password) rather than assuming NT
+
+**Observed (Win98 `00:86:b0:a4:b8:81` NEGOTIATE response):** Security Mode 0x02 (SHARE-level, encrypted challenge/response offered), Capabilities `0x00000203` — **no CAP_STATUS32, no CAP_UNICODE** — and a per-connection **SessionKey**. The MS redirector logs into this same box (`captures/nt-98-nbf.pcap` frame 217) with header **Flags 0x18** (canonicalized + case-insensitive) and **Flags2 DOS error codes** (NOT NT status), the **SessionKey echoed** from NEGOTIATE, **ANSI Password Length 1** (a lone `0x00` — the null password, not length 0), and a **non-empty Account**. Win98 answers Success (a null-password logon), proving no LM hashing is needed — a plaintext/null password is accepted despite the "encrypted" advertisement.
+
+Our client had hard-set SMB_FLAGS2_NT_STATUS + CAP_STATUS32 (Win98 is a DOS-error server), SessionKey 0, a zero-length password, empty Account, and Flags 0x00. A Win9x server silently discards a request whose header claims a dialect it did not negotiate.
+
+**What we do (all keyed off the NEGOTIATE reply):**
+- `NegotiateResult` surfaces `Capabilities`, `SessionKey`, and `MaxBuffer`; `SupportsNTStatus()` reports CAP_STATUS32.
+- `Builder.NTStatus` (from `SupportsNTStatus()`) gates the SMB_FLAGS2_NT_STATUS header bit AND CAP_STATUS32 in SESSION_SETUP.
+- `Builder.SessionKey` is echoed in SESSION_SETUP; MaxBufferSize/MaxMpxCount follow the server (never exceed what it offered).
+- The request header carries `FlagsRequest` (0x18) + Flags2 `Flags2EAS`.
+- The case-insensitive password is always at least one NUL (length 1); the Account defaults to `GUEST` when none is given.
+
+With these plus the two NBF sections above, the SMB-over-NBF client completes NEGOTIATE → SESSION_SETUP → TREE_CONNECT against real Win98 and lists a mounted share's contents.
+
+### SMB client: RAP NetShareEnum MaxParameterCount must be the reply-param size (8), not the receive-buffer length
+
+**Context:** the server-root browse (`smb://server/`, no share) connects the IPC$ pipe and runs a RAP NetShareEnum over `\PIPE\LANMAN`. The transaction completed but parsed **0 shares**.
+
+**Observed (live):** our SMB_COM_TRANSACTION request set **MaxParameterCount = 65535** (the same large value as MaxDataCount). Win98 echoed `0xFFFF` back as the reply's TotalParameterCount and misframed the parameter/data split, so the SHARE_INFO_1 records never landed where the reply header pointed.
+
+**What we do:** `BuildNetShareEnum` sets **MaxParameterCount = 8** (the RAP reply param block: Status + Converter + EntriesReturned + EntriesAvailable) and MaxDataCount = the receive-buffer length (the share records). Win98 then returns a correctly-framed reply; the client parses the SHARE_INFO_1 records (20-byte netname/type + remark-heap pointer, Converter-biased) into the share list. `csfs smb://win98-nbf,nbf/` now prints the server + its shares, each with a ready-to-paste URI, and `csfs ls smb://win98-nbf,nbf/C-DRIVE` lists the drive.
+
+**Where:** `core/protocol/smb/smb.go` (`Cap*`, `Flag*`/`FlagsRequest`, `Flags2EAS`, `ShareType*`), `core/protocol/smb/client.go` (`NegotiateResult` fields + `SupportsNTStatus`, `Builder.{NTStatus,SessionKey}`, `flags2()`, `header()` Flags, `BuildSessionSetup`, `BuildTreeConnectIPC`, `BuildNetShareEnum`/`ParseNetShareEnum`), `client/smb/{session.go,browse.go}` (`establishSession`, `OpenIPC`, `EnumShares`, `Browse`), `client/smb/nbf.go` (`sendRR`/`sendRRFinal`/`ackInbound`, `respCorrelator`, `sendDataAck`), `cmd/csfs/{browse.go,main.go}` (SMB server-root listing). Coverage: `core/protocol/smb/netshareenum_test.go`.

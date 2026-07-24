@@ -3,52 +3,29 @@ package main
 import (
 	"testing"
 
-	mailslot "github.com/ObsoleteMadness/ClassicStack/core/protocol/mailslot"
-	messenger "github.com/ObsoleteMadness/ClassicStack/core/protocol/messenger"
+	"github.com/ObsoleteMadness/ClassicStack/client/netbios"
 )
 
-// TestPayloadRoundTrips proves the payload csnetsend assembles (messenger frame
-// inside a \MAILSLOT\MESSNGR transaction) decodes back through the SAME core codecs
-// the messenger service uses — the protocol-reuse proof: what the client builds is
-// exactly what the server parses.
-func TestPayloadRoundTrips(t *testing.T) {
-	body := messenger.Message{From: "ALICE", To: "BOB", Text: "hello there"}.Marshal()
-	payload := mailslot.Write{Name: mailslot.NameMessenger, Body: body}.Marshal()
+// csnetsend is a thin consumer of client/netbios: the wire logic (messenger frame,
+// mailslot envelope, datagram framing) is tested in that SDK package. Here we only cover
+// the tool-local concerns — the "<name>,<protocol>" recipient parse the SDK backs, and
+// the -mac parser — so a regression in the CLI's own surface is caught.
 
-	// Unwrap the mailslot envelope: name must be \MAILSLOT\MESSNGR, body the frame.
-	w, err := mailslot.Unmarshal(payload)
+func TestParseTargetRecipient(t *testing.T) {
+	got, err := netbios.ParseTarget("SERVER,nbipx", netbios.MessengerNameType)
 	if err != nil {
-		t.Fatalf("mailslot Unmarshal: %v", err)
+		t.Fatalf("ParseTarget: %v", err)
 	}
-	if w.Name != mailslot.NameMessenger {
-		t.Errorf("mailslot name = %q, want %q", w.Name, mailslot.NameMessenger)
-	}
-
-	// Decode the inner messenger frame and confirm the fields survived.
-	m, err := messenger.Unmarshal(w.Body)
-	if err != nil {
-		t.Fatalf("messenger Unmarshal: %v", err)
-	}
-	if m.From != "ALICE" || m.To != "BOB" || m.Text != "hello there" {
-		t.Errorf("decoded message = %+v, want From=ALICE To=BOB Text=\"hello there\"", *m)
+	if got.Name.String() != "SERVER" || got.Protocol != netbios.NBIPX {
+		t.Fatalf("target = %q/%q, want SERVER/nbipx", got.Name.String(), got.Protocol)
 	}
 }
 
-// TestHexDumpShape sanity-checks the dump renders one offset-prefixed row per 16
-// bytes with the trailing ASCII gutter, so the tool's human output stays stable.
-func TestHexDumpShape(t *testing.T) {
-	out := hexDump([]byte("ABCDEFGHIJKLMNOPQR")) // 18 bytes → 2 rows
-	if got := countLines(out); got != 2 {
-		t.Errorf("hexDump produced %d rows for 18 bytes, want 2", got)
+func TestParseMAC(t *testing.T) {
+	if _, err := parseMAC("aa:bb:cc:dd:ee:ff"); err != nil {
+		t.Errorf("valid MAC rejected: %v", err)
 	}
-}
-
-func countLines(s string) int {
-	n := 0
-	for _, c := range s {
-		if c == '\n' {
-			n++
-		}
+	if _, err := parseMAC("nope"); err == nil {
+		t.Error("invalid MAC accepted")
 	}
-	return n
 }

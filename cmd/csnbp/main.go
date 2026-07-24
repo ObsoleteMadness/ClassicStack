@@ -3,36 +3,31 @@
 // (object:type@zone) to the network addresses registered under it, acting as an
 // nslookup for Classic Mac networks.
 //
-// Like csecho (the AEP echo client / aecho equivalent), this is a T1 "protocol-reuse
-// proof": it drives the SAME core codec the server uses — core/protocol/nbp — over the
-// adapter/link framers/links (cmd/internal/atlink picks the segment transport). No
-// server, no router; just the wire stack composed into a client. The transport
-// defaults to LToUDP, with -transport tashtalk or pcap selecting the others.
+// It stands on the client SDK's AppleTalk endpoint (client/atalk): it opens a transport
+// via client/link, wraps it in an atalk.Endpoint, and calls Endpoint.Lookup — the same
+// NBP requester the AFP client uses to discover a server — so the lookup, the reply
+// collection, and the -v wire trace are shared with every other client tool rather than
+// hand-rolled here. The transport defaults to LToUDP, with -transport tashtalk or pcap
+// selecting the others.
 //
-// NBP (Inside AppleTalk, 2nd ed., ch. 7): DDP type 2 on socket 2. csnbp emits a
-// Broadcast Request (BrRq) carrying the name pattern and its OWN reply address; every
-// node holding a matching name returns a Lookup Reply (LkUp-Rply) tuple to that
-// address. csnbp collects replies until the timeout and prints one line per match. The
-// name pattern may use '=' to wildcard the object or type field and '*' for "this
-// zone".
+// NBP (Inside AppleTalk, 2nd ed., ch. 7): DDP type 2 on socket 2. Lookup emits a
+// Broadcast Request (BrRq) carrying the name pattern and the endpoint's OWN reply
+// address; every node holding a matching name returns a Lookup Reply (LkUp-Rply) tuple.
+// csnbp prints one line per match. The name pattern may use '=' to wildcard the object or
+// type field and '*' for "this zone".
 package main
 
 import (
 	"flag"
 	"fmt"
-	"math/rand"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/ObsoleteMadness/ClassicStack/client/atalk"
+	"github.com/ObsoleteMadness/ClassicStack/client/trace"
 	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/atlink"
-	"github.com/ObsoleteMadness/ClassicStack/core/link"
-	"github.com/ObsoleteMadness/ClassicStack/core/protocol/ddp"
-	"github.com/ObsoleteMadness/ClassicStack/core/protocol/nbp"
 )
-
-// broadcastNode is the DDP node id every node on the segment receives.
-const broadcastNode = 0xFF
 
 func main() {
 	if err := run(); err != nil {
@@ -46,10 +41,12 @@ func run() error {
 		network = flag.Uint("net", 0, "AppleTalk network number (0 = local segment)")
 		srcNode = flag.Uint("src", 0x01, "our LocalTalk source node (1..254)")
 		timeout = flag.Duration("timeout", 2*time.Second, "how long to collect replies")
+		verbose = flag.Bool("v", false, "verbose wire trace to stderr")
 	)
 	at := atlink.Flags(flag.CommandLine)
 	flag.Usage = usage
 	flag.Parse()
+	trace.SetVerbose(*verbose)
 
 	if *srcNode < 1 || *srcNode > 254 {
 		return fmt.Errorf("src node %d out of range (1..254)", *srcNode)
@@ -59,107 +56,66 @@ func run() error {
 	if flag.NArg() > 0 {
 		pattern = flag.Arg(0)
 	}
-	obj, typ, zone, err := parseEntity(pattern)
-	if err != nil {
-		return err
-	}
+	obj, typ, zone := parseEntity(pattern)
 
 	// Open the selected AppleTalk transport (LToUDP by default; -transport tashtalk or
-	// pcap selects the others), asserting our claimed network/node (a probe client may
-	// assert one without a node-claim handshake).
+	// pcap selects the others) and wrap it in the client SDK's DDP endpoint, asserting our
+	// claimed network/node (a probe client may assert one without a node-claim handshake).
 	dl, err := at.Open(uint16(*network), uint8(*srcNode))
 	if err != nil {
 		return err
 	}
-	defer dl.Close()
+	ep := atalk.NewEndpoint(dl, atalk.Addr{Network: uint16(*network), Node: uint8(*srcNode)})
+	defer ep.Close()
 
-	nbpID := byte(rand.Intn(256))
-	req := lookupRequest(nbpID, uint16(*network), uint8(*srcNode), obj, typ, zone)
-	if err := dl.WriteDatagram(req); err != nil {
-		return fmt.Errorf("send NBP BrRq: %w", err)
+	fmt.Printf("looking up %s:%s@%s ...\n", orWildcard(obj, "="), orWildcard(typ, "="), orWildcard(zone, "*"))
+	ents, err := ep.LookupTimeout(obj, typ, zone, *timeout)
+	if err != nil {
+		return fmt.Errorf("NBP lookup: %w", err)
 	}
-	fmt.Printf("looking up %s:%s@%s ...\n", obj, typ, zone)
-
-	matches := collectReplies(dl, nbpID, uint8(*srcNode), *timeout)
-	if matches == 0 {
-		fmt.Printf("no replies within %s\n", *timeout)
+	for _, e := range ents {
+		fmt.Printf("  %s:%s@%s\t%d.%d:%d\n",
+			e.Object, e.Type, e.Zone, e.Addr.Network, e.Addr.Node, e.Addr.Socket)
+	}
+	if len(ents) == 0 {
+		fmt.Println("no replies")
 	}
 	return nil
 }
 
-// lookupRequest builds the NBP Broadcast Request datagram: DDP type 2 to socket 2,
-// carrying the name pattern and our own reply address (where matches are returned).
-func lookupRequest(nbpID byte, network uint16, srcNode uint8, obj, typ, zone string) ddp.Datagram {
-	data := nbp.BuildLkUp(nbp.CtrlBrRq, nbpID, network, srcNode, nbp.SASSocket,
-		[]byte(obj), []byte(typ), []byte(zone))
-	return ddp.Datagram{
-		DestNetwork: network,
-		SrcNetwork:  network,
-		DestNode:    broadcastNode,
-		SrcNode:     srcNode,
-		DestSocket:  nbp.SASSocket,
-		SrcSocket:   nbp.SASSocket,
-		DDPType:     nbp.DDPType,
-		Data:        data,
-	}
-}
-
-// collectReplies reads datagrams until the timeout, printing one line per matching
-// LkUp-Rply tuple addressed to us with our request's NBP id. Returns the match count.
-func collectReplies(dl link.DatagramLink, nbpID, ourNode uint8, timeout time.Duration) int {
-	deadline := time.Now().Add(timeout)
-	matches := 0
-	for time.Now().Before(deadline) {
-		dg, err := dl.ReadDatagram()
-		if err != nil {
-			if err == link.ErrTimeout {
-				continue // the LToUDP read deadline ticked; keep waiting until our own deadline
-			}
-			return matches
-		}
-		if dg.DDPType != nbp.DDPType || dg.DestSocket != nbp.SASSocket {
-			continue
-		}
-		if dg.DestNode != ourNode && dg.DestNode != broadcastNode {
-			continue // a reply meant for some other requester
-		}
-		pkt, err := nbp.ParsePacket(dg.Data)
-		if err != nil || pkt.Function != nbp.CtrlLkUpRply || pkt.NBPID != nbpID {
-			continue
-		}
-		t := pkt.Tuple
-		fmt.Printf("  %s:%s@%s\t%d.%d:%d\n",
-			t.Object, t.Type, t.Zone, t.Network, t.Node, t.Socket)
-		matches++
-	}
-	return matches
-}
-
-// parseEntity splits an NBP entity name "object:type@zone" into its three fields,
-// defaulting omitted fields to wildcards ('=' for object/type, '*' for zone) the way
-// nbplkup does.
-func parseEntity(s string) (obj, typ, zone string, err error) {
-	obj, typ, zone = "=", "=", "*"
+// parseEntity splits an NBP entity name "object:type@zone" into its three fields.
+// Omitted fields become empty strings, which atalk.Endpoint.Lookup treats as the
+// wildcard ('=' for object/type, '*' for zone), matching nbplkup's defaults.
+func parseEntity(s string) (obj, typ, zone string) {
 	rest := s
 	if at := strings.LastIndex(rest, "@"); at >= 0 {
-		if z := rest[at+1:]; z != "" {
-			zone = z
-		}
+		zone = rest[at+1:]
 		rest = rest[:at]
 	}
 	if colon := strings.Index(rest, ":"); colon >= 0 {
-		if t := rest[colon+1:]; t != "" {
-			typ = t
-		}
+		typ = rest[colon+1:]
 		rest = rest[:colon]
 	}
-	if rest != "" {
-		obj = rest
+	obj = rest
+	// A bare '=' / '*' is already the wildcard; normalise it to empty so Lookup wildcards.
+	return normWildcard(obj), normWildcard(typ), normWildcard(zone)
+}
+
+// normWildcard maps an explicit wildcard token ('=' or '*') to the empty string Lookup
+// interprets as "wildcard this field".
+func normWildcard(s string) string {
+	if s == "=" || s == "*" {
+		return ""
 	}
-	if len(obj) > 0xFF || len(typ) > 0xFF || len(zone) > 0xFF {
-		return "", "", "", fmt.Errorf("entity field too long (max 255 bytes each)")
+	return s
+}
+
+// orWildcard renders an empty (wildcarded) field as its wildcard token for display.
+func orWildcard(s, wildcard string) string {
+	if s == "" {
+		return wildcard
 	}
-	return obj, typ, zone, nil
+	return s
 }
 
 func usage() {
