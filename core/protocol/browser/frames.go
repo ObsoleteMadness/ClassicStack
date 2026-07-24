@@ -265,6 +265,19 @@ type AnnouncementRequest struct {
 	ResponseName string
 }
 
+// Marshal renders an announcement request ([MS-BRWS] §2.2.2): the opcode, a reserved
+// byte, then an optional NUL-terminated response computer name (the browser a
+// re-announcing host should unicast its HostAnnouncement to; empty asks for the usual
+// broadcast). A browse client emits this to solicit an immediate re-announce from every
+// listening browser rather than waiting for the periodic timer.
+func (f AnnouncementRequest) Marshal() []byte {
+	out := []byte{OpAnnouncementRequest, f.Reserved}
+	if f.ResponseName != "" {
+		out = appendName(out, f.ResponseName)
+	}
+	return out
+}
+
 // UnmarshalAnnouncementRequest parses an announcement request.
 func UnmarshalAnnouncementRequest(b []byte) (*AnnouncementRequest, error) {
 	if len(b) < 2 {

@@ -11,6 +11,9 @@
 // Transport kinds (Spec.Kind):
 //
 //	pcap:<device>       a NIC via libpcap/Npcap (needs the 'pcap' build tag)
+//	tap:<device>        a Linux TUN/TAP device (raw Ethernet, no libpcap) — the
+//	                    pcap-free raw-FrameLink alternative for the IPX/NetBEUI/
+//	                    EtherDFS/EtherTalk carriers on a host without Npcap/libpcap
 //	ltoudp:<iface>      LToUDP multicast (239.192.76.84:1954) on a local IPv4 iface
 //	tashtalk:<device>   a TashTalk serial adapter at <device> (COM3, /dev/ttyUSB0)
 //	tcp:<host>          a TCP dial target (host or host:port)
@@ -33,6 +36,7 @@ import (
 // Transport kind names.
 const (
 	KindPcap     = "pcap"
+	KindTap      = "tap"
 	KindLToUDP   = "ltoudp"
 	KindTashTalk = "tashtalk"
 	KindTCP      = "tcp"
@@ -53,6 +57,20 @@ type Spec struct {
 	// -transport flag threads a value here. Uninterpreted by client/link (it only opens
 	// the L2 link); the scheme's factory reads it.
 	Carrier string
+}
+
+// RawEtherKinds are the transport kinds that yield a raw Ethernet FrameLink (the carrier
+// a raw-Ethernet client — IPX/NetBEUI/EtherDFS/EtherTalk, or a NetBIOS datagram tool —
+// rides). pcap and tap are interchangeable at this seam: pcap sniffs a real NIC via
+// libpcap/Npcap, tap is the libpcap-free TUN/TAP device. A tool exposing an -ifacetype
+// for a raw-Ethernet carrier validates against this set so pcap and tap are both accepted
+// and anything else (ltoudp/tashtalk/tcp) is rejected with a clear message.
+var RawEtherKinds = []string{KindPcap, KindTap}
+
+// IsRawEtherKind reports whether kind (case-insensitive) yields a raw Ethernet FrameLink.
+func IsRawEtherKind(kind string) bool {
+	k := strings.ToLower(strings.TrimSpace(kind))
+	return k == KindPcap || k == KindTap
 }
 
 // ParseSpec parses "kind:name" (or a bare kind for inmem) into a Spec. The name may
@@ -165,6 +183,14 @@ func (o *Opener) FrameLink(filter string) (link.FrameLink, error) {
 		return a, nil
 	case KindPcap:
 		return openPcapFrame(o.Spec.Name, filter)
+	case KindTap:
+		// A TUN/TAP device is a raw Ethernet FrameLink with no libpcap dependency — the
+		// pcap-free alternative for the raw-Ethernet carriers on Linux. It delivers whole
+		// frames, so the kernel BPF a pcap handle would apply is not available; the scheme's
+		// own framer/decoder drops frames it does not want (filter is accepted for a uniform
+		// signature but not enforced at the device).
+		_ = filter
+		return openTapFrame(o.Spec.Name)
 	default:
 		return nil, fmt.Errorf("link: kind %q has no raw FrameLink (use DatagramLinkDDP or Dial)", o.Spec.Kind)
 	}

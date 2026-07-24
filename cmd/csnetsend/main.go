@@ -1,24 +1,31 @@
-// Command csnetsend is a standalone NetBIOS Messenger ("net send" / WinPopup)
-// payload builder. It is a T1 "protocol-reuse proof": it drives the SAME core codecs
-// the messenger service uses — core/protocol/messenger (the single-block message
-// frame) wrapped in core/protocol/mailslot (the \MAILSLOT\MESSNGR SMB_COM_TRANSACTION
-// envelope) — to assemble exactly the bytes a "net send" puts on the wire, then
-// prints a hex dump and optionally writes them to a file.
+// Command csnetsend sends a NetBIOS Messenger ("net send" / WinPopup) pop-up message to
+// a named station over a raw NIC — the ClassicStack equivalent of DOS/Windows `net send`.
 //
-// Scope (per the M7g/T1 decision "core send half only"): this builds the mailslot
-// PAYLOAD. The outer NetBIOS DATAGRAM framing and the transport (NBT UDP/138,
-// NetBEUI, or NB-IPX) are a NetBIOS-transport concern (M7b2) the messenger service
-// reaches through netbios.SendDatagram; csnetsend stops at the payload the service
-// would hand that seam, which is the genuinely protocol-layer, transport-free half.
+// It is a THIN consumer of the client SDK's connectionless-datagram carrier
+// (client/netbios): it parses flags, builds a netbios.Conn over the chosen carrier, and
+// calls Conn.SendMessage. All the wire work — the single-block Messenger frame, the
+// \MAILSLOT\MESSNGR SMB_COM_TRANSACTION envelope, and the NBF / NB-IPX datagram framing —
+// lives in the SDK, so this file is an example of how a third-party client transmits a
+// message, not a re-implementation of the protocol.
+//
+// The recipient is given as "<name>,<protocol>" (e.g. "SERVER,nbf"), the same
+// name-plus-carrier target form the SDK's ParseTarget accepts: the protocol half selects
+// the datagram carrier (nbf = NetBEUI over 802.2 LLC, nbipx = NetBIOS-over-IPX / NWLink),
+// mirroring the SMB file client's -transport carriers. It needs the 'pcap' build tag
+// (libpcap/Npcap) and privilege to open the NIC.
+//
+// Delivery is connectionless and unacknowledged: a successful send means the datagram was
+// transmitted, not that the recipient popped it up (the Messenger datagram has no reply).
 package main
 
 import (
 	"flag"
 	"fmt"
+	"net"
 	"os"
 
-	mailslot "github.com/ObsoleteMadness/ClassicStack/core/protocol/mailslot"
-	messenger "github.com/ObsoleteMadness/ClassicStack/core/protocol/messenger"
+	"github.com/ObsoleteMadness/ClassicStack/client/netbios"
+	"github.com/ObsoleteMadness/ClassicStack/client/trace"
 )
 
 func main() {
@@ -30,63 +37,76 @@ func main() {
 
 func run() error {
 	var (
-		from = flag.String("from", "CLASSICSTACK", "sender name (the From field)")
-		to   = flag.String("to", "", "recipient name (the To field; required)")
-		text = flag.String("text", "", "message text (required)")
-		out  = flag.String("o", "", "write the raw payload bytes to this file (optional)")
+		iface     = flag.String("iface", "", "interface to send from (pcap device or TUN/TAP device name; required)")
+		ifaceType = flag.String("ifacetype", "pcap", "interface type: pcap | tap")
+		to        = flag.String("to", "", "recipient as \"<name>,<protocol>\" (protocol: nbf | nbipx; required)")
+		from      = flag.String("from", "CLASSICSTACK", "sender name (the From field)")
+		text      = flag.String("text", "", "message text (required)")
+		macFlag   = flag.String("mac", "", "source MAC for our virtual station (default: random locally-administered)")
+		verbose   = flag.Bool("v", false, "verbose wire trace to stderr")
 	)
+	flag.Usage = usage
 	flag.Parse()
+	trace.SetVerbose(*verbose)
 
-	if *to == "" || *text == "" {
+	if *iface == "" || *to == "" || *text == "" {
 		flag.Usage()
-		return fmt.Errorf("both -to and -text are required")
+		return fmt.Errorf("-iface, -to and -text are required")
 	}
 
-	// Build the inner single-block messenger frame (From/To/Text as NUL-terminated
-	// OEM strings), then wrap it in the \MAILSLOT\MESSNGR transaction envelope — the
-	// exact two-layer construction messenger.Service.SendMessage performs before
-	// handing the bytes to the NetBIOS datagram seam.
-	body := messenger.Message{From: *from, To: *to, Text: *text}.Marshal()
-	payload := mailslot.Write{Name: mailslot.NameMessenger, Body: body}.Marshal()
+	// Parse "<name>,<protocol>" into a Messenger-addressed target (name-type <03>).
+	target, err := netbios.ParseTarget(*to, netbios.MessengerNameType)
+	if err != nil {
+		return err
+	}
 
-	fmt.Printf("messenger frame: %d bytes (From=%q To=%q)\n", len(body), *from, *to)
-	fmt.Printf("\\MAILSLOT\\MESSNGR transaction: %d bytes\n\n", len(payload))
-	fmt.Print(hexDump(payload))
-
-	if *out != "" {
-		if err := os.WriteFile(*out, payload, 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", *out, err)
+	// Parse an optional pinned virtual-station MAC (else the SDK synthesises a random
+	// locally-administered one, so the client never borrows the host NIC's identity).
+	var mac [6]byte
+	if *macFlag != "" {
+		var err error
+		if mac, err = parseMAC(*macFlag); err != nil {
+			return err
 		}
-		fmt.Printf("\nwrote %d bytes to %s\n", len(payload), *out)
 	}
+
+	// Build the raw-Ethernet opener for the chosen interface type (pcap or the
+	// libpcap-free TUN/TAP), the same way the SMB file client selects its transport.
+	opener, err := netbios.OpenerFor(*ifaceType, *iface, mac)
+	if err != nil {
+		return err
+	}
+
+	// Our own station name (the datagram Source), derived from the station MAC.
+	station := netbios.DefaultStationName(opener.MAC, netbios.NameTypeWorkstation)
+	conn, err := netbios.Open(opener, target.Protocol, station)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if err := conn.SendMessage(target.Name, netbios.Message{From: *from, To: target.Name.String(), Text: *text}); err != nil {
+		return fmt.Errorf("send: %w", err)
+	}
+	fmt.Printf("sent %q to %s over %s\n", *text, target.Name.String(), target.Protocol)
 	return nil
 }
 
-// hexDump renders b as a classic offset/hex/ASCII dump (16 bytes per row), so the
-// assembled payload can be eyeballed or diffed against a capture.
-func hexDump(b []byte) string {
-	const perRow = 16
-	var sb []byte
-	for off := 0; off < len(b); off += perRow {
-		end := min(off+perRow, len(b))
-		row := b[off:end]
-		sb = fmt.Appendf(sb, "%08x  ", off)
-		for i := range perRow {
-			if i < len(row) {
-				sb = fmt.Appendf(sb, "%02x ", row[i])
-			} else {
-				sb = append(sb, ' ', ' ', ' ')
-			}
-		}
-		sb = append(sb, ' ', '|')
-		for _, c := range row {
-			if c >= 0x20 && c < 0x7f {
-				sb = append(sb, c)
-			} else {
-				sb = append(sb, '.')
-			}
-		}
-		sb = append(sb, '|', '\n')
+// parseMAC parses a colon/hyphen-separated MAC into a 6-byte array.
+func parseMAC(s string) ([6]byte, error) {
+	hw, err := net.ParseMAC(s)
+	if err != nil || len(hw) != 6 {
+		return [6]byte{}, fmt.Errorf("invalid -mac %q (want aa:bb:cc:dd:ee:ff)", s)
 	}
-	return string(sb)
+	var mac [6]byte
+	copy(mac[:], hw)
+	return mac, nil
+}
+
+func usage() {
+	fmt.Fprintln(os.Stderr, "usage: csnetsend -iface <dev> -to <name>,<protocol> -text <msg> [flags]")
+	fmt.Fprintln(os.Stderr, "  sends a NetBIOS Messenger (\"net send\") pop-up over a raw interface.")
+	fmt.Fprintln(os.Stderr, "  ifacetype: pcap (libpcap/Npcap NIC) | tap (Linux TUN/TAP)")
+	fmt.Fprintln(os.Stderr, "  protocol: nbf (NetBEUI) | nbipx (NetBIOS-over-IPX)")
+	flag.PrintDefaults()
 }
