@@ -37,7 +37,14 @@ func runREPL(cfg config, rawURI string) int {
 		if line == "" {
 			continue
 		}
-		fields := strings.Fields(line)
+		fields, err := splitArgs(line)
+		if err != nil {
+			fmt.Println(err)
+			continue
+		}
+		if len(fields) == 0 {
+			continue
+		}
 		cmd, rest := fields[0], fields[1:]
 		if cmd == "quit" || cmd == "exit" {
 			break
@@ -55,6 +62,7 @@ func replCmd(cfg config, remote fs.ForkFS, cwd *string, cmd string, args []strin
 	switch cmd {
 	case "help":
 		fmt.Println("ls [path]  cd <path>  pwd  get <path> <host>  put <host> <path>  cp <src> <dst>  mv <old> <new>  rm <path>  attrib <path> [±rhsa]  type <path> [CODE]  creator <path> [CODE]  quit")
+		fmt.Println("(quote arguments containing spaces: cd \"My Folder\")")
 	case "pwd":
 		fmt.Printf("/%s\n", *cwd)
 	case "cd":
@@ -90,6 +98,15 @@ func replCmd(cfg config, remote fs.ForkFS, cwd *string, cmd string, args []strin
 		if err := xfer.Move(remote, resolveREPLPath(*cwd, args[0]), resolveREPLPath(*cwd, args[1])); err != nil {
 			fmt.Println("mv:", err)
 		}
+	case "cp":
+		// Remote→remote copy on the held session: both paths resolve against cwd.
+		if len(args) != 2 {
+			fmt.Println("usage: cp <src> <dst>")
+			break
+		}
+		if err := xfer.Copy(remote, remote, resolveREPLPath(*cwd, args[0]), resolveREPLPath(*cwd, args[1])); err != nil {
+			fmt.Println("cp:", err)
+		}
 	case "get":
 		if len(args) != 2 {
 			fmt.Println("usage: get <remote-path> <host-path>")
@@ -118,6 +135,54 @@ func replCmd(cfg config, remote fs.ForkFS, cwd *string, cmd string, args []strin
 		fmt.Printf("unknown command %q (try 'help')\n", cmd)
 	}
 	return true
+}
+
+// splitArgs tokenises a REPL command line into whitespace-separated fields, honouring
+// double- and single-quoted spans so a path with spaces can be passed as one argument
+// (e.g. cd "My Folder"). A quote can also be escaped with a backslash. An unterminated
+// quote is an error rather than a silently truncated token.
+func splitArgs(line string) ([]string, error) {
+	var (
+		fields []string
+		cur    strings.Builder
+		quote  rune // 0 = unquoted; '"' or '\'' when inside a quoted span
+		inTok  bool // a token is being accumulated (so "" is preserved as an empty arg)
+	)
+	for i := 0; i < len(line); i++ {
+		c := rune(line[i])
+		switch {
+		case c == '\\' && i+1 < len(line):
+			// Backslash escapes the next byte (a literal quote or space).
+			i++
+			cur.WriteByte(line[i])
+			inTok = true
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			} else {
+				cur.WriteRune(c)
+			}
+		case c == '"' || c == '\'':
+			quote = c
+			inTok = true
+		case c == ' ' || c == '\t':
+			if inTok {
+				fields = append(fields, cur.String())
+				cur.Reset()
+				inTok = false
+			}
+		default:
+			cur.WriteRune(c)
+			inTok = true
+		}
+	}
+	if quote != 0 {
+		return nil, fmt.Errorf("unterminated %c quote", quote)
+	}
+	if inTok {
+		fields = append(fields, cur.String())
+	}
+	return fields, nil
 }
 
 // resolveREPLPath resolves an argument against the current working dir: an absolute
