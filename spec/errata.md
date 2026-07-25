@@ -2,6 +2,16 @@
 
 This document records places where ClassicStack's wire behavior intentionally differs from the published spec, because the spec contradicts what real clients actually require. Each entry cites the spec section we deviate from, the client behavior that drove the change, and the file/function where the deviation lives.
 
+## ATP (client)
+
+### ATP response UserData is authoritative only in the seq-0 packet — observed
+
+**Spec (Inside AppleTalk, ATP):** every ATP response packet carries the 4-byte UserData; the reassembled transaction's UserData (which ASP maps to the command result / AFP result code) is a single value for the transaction.
+
+**Observed (live LToUDP capture of an FPRead reply from System 7.5.3 Personal File Sharing):** a real System 7.x ASP responder fills UserData correctly **only in the first response packet (seq 0)**; seq 1..N carry **stale bytes left over from a prior transaction**. In the captured multi-packet FPRead reply (8 ATP response packets, seq 0-7), seq 0 UserData = `0x00000000` (success) but seq 1-7 = `0x07270011` — the leftover ASPWriteContinue user bytes (function 0x07, session 0x27, a fragment index) of an earlier write transaction on the same node. Our requester overwrote `respUserData` on every packet, so the reassembled UserData became the **last** packet's garbage. This surfaced as bogus AFP result codes (`kFP#0x0727xxxx`) and truncation on **any** read larger than one ATP-response quantum (~4 KB) — data forks and resource forks alike — including through the `csmount` WinFsp mount.
+
+**What we do:** capture `respUserData` from the **seq-0** response packet only. **Where:** `client/atalk/atp.go` (`(*ATP).Request`). Test: `TestRequestUserDataFromFirstPacket`.
+
 ## AFP (client)
 
 Both entries below were found live driving the AFP **client** against **System 7.5.3 Personal File Sharing** running in Mini vMac (server offers AFPVersion 1.1/2.0/2.1, UAMs Cleartxt/Randnum/2-Way-Randnum), reached over DDP/LToUDP and mounted with `csmount` (WinFsp).

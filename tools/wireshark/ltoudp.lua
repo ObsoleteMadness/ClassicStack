@@ -1,4 +1,4 @@
-- LToUDP ("LocalTalk over UDP") Wireshark dissector.
+-- LToUDP ("LocalTalk over UDP") Wireshark dissector.
 --
 -- Wire format reference:
 --   adapter/link/ltoudp/{ltoudp.go,doc.go}      (the 4-byte sender ID envelope)

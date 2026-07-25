@@ -203,7 +203,18 @@ func (a *ATP) Request(dst Addr, userData uint32, reqData []byte, xo bool, maxRes
 				if !ok {
 					continue
 				}
-				respUserData = resp.userData
+				// The transaction's UserData (the ASP command result / AFP result code) is
+				// authoritative from the FIRST response packet (seq 0) only. ERRATA: a real
+				// System 7.x ASP responder fills seq 1..N's UserData with STALE bytes from a
+				// prior transaction (observed on a live LToUDP FPRead reply from System 7.5.3
+				// Personal File Sharing: UserData 0x00000000 in seq 0, 0x07270011 in seq 1-7 —
+				// the leftover ASPWriteContinue user bytes of an earlier write session). Taking
+				// the LAST packet's UserData clobbered the real result with garbage, surfacing
+				// as bogus FPRead result codes like kFP#0x0727xxxx on any read over one
+				// ATP-response quantum (~4 KB). Keep seq 0's value. See spec/errata.md.
+				if resp.seq == 0 {
+					respUserData = resp.userData
+				}
 				if int(resp.seq) < len(received) {
 					if !gotPacket[resp.seq] {
 						// Store a non-nil slice even for an empty payload, so a

@@ -165,3 +165,37 @@ func TestRequestReassemblesEOM(t *testing.T) {
 		t.Errorf("reassembled data = %q, want AAAABBBB", resp.Data)
 	}
 }
+
+// TestRequestUserDataFromFirstPacket regresses the multi-chunk read corruption: a real
+// System 7.x ASP responder puts the authoritative UserData (the AFP result code) only in
+// the seq-0 response packet and leaves STALE bytes in seq 1..N (ground truth:
+// tools/wireshark/caps/afp_fork_write.pcap fr280-287 — seq 0 UserData 0x00000000, seq 1-7
+// 0x07270011). The requester must keep seq 0's value, not the last packet's garbage.
+func TestRequestUserDataFromFirstPacket(t *testing.T) {
+	link := newFakeLink(func(req ddp.Datagram) []ddp.Datagram {
+		h, err := atp.Decode(req.Data)
+		if err != nil || h.FuncCode() != atp.FuncTReq {
+			return nil
+		}
+		s := req.SrcSocket
+		return []ddp.Datagram{
+			tRespDatagram(s, h.TransID, 0, false, 0x00000000, []byte("AAAA")), // real result
+			tRespDatagram(s, h.TransID, 1, false, 0x07270011, []byte("BBBB")), // stale garbage
+			tRespDatagram(s, h.TransID, 2, true, 0x07270011, []byte("CCCC")),  // stale + EOM
+		}
+	})
+	ep := NewEndpoint(link, Addr{Network: 0, Node: 10})
+	defer ep.Close()
+
+	a := NewATP(ep)
+	resp, err := a.Request(Addr{Network: 1, Node: 11, Socket: 250}, 0, nil, false, 8)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if resp.UserData != 0x00000000 {
+		t.Errorf("UserData = %#x, want 0 (seq-0 value; must not take stale seq 1..N bytes)", resp.UserData)
+	}
+	if string(resp.Data) != "AAAABBBBCCCC" {
+		t.Errorf("reassembled data = %q, want AAAABBBBCCCC", resp.Data)
+	}
+}
