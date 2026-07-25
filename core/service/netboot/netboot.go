@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Based on Netboot code by Elliot Nunn
+// SPDX-License-Identifier: MIT
 // Package netboot implements the classic Mac netboot server: the AppleTalk Boot
 // Protocol (ABP) the `.netBOOT`/`.ATBOOT` ROM drivers speak, plus Elliot Nunn's
 // ChainBoot EBP extension that streams a full-size read/write HFS disk image to

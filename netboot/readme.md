@@ -1,18 +1,17 @@
 # Netboot ROM Experiments
 
-This is a modified version of Elliot Nunn's effort to enable the netBOOT and ATBoot drivers. 
+This is a modified version of [Elliot Nunn](https://github.com/elliotnunn)'s effort to enable the netBOOT and ATBoot drivers. 
 His original repository is can be found at https://github.com/elliotnunn/NetBoot/.
 
 The discussion mentioned can be found on the Wayback Machine.
 https://web.archive.org/web/20210923014929/https://mac68k.info/forums/thread.jspa?threadID=76&tstart=0
 
 
-Elliot had done an enormous amount of work to get this far and deserves all the credit.
+Code used [with permission](https://github.com/elliotnunn/NetBoot/issues/2), under the terms of the MIT License. 
 
 
 ## Building
 You'll need vasmm68 and Python with machfs, etc.
-
 
 
 ## Changes

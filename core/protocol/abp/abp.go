@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Based on Netboot code by Elliot Nunn
+// SPDX-License-Identifier: MIT
+
 // Package abp holds the AppleTalk Boot Protocol (ABP) codec, plus Elliot Nunn's
 // ChainBoot EBP extension commands.
 //
