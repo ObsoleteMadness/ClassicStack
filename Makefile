@@ -6,9 +6,12 @@ GOOS ?= $(shell go env GOOS)
 ifeq ($(GOOS),windows)
 SVC_PKG := ./cmd/classicstack-svc
 SVC_BIN := classicstack-svc.exe
+# csmount (the WinFsp mount client) is Windows-only; built only on Windows.
+MOUNT_BIN := csmount.exe
 else
 SVC_PKG := ./cmd/classicstackd
 SVC_BIN := classicstackd
+MOUNT_BIN :=
 endif
 
 # Versions of the quality tools to install when absent. Kept here so a local
@@ -21,14 +24,20 @@ GOSEC_PKG       := github.com/securego/gosec/v2/cmd/gosec@latest
 # the CI Quality job exactly.
 GOSEC_PKGS := ./service/macip/... ./service/macgarden/... ./service/afpfs/macgarden/...
 
-.PHONY: build build-svc test test-race test-tags lint quality vet vuln gosec fuzz clean \
+.PHONY: build build-svc build-mount test test-race test-tags lint quality vet vuln gosec fuzz clean \
         harness archtest tinygo-gate
 
-build: build-svc
+build: build-svc build-mount
 	go build -tags "$(TAGS)" -o classicstack ./cmd/classicstack
 
 build-svc:
 	go build -tags "$(TAGS)" -o $(SVC_BIN) $(SVC_PKG)
+
+# build-mount builds the WinFsp mount client. It is a no-op off Windows (MOUNT_BIN empty).
+build-mount:
+ifneq ($(MOUNT_BIN),)
+	go build -tags "$(TAGS)" -o $(MOUNT_BIN) ./cmd/csmount
+endif
 
 test:
 	go test -tags "$(TAGS)" ./...
@@ -108,6 +117,6 @@ build-pico2w:
 	bash scripts/build_pico.sh pico2w
 
 clean:
-	rm -f classicstack classicstack.exe classicstackd classicstack-svc.exe cs-tinygo.exe
+	rm -f classicstack classicstack.exe classicstackd classicstack-svc.exe csmount.exe cs-tinygo.exe
 	rm -rf out dist bin/*.bin bin/*.uf2
 

@@ -45,11 +45,11 @@ func cmdDiscover(cfg config, args []string) int {
 // discoverAFP broadcasts an NBP lookup for AFPServer entities over the selected DDP
 // transport (default ltoudp) and prints each responder's name, zone, and net.node.
 func discoverAFP(cfg config) int {
-	kind := cfg.ifaceType
+	kind := cfg.IfaceType
 	if kind == "" {
 		kind = clientlink.KindLToUDP
 	}
-	opener := clientlink.NewOpener(clientlink.Spec{Kind: kind, Name: cfg.iface})
+	opener := clientlink.NewOpener(clientlink.Spec{Kind: kind, Name: cfg.Iface})
 	dl, err := opener.DatagramLinkDDP()
 	if err != nil {
 		return fail(fmt.Errorf("open transport: %w", err))
@@ -88,16 +88,16 @@ const (
 // pasted into an ncp:// URI. NCP discovery is IPX-only (SAP rides IPX), so it needs a
 // pcap interface just like the ncp client transport.
 func discoverNCP(cfg config) int {
-	kind := cfg.ifaceType
+	kind := cfg.IfaceType
 	if kind == "" {
 		kind = clientlink.KindPcap
 	}
 	if kind != clientlink.KindPcap {
 		return fail(fmt.Errorf("discover ncp needs a pcap interface (SAP rides IPX); got -ifacetype %q", kind))
 	}
-	opener := clientlink.NewOpener(clientlink.Spec{Kind: kind, Name: cfg.iface})
-	if cfg.mac != "" {
-		mac, err := parseMAC(cfg.mac)
+	opener := clientlink.NewOpener(clientlink.Spec{Kind: kind, Name: cfg.Iface})
+	if cfg.MAC != "" {
+		mac, err := parseMAC(cfg.MAC)
 		if err != nil {
 			return fail(err)
 		}
@@ -206,16 +206,16 @@ const etherdfsDiscoverWait = 2 * time.Second
 // AL_DISKSPACE reply; AL_INSTALLCHK additionally draws the server NAME from a
 // ClassicStack server, which this prints for a friendlier listing.
 func discoverEtherDFS(cfg config) int {
-	kind := cfg.ifaceType
+	kind := cfg.IfaceType
 	if kind == "" {
 		kind = clientlink.KindPcap
 	}
 	if kind != clientlink.KindPcap {
 		return fail(fmt.Errorf("discover etherdfs needs a pcap interface (raw Ethernet); got -ifacetype %q", kind))
 	}
-	opener := clientlink.NewOpener(clientlink.Spec{Kind: kind, Name: cfg.iface})
-	if cfg.mac != "" {
-		mac, err := parseMAC(cfg.mac)
+	opener := clientlink.NewOpener(clientlink.Spec{Kind: kind, Name: cfg.Iface})
+	if cfg.MAC != "" {
+		mac, err := parseMAC(cfg.MAC)
 		if err != nil {
 			return fail(err)
 		}

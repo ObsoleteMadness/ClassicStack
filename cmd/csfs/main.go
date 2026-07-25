@@ -51,7 +51,7 @@ func run(args []string) int {
 	// -v turns on the client wire-trace across EVERY transport (AppleTalk NBP/ATP/ASP,
 	// direct-IPX, NBIPX, NBF, NCP, EtherDFS) — one shared verbose toggle on the core/log
 	// library, rendered to stderr.
-	trace.SetVerbose(cfg.verbose)
+	trace.SetVerbose(cfg.Verbose)
 	if len(rest) == 0 {
 		usage()
 		return 2

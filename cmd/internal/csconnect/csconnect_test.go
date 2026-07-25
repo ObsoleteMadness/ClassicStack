@@ -1,4 +1,4 @@
-package main
+package csconnect
 
 import (
 	"strings"
@@ -16,7 +16,7 @@ func TestOpenerForValidatesTransport(t *testing.T) {
 	afp, _ := uri.Parse("afp://server/Vol")
 
 	// Default (no -ifacetype) → ltoudp.
-	op, err := openerFor(config{}, afp)
+	op, err := OpenerFor(Config{}, afp)
 	if err != nil {
 		t.Fatalf("default afp opener: %v", err)
 	}
@@ -25,12 +25,12 @@ func TestOpenerForValidatesTransport(t *testing.T) {
 	}
 
 	// Explicit pcap is accepted.
-	if _, err := openerFor(config{ifaceType: "pcap"}, afp); err != nil {
+	if _, err := OpenerFor(Config{IfaceType: "pcap"}, afp); err != nil {
 		t.Errorf("afp over pcap should be valid: %v", err)
 	}
 
 	// tcp is NOT an AFP transport (DSI does not exist) → rejected.
-	_, err = openerFor(config{ifaceType: "tcp"}, afp)
+	_, err = OpenerFor(Config{IfaceType: "tcp"}, afp)
 	if err == nil {
 		t.Fatal("afp over tcp should be rejected")
 	}
@@ -45,7 +45,7 @@ func TestOpenerForValidatesTransport(t *testing.T) {
 func TestOpenerForURICarrier(t *testing.T) {
 	// smb://host,nbf/share over pcap: the ",nbf" tail (not a link kind) → Carrier=nbf.
 	nbf, _ := uri.Parse("smb://host,nbf/share")
-	op, err := openerFor(config{ifaceType: "pcap"}, nbf)
+	op, err := OpenerFor(Config{IfaceType: "pcap"}, nbf)
 	if err != nil {
 		t.Fatalf("smb ,nbf opener: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestOpenerForURICarrier(t *testing.T) {
 	}
 
 	// No -ifacetype: kind falls back to the scheme default (pcap), carrier still from URI.
-	op, err = openerFor(config{}, nbf)
+	op, err = OpenerFor(Config{}, nbf)
 	if err != nil {
 		t.Fatalf("smb ,nbf default-ifacetype opener: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestOpenerForURICarrier(t *testing.T) {
 	}
 
 	// Explicit -transport wins over the URI tail.
-	op, err = openerFor(config{ifaceType: "pcap", transport: "nbipx"}, nbf)
+	op, err = OpenerFor(Config{IfaceType: "pcap", Transport: "nbipx"}, nbf)
 	if err != nil {
 		t.Fatalf("smb -transport override opener: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestOpenerForURICarrier(t *testing.T) {
 
 	// A link-kind tail (",tcp") selects the Kind, NOT the carrier.
 	tcp, _ := uri.Parse("smb://host,tcp/share")
-	op, err = openerFor(config{}, tcp)
+	op, err = OpenerFor(Config{}, tcp)
 	if err != nil {
 		t.Fatalf("smb ,tcp opener: %v", err)
 	}
@@ -84,11 +84,11 @@ func TestOpenerForURICarrier(t *testing.T) {
 
 // TestParseGlobalFlags checks flags may precede the subcommand and support -f=v and -f v.
 func TestParseGlobalFlags(t *testing.T) {
-	cfg, rest, err := parseGlobalFlags([]string{"-ifacetype", "ltoudp", "-iface=192.168.1.5", "ls", "afp://x/y"})
+	cfg, rest, err := ParseGlobalFlags([]string{"-ifacetype", "ltoudp", "-iface=192.168.1.5", "ls", "afp://x/y"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ifaceType != "ltoudp" || cfg.iface != "192.168.1.5" {
+	if cfg.IfaceType != "ltoudp" || cfg.Iface != "192.168.1.5" {
 		t.Errorf("cfg = %+v", cfg)
 	}
 	if len(rest) != 2 || rest[0] != "ls" {

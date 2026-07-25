@@ -36,7 +36,7 @@ func maybeBrowseServer(cfg config, arg string) (bool, int) {
 	if err != nil {
 		return true, fail(err)
 	}
-	opts := client.Options{Opener: opener, ForkBackend: cfg.fork}
+	opts := client.Options{Opener: opener, ForkBackend: cfg.Fork}
 
 	switch target.Scheme {
 	case "afp":
