@@ -411,6 +411,23 @@ func translateErr(err error) error {
 	if !errors.As(err, &st) {
 		return err
 	}
+	// A DOS-error server (Win9x negotiates NT LM 0.12 WITHOUT CAP_STATUS32) packs the
+	// header's 32-bit status field as ErrorClass(1) | Reserved(1) | ErrorCode(2 LE), read
+	// here as class in the low byte and code in the high 16 bits (e.g. 0x00020001 =
+	// class ERRDOS(1) code ERRbadfile(2)). Such a value never collides with a real
+	// NTSTATUS, which always has the top severity bits set, so decode it first.
+	if class := st.Status & 0xFF; class == dosErrClassDOS || class == dosErrClassSrv {
+		switch code := uint16(st.Status >> 16); code {
+		case dosErrBadFile, dosErrBadPath, dosErrNoFiles:
+			return stdfs.ErrNotExist
+		case dosErrFileExists:
+			return stdfs.ErrExist
+		case dosErrNoAccess, dosErrBadShare:
+			return stdfs.ErrPermission
+		default:
+			return err
+		}
+	}
 	switch st.Status {
 	case statusObjectNameNotFound, statusObjectPathNotFound, statusNoSuchFile, statusNoMoreFiles:
 		return stdfs.ErrNotExist
@@ -422,6 +439,21 @@ func translateErr(err error) error {
 		return err
 	}
 }
+
+// DOS/OS2 SMB error class + codes a DOS-error server (Win9x) returns in place of an
+// NTSTATUS ([MS-CIFS] 2.2.1.5, SMB error class/code). ErrorClass sits in the status
+// field's low byte, ErrorCode in the high 16 bits.
+const (
+	dosErrClassDOS uint32 = 0x01 // ERRDOS
+	dosErrClassSrv uint32 = 0x02 // ERRSRV
+
+	dosErrBadFile    uint16 = 2  // ERRbadfile — file not found
+	dosErrBadPath    uint16 = 3  // ERRbadpath — directory component not found
+	dosErrNoAccess   uint16 = 5  // ERRnoaccess — access denied
+	dosErrFileExists uint16 = 80 // ERRfilexists — file already exists
+	dosErrNoFiles    uint16 = 18 // ERRnofiles — no more files in a search
+	dosErrBadShare   uint16 = 32 // ERRbadshare — sharing/lock violation
+)
 
 // SMB NTSTATUS values the client maps to fs sentinels ([MS-ERREF]). The client always
 // negotiates NT status, so the wire values are the raw NTSTATUS.

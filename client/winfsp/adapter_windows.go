@@ -383,7 +383,7 @@ func (a *Adapter) Cleanup(_ *winfsp.FileSystemRef, file uintptr, _ string, clean
 
 // --- BehaviourRename -------------------------------------------------------------------
 
-func (a *Adapter) Rename(_ *winfsp.FileSystemRef, _ uintptr, source, target string, _ bool) error {
+func (a *Adapter) Rename(_ *winfsp.FileSystemRef, file uintptr, source, target string, _ bool) error {
 	if a.readOnly {
 		return os.ErrPermission
 	}
@@ -394,6 +394,15 @@ func (a *Adapter) Rename(_ *winfsp.FileSystemRef, _ uintptr, source, target stri
 	dst, err := toStorePath(target)
 	if err != nil {
 		return err
+	}
+	// WinFsp holds the source open across the rename, but a classic SMB SMB_COM_RENAME
+	// (and other legacy backends) fails with a sharing/access error while the file has an
+	// open handle (observed: Win98 returns "access denied"). Close the underlying data
+	// handle first; the WinFsp handle stays in the table but its fs.File is now nil, so a
+	// stray post-rename op fails cleanly rather than acting on the stale (renamed) path.
+	if h, ok := a.handles.get(file); ok && h.f != nil {
+		_ = h.f.Close()
+		h.f = nil
 	}
 	return a.fsys.Rename(src, dst)
 }

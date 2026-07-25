@@ -32,6 +32,32 @@ Both entries below were found live driving the AFP **client** against **System 7
 
 **What we do:** always emit `newLineMask=0, newLineChar=0`, so the FPRead block is 14 bytes. Substitution stays disabled. **Where:** `core/protocol/afp/fork.go` (`ReadRequest.Marshal`).
 
+## SMB (client)
+
+The three entries below were found live driving the SMB **client** and the `csmount` WinFsp mount against **real Windows 98 SE** file sharing (server `WIN98-NBF`, anonymous GUEST, over NetBEUI/NBF), which negotiates NT LM 0.12 **without CAP_STATUS32** — i.e. it is a DOS-error server with a small buffer.
+
+### READ_ANDX/WRITE_ANDX must be clamped to the server's negotiated MaxBufferSize — observed
+
+**Spec ([MS-CIFS]):** MaxBufferSize in the NEGOTIATE response is the largest SMB message the server can receive/send; a READ_ANDX MaxCount must not exceed it.
+
+**Observed (live):** the client capped reads only by the transport budget (a reassembling NBF/NBT/TCP carrier reports a huge value), so `maxIO` stayed at the 12 KiB default. Win98 advertised **MaxBufferSize = 2920** and rejected a `READ_ANDX, 12288 bytes` with **ERRDOS/87 "invalid parameter"** (status `0x00570001`) — every read over ~2.8 KB failed.
+
+**What we do:** after NEGOTIATE, clamp `maxIO` to `MaxBufferSize - smbReplyOverhead`. **Where:** `client/smb/session.go` (`establishSession`).
+
+### DOS-error servers return ErrorClass/ErrorCode, not NTSTATUS — observed
+
+**Spec ([MS-CIFS] 2.2.1.5):** when SMB_FLAGS2_NT_STATUS is not negotiated, the header's 4-byte status field is `ErrorClass(1) Reserved(1) ErrorCode(2)`, not a 32-bit NTSTATUS.
+
+**Observed (live):** `translateErr` mapped only NTSTATUS values (`0xC00000xx`), so a Win98 DOS status like `0x00020001` (ERRDOS class 1, ERRbadfile code 2 = not found) fell through as a raw error that did **not** satisfy `errors.Is(err, os.ErrNotExist)`. Through the mount this broke **create**: WinFsp's `GetSecurityByName` on a new name got a non-not-found error, so WinFsp never issued the create (Explorer/`copy` reported "an internal error occurred"; no OPEN_ANDX ever reached the wire).
+
+**What we do:** `translateErr` decodes the DOS class/code form (ERRDOS/ERRSRV class in the low byte, code in the high 16 bits) to the fs sentinels before the NTSTATUS switch. Such values never collide with a real NTSTATUS (whose top severity bits are always set). **Where:** `client/smb/filesystem.go` (`translateErr`, `dosErr*` consts). Test: `TestTranslateErrDOSAndNTStatus`.
+
+### The mount must close the data handle before a classic SMB rename — observed
+
+**Spec:** `SMB_COM_RENAME` renames by path; the file must not have an open handle on a classic (share-mode) server.
+
+**Observed (live):** WinFsp holds the source file open across a rename and calls the `Rename` delegate with that handle; Win98 then rejected `SMB_COM_RENAME` with "access denied" (a direct `csfs mv`, which holds no handle, succeeded). **What we do:** the `client/winfsp` `Rename` delegate closes the open data handle (nils `openFile.f`) before calling `FileSystem.Rename`. **Where:** `client/winfsp/adapter_windows.go` (`(*Adapter).Rename`).
+
 ## CIFS / SMB1
 
 ### SMB_COM_NEGOTIATE response WordCount MUST match the selected dialect family ([MS-CIFS] 2.2.4.52.2) — spec-based

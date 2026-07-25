@@ -121,6 +121,18 @@ func establishSession(tr Transport, p DialParams) (*Session, error) {
 	s.builder.SessionKey = neg.SessionKey
 	// Advertise no more than the server's own MaxBufferSize.
 	s.negMaxBuffer = neg.MaxBuffer
+	// Clamp READ_ANDX/WRITE_ANDX to the server's negotiated MaxBufferSize. The transport
+	// budget (applyTransportLimits, above) only bounds what the WIRE can carry — for a
+	// reassembling carrier (NBF/NBT/TCP) that is huge, so maxIO stayed at defaultMaxIO
+	// (12 KiB). But a Win9x server advertises a small MaxBufferSize (observed: Win98 =
+	// 2920) and rejects a READ_ANDX asking for more than that with ERRDOS/87 "invalid
+	// parameter" (status 0x00570001). Bound maxIO to the server's buffer net of reply
+	// overhead so the read fits one server message.
+	if s.negMaxBuffer > 0 {
+		if bufCap := int(s.negMaxBuffer) - smbReplyOverhead; bufCap > 0 && bufCap < s.maxIO {
+			s.maxIO = bufCap
+		}
+	}
 
 	// 2. SESSION_SETUP_ANDX — obtain a UID (guest or named).
 	if err := s.sessionSetup(p.User, p.Password, p.Domain); err != nil {
