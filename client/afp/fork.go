@@ -38,11 +38,19 @@ func (f *FS) OpenFork(path string, fork fs.ForkType, flag int) (fs.File, error) 
 	if writable {
 		access |= proto.AccessWrite
 	}
+	// FPOpenFork's bitmap requests parameters for the fork being opened — so ask only for
+	// the length bit matching that fork. A strict server (observed: System 7.5 Personal
+	// File Sharing) returns kFPBitmapErr (-5004) when the data-fork open also requests the
+	// resource-fork-length bit (and vice versa).
+	bitmap := uint16(proto.FileBitmapDataForkLen)
+	if fork == fs.ResourceFork {
+		bitmap = proto.FileBitmapRsrcForkLen
+	}
 	req := proto.OpenForkRequest{
 		Resource:   fork == fs.ResourceFork,
 		VolID:      f.volID,
 		DirID:      proto.CNIDRoot,
-		Bitmap:     proto.FileBitmapDataForkLen | proto.FileBitmapRsrcForkLen,
+		Bitmap:     bitmap,
 		AccessMode: access,
 		PathType:   pathType,
 		Path:       afpWirePath(path),

@@ -77,8 +77,11 @@ func (r ReadRequest) Marshal() []byte {
 	out = bp.AppendBE16(out, r.ForkRefNum)
 	out = bp.AppendBE32(out, r.Offset)
 	out = bp.AppendBE32(out, r.ReqCount)
-	// newLineMask + newLineChar are optional and 0 disables substitution; the server
-	// treats their absence as 0, so they are omitted.
+	// newLineMask + newLineChar. 0/0 disables newline substitution. Emitted explicitly
+	// rather than omitted: a strict real server (observed: System 7.5 Personal File
+	// Sharing) rejects the short 12-byte block with kFPParamErr (-5019), expecting the
+	// full fixed 14-byte FPRead command block. See spec/errata.md.
+	out = append(out, 0, 0)
 	return out
 }
 

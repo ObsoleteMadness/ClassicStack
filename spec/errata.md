@@ -2,6 +2,26 @@
 
 This document records places where ClassicStack's wire behavior intentionally differs from the published spec, because the spec contradicts what real clients actually require. Each entry cites the spec section we deviate from, the client behavior that drove the change, and the file/function where the deviation lives.
 
+## AFP (client)
+
+Both entries below were found live driving the AFP **client** against **System 7.5.3 Personal File Sharing** running in Mini vMac (server offers AFPVersion 1.1/2.0/2.1, UAMs Cleartxt/Randnum/2-Way-Randnum), reached over DDP/LToUDP and mounted with `csmount` (WinFsp).
+
+### FPOpenFork bitmap must request only the opened fork's length bit — observed
+
+**Spec:** `FPOpenFork`'s Bitmap requests the file parameters to return for the fork being opened; `FileBitmapDataForkLen`/`FileBitmapRsrcForkLen` are independent bits.
+
+**Observed (live):** our client sent `Bitmap = DataForkLen | RsrcForkLen` for *every* open. System 7.5 Personal File Sharing returned **kFPBitmapErr (-5004)** — it rejects a data-fork open that also asks for the resource-fork length (and vice-versa).
+
+**What we do:** request `FileBitmapDataForkLen` when opening the data fork and `FileBitmapRsrcForkLen` when opening the resource fork — never both. **Where:** `client/afp/fork.go` (`(*FS).OpenFork`).
+
+### FPRead command block must be the full fixed 14 bytes (newLineMask/Char emitted) — observed
+
+**Spec (`spec/*` FPRead, cmd 27):** request is `cmd(1) pad(1) forkRefNum(2) offset(4) reqCount(4) [newLineMask(1) newLineChar(1)]`; 0/0 disables newline substitution, and the trailing two bytes read as "optional."
+
+**Observed (live):** omitting the two trailing bytes (a 12-byte block) drew **kFPParamErr (-5019)** from System 7.5 Personal File Sharing, which expects the full fixed 14-byte block. (Our own server accepts either — it only checks `len >= 12`.)
+
+**What we do:** always emit `newLineMask=0, newLineChar=0`, so the FPRead block is 14 bytes. Substitution stays disabled. **Where:** `core/protocol/afp/fork.go` (`ReadRequest.Marshal`).
+
 ## CIFS / SMB1
 
 ### SMB_COM_NEGOTIATE response WordCount MUST match the selected dialect family ([MS-CIFS] 2.2.4.52.2) — spec-based
