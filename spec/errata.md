@@ -52,6 +52,12 @@ The three entries below were found live driving the SMB **client** and the `csmo
 
 **What we do:** `translateErr` decodes the DOS class/code form (ERRDOS/ERRSRV class in the low byte, code in the high 16 bits) to the fs sentinels before the NTSTATUS switch. Such values never collide with a real NTSTATUS (whose top severity bits are always set). **Where:** `client/smb/filesystem.go` (`translateErr`, `dosErr*` consts). Test: `TestTranslateErrDOSAndNTStatus`.
 
+### OPEN_ANDX SearchAttributes must include hidden/system to open DOS system files — observed
+
+**Spec ([MS-CIFS] §2.2.4.41.1):** OPEN_ANDX SearchAttributes is the set of attributes a file may carry and still be opened; 0 means "normal files only."
+
+**Observed (live):** the client sent SearchAttributes = 0, so Win98 refused to open a hidden+system file (MSDOS.SYS) with "file not found" (the OPEN_ANDX failed even though QUERY_INFORMATION found it). **What we do:** set SearchAttributes = ReadOnly|Hidden|System|Archive on OPEN_ANDX, matching the FIND/QUERY builders. **Where:** `core/protocol/smb/clientfileops.go` (`BuildOpenAndX`).
+
 ### The mount must close the data handle before a classic SMB rename — observed
 
 **Spec:** `SMB_COM_RENAME` renames by path; the file must not have an open handle on a classic (share-mode) server.

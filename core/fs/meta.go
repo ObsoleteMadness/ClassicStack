@@ -7,6 +7,16 @@ import "github.com/ObsoleteMadness/ClassicStack/core/metastore"
 // metastore.EA for the full doc.
 type EA = metastore.EA
 
+// DOSAttrInfo is an OPTIONAL interface an fs.FileInfo's Sys() value may satisfy when the
+// backend already knows the file's DOS attribute bits from the wire (e.g. an SMB client
+// Stat carries the server's FileAttributes). A consumer that maps to a DOS/Windows view —
+// the WinFsp mount — reads these to surface hidden/system/read-only when no local
+// metastore entry exists. DOSAttrs returns the metastore.DOS* bitmask (FILE_ATTRIBUTE_*
+// low byte); the structural Directory bit is derived from FileInfo.IsDir separately.
+type DOSAttrInfo interface {
+	DOSAttrs() uint16
+}
+
 // MetaEngine is the single per-share interface for everything the storage seam
 // tracks about a path beyond its bytes: derived DOS/AFP names, CNIDs, and DOS
 // attributes/dates a host filesystem cannot natively represent. It plays the

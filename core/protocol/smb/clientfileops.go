@@ -82,16 +82,21 @@ func (b *Builder) BuildOpenAndX(path string, p OpenParams) []byte {
 	words := make([]byte, 30) // WCT=15
 	words[0] = CommandNoAndXCommand
 	words[1] = 0x00
-	bp.PutLE16(words[2:4], 0)                  // AndXOffset
-	bp.PutLE16(words[4:6], 0)                  // Flags
-	bp.PutLE16(words[6:8], p.accessMode())     // AccessMode (DesiredAccess)
-	bp.PutLE16(words[8:10], 0)                 // SearchAttrs
-	bp.PutLE16(words[10:12], 0)                // FileAttrs
-	bp.PutLE32(words[12:16], 0)                // CreationTime
-	bp.PutLE16(words[16:18], p.openFunction()) // OpenFunction
-	bp.PutLE32(words[18:22], 0)                // AllocationSize
-	bp.PutLE32(words[22:26], 0)                // Timeout
-	bp.PutLE32(words[26:30], 0)                // Reserved
+	bp.PutLE16(words[2:4], 0)              // AndXOffset
+	bp.PutLE16(words[4:6], 0)              // Flags
+	bp.PutLE16(words[6:8], p.accessMode()) // AccessMode (DesiredAccess)
+	// SearchAttributes is the set of attributes a file may carry and still be opened. A
+	// classic server (observed: Win98) treats a 0 here as a filter that EXCLUDES hidden/
+	// system/read-only files, so OPEN_ANDX on MSDOS.SYS (hidden+system) fails "file not
+	// found" even though QUERY_INFORMATION found it. Include hidden/system/read-only/
+	// archive so ordinary DOS system files open. Matches the other path commands above.
+	bp.PutLE16(words[8:10], AttrReadOnly|AttrHidden|AttrSystem|AttrArchive) // SearchAttrs
+	bp.PutLE16(words[10:12], 0)                                             // FileAttrs
+	bp.PutLE32(words[12:16], 0)                                             // CreationTime
+	bp.PutLE16(words[16:18], p.openFunction())                              // OpenFunction
+	bp.PutLE32(words[18:22], 0)                                             // AllocationSize
+	bp.PutLE32(words[22:26], 0)                                             // Timeout
+	bp.PutLE32(words[26:30], 0)                                             // Reserved
 
 	area := b.pathArea(path)
 	return b.frame(CommandOpenAndX, words, area)

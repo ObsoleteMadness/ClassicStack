@@ -79,9 +79,10 @@ func (f *FS) ReadDir(dir string) ([]stdfs.DirEntry, error) {
 func appendFindEntries(out []stdfs.DirEntry, entries []proto.FindEntry) []stdfs.DirEntry {
 	for _, e := range entries {
 		out = append(out, dirEntry{
-			name: e.Name,
-			dir:  e.IsDir(),
-			size: int64(e.Size),
+			name:  e.Name,
+			dir:   e.IsDir(),
+			size:  int64(e.Size),
+			attrs: e.Attrs,
 		})
 	}
 	return out
@@ -104,9 +105,10 @@ func (f *FS) Stat(p string) (stdfs.FileInfo, error) {
 		return nil, translateErr(err)
 	}
 	return fileInfo{
-		name: leaf(p),
-		dir:  info.IsDir(),
-		size: int64(info.Size),
+		name:  leaf(p),
+		dir:   info.IsDir(),
+		size:  int64(info.Size),
+		attrs: info.Attrs,
 	}, nil
 }
 
@@ -205,7 +207,11 @@ func (f *FS) MediumName(p string) (string, error) { return leaf(p), nil }
 // Capabilities reports the mounted share's capabilities. ChildCount is off (the client
 // does not compute it); ReadOnly follows the connection option.
 func (f *FS) Capabilities() fs.Capabilities {
-	return fs.Capabilities{ReadOnly: f.readOnly}
+	// DirAttributes: our Stat/ReadDir FileInfo carries the server's DOS attributes
+	// natively (via fs.DOSAttrInfo on Sys()), so the share's MetaEngine reads them from
+	// the wire rather than a local store — surfacing hidden/system/read-only to a DOS
+	// client (and the WinFsp mount) with no extra round-trips.
+	return fs.Capabilities{ReadOnly: f.readOnly, DirAttributes: true}
 }
 
 // Close ends the SMB session (fs.FSCloser), so client.Connect's ForkFS.Close tears the
@@ -354,9 +360,10 @@ func (h *fileHandle) Close() error {
 
 // dirEntry is a minimal fs.DirEntry from a FIND record.
 type dirEntry struct {
-	name string
-	dir  bool
-	size int64
+	name  string
+	dir   bool
+	size  int64
+	attrs uint16 // server's DOS FileAttributes from the FIND record
 }
 
 func (e dirEntry) Name() string { return e.name }
@@ -368,15 +375,16 @@ func (e dirEntry) Type() stdfs.FileMode {
 	return 0
 }
 func (e dirEntry) Info() (stdfs.FileInfo, error) {
-	return fileInfo{name: e.name, dir: e.dir, size: e.size}, nil
+	return fileInfo{name: e.name, dir: e.dir, size: e.size, attrs: e.attrs}, nil
 }
 
 // fileInfo is a minimal fs.FileInfo. SMB timestamps are not surfaced by the client's
 // minimal command set, so ModTime is the zero time (the fs layer tolerates it).
 type fileInfo struct {
-	name string
-	dir  bool
-	size int64
+	name  string
+	dir   bool
+	size  int64
+	attrs uint16 // server's SMB FileAttributes (== DOS/FILE_ATTRIBUTE_* bits); 0 = unknown
 }
 
 func (fi fileInfo) Name() string { return fi.name }
@@ -389,7 +397,23 @@ func (fi fileInfo) Mode() stdfs.FileMode {
 }
 func (fi fileInfo) ModTime() time.Time { return time.Time{} }
 func (fi fileInfo) IsDir() bool        { return fi.dir }
-func (fi fileInfo) Sys() any           { return nil }
+
+// Sys returns the file's DOS attribute bits via the fs.DOSAttrInfo interface when the
+// server reported any non-structural ones (hidden/system/read-only/archive), so a
+// DOS/Windows consumer (the WinFsp mount) can surface them. The SMB Attr* bits are the
+// same values as metastore.DOS* / FILE_ATTRIBUTE_*, so no translation is needed. nil when
+// nothing beyond the Directory bit is set, to avoid claiming a plain file has attributes.
+func (fi fileInfo) Sys() any {
+	if a := fi.attrs &^ proto.AttrDirectory; a != 0 {
+		return smbDOSAttrs(a)
+	}
+	return nil
+}
+
+// smbDOSAttrs adapts the raw SMB FileAttributes to fs.DOSAttrInfo.
+type smbDOSAttrs uint16
+
+func (a smbDOSAttrs) DOSAttrs() uint16 { return uint16(a) }
 
 // leaf returns the last '/'-separated element of a share-relative path.
 func leaf(p string) string {

@@ -98,8 +98,15 @@ func buildDOSAttrStore(backend string, base FileSystem, store metastore.Store, l
 		}
 		return newSidecarDOSAttrStore(base, cache)
 	case dosBackendAuto, "":
-		// Prefer Windows-native passthrough, then a Samba-compatible xattr, then a
-		// sidecar — each only when host-backed; otherwise the metastore alone.
+		// A FileSystem whose own Stat carries the DOS attributes natively (a remote
+		// client FS — SMB/AFP — that reads them off the wire) is authoritative: read
+		// from it directly, no host path or sidecar needed. This is preferred over the
+		// host-interop backends because it needs no local storage and never goes stale.
+		if base.Capabilities().DirAttributes {
+			return newFSNativeDOSAttrStore(base, cache)
+		}
+		// Otherwise prefer Windows-native passthrough, then a Samba-compatible xattr,
+		// then a sidecar — each only when host-backed; otherwise the metastore alone.
 		if host != nil && hostNativeDOSAttr != nil {
 			if s, ok := hostNativeDOSAttr(host, cache); ok {
 				return s
@@ -117,6 +124,60 @@ func buildDOSAttrStore(backend string, base FileSystem, store metastore.Store, l
 	default:
 		return cache
 	}
+}
+
+// --- fs-native backend: read DOS attributes straight from the base FileSystem's own
+// Stat, for a backend whose FileInfo carries them natively (a remote SMB/AFP client that
+// reads the server's FileAttributes off the wire). No host path, no sidecar, no staleness —
+// the source filesystem IS the store. Writes cache in the metastore (we cannot generally
+// push attributes back over the wire yet); reads prefer the live Stat and fall back to the
+// cache for anything the wire did not carry (e.g. a value only this session Set). ---
+
+// fsNativeDOSAttrStore reads DOS attributes from base.Stat(path), whose returned
+// FileInfo.Sys() implements DOSAttrInfo. It is selected by buildDOSAttrStore for a base
+// FileSystem advertising Capabilities().DirAttributes.
+type fsNativeDOSAttrStore struct {
+	fs      FileSystem
+	cache   DOSAttrStore
+	logging log.Logger
+}
+
+func newFSNativeDOSAttrStore(base FileSystem, cache DOSAttrStore) *fsNativeDOSAttrStore {
+	return &fsNativeDOSAttrStore{fs: base, cache: cache, logging: log.New("dosattr.fsnative")}
+}
+
+func (s *fsNativeDOSAttrStore) Get(path string) (DOSAttr, bool) {
+	// A value this session explicitly Set wins (the wire has no way to have learned it).
+	if attr, ok := s.cache.Get(path); ok {
+		return attr, true
+	}
+	fi, err := s.fs.Stat(path)
+	if err != nil {
+		s.logging.Log1(log.Debug, "fs-native stat miss", log.Str("path", path))
+		return DOSAttr{}, false
+	}
+	da, ok := fi.Sys().(DOSAttrInfo)
+	if !ok {
+		return DOSAttr{}, false
+	}
+	bits := da.DOSAttrs() & DOSStorableMask
+	if bits == 0 {
+		// A plain file with no stored attributes: report "nothing stored" so the reader
+		// derives structural bits from the entry, matching the metastore's miss semantics.
+		return DOSAttr{}, false
+	}
+	return DOSAttr{Attrs: bits}, true
+}
+
+func (s *fsNativeDOSAttrStore) Set(path string, attr DOSAttr) error {
+	// No generic wire write-back yet; keep it in the cache so this session sees it.
+	return s.cache.Set(path, attr)
+}
+
+func (s *fsNativeDOSAttrStore) Delete(path string) error { return s.cache.Delete(path) }
+
+func (s *fsNativeDOSAttrStore) Rename(oldPath, newPath string) error {
+	return s.cache.Rename(oldPath, newPath)
 }
 
 // --- sidecar backend: a ".dosattr/<name>" companion holding the XATTR_DOSINFO
