@@ -25,9 +25,17 @@ ClassicStack is an AppleTalk router and classic LAN services stack that bridges 
 - MacIPX gateway for IPX-over-AppleTalk clients. 
 - Optional IPX, NetBEUI, NetBIOS, and SMB1 services (build-tag gated).
 - Shared raw-link bridge settings for EtherTalk, MacIP, IPX, and NetBEUI.
+- File **client** that mounts remote AFP / SMB / NCP / EtherDFS shares as a Windows
+  drive via WinFsp (`csmount`), plus a cross-platform CLI (`csfs`).
 
 ## Releases
 Grab the latest release from Github Releases [releases](https://github.com/ObsoleteMadness/ClassicStack/releases/latest).
+
+## I don't like AI! What else is out there
+Fair, there's good reasons not to. If you're after user-land AFP support, I recommend checking out TailTalk from @FeralFirmware. 
+There's Netatalk which has great support for legacy Mac Clients, and Samba for Windows clients (at least over TCP/IP). For Netware, mars_nws is an option. 
+
+Of course, nothing stops you running up native servers in snow or 86box. 
 
 ## Screenshots
 
@@ -314,6 +322,90 @@ UI server is preserved across the rebuild), **Save** writes `server.toml`
 by the transport-agnostic `pkg/control` API, so a future text/telnet UI can
 reuse them.
 
+## File client — mount and browse remote shares
+
+ClassicStack is not only a server. It ships a **file client** that connects *out* to
+a legacy file server — AFP, SMB (over IPX / NBIPX / NetBEUI / TCP), NetWare NCP, or
+EtherDFS — and presents it through one uniform interface. Two commands share that
+client:
+
+- **`csmount`** — mount a remote share as a Windows drive letter or directory via
+  [WinFsp](https://winfsp.dev/), so any application (Explorer, `copy`, editors) can
+  use it.
+- **`csfs`** — a cross-platform CLI over the same client (`ls` / `cp` / `mv` / `rm` /
+  `attrib` / `type` / `creator`), plus an interactive REPL.
+
+Both address a server by URI:
+
+~~~
+<scheme>://[[user][:pass]@]<server>[,<transport>]/<volume>[/<path>]
+
+afp://classicstack:MyZone/Volume        smb://pete:secret@host,tcp/share
+smb://server,nbf/Share                  ncp://SERVER,ipx/SYS
+etherdfs://02-1a-4d-11-22-33/C
+~~~
+
+Shared flags: `-ifacetype` (`ltoudp` | `tashtalk` | `pcap` | `tcp`, validated against
+the scheme), `-iface` (the IPv4 address / pcap device / serial port / host),
+`-transport` (SMB pcap carrier: `ipx` | `nbipx` | `nbf`), `-mac` (virtual-station MAC
+for raw-Ethernet SMB carriers), `-fork` (fork container, see below), and `-v` (client
+wire-trace to stderr).
+
+### csmount (Windows, WinFsp)
+
+`csmount` is **Windows-only** and needs the **WinFsp runtime** installed on the machine
+(https://winfsp.dev/rel/). It compiles with no cgo; add the `pcap` build tag for the raw-
+Ethernet carriers (SMB-over-IPX/NBIPX/NBF, NCP, EtherDFS):
+
+~~~powershell
+go build -tags pcap -o csmount.exe ./cmd/csmount
+# or via the Makefile (builds csmount.exe only on Windows):
+#   make build
+~~~
+
+Usage — `csmount [flags] <uri> <mountpoint>`, where `<mountpoint>` is a drive letter
+(`X:`) or an empty directory. Ctrl-C unmounts cleanly.
+
+~~~powershell
+# AFP over LToUDP (the scheme default), mounted at M:
+.\csmount.exe "afp://user@MyServer/My Volume" M:
+
+# SMB over NetBEUI (raw Ethernet — pick the NIC on the server's segment)
+.\csmount.exe -iface "\Device\NPF_{GUID}" "smb://WIN98,nbf/C-DRIVE" N:
+
+# NetWare NCP over IPX
+.\csmount.exe -iface "\Device\NPF_{GUID}" "ncp://SERVER/SYS" N:
+~~~
+
+List pcap device names with `.\classicstack.exe -list-pcap-devices`.
+
+**What maps through to Windows:**
+
+- **AFP resource forks / Finder info** are handled by the `-fork` backend chosen at
+  connect time (`appledouble` — the SMB/NCP/EtherDFS default, `applesingle`,
+  `macbinary`, `derez`, `native`, `nofork`, or `passthrough` — the AFP default, native
+  forks straight off the wire). The mount reflects whatever namespace that backend
+  produces; it does not invent NTFS stream names.
+- **DOS attributes** (hidden / system / read-only) and **file dates** are read live from
+  the server and surfaced to Explorer — AFP maps Invisible→hidden, System→system,
+  WriteInhibit→read-only; SMB uses the server's FileAttributes and timestamps directly.
+
+### csfs (cross-platform CLI)
+
+`csfs` runs anywhere and drives the same client. Host↔remote copies are one code path,
+so it preserves resource forks, Finder type/creator, and DOS attributes across a copy.
+
+~~~bash
+go build -tags pcap -o csfs ./cmd/csfs      # -tags pcap for raw-Ethernet carriers
+
+csfs ls "afp://user@MyServer/My Volume"           # list a directory
+csfs ls smb://server/                             # a bare server → list its shares
+csfs get "afp://user@server/Vol/file" ./file      # copy remote → host (forks preserved)
+csfs put ./file "smb://server,nbf/Share/file"     # copy host → remote
+csfs discover afp                                  # find servers (NBP / SAP / broadcast)
+csfs "afp://user@server/Vol"                       # no command → interactive REPL
+~~~
+
 ## Running as a service / daemon
 
 ClassicStack ships a wrapper binary so it can run in the background and start
@@ -390,14 +482,11 @@ re-implementations over our storage/transport seams rather than code ports, but 
 a clear debt to the originals, and the `derez` fork backend is a direct Go port. With
 thanks to:
 
-- **tashrouter** — the original inspiration for the AppleTalk routing core.
-  https://github.com/lampmerchant/tashrouter
+
 - **macresources / rdump (DeRez) format** by **Elliot Nunn** — the resource-fork text
   format and reference implementation behind our `derez` fork backend, ported to Go.
   https://github.com/elliotnunn/macresources
-- **EtherDFS** by **Mateusz Viste**, Copyright © 2017-2023 Mateusz Viste — the EtherType
-  0xEDF5 DOS file-system protocol our EtherDFS service re-implements.
-  https://github.com/mateuszviste
+
 - **mars_nwe** (the MARtin Stover NetWare Emulator), © 1993,1995 Martin Stover, Marburg,
   Germany — the canonical open-source NetWare/NCP reference that inspired our NCP service
   (alongside Linux ncpfs by Volker Lendecke et al).
@@ -413,8 +502,20 @@ thanks to:
   Cross-checked against Apple's SuperMario `os/netboot` source.
 
 ## License
+This work is released under the terms of the GPL-3.0. 
 
-GPL-3.0.
+It uses coded which has been used / translated by an LLM:
+- **tashrouter** — the original inspiration for the AppleTalk routing core by Tashtari.
+  https://github.com/lampmerchant/tashrouter, released under GPL-3.0. 
+
+
+
+MIT Licensed components
+ * Derez - derez support is based on [Macresources](https://github.com/elliotnunn/macresources) by Elliot Nunn, which is released under terms of MIT.
+ * Netboot - Netboot support is based on [Netboot](https://github.com/elliotnunn/NetBoot/) by Elliot Nunn, under the terms of the MIT.
+ - **EtherDFS** by **Mateusz Viste**, Copyright © 2017-2023 Mateusz Viste — the EtherType
+  0xEDF5 DOS file-system protocol our EtherDFS service re-implements.
+  https://github.com/mateuszviste
 
 ## Additional docs
 
