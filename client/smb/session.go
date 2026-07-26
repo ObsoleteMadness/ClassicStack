@@ -56,6 +56,27 @@ type Session struct {
 
 	mu      sync.Mutex
 	builder proto.Builder
+
+	// noPathInfo is set once a server rejects TRANS2 QUERY_PATH_INFORMATION as unsupported
+	// (a Win9x file share answers "invalid function"), so Stat stops issuing it and relies
+	// on the legacy QUERY_INFORMATION alone. Guarded by mu.
+	noPathInfo bool
+}
+
+// PathInfoUnsupported reports whether this session's server has rejected TRANS2
+// QUERY_PATH_INFORMATION as unsupported.
+func (s *Session) PathInfoUnsupported() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.noPathInfo
+}
+
+// MarkPathInfoUnsupported records that the server does not support TRANS2
+// QUERY_PATH_INFORMATION, so the client stops issuing it for the rest of the session.
+func (s *Session) MarkPathInfoUnsupported() {
+	s.mu.Lock()
+	s.noPathInfo = true
+	s.mu.Unlock()
 }
 
 // Dialect returns the SMB dialect the server selected at NEGOTIATE (e.g. "NT LM 0.12").

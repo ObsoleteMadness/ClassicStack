@@ -90,8 +90,12 @@ func appendFindEntries(out []stdfs.DirEntry, entries []proto.FindEntry) []stdfs.
 	return out
 }
 
-// Stat resolves one path via SMB_COM_QUERY_INFORMATION (the CORE stat every dialect
-// answers). The root path ("") is always a directory.
+// Stat resolves one path. It uses SMB_COM_QUERY_INFORMATION for the size (the CORE stat
+// every dialect answers), then enriches the timestamps and attributes with a TRANS2
+// QUERY_PATH_INFORMATION (SMB_QUERY_FILE_BASIC_INFO) — the legacy query returns a poor/
+// zero LastWriteTime on a Win9x server, whereas BASIC_INFO carries the real FILETIMEs and
+// a creation date. QUERY_PATH_INFO is best-effort: if the server does not answer it, the
+// legacy values stand. The root path ("") is always a directory.
 func (f *FS) Stat(p string) (stdfs.FileInfo, error) {
 	if strings.Trim(p, "/") == "" {
 		return fileInfo{name: "", dir: true}, nil
@@ -106,13 +110,45 @@ func (f *FS) Stat(p string) (stdfs.FileInfo, error) {
 	if err != nil {
 		return nil, translateErr(err)
 	}
-	return fileInfo{
+	fi := fileInfo{
 		name:    leaf(p),
 		dir:     info.IsDir(),
 		size:    int64(info.Size),
 		attrs:   info.Attrs,
 		modTime: info.ModTime,
-	}, nil
+	}
+	// Enrich with the TRANS2 basic-info timestamps (best-effort). Skipped once the server
+	// has rejected QUERY_PATH_INFORMATION as unsupported (a Win9x share does), so we do not
+	// pay a failed round trip per Stat.
+	if !f.sess.PathInfoUnsupported() {
+		if bi, err := f.queryBasicInfo(p); err == nil {
+			if !bi.WriteTime.IsZero() {
+				fi.modTime = bi.WriteTime
+			}
+			fi.create = bi.CreateTime
+			if bi.Attrs != 0 {
+				fi.attrs = bi.Attrs
+			}
+		} else {
+			// A server that does not implement QUERY_PATH_INFORMATION answers "invalid
+			// function"; remember that and stop issuing it for this session.
+			f.sess.MarkPathInfoUnsupported()
+		}
+	}
+	return fi, nil
+}
+
+// queryBasicInfo runs a TRANS2 QUERY_PATH_INFORMATION (BASIC_INFO) for path, returning the
+// server's timestamps + attributes. Errors are returned so the caller can fall back to the
+// legacy query values.
+func (f *FS) queryBasicInfo(p string) (proto.BasicInfo, error) {
+	resp, err := f.sess.send(func(b *proto.Builder) []byte {
+		return b.BuildQueryPathInfo(p)
+	})
+	if err != nil {
+		return proto.BasicInfo{}, err
+	}
+	return proto.ParseQueryPathInfo(resp)
 }
 
 // DiskUsage is not surfaced over the client's minimal command set; report unknown

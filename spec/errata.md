@@ -26,9 +26,13 @@ base FileSystem advertises `Capabilities().DirAttributes` gets the `fsNativeDOSA
 
 - **SMB**: `FileAttributes` are already DOS/FILE_ATTRIBUTE_* bits (no translation).
   QUERY_INFORMATION carries a UTIME LastWriteTime; FIND records carry full FILETIMEs
-  (creation + write). Note: Win98's *legacy QUERY_INFORMATION* returns a poor/zero
-  LastWriteTime, so a per-file `Stat` date can be unreliable there — the FIND path is
-  authoritative. (A TRANS2 QUERY_PATH_INFO Stat would fix per-file dates; deferred.)
+  (creation + write). `Stat` also issues a TRANS2 QUERY_PATH_INFORMATION
+  (SMB_QUERY_FILE_BASIC_INFO, level 0x0101) to enrich the timestamps with reliable
+  FILETIMEs + a creation date. A server that does not implement it (observed: Win98
+  answers "invalid function") is remembered per session (`Session.MarkPathInfoUnsupported`)
+  so the client stops issuing it after one probe and falls back to QUERY_INFORMATION.
+  Where: `core/protocol/smb/clientfileops.go` (`BuildQueryPathInfo`/`ParseQueryPathInfo`),
+  `client/smb/{filesystem.go,session.go}`. Test: `TestParseQueryPathInfoBasicInfo`.
 - **AFP**: the `FPGetFileDirParms`/`FPEnumerate` Attributes word maps Invisible→Hidden,
   System→System, WriteInhibit→ReadOnly (`client/afp/afp.go afpAttrsToDOS`); ModDate/
   CreateDate are surfaced directly. The client now requests `FDBitmapAttributes` +

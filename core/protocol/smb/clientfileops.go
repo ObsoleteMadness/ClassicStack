@@ -442,6 +442,59 @@ func (b *Builder) BuildFindNext2(sid, maxCount uint16) []byte {
 	return b.buildTrans2(trans2FindNext2Sub, params, nil)
 }
 
+// --- TRANS2 QUERY_PATH_INFORMATION (single-file stat with reliable timestamps) ---
+
+// BuildQueryPathInfo builds a TRANS2_QUERY_PATH_INFORMATION request for path at info level
+// SMB_QUERY_FILE_BASIC_INFO ([MS-CIFS] §2.2.6.6.1). Params: InformationLevel(2) Reserved(4)
+// FileName(SMB_STRING). Preferred over the legacy SMB_COM_QUERY_INFORMATION because it
+// returns the four FILETIMEs (a Win9x server's legacy query returns a poor LastWriteTime).
+func (b *Builder) BuildQueryPathInfo(path string) []byte {
+	params := make([]byte, 6)
+	bp.PutLE16(params[0:2], queryFileBasicInfo) // InformationLevel
+	bp.PutLE32(params[2:6], 0)                  // Reserved
+	params = append(params, encodePathBytes(path, b.Unicode)...)
+	if b.Unicode {
+		params = append(params, 0, 0)
+	} else {
+		params = append(params, 0)
+	}
+	return b.buildTrans2(trans2QueryPathInfoSub, params, nil)
+}
+
+// BasicInfo is the parsed SMB_QUERY_FILE_BASIC_INFO data block: the file's timestamps and
+// DOS attributes. A zero time means the server did not report that timestamp.
+type BasicInfo struct {
+	CreateTime time.Time
+	AccessTime time.Time
+	WriteTime  time.Time
+	ChangeTime time.Time
+	Attrs      uint16
+}
+
+// IsDir reports whether the attribute word marks a directory.
+func (bi BasicInfo) IsDir() bool { return bi.Attrs&AttrDirectory != 0 }
+
+// ParseQueryPathInfo parses a TRANS2_QUERY_PATH_INFORMATION (BASIC_INFO) response. The
+// data block is CreationTime(8) LastAccessTime(8) LastWriteTime(8) ChangeTime(8)
+// ExtFileAttributes(4) [Reserved(4)] — all FILETIME/LE.
+func ParseQueryPathInfo(resp []byte) (BasicInfo, error) {
+	if _, _, _, err := respBody(CommandTransaction2, resp); err != nil {
+		return BasicInfo{}, err
+	}
+	_, _, dOff, dLen, ok := trans2ResponseBlocks(resp)
+	if !ok || dLen < 36 {
+		return BasicInfo{}, ErrShortResponse
+	}
+	d := resp[dOff : dOff+dLen]
+	return BasicInfo{
+		CreateTime: filetimeToTime(bp.LE64(d[0:8])),
+		AccessTime: filetimeToTime(bp.LE64(d[8:16])),
+		WriteTime:  filetimeToTime(bp.LE64(d[16:24])),
+		ChangeTime: filetimeToTime(bp.LE64(d[24:32])),
+		Attrs:      uint16(bp.LE32(d[32:36]) & 0xFFFF),
+	}, nil
+}
+
 // findPattern builds the wildcard search path for a directory: the '/'-path with a
 // trailing "*" so the server lists the directory's entries (resolveSearchPath treats a
 // trailing wildcard element as the pattern).
@@ -455,9 +508,16 @@ func findPattern(dir string) string {
 
 // TRANS2 subcommand codes (client copy; mirror the service trans2FindFirst2/Next2).
 const (
-	trans2FindFirst2Sub uint16 = 0x0001
-	trans2FindNext2Sub  uint16 = 0x0002
+	trans2FindFirst2Sub    uint16 = 0x0001
+	trans2FindNext2Sub     uint16 = 0x0002
+	trans2QueryPathInfoSub uint16 = 0x0005
 )
+
+// queryFileBasicInfo is the TRANS2 information level SMB_QUERY_FILE_BASIC_INFO
+// ([MS-CIFS] §2.2.8.3.1): the four FILETIMEs plus the extended attributes — the compact
+// stat every NT-dialect server answers, and (unlike the legacy QUERY_INFORMATION) with
+// reliable timestamps on a Win9x server.
+const queryFileBasicInfo uint16 = 0x0101
 
 // findCloseAtEOSFlag asks the server to release the search when it reaches end-of-
 // search (SMB_FIND_CLOSE_AT_EOS), so a fully-listed directory needs no FIND_CLOSE2.
