@@ -12,6 +12,35 @@ This document records places where ClassicStack's wire behavior intentionally di
 
 **What we do:** capture `respUserData` from the **seq-0** response packet only. **Where:** `client/atalk/atp.go` (`(*ATP).Request`). Test: `TestRequestUserDataFromFirstPacket`.
 
+## Metadata mapping (client)
+
+### Remote DOS attributes/dates reach a DOS/Windows view through an fs-native MetaEngine — design
+
+A remote file client (SMB/AFP) carries the file's DOS-equivalent attributes and dates in
+its own `Stat`/`ReadDir` result (off the wire), not in a local metastore. So a share whose
+base FileSystem advertises `Capabilities().DirAttributes` gets the `fsNativeDOSAttrStore`
+(`core/fs/dosattr.go`): `Meta().Attrs()` reads attributes/create-time straight from
+`base.Stat(path).Sys()`, which implements `fs.DOSAttrInfo` (attribute bits) and optionally
+`fs.DOSCreateTimeInfo` (creation date). The WinFsp adapter is protocol-agnostic — it reads
+`Meta().Attrs()` and `FileInfo.ModTime()` only.
+
+- **SMB**: `FileAttributes` are already DOS/FILE_ATTRIBUTE_* bits (no translation).
+  QUERY_INFORMATION carries a UTIME LastWriteTime; FIND records carry full FILETIMEs
+  (creation + write). Note: Win98's *legacy QUERY_INFORMATION* returns a poor/zero
+  LastWriteTime, so a per-file `Stat` date can be unreliable there — the FIND path is
+  authoritative. (A TRANS2 QUERY_PATH_INFO Stat would fix per-file dates; deferred.)
+- **AFP**: the `FPGetFileDirParms`/`FPEnumerate` Attributes word maps Invisible→Hidden,
+  System→System, WriteInhibit→ReadOnly (`client/afp/afp.go afpAttrsToDOS`); ModDate/
+  CreateDate are surfaced directly. The client now requests `FDBitmapAttributes` +
+  `FDBitmapCreateDate` in its stat/enumerate bitmap.
+
+### WinFsp: never feed a zero time.Time to filetime.Timestamp — observed
+
+A zero `time.Time` through go-winfsp's `filetime.Timestamp` maps to ~year 1754, which
+Explorer displays as a garbage date. The adapter falls back to the FAT epoch (1980-01-01)
+for any timestamp a backend does not surface. **Where:** `client/winfsp/fileinfo_windows.go`
+(`filetimeOr`/`fatEpochFiletime`).
+
 ## AFP (client)
 
 Both entries below were found live driving the AFP **client** against **System 7.5.3 Personal File Sharing** running in Mini vMac (server offers AFPVersion 1.1/2.0/2.1, UAMs Cleartxt/Randnum/2-Way-Randnum), reached over DDP/LToUDP and mounted with `csmount` (WinFsp).

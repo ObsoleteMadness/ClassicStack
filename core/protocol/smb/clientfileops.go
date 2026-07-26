@@ -14,6 +14,7 @@ package smb
 
 import (
 	"strings"
+	"time"
 	"unicode/utf16"
 
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
@@ -314,8 +315,9 @@ func ParseDeleteDirectory(resp []byte) error {
 // SMB_COM_QUERY_INFORMATION which every dialect answers, so a single Stat needs no
 // TRANS2 round trip.
 type FileInfo struct {
-	Attrs uint16
-	Size  uint32
+	Attrs   uint16
+	Size    uint32
+	ModTime time.Time // LastWriteTime (UTIME) from the response; zero if unset
 }
 
 // IsDir reports whether the DOS attribute word marks a directory.
@@ -337,7 +339,33 @@ func ParseQueryInformation(resp []byte) (FileInfo, error) {
 	if len(words) < 10 {
 		return FileInfo{}, ErrShortResponse
 	}
-	return FileInfo{Attrs: bp.LE16(words[0:2]), Size: bp.LE32(words[6:10])}, nil
+	return FileInfo{
+		Attrs:   bp.LE16(words[0:2]),
+		ModTime: utimeToTime(bp.LE32(words[2:6])), // LastWriteTime (UTIME, secs since 1970)
+		Size:    bp.LE32(words[6:10]),
+	}, nil
+}
+
+// filetimeEpochDelta100ns is the 100-ns tick count between the FILETIME epoch
+// (1601-01-01) and the Unix epoch (1970-01-01).
+const filetimeEpochDelta100ns = 116444736000000000
+
+// utimeToTime converts an SMB UTIME (seconds since 1970-01-01 UTC) to a time.Time. Zero
+// (unset / unknown) maps to the zero time so callers can test IsZero.
+func utimeToTime(secs uint32) time.Time {
+	if secs == 0 {
+		return time.Time{}
+	}
+	return time.Unix(int64(secs), 0).UTC()
+}
+
+// filetimeToTime converts a Windows FILETIME (100-ns ticks since 1601-01-01 UTC, as
+// carried in TRANS2 FIND records) to a time.Time. Zero maps to the zero time.
+func filetimeToTime(ft uint64) time.Time {
+	if ft == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, (int64(ft)-filetimeEpochDelta100ns)*100).UTC()
 }
 
 // --- TRANS2 FIND_FIRST2 / FIND_NEXT2 (directory listing) ---
@@ -347,10 +375,12 @@ func ParseQueryInformation(resp []byte) (FileInfo, error) {
 // (empty when the server reports no distinct short name). ShortName is decoded but not
 // yet surfaced by the client fs adapter (multi-name listing is deferred).
 type FindEntry struct {
-	Name      string
-	ShortName string
-	Attrs     uint16
-	Size      uint64
+	Name       string
+	ShortName  string
+	Attrs      uint16
+	Size       uint64
+	ModTime    time.Time // LastWriteTime (FILETIME) from the FIND record; zero if unset
+	CreateTime time.Time // CreationTime (FILETIME) from the FIND record; zero if unset
 }
 
 // IsDir reports whether the entry's attribute word marks a directory.
@@ -564,6 +594,11 @@ func parseBothDirInfo(data []byte, unicode bool) []FindEntry {
 	for pos+94 <= len(data) {
 		rec := data[pos:]
 		next := int(bp.LE32(rec[0:4]))
+		// Fixed area: NextEntryOffset(0) FileIndex(4) CreationTime(8) LastAccessTime(16)
+		// LastWriteTime(24) ChangeTime(32) EndOfFile(40) AllocationSize(48)
+		// ExtFileAttributes(56) FileNameLength(60) …
+		createTime := filetimeToTime(bp.LE64(rec[8:16]))
+		writeTime := filetimeToTime(bp.LE64(rec[24:32]))
 		size := bp.LE64(rec[40:48])
 		attrs := uint16(bp.LE32(rec[56:60]) & 0xFFFF)
 		nameLen := int(bp.LE32(rec[60:64]))
@@ -580,10 +615,12 @@ func parseBothDirInfo(data []byte, unicode bool) []FindEntry {
 		name = strings.TrimRight(name, "\x00")
 		if name != "" && name != "." && name != ".." {
 			out = append(out, FindEntry{
-				Name:      name,
-				ShortName: strings.TrimRight(short, "\x00"),
-				Attrs:     attrs,
-				Size:      size,
+				Name:       name,
+				ShortName:  strings.TrimRight(short, "\x00"),
+				Attrs:      attrs,
+				Size:       size,
+				ModTime:    writeTime,
+				CreateTime: createTime,
 			})
 		}
 		if next <= 0 {

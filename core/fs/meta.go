@@ -1,6 +1,10 @@
 package fs
 
-import "github.com/ObsoleteMadness/ClassicStack/core/metastore"
+import (
+	"time"
+
+	"github.com/ObsoleteMadness/ClassicStack/core/metastore"
+)
 
 // EA is one named extended-attribute value, re-exported from core/metastore
 // so file services reach it through the fs seam like DOSAttr — see
@@ -15,6 +19,15 @@ type EA = metastore.EA
 // low byte); the structural Directory bit is derived from FileInfo.IsDir separately.
 type DOSAttrInfo interface {
 	DOSAttrs() uint16
+}
+
+// DOSCreateTimeInfo is an OPTIONAL companion to DOSAttrInfo an fs.FileInfo's Sys() value
+// may also satisfy when the backend knows the file's creation time from the wire (SMB
+// QUERY_INFORMATION / FIND, AFP FPGetFileDirParms CreateDate). The fs-native MetaEngine
+// reads it into DOSAttr.CreateTime so a DOS/Windows view (the WinFsp mount) shows the real
+// creation date. A zero time means "unknown".
+type DOSCreateTimeInfo interface {
+	DOSCreateTime() time.Time
 }
 
 // MetaEngine is the single per-share interface for everything the storage seam

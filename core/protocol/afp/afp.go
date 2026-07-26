@@ -130,6 +130,16 @@ const (
 	DirBitmapProDOSInfo   uint16 = 1 << 13
 )
 
+// AFP file/directory Attributes bits (the FDBitmapAttributes word — Inside Macintosh:
+// Networking, "File attributes" / "Directory attributes"). Only the ones with a DOS
+// analogue are named here.
+const (
+	AttrInvisible    uint16 = 1 << 0 // kFPInvisibleBit — maps to DOS Hidden
+	AttrMultiUser    uint16 = 1 << 1 // kFPMultiUserBit (dir)
+	AttrSystem       uint16 = 1 << 2 // kFPSystemBit — maps to DOS System
+	AttrWriteInhibit uint16 = 1 << 5 // kFPWriteInhibitBit — maps to DOS ReadOnly
+)
+
 // AFP volume signature values (Inside Macintosh: Networking, "Volume signature").
 const (
 	VolSignatureFlat       uint16 = 1

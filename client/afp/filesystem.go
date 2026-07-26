@@ -15,9 +15,11 @@ import (
 
 // statBitmap is the file/dir parameter set the adapter requests for a Stat/Enumerate.
 const (
-	fileStatBitmap = proto.FDBitmapLongName | proto.FDBitmapModDate |
+	fileStatBitmap = proto.FDBitmapAttributes | proto.FDBitmapLongName |
+		proto.FDBitmapCreateDate | proto.FDBitmapModDate |
 		proto.FDBitmapFinderInfo | proto.FileBitmapDataForkLen
-	dirStatBitmap = proto.FDBitmapLongName | proto.FDBitmapModDate |
+	dirStatBitmap = proto.FDBitmapAttributes | proto.FDBitmapLongName |
+		proto.FDBitmapCreateDate | proto.FDBitmapModDate |
 		proto.FDBitmapFinderInfo
 )
 
@@ -59,10 +61,12 @@ func (f *FS) ReadDir(path string) ([]stdfs.DirEntry, error) {
 		}
 		for _, e := range reply.Entries {
 			out = append(out, dirEntry{
-				name: string(e.LongName),
-				dir:  e.IsDir,
-				size: int64(e.DataForkLen),
-				mod:  e.ModDate,
+				name:     string(e.LongName),
+				dir:      e.IsDir,
+				size:     int64(e.DataForkLen),
+				mod:      e.ModDate,
+				create:   e.CreateDate,
+				afpAttrs: e.Attributes,
 			})
 		}
 		start += uint16(len(reply.Entries))
@@ -82,10 +86,12 @@ func (f *FS) Stat(path string) (stdfs.FileInfo, error) {
 		name = string(p.Params.LongName)
 	}
 	return fileInfo{
-		name:    name,
-		size:    int64(p.Params.DataForkLen),
-		dir:     p.IsDir,
-		modTime: p.Params.ModDate,
+		name:       name,
+		size:       int64(p.Params.DataForkLen),
+		dir:        p.IsDir,
+		modTime:    p.Params.ModDate,
+		createTime: p.Params.CreateDate,
+		afpAttrs:   p.Params.Attributes,
 	}, nil
 }
 
@@ -232,7 +238,11 @@ func (f *FS) Capabilities() fs.Capabilities {
 	f.mu.Lock()
 	ro := f.readOnly
 	f.mu.Unlock()
-	return fs.Capabilities{ReadOnly: ro, ChildCount: true}
+	// DirAttributes: our FPGetFileDirParms/FPEnumerate FileInfo carries the AFP attribute
+	// word + create date natively (fs.DOSAttrInfo/DOSCreateTimeInfo on Sys()), so the
+	// share's MetaEngine reads them from the wire — surfacing Invisible→hidden,
+	// System→system, WriteInhibit→read-only and the creation date to the WinFsp mount.
+	return fs.Capabilities{ReadOnly: ro, ChildCount: true, DirAttributes: true}
 }
 
 // Close ends the underlying ASP session (fs.FSCloser), so client.Connect's ForkFS.Close

@@ -6,6 +6,7 @@ import (
 	stdfs "io/fs"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/metastore"
@@ -156,17 +157,22 @@ func (s *fsNativeDOSAttrStore) Get(path string) (DOSAttr, bool) {
 		s.logging.Log1(log.Debug, "fs-native stat miss", log.Str("path", path))
 		return DOSAttr{}, false
 	}
-	da, ok := fi.Sys().(DOSAttrInfo)
-	if !ok {
+	sys := fi.Sys()
+	var bits uint16
+	if da, ok := sys.(DOSAttrInfo); ok {
+		bits = da.DOSAttrs() & DOSStorableMask
+	}
+	var create time.Time
+	if ct, ok := sys.(DOSCreateTimeInfo); ok {
+		create = ct.DOSCreateTime()
+	}
+	if bits == 0 && create.IsZero() {
+		// A plain file with no stored attributes and no known create time: report "nothing
+		// stored" so the reader derives everything from the entry, matching the metastore's
+		// miss semantics.
 		return DOSAttr{}, false
 	}
-	bits := da.DOSAttrs() & DOSStorableMask
-	if bits == 0 {
-		// A plain file with no stored attributes: report "nothing stored" so the reader
-		// derives structural bits from the entry, matching the metastore's miss semantics.
-		return DOSAttr{}, false
-	}
-	return DOSAttr{Attrs: bits}, true
+	return DOSAttr{Attrs: bits, CreateTime: create}, true
 }
 
 func (s *fsNativeDOSAttrStore) Set(path string, attr DOSAttr) error {

@@ -4,6 +4,7 @@ package winfsp
 
 import (
 	iofs "io/fs"
+	"time"
 
 	winfsp "github.com/winfsp/go-winfsp"
 	"github.com/winfsp/go-winfsp/filetime"
@@ -11,6 +12,19 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/core/metastore"
 )
+
+// fatEpochFiletime is the WinFsp FILETIME for the FAT epoch (1980-01-01 UTC), used as the
+// timestamp for a backend that surfaces no real date — a plausible value Explorer renders,
+// versus the ~1754 garbage a zero time.Time would produce through filetime.Timestamp.
+var fatEpochFiletime = filetime.Timestamp(time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC))
+
+// filetimeOr converts t to a WinFsp FILETIME, or returns fallback when t is the zero time.
+func filetimeOr(t time.Time, fallback uint64) uint64 {
+	if t.IsZero() {
+		return fallback
+	}
+	return filetime.Timestamp(t)
+}
 
 // fillFileInfo populates a WinFsp FSP_FSCTL_FILE_INFO for the store path from its
 // io/fs.FileInfo plus the share's stored DOS attributes/dates. It is the single mapping
@@ -43,7 +57,11 @@ func (a *Adapter) fillFileInfo(info *winfsp.FSP_FSCTL_FILE_INFO, storePath strin
 		info.AllocationSize = (info.FileSize + 4095) / 4096 * 4096
 	}
 
-	mtime := filetime.Timestamp(fi.ModTime())
+	// Timestamps. A zero time.Time must NOT be fed to filetime.Timestamp — it maps to a
+	// bogus year (~1754), which Explorer then displays. Fall back to a fixed sane epoch
+	// (the FAT epoch, 1980-01-01) so a backend that does not surface a given time shows a
+	// plausible date rather than garbage.
+	mtime := filetimeOr(fi.ModTime(), fatEpochFiletime)
 	info.LastWriteTime = mtime
 	info.ChangeTime = mtime
 

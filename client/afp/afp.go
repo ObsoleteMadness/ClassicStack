@@ -20,6 +20,7 @@ import (
 	"time"
 
 	aspclient "github.com/ObsoleteMadness/ClassicStack/client/asp"
+	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	proto "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 )
 
@@ -107,10 +108,12 @@ func (f *FS) command(name string, block []byte) ([]byte, error) {
 
 // fileInfo is the fs.FileInfo the adapter returns from parsed AFP params.
 type fileInfo struct {
-	name    string
-	size    int64
-	dir     bool
-	modTime time.Time
+	name       string
+	size       int64
+	dir        bool
+	modTime    time.Time
+	createTime time.Time
+	afpAttrs   uint16 // FPGetFileDirParms Attributes word (AFP AttrInvisible/System/…)
 }
 
 func (fi fileInfo) Name() string { return fi.name }
@@ -123,14 +126,52 @@ func (fi fileInfo) Mode() stdfs.FileMode {
 }
 func (fi fileInfo) ModTime() time.Time { return fi.modTime }
 func (fi fileInfo) IsDir() bool        { return fi.dir }
-func (fi fileInfo) Sys() any           { return nil }
+
+// Sys exposes the file's DOS-equivalent attributes and creation time to a DOS/Windows
+// consumer (the WinFsp mount, via the share's fs-native MetaEngine), mapping the AFP
+// attribute bits — Invisible→Hidden, System→System, WriteInhibit→ReadOnly. Returns nil
+// when nothing maps, so a plain file is not reported as having attributes.
+func (fi fileInfo) Sys() any {
+	dos := afpAttrsToDOS(fi.afpAttrs)
+	if dos == 0 && fi.createTime.IsZero() {
+		return nil
+	}
+	return afpMeta{dos: dos, create: fi.createTime}
+}
+
+// afpMeta adapts AFP-derived metadata to the fs interfaces the fs-native MetaEngine reads
+// (fs.DOSAttrInfo for the attribute bits, fs.DOSCreateTimeInfo for the creation date).
+type afpMeta struct {
+	dos    uint16
+	create time.Time
+}
+
+func (m afpMeta) DOSAttrs() uint16         { return m.dos }
+func (m afpMeta) DOSCreateTime() time.Time { return m.create }
+
+// afpAttrsToDOS maps the AFP file/dir Attributes word to the DOS attribute bits.
+func afpAttrsToDOS(a uint16) uint16 {
+	var d uint16
+	if a&proto.AttrInvisible != 0 {
+		d |= fs.DOSHidden
+	}
+	if a&proto.AttrSystem != 0 {
+		d |= fs.DOSSystem
+	}
+	if a&proto.AttrWriteInhibit != 0 {
+		d |= fs.DOSReadOnly
+	}
+	return d
+}
 
 // dirEntry is the fs.DirEntry the adapter returns from Enumerate.
 type dirEntry struct {
-	name string
-	dir  bool
-	size int64
-	mod  time.Time
+	name     string
+	dir      bool
+	size     int64
+	mod      time.Time
+	create   time.Time
+	afpAttrs uint16
 }
 
 func (d dirEntry) Name() string { return d.name }
@@ -142,5 +183,5 @@ func (d dirEntry) Type() stdfs.FileMode {
 	return 0
 }
 func (d dirEntry) Info() (stdfs.FileInfo, error) {
-	return fileInfo{name: d.name, size: d.size, dir: d.dir, modTime: d.mod}, nil
+	return fileInfo{name: d.name, size: d.size, dir: d.dir, modTime: d.mod, createTime: d.create, afpAttrs: d.afpAttrs}, nil
 }
