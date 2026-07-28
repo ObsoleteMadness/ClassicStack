@@ -9,8 +9,6 @@ package ncp
 // Novell NCP call names (as used by mars_nwe and the Wireshark NCP dissector).
 
 import (
-	"fmt"
-
 	ncpproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ncp"
 )
 
@@ -199,14 +197,14 @@ func fnString(req *ncpproto.RequestHeader) string {
 			if fn == fnConnBindery {
 				sub = sf17Names
 			}
-			return withName(fmt.Sprintf("0x%02X/0x%02X", fn, req.Body[2]), sub[req.Body[2]])
+			return withName(hex8(fn)+"/"+hex8(req.Body[2]), sub[req.Body[2]])
 		}
 	case fnNameSpace:
 		if len(req.Body) >= 1 {
-			return withName(fmt.Sprintf("0x%02X/0x%02X", fn, req.Body[0]), sf57Names[req.Body[0]])
+			return withName(hex8(fn)+"/"+hex8(req.Body[0]), sf57Names[req.Body[0]])
 		}
 	}
-	return withName(fmt.Sprintf("0x%02X", fn), fnNames[fn])
+	return withName(hex8(fn), fnNames[fn])
 }
 
 // withName appends the call name to the hex code when one is known.

@@ -1,7 +1,6 @@
 package ncp
 
 import (
-	"fmt"
 	"sync"
 	"time"
 )
@@ -37,7 +36,7 @@ type endpoint struct {
 // String renders the endpoint in the conventional IPX net.node form
 // (e.g. "00000000.02608c531b97") for the diagnostic logs.
 func (ep endpoint) String() string {
-	return fmt.Sprintf("%x.%x", ep.net, ep.node)
+	return hexBytes(ep.net[:]) + "." + hexBytes(ep.node[:])
 }
 
 // dirHandle is one allocated directory handle: the volume it is bound to and the

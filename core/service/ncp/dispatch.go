@@ -17,7 +17,6 @@ package ncp
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"time"
 
@@ -156,7 +155,7 @@ func (cn *Conn) ServeRequest(req *ncpproto.RequestHeader) (uint8, []byte) {
 		// verb is visible from the log without a capture.
 		cn.svc.logging.Log(log.Debug, "NCP request failed",
 			log.Str("fn", fnString(req)),
-			log.Str("completion", fmt.Sprintf("0x%02X", code)),
+			log.Str("completion", hex8(code)),
 			log.Int("conn", int64(cn.c.number)))
 		return code, nil
 	}

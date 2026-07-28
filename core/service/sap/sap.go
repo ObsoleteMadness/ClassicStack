@@ -24,7 +24,6 @@
 package sap
 
 import (
-	"fmt"
 	"sync"
 	"time"
 
@@ -32,6 +31,28 @@ import (
 	ipxproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx"
 	ncpproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ncp"
 )
+
+// hexAlphabet is the lowercase hex digits used to hand-roll the diagnostic strings
+// below. Core packages may not import fmt: fmt transitively pulls in reflect, which
+// the §1 no-reflection rule (TinyGo + allocation discipline, enforced by
+// core/internal/archtest) forbids in the core ring.
+const hexAlphabet = "0123456789abcdef"
+
+// hexBytes renders a byte slice as lowercase hex with no separators (the "%x" verb).
+func hexBytes(b []byte) string {
+	out := make([]byte, 0, len(b)*2)
+	for _, c := range b {
+		out = append(out, hexAlphabet[c>>4], hexAlphabet[c&0x0F])
+	}
+	return string(out)
+}
+
+// hexServiceType renders a SAP service type as "0xNNNN" with four uppercase hex
+// digits (the "0x%04X" verb the query logs used).
+func hexServiceType(v uint16) string {
+	const up = "0123456789ABCDEF"
+	return "0x" + string([]byte{up[v>>12&0x0F], up[v>>8&0x0F], up[v>>4&0x0F], up[v&0x0F]})
+}
 
 // Name is the component name for the SAP advertiser.
 const Name = "SAP"
@@ -234,12 +255,12 @@ func (a *Advertiser) HandleDatagram(d *ipxproto.Datagram) {
 	default:
 		return // not a query we answer
 	}
-	querier := fmt.Sprintf("%x.%x", d.SrcNet, d.SrcNode)
+	querier := hexBytes(d.SrcNet[:]) + "." + hexBytes(d.SrcNode[:])
 	entries := a.matching(q.ServiceType)
 	if len(entries) == 0 {
 		a.logging.Log(log.Debug, "SAP query ignored (no matching entry)",
 			log.Str("kind", kind),
-			log.Str("service_type", fmt.Sprintf("0x%04X", q.ServiceType)),
+			log.Str("service_type", hexServiceType(q.ServiceType)),
 			log.Str("querier", querier))
 		return
 	}
@@ -251,7 +272,7 @@ func (a *Advertiser) HandleDatagram(d *ipxproto.Datagram) {
 	}
 	a.logging.Log(log.Debug, "SAP query answered",
 		log.Str("kind", kind),
-		log.Str("service_type", fmt.Sprintf("0x%04X", q.ServiceType)),
+		log.Str("service_type", hexServiceType(q.ServiceType)),
 		log.Str("server", entries[0].Name),
 		log.Str("querier", querier))
 	payload := ncpproto.MarshalResponse(op, entries, nil)
