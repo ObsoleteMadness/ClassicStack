@@ -30,6 +30,7 @@ import (
 	"strings"
 
 	"github.com/ObsoleteMadness/ClassicStack/client/trace"
+	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/csconnect"
 
 	// Register the client schemes. Each blank import plugs a scheme into the registry.
 	_ "github.com/ObsoleteMadness/ClassicStack/client/afp"
@@ -52,6 +53,10 @@ func run(args []string) int {
 	// direct-IPX, NBIPX, NBF, NCP, EtherDFS) — one shared verbose toggle on the core/log
 	// library, rendered to stderr.
 	trace.SetVerbose(cfg.Verbose)
+	if cfg.ListIfaces {
+		csconnect.PrintInterfaces(os.Stdout)
+		return 0
+	}
 	if len(rest) == 0 {
 		usage()
 		return 2
@@ -107,10 +112,13 @@ Commands:
 Flags:
   -ifacetype  transport: ltoudp | tashtalk | pcap | tcp (scheme-validated)
   -iface      interface: IPv4 addr (ltoudp), device (pcap), COM3//dev/tty (tashtalk), host (tcp)
+              (pcap: omit to auto-detect the host's primary/default-route NIC)
   -transport  SMB pcap carrier: ipx (default) | nbipx | nbf
+  -frametype  IPX Ethernet framing: ethernet_ii | 802.3 | 802.2 (empty = learn from server)
   -mac        virtual-station MAC for raw-Ethernet SMB carriers (empty = random)
   -fork       host fork container: appledouble | applesingle | macbinary | derez | native | nofork
   -v          verbose: print the client wire-trace (NBP/ATP/ASP) to stderr
+  -list-ifaces  list the capturable pcap NICs (the names -iface accepts) and exit
 
 URI grammar:
   <scheme>://[[user][:pass]@]<server>[,<transport>]/<volume>[/<path>]

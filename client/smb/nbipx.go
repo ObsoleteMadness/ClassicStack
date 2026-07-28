@@ -9,6 +9,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/client/trace"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
+	ipxport "github.com/ObsoleteMadness/ClassicStack/core/port/ipx"
 	ipxproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx"
 	nb "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbios"
 )
@@ -112,9 +113,13 @@ type nbipxTransport struct {
 	calledName  nb.Name // the server's NetBIOS name (\\SERVER<20>), from the URI
 	callingName nb.Name // this client's NetBIOS name
 
+	frameType       ipxport.FrameType // outbound encapsulation (learned unless pinned)
+	frameTypePinned bool
+
 	mu           sync.Mutex
 	serverNode   [6]byte
 	serverNet    [4]byte
+	serverMAC    [6]byte // Ethernet source MAC of the server's frames — the L2 next hop
 	haveServer   bool
 	remoteConnID uint16 // the server's SourceConnID, learned from the accept
 	established  bool
@@ -135,22 +140,33 @@ type nbipxTransport struct {
 	closed   bool
 }
 
-// DialNBIPX builds an SMB-over-NBIPX client transport over the pcap FrameLink fl and
-// establishes the NB-IPX session to serverName (the \\SERVER label from the URI). srcMAC
-// is the virtual station's node (RandomMAC() by default). The first SESSION_INITIALIZE
-// is broadcast; the server's node is learned from the accept. It returns an error if the
-// session is not accepted within the timeout.
+// DialNBIPX builds an SMB-over-NBIPX client transport in the default (learned) frame
+// type. See DialNBIPXFrame to pin a frame type.
 func DialNBIPX(fl link.FrameLink, srcMAC [6]byte, serverName string) (Transport, error) {
+	return DialNBIPXFrame(fl, srcMAC, serverName, ipxport.DefaultFrameType, false)
+}
+
+// DialNBIPXFrame builds an SMB-over-NBIPX client transport over the pcap FrameLink fl and
+// establishes the NB-IPX session to serverName (the \\SERVER label from the URI). srcMAC
+// is the virtual station's node (RandomMAC() by default). frameType is the encapsulation
+// used on the initial broadcast; when pinned is false the transport LEARNS the server's
+// frame type from its first frame (so it reaches a server bound on raw-802.3 / 802.2
+// rather than Ethernet II). The first SESSION_INITIALIZE is broadcast; the server's node
+// is learned from the accept. It returns an error if the session is not accepted within
+// the timeout.
+func DialNBIPXFrame(fl link.FrameLink, srcMAC [6]byte, serverName string, frameType ipxport.FrameType, pinned bool) (Transport, error) {
 	t := &nbipxTransport{
-		fl:          fl,
-		srcMAC:      srcMAC,
-		calledName:  nb.NewName(serverName, nb.NameTypeFileServer),
-		callingName: nb.NewName(nbipxCallingName(srcMAC), nb.NameTypeWorkstation),
-		sendSeq:     1,
-		recvSeq:     0,
-		acceptCh:    make(chan struct{}),
-		respCh:      make(chan []byte, 2),
-		stop:        make(chan struct{}),
+		fl:              fl,
+		srcMAC:          srcMAC,
+		calledName:      nb.NewName(serverName, nb.NameTypeFileServer),
+		callingName:     nb.NewName(nbipxCallingName(srcMAC), nb.NameTypeWorkstation),
+		frameType:       frameType,
+		frameTypePinned: pinned,
+		sendSeq:         1,
+		recvSeq:         0,
+		acceptCh:        make(chan struct{}),
+		respCh:          make(chan []byte, 2),
+		stop:            make(chan struct{}),
 	}
 	go t.readLoop()
 	if err := t.establish(); err != nil {
@@ -314,12 +330,15 @@ func (t *nbipxTransport) sendFrame(header, body []byte) error {
 	payload := append(append([]byte(nil), header...), body...)
 
 	t.mu.Lock()
+	dstMAC := broadcastNode
 	dstNode := broadcastNode
 	dstNet := t.srcNet
 	if t.haveServer {
+		dstMAC = t.serverMAC
 		dstNode = t.serverNode
 		dstNet = t.serverNet
 	}
+	frameType := t.frameType
 	t.mu.Unlock()
 
 	d := &ipxproto.Datagram{
@@ -336,12 +355,7 @@ func (t *nbipxTransport) sendFrame(header, body []byte) error {
 	if err != nil {
 		return err
 	}
-	frame := make([]byte, 0, ethHdrLen+len(ipxBytes))
-	frame = append(frame, dstNode[:]...)
-	frame = append(frame, t.srcMAC[:]...)
-	frame = append(frame, byte(etherTypeIPX>>8), byte(etherTypeIPX&0xFF))
-	frame = append(frame, ipxBytes...)
-	return t.fl.Write(frame)
+	return t.fl.Write(frameType.Encapsulate(dstMAC, t.srcMAC, ipxBytes))
 }
 
 // readLoop reads frames, strips the encapsulation, decodes the NB-IPX session header,
@@ -362,10 +376,12 @@ func (t *nbipxTransport) readLoop() {
 			}
 			return
 		}
-		payload, ok := stripIPXEncapsulation(frame)
+		payload, frameType, ok := ipxport.Strip(frame)
 		if !ok {
 			continue
 		}
+		var srcMAC [6]byte
+		copy(srcMAC[:], frame[6:12]) // Ethernet source = L2 next hop to the server
 		d, err := ipxproto.Decode(payload)
 		if err != nil || d.Type != ipxPEPType || d.DstSock != nbipxSessionSocket {
 			continue
@@ -381,13 +397,15 @@ func (t *nbipxTransport) readLoop() {
 		if hdr.DestConnID != nbipxClientConnID {
 			continue
 		}
-		t.handleInbound(d, hdr)
+		t.handleInbound(d, hdr, srcMAC, frameType)
 	}
 }
 
 // handleInbound processes one inbound DATA frame addressed to our circuit: the
 // session-accept (SYS|CONFIRM), a sequenced data fragment, or a zero-data SYS control.
-func (t *nbipxTransport) handleInbound(d *ipxproto.Datagram, hdr *nb.NBIPXSessionHeader) {
+// srcMAC/frameType are the frame's Ethernet source (L2 next hop) and encapsulation,
+// learned alongside the server's IPX address on the first frame.
+func (t *nbipxTransport) handleInbound(d *ipxproto.Datagram, hdr *nb.NBIPXSessionHeader, srcMAC [6]byte, frameType ipxport.FrameType) {
 	sys := hdr.ConnCtrlFlag&nb.NBIPXConnFlagSYS != 0
 	confirm := hdr.ConnCtrlFlag&nb.NBIPXConnFlagCONFIRM != 0
 	eom := hdr.ConnCtrlFlag&nb.NBIPXConnFlagEOM != 0
@@ -398,6 +416,10 @@ func (t *nbipxTransport) handleInbound(d *ipxproto.Datagram, hdr *nb.NBIPXSessio
 	if !t.established && sys && confirm {
 		t.serverNode = d.SrcNode
 		t.serverNet = d.SrcNet
+		t.serverMAC = srcMAC
+		if !t.frameTypePinned {
+			t.frameType = frameType
+		}
 		t.haveServer = true
 		t.remoteConnID = hdr.SourceConnID
 		t.established = true
@@ -410,6 +432,10 @@ func (t *nbipxTransport) handleInbound(d *ipxproto.Datagram, hdr *nb.NBIPXSessio
 		// Any inbound on our circuit also fixes the server address (defensive).
 		t.serverNode = d.SrcNode
 		t.serverNet = d.SrcNet
+		t.serverMAC = srcMAC
+		if !t.frameTypePinned {
+			t.frameType = frameType
+		}
 		t.haveServer = true
 	}
 

@@ -8,11 +8,13 @@
 // FSP_FSCTL_FILE_INFO from a ForkFS's DOS attributes and dates rather than a bare
 // os.FileInfo.
 //
-// Resource forks are NOT surfaced through a mount-specific stream convention: the fork
-// backend is chosen once at client.Connect (the -fork flag → appledouble / applesingle /
-// derez / passthrough / …), and the mount reflects whatever namespace that backend
-// produces (e.g. AppleDouble "._name" sidecars appear as ordinary files). go-winfsp does
-// not expose NTFS alternate-data-stream enumeration or EA get/set, so those are not mapped.
+// Resource forks are surfaced through the fork backend chosen at client.Connect
+// (-fork). On a native-fork protocol (AFP) a sidecar backend (derez / appledouble)
+// PROJECTS those forks into the mount namespace as ordinary sidecar files
+// (.rdump/.idump, ._name, …) so Windows tools can read them — the inverse of the
+// server-hosting case, where the same adapters consume sidecars from a local disk.
+// go-winfsp does not expose NTFS alternate-data-stream enumeration or EA get/set, so
+// those are not mapped as streams.
 //
 // Ring: CLIENT. Windows-only; the non-Windows build is a stub returning ErrUnsupported.
 package winfsp

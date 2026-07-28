@@ -17,6 +17,7 @@ type openFile struct {
 	path       string // '/'-separated store path ("" = root)
 	isDir      bool
 	f          fs.File // nil for directories
+	flag       int     // os.O_* the data fork was opened with (for a post-rename reopen)
 	dirBuf     winfsp.DirBuffer
 	dirBufUsed bool // true once WinFsp took the buffer via GetOrNewDirBuffer
 }

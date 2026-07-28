@@ -55,8 +55,13 @@ func (f *FS) ReadDir(dir string) ([]stdfs.DirEntry, error) {
 	}
 	out = appendFindEntries(out, res.Entries)
 
+	// The search id is assigned by FIND_FIRST2 and identifies the server-side search for
+	// the whole paging run; FIND_NEXT2 responses do NOT carry it (their param block is
+	// SearchCount/EndOfSearch only), so it must be held from the first reply rather than
+	// re-read from each page. (Re-reading res.SID gave 0 on the second FIND_NEXT2, which a
+	// real Win98 rejected with ERRDOS/ERRbadfid — every listing over two pages failed.)
+	sid := res.SID
 	for !res.EndOfSearch {
-		sid := res.SID
 		resp, err := f.sess.send(func(b *proto.Builder) []byte {
 			return b.BuildFindNext2(sid, 256)
 		})
@@ -71,6 +76,14 @@ func (f *FS) ReadDir(dir string) ([]stdfs.DirEntry, error) {
 			return nil, translateErr(err)
 		}
 		out = appendFindEntries(out, res.Entries)
+		// A page that returns no entries is end-of-search even when the server did not set
+		// the EndOfSearch flag: a real Win98 answers the FIND_NEXT2 that runs off the end
+		// with SearchCount=0, DataCount=0, EndOfSearch=0 — relying only on the flag looped
+		// FIND_NEXT2 forever (hundreds of thousands of empty round trips). Stop on either
+		// signal.
+		if len(res.Entries) == 0 {
+			break
+		}
 	}
 	return out, nil
 }
@@ -151,11 +164,22 @@ func (f *FS) queryBasicInfo(p string) (proto.BasicInfo, error) {
 	return proto.ParseQueryPathInfo(resp)
 }
 
-// DiskUsage is not surfaced over the client's minimal command set; report unknown
-// (0,0), which the fs layer treats as a mounted, non-empty volume. (A TRANS2
-// QUERY_FS_INFORMATION round trip could fill this in later.)
+// DiskUsage reports the share's total and free bytes via SMB_COM_QUERY_INFORMATION_DISK
+// ([MS-CIFS] §2.2.4.24) — the CORE disk-space command every dialect answers (including
+// Win9x File & Print). Without this, WinFsp falls back to a nominal 8 TiB volume.
 func (f *FS) DiskUsage(path string) (total, free uint64, err error) {
-	return 0, 0, nil
+	_ = path
+	resp, err := f.sess.send(func(b *proto.Builder) []byte {
+		return b.BuildQueryInformationDisk()
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	info, err := proto.ParseQueryInformationDisk(resp)
+	if err != nil {
+		return 0, 0, translateErr(err)
+	}
+	return info.Total, info.Free, nil
 }
 
 // CreateDir creates a directory via SMB_COM_CREATE_DIRECTORY.

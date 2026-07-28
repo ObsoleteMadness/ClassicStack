@@ -14,10 +14,14 @@ import (
 // mod date, and Finder info (for type/creator via the ForkEngine).
 
 // statBitmap is the file/dir parameter set the adapter requests for a Stat/Enumerate.
+// FileBitmapRsrcForkLen is included so a sidecar-export mount (-fork derez/appledouble)
+// can synthesise .rdump / ._name entries from the enumerate reply without a per-file
+// FPGetFileDirParms round-trip.
 const (
 	fileStatBitmap = proto.FDBitmapAttributes | proto.FDBitmapLongName |
 		proto.FDBitmapCreateDate | proto.FDBitmapModDate |
-		proto.FDBitmapFinderInfo | proto.FileBitmapDataForkLen
+		proto.FDBitmapFinderInfo | proto.FileBitmapDataForkLen |
+		proto.FileBitmapRsrcForkLen
 	dirStatBitmap = proto.FDBitmapAttributes | proto.FDBitmapLongName |
 		proto.FDBitmapCreateDate | proto.FDBitmapModDate |
 		proto.FDBitmapFinderInfo
@@ -26,23 +30,35 @@ const (
 var _ fs.FileSystem = (*FS)(nil)
 
 // ReadDir lists a directory via FPEnumerate, paging until the server reports no more
-// entries (kFPObjectNotFound at the next start index).
+// entries (kFPObjectNotFound at the next start index). Results are cached briefly so
+// WinFsp's repeated probes do not re-enumerate the same directory over the wire.
 func (f *FS) ReadDir(path string) ([]stdfs.DirEntry, error) {
+	if ents, err, ok := f.cache.getDir(path); ok {
+		return ents, err
+	}
+	ents, err := f.readDirUncached(path)
+	f.cache.putDir(path, ents, err)
+	return ents, err
+}
+
+func (f *FS) readDirUncached(path string) ([]stdfs.DirEntry, error) {
 	var out []stdfs.DirEntry
 	start := uint16(1)
 	for {
-		req := proto.EnumerateRequest{
-			VolID:        f.volID,
-			DirID:        proto.CNIDRoot,
-			FileBitmap:   fileStatBitmap,
-			DirBitmap:    dirStatBitmap,
-			ReqCount:     50,
-			StartIndex:   start,
-			MaxReplySize: 4000,
-			PathType:     pathType,
-			Path:         afpWirePath(path),
-		}
-		body, result, err := f.sess.Command(req.Marshal())
+		body, result, err := f.sessCommand("FPEnumerate", path, func(volID uint16) []byte {
+			req := proto.EnumerateRequest{
+				VolID:        volID,
+				DirID:        proto.CNIDRoot,
+				FileBitmap:   fileStatBitmap,
+				DirBitmap:    dirStatBitmap,
+				ReqCount:     50,
+				StartIndex:   start,
+				MaxReplySize: 4000,
+				PathType:     pathType,
+				Path:         afpWirePath(path),
+			}
+			return req.Marshal()
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -61,12 +77,15 @@ func (f *FS) ReadDir(path string) ([]stdfs.DirEntry, error) {
 		}
 		for _, e := range reply.Entries {
 			out = append(out, dirEntry{
-				name:     string(e.LongName),
-				dir:      e.IsDir,
-				size:     int64(e.DataForkLen),
-				mod:      e.ModDate,
-				create:   e.CreateDate,
-				afpAttrs: e.Attributes,
+				name:      afpDecodeName(e.LongName),
+				dir:       e.IsDir,
+				size:      int64(e.DataForkLen),
+				rsrcLen:   int64(e.RsrcForkLen),
+				mod:       e.ModDate,
+				create:    e.CreateDate,
+				afpAttrs:  e.Attributes,
+				finder:    e.FinderInfo,
+				hasFinder: true,
 			})
 		}
 		start += uint16(len(reply.Entries))
@@ -74,8 +93,17 @@ func (f *FS) ReadDir(path string) ([]stdfs.DirEntry, error) {
 	return out, nil
 }
 
-// Stat resolves one path via FPGetFileDirParms.
+// Stat resolves one path via FPGetFileDirParms. Results are cached briefly (see ReadDir).
 func (f *FS) Stat(path string) (stdfs.FileInfo, error) {
+	if fi, err, ok := f.cache.getStat(path); ok {
+		return fi, err
+	}
+	fi, err := f.statUncached(path)
+	f.cache.putStat(path, fi, err)
+	return fi, err
+}
+
+func (f *FS) statUncached(path string) (stdfs.FileInfo, error) {
 	p, err := f.getFileDirParms(path)
 	if err != nil {
 		return nil, err
@@ -83,30 +111,35 @@ func (f *FS) Stat(path string) (stdfs.FileInfo, error) {
 	_, base := splitPath(path)
 	name := base
 	if len(p.Params.LongName) > 0 {
-		name = string(p.Params.LongName)
+		name = afpDecodeName(p.Params.LongName)
 	}
 	return fileInfo{
 		name:       name,
 		size:       int64(p.Params.DataForkLen),
+		rsrcLen:    int64(p.Params.RsrcForkLen),
 		dir:        p.IsDir,
 		modTime:    p.Params.ModDate,
 		createTime: p.Params.CreateDate,
 		afpAttrs:   p.Params.Attributes,
+		finder:     p.Params.FinderInfo,
+		hasFinder:  true,
 	}, nil
 }
 
 // getFileDirParms runs FPGetFileDirParms for a path and returns the parsed reply,
 // mapping object-not-found to fs.ErrNotExist.
 func (f *FS) getFileDirParms(path string) (proto.GetFileDirParmsReply, error) {
-	req := proto.GetFileDirParmsRequest{
-		VolID:      f.volID,
-		DirID:      proto.CNIDRoot,
-		FileBitmap: fileStatBitmap,
-		DirBitmap:  dirStatBitmap,
-		PathType:   pathType,
-		Path:       afpWirePath(path),
-	}
-	body, result, err := f.sess.Command(req.Marshal())
+	body, result, err := f.sessCommand("FPGetFileDirParms", path, func(volID uint16) []byte {
+		req := proto.GetFileDirParmsRequest{
+			VolID:      volID,
+			DirID:      proto.CNIDRoot,
+			FileBitmap: fileStatBitmap,
+			DirBitmap:  dirStatBitmap,
+			PathType:   pathType,
+			Path:       afpWirePath(path),
+		}
+		return req.Marshal()
+	})
 	if err != nil {
 		return proto.GetFileDirParmsReply{}, err
 	}
@@ -125,11 +158,13 @@ func (f *FS) getFileDirParms(path string) (proto.GetFileDirParmsReply, error) {
 
 // DiskUsage reports the volume's total/free bytes via FPGetVolParms.
 func (f *FS) DiskUsage(path string) (total, free uint64, err error) {
-	req := proto.GetVolParmsRequest{
-		VolID:  f.volID,
-		Bitmap: proto.VolBitmapBytesFree | proto.VolBitmapBytesTotal,
-	}
-	body, e := f.command("FPGetVolParms", req.Marshal())
+	body, e := f.command("FPGetVolParms", "", func(volID uint16) []byte {
+		req := proto.GetVolParmsRequest{
+			VolID:  volID,
+			Bitmap: proto.VolBitmapBytesFree | proto.VolBitmapBytesTotal,
+		}
+		return req.Marshal()
+	})
 	if e != nil {
 		return 0, 0, e
 	}
@@ -142,28 +177,36 @@ func (f *FS) DiskUsage(path string) (total, free uint64, err error) {
 
 // CreateDir creates a directory via FPCreateDir.
 func (f *FS) CreateDir(path string) error {
-	req := proto.CreateDirRequest{
-		VolID:    f.volID,
-		DirID:    proto.CNIDRoot,
-		PathType: pathType,
-		Path:     afpWirePath(path),
+	_, err := f.command("FPCreateDir", path, func(volID uint16) []byte {
+		req := proto.CreateDirRequest{
+			VolID:    volID,
+			DirID:    proto.CNIDRoot,
+			PathType: pathType,
+			Path:     afpWirePath(path),
+		}
+		return req.Marshal()
+	})
+	if err == nil {
+		f.cache.invalidate(path)
 	}
-	_, err := f.command("FPCreateDir", req.Marshal())
 	return err
 }
 
 // CreateFile creates a file via FPCreateFile and returns an open handle to its data
 // fork.
 func (f *FS) CreateFile(path string) (fs.File, error) {
-	req := proto.CreateFileRequest{
-		VolID:    f.volID,
-		DirID:    proto.CNIDRoot,
-		PathType: pathType,
-		Path:     afpWirePath(path),
-	}
-	if _, err := f.command("FPCreateFile", req.Marshal()); err != nil {
+	if _, err := f.command("FPCreateFile", path, func(volID uint16) []byte {
+		req := proto.CreateFileRequest{
+			VolID:    volID,
+			DirID:    proto.CNIDRoot,
+			PathType: pathType,
+			Path:     afpWirePath(path),
+		}
+		return req.Marshal()
+	}); err != nil {
 		return nil, err
 	}
+	f.cache.invalidate(path)
 	return f.OpenFork(path, fs.DataFork, os.O_RDWR)
 }
 
@@ -171,23 +214,31 @@ func (f *FS) CreateFile(path string) (fs.File, error) {
 func (f *FS) OpenFile(path string, flag int) (fs.File, error) {
 	if flag&os.O_CREATE != 0 {
 		// Create-if-missing: try create, ignore an "exists" error.
-		req := proto.CreateFileRequest{VolID: f.volID, DirID: proto.CNIDRoot, PathType: pathType, Path: afpWirePath(path)}
-		if _, err := f.command("FPCreateFile", req.Marshal()); err != nil && !strings.Contains(err.Error(), "kFPObjectExists") {
+		if _, err := f.command("FPCreateFile", path, func(volID uint16) []byte {
+			req := proto.CreateFileRequest{VolID: volID, DirID: proto.CNIDRoot, PathType: pathType, Path: afpWirePath(path)}
+			return req.Marshal()
+		}); err != nil && !strings.Contains(err.Error(), "kFPObjectExists") {
 			return nil, err
 		}
+		f.cache.invalidate(path)
 	}
 	return f.OpenFork(path, fs.DataFork, flag)
 }
 
 // Remove deletes a file or (empty) directory via FPDelete.
 func (f *FS) Remove(path string) error {
-	req := proto.DeleteRequest{
-		VolID:    f.volID,
-		DirID:    proto.CNIDRoot,
-		PathType: pathType,
-		Path:     afpWirePath(path),
+	_, err := f.command("FPDelete", path, func(volID uint16) []byte {
+		req := proto.DeleteRequest{
+			VolID:    volID,
+			DirID:    proto.CNIDRoot,
+			PathType: pathType,
+			Path:     afpWirePath(path),
+		}
+		return req.Marshal()
+	})
+	if err == nil {
+		f.cache.invalidate(path)
 	}
-	_, err := f.command("FPDelete", req.Marshal())
 	return err
 }
 
@@ -196,27 +247,35 @@ func (f *FS) Remove(path string) error {
 func (f *FS) Rename(old, new string) error {
 	oldDir, oldBase := splitPath(old)
 	newDir, newBase := splitPath(new)
+	var err error
 	if oldDir == newDir {
-		req := proto.RenameRequest{
-			VolID:    f.volID,
-			DirID:    proto.CNIDRoot,
-			PathType: pathType,
-			OldName:  afpNamePath(oldDir, oldBase),
-			NewName:  []byte(newBase),
-		}
-		_, err := f.command("FPRename", req.Marshal())
-		return err
+		_, err = f.command("FPRename", old, func(volID uint16) []byte {
+			req := proto.RenameRequest{
+				VolID:    volID,
+				DirID:    proto.CNIDRoot,
+				PathType: pathType,
+				OldName:  afpNamePath(oldDir, oldBase),
+				NewName:  afpEncodeName(newBase),
+			}
+			return req.Marshal()
+		})
+	} else {
+		_, err = f.command("FPMoveAndRename", old, func(volID uint16) []byte {
+			req := proto.MoveAndRenameRequest{
+				VolID:    volID,
+				SrcDirID: proto.CNIDRoot,
+				DstDirID: proto.CNIDRoot,
+				PathType: pathType,
+				SrcPath:  afpWirePath(old),
+				DstPath:  afpWirePath(newDir),
+				NewName:  afpEncodeName(newBase),
+			}
+			return req.Marshal()
+		})
 	}
-	req := proto.MoveAndRenameRequest{
-		VolID:    f.volID,
-		SrcDirID: proto.CNIDRoot,
-		DstDirID: proto.CNIDRoot,
-		PathType: pathType,
-		SrcPath:  afpWirePath(old),
-		DstPath:  afpWirePath(newDir),
-		NewName:  []byte(newBase),
+	if err == nil {
+		f.cache.invalidate(old, new)
 	}
-	_, err := f.command("FPMoveAndRename", req.Marshal())
 	return err
 }
 
@@ -247,9 +306,17 @@ func (f *FS) Capabilities() fs.Capabilities {
 
 // Close ends the underlying ASP session (fs.FSCloser), so client.Connect's ForkFS.Close
 // tears the whole AFP session down; onClose (set by the factory) then closes the DDP
-// endpoint/transport.
+// endpoint/transport. Sets closed so a concurrent command does not reconnect.
 func (f *FS) Close() error {
-	err := f.sess.Close()
+	f.mu.Lock()
+	f.closed = true
+	sess := f.sess
+	f.sess = nil
+	f.mu.Unlock()
+	var err error
+	if sess != nil {
+		err = sess.Close()
+	}
 	if f.onClose != nil {
 		f.onClose()
 	}

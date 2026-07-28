@@ -1,11 +1,13 @@
 package afp
 
 import (
+	"errors"
 	"io"
 	stdfs "io/fs"
 	"os"
 	"time"
 
+	aspclient "github.com/ObsoleteMadness/ClassicStack/client/asp"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	proto "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 )
@@ -38,38 +40,11 @@ func (f *FS) OpenFork(path string, fork fs.ForkType, flag int) (fs.File, error) 
 	if writable {
 		access |= proto.AccessWrite
 	}
-	// FPOpenFork's bitmap requests parameters for the fork being opened — so ask only for
-	// the length bit matching that fork. A strict server (observed: System 7.5 Personal
-	// File Sharing) returns kFPBitmapErr (-5004) when the data-fork open also requests the
-	// resource-fork-length bit (and vice versa).
-	bitmap := uint16(proto.FileBitmapDataForkLen)
-	if fork == fs.ResourceFork {
-		bitmap = proto.FileBitmapRsrcForkLen
-	}
-	req := proto.OpenForkRequest{
-		Resource:   fork == fs.ResourceFork,
-		VolID:      f.volID,
-		DirID:      proto.CNIDRoot,
-		Bitmap:     bitmap,
-		AccessMode: access,
-		PathType:   pathType,
-		Path:       afpWirePath(path),
-	}
-	body, result, err := f.sess.Command(req.Marshal())
+	ref, err := f.openForkRef(path, fork, access)
 	if err != nil {
 		return nil, err
 	}
-	if result == proto.ErrObjectNotFnd {
-		return nil, stdfs.ErrNotExist
-	}
-	if result != proto.NoErr {
-		return nil, afpError("FPOpenFork", result)
-	}
-	reply, ok := proto.ParseOpenForkReply(body)
-	if !ok {
-		return nil, errMalformed("FPOpenFork reply")
-	}
-	ff := &forkFile{fs: f, path: path, fork: fork, forkRef: reply.ForkRefNum, writable: writable}
+	ff := &forkFile{fs: f, path: path, fork: fork, forkRef: ref, writable: writable}
 	// O_TRUNC on a writable open empties the fork first.
 	if writable && flag&os.O_TRUNC != 0 {
 		if err := ff.Truncate(0); err != nil {
@@ -80,20 +55,60 @@ func (f *FS) OpenFork(path string, fork fs.ForkType, flag int) (fs.File, error) 
 	return ff, nil
 }
 
+// openForkRef runs FPOpenFork and returns the fork reference number.
+func (f *FS) openForkRef(path string, fork fs.ForkType, access uint16) (uint16, error) {
+	// FPOpenFork's bitmap requests parameters for the fork being opened — so ask only for
+	// the length bit matching that fork. A strict server (observed: System 7.5 Personal
+	// File Sharing) returns kFPBitmapErr (-5004) when the data-fork open also requests the
+	// resource-fork-length bit (and vice versa).
+	bitmap := uint16(proto.FileBitmapDataForkLen)
+	if fork == fs.ResourceFork {
+		bitmap = proto.FileBitmapRsrcForkLen
+	}
+	body, result, err := f.sessCommand("FPOpenFork", path, func(volID uint16) []byte {
+		req := proto.OpenForkRequest{
+			Resource:   fork == fs.ResourceFork,
+			VolID:      volID,
+			DirID:      proto.CNIDRoot,
+			Bitmap:     bitmap,
+			AccessMode: access,
+			PathType:   pathType,
+			Path:       afpWirePath(path),
+		}
+		return req.Marshal()
+	})
+	if err != nil {
+		return 0, err
+	}
+	if result == proto.ErrObjectNotFnd {
+		return 0, stdfs.ErrNotExist
+	}
+	if result != proto.NoErr {
+		return 0, afpError("FPOpenFork", result)
+	}
+	reply, ok := proto.ParseOpenForkReply(body)
+	if !ok {
+		return 0, errMalformed("FPOpenFork reply")
+	}
+	return reply.ForkRefNum, nil
+}
+
 // ForkLen returns a fork's length via FPGetFileDirParms (data/rsrc fork length bits).
 func (f *FS) ForkLen(path string, fork fs.ForkType) (int64, error) {
 	bitmap := uint16(proto.FileBitmapDataForkLen)
 	if fork == fs.ResourceFork {
 		bitmap = proto.FileBitmapRsrcForkLen
 	}
-	req := proto.GetFileDirParmsRequest{
-		VolID:      f.volID,
-		DirID:      proto.CNIDRoot,
-		FileBitmap: bitmap,
-		PathType:   pathType,
-		Path:       afpWirePath(path),
-	}
-	body, result, err := f.sess.Command(req.Marshal())
+	body, result, err := f.sessCommand("FPGetFileDirParms", path, func(volID uint16) []byte {
+		req := proto.GetFileDirParmsRequest{
+			VolID:      volID,
+			DirID:      proto.CNIDRoot,
+			FileBitmap: bitmap,
+			PathType:   pathType,
+			Path:       afpWirePath(path),
+		}
+		return req.Marshal()
+	})
 	if err != nil {
 		return 0, err
 	}
@@ -115,15 +130,17 @@ func (f *FS) ForkLen(path string, fork fs.ForkType) (int64, error) {
 
 // ReadFinderInfo returns the 32-byte Finder info via FPGetFileDirParms.
 func (f *FS) ReadFinderInfo(path string) (info [32]byte, ok bool, err error) {
-	req := proto.GetFileDirParmsRequest{
-		VolID:      f.volID,
-		DirID:      proto.CNIDRoot,
-		FileBitmap: proto.FDBitmapFinderInfo,
-		DirBitmap:  proto.FDBitmapFinderInfo,
-		PathType:   pathType,
-		Path:       afpWirePath(path),
-	}
-	body, result, err := f.sess.Command(req.Marshal())
+	body, result, err := f.sessCommand("FPGetFileDirParms", path, func(volID uint16) []byte {
+		req := proto.GetFileDirParmsRequest{
+			VolID:      volID,
+			DirID:      proto.CNIDRoot,
+			FileBitmap: proto.FDBitmapFinderInfo,
+			DirBitmap:  proto.FDBitmapFinderInfo,
+			PathType:   pathType,
+			Path:       afpWirePath(path),
+		}
+		return req.Marshal()
+	})
 	if err != nil {
 		return info, false, err
 	}
@@ -139,14 +156,19 @@ func (f *FS) ReadFinderInfo(path string) (info [32]byte, ok bool, err error) {
 
 // WriteFinderInfo writes the 32-byte Finder info via FPSetFileDirParms.
 func (f *FS) WriteFinderInfo(path string, info [32]byte) error {
-	req := proto.SetFinderInfoRequest{
-		VolID:      f.volID,
-		DirID:      proto.CNIDRoot,
-		PathType:   pathType,
-		Path:       afpWirePath(path),
-		FinderInfo: info,
+	_, err := f.command("FPSetFileDirParms", path, func(volID uint16) []byte {
+		req := proto.SetFinderInfoRequest{
+			VolID:      volID,
+			DirID:      proto.CNIDRoot,
+			PathType:   pathType,
+			Path:       afpWirePath(path),
+			FinderInfo: info,
+		}
+		return req.Marshal()
+	})
+	if err == nil {
+		f.cache.invalidate(path)
 	}
-	_, err := f.command("FPSetFileDirParms", req.Marshal())
 	return err
 }
 
@@ -164,22 +186,47 @@ func (f *FS) DeleteMetadata(path string) error { return nil }
 
 // --- forkFile: fs.File over an AFP fork ref ---
 
+// reopen obtains a fresh fork ref after the ASP session was re-established (old refs
+// die with the session).
+func (ff *forkFile) reopen() error {
+	access := proto.AccessRead
+	if ff.writable {
+		access |= proto.AccessWrite
+	}
+	ref, err := ff.fs.openForkRef(ff.path, ff.fork, access)
+	if err != nil {
+		return err
+	}
+	ff.forkRef = ref
+	return nil
+}
+
 func (ff *forkFile) ReadAt(p []byte, off int64) (int, error) {
 	if ff.closed {
 		return 0, stdfs.ErrClosed
 	}
 	total := 0
+	retried := false
 	for total < len(p) {
 		want := len(p) - total
 		if want > maxForkIO {
 			want = maxForkIO
 		}
-		req := proto.ReadRequest{
-			ForkRefNum: ff.forkRef,
-			Offset:     uint32(off + int64(total)),
-			ReqCount:   uint32(want),
+		offset := uint32(off + int64(total))
+		body, result, err := ff.fs.sessForkCommand("FPRead", ff.path, func(uint16) []byte {
+			return proto.ReadRequest{
+				ForkRefNum: ff.forkRef,
+				Offset:     offset,
+				ReqCount:   uint32(want),
+			}.Marshal()
+		})
+		if errors.Is(err, aspclient.ErrSessionClosed) && !retried {
+			if rerr := ff.reopen(); rerr != nil {
+				return total, err
+			}
+			retried = true
+			continue
 		}
-		body, result, err := ff.fs.sess.Command(req.Marshal())
 		if err != nil {
 			return total, err
 		}
@@ -207,6 +254,7 @@ func (ff *forkFile) WriteAt(p []byte, off int64) (int, error) {
 		return 0, stdfs.ErrPermission
 	}
 	total := 0
+	retried := false
 	for total < len(p) {
 		want := len(p) - total
 		if want > maxForkIO {
@@ -217,7 +265,14 @@ func (ff *forkFile) WriteAt(p []byte, off int64) (int, error) {
 			Offset:     uint32(off + int64(total)),
 			Data:       p[total : total+want],
 		}
-		_, result, err := ff.fs.sess.Write(w.Header(), w.Data)
+		_, result, err := ff.fs.sessWrite(ff.path, w.Header(), w.Data)
+		if errors.Is(err, aspclient.ErrSessionClosed) && !retried {
+			if rerr := ff.reopen(); rerr != nil {
+				return total, err
+			}
+			retried = true
+			continue
+		}
 		if err != nil {
 			return total, err
 		}
@@ -237,13 +292,30 @@ func (ff *forkFile) Truncate(size int64) error {
 	if ff.fork == fs.ResourceFork {
 		bitmap = proto.FileBitmapRsrcForkLen
 	}
-	req := proto.SetForkParmsRequest{
-		ForkRefNum: ff.forkRef,
-		Bitmap:     bitmap,
-		ForkLen:    uint32(size),
+	retried := false
+	for {
+		_, result, err := ff.fs.sessForkCommand("FPSetForkParms", ff.path, func(uint16) []byte {
+			return proto.SetForkParmsRequest{
+				ForkRefNum: ff.forkRef,
+				Bitmap:     bitmap,
+				ForkLen:    uint32(size),
+			}.Marshal()
+		})
+		if errors.Is(err, aspclient.ErrSessionClosed) && !retried {
+			if rerr := ff.reopen(); rerr != nil {
+				return err
+			}
+			retried = true
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if result != proto.NoErr {
+			return afpError("FPSetForkParms", result)
+		}
+		return nil
 	}
-	_, err := ff.fs.command("FPSetForkParms", req.Marshal())
-	return err
 }
 
 func (ff *forkFile) Stat() (stdfs.FileInfo, error) {
@@ -259,9 +331,7 @@ func (ff *forkFile) Sync() error {
 	if ff.closed {
 		return stdfs.ErrClosed
 	}
-	req := proto.GetForkParmsRequest{ForkRefNum: ff.forkRef, Bitmap: proto.FileBitmapDataForkLen}
-	_ = req // FPFlushFork would be ideal; a GetForkParms is a cheap round-trip that
-	// confirms the fork is still live. The server flushes on close; a no-op Sync is
+	// FPFlushFork would be ideal; the server flushes on close. A no-op Sync is
 	// acceptable for a network fork.
 	return nil
 }
@@ -271,7 +341,19 @@ func (ff *forkFile) Close() error {
 		return nil
 	}
 	ff.closed = true
-	req := proto.CloseForkRequest{ForkRefNum: ff.forkRef}
-	_, err := ff.fs.command("FPCloseFork", req.Marshal())
-	return err
+	// Best-effort: if the session already died, the fork is gone with it. Do not
+	// reconnect just to send CloseFork — that would be wasteful and surprising.
+	_, result, _, err := ff.fs.sessCommandOnce("FPCloseFork", ff.path, func(uint16) []byte {
+		return proto.CloseForkRequest{ForkRefNum: ff.forkRef}.Marshal()
+	})
+	if errors.Is(err, aspclient.ErrSessionClosed) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if result != proto.NoErr {
+		return afpError("FPCloseFork", result)
+	}
+	return nil
 }

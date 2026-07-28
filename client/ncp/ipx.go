@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
+	ipxport "github.com/ObsoleteMadness/ClassicStack/core/port/ipx"
 	ipxproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx"
 )
 
@@ -17,12 +18,21 @@ import (
 // server's core/port/ipx port speaks, over a raw pcap FrameLink.
 //
 // Connection model: the client sends CreateConnection to the IPX broadcast node
-// (all-ones → broadcast MAC on Ethernet), learns the server's real node from the first
-// reply, and addresses every later request to it. NCP correlates a reply to its request
-// by the (sequence, connection-number) pair in the reply header, so the read loop
-// matches an inbound reply against the request in flight before delivering it — a late
-// or duplicated datagram cannot satisfy the wrong Send. The session above serialises
-// Sends, so at most one request is in flight.
+// (all-ones → broadcast MAC on Ethernet), learns the server's real node AND network
+// from the first reply, and addresses every later request to it. NCP correlates a reply
+// to its request by the (sequence, connection-number) pair in the reply header, so the
+// read loop matches an inbound reply against the request in flight before delivering it —
+// a late or duplicated datagram cannot satisfy the wrong Send. The session above
+// serialises Sends, so at most one request is in flight.
+//
+// Frame type: a real NetWare server is frequently bound to raw 802.3 or 802.2 LLC rather
+// than Ethernet II (NetWare 3.x defaulted to raw 802.3, 4.x to 802.2), and each Ethernet
+// frame type is a DISTINCT logical IPX network on the same wire — so an Ethernet-II
+// request never reaches a server bound only on 802.2. The transport therefore LEARNS the
+// server's frame type from the encapsulation of the first frame it receives from the
+// server and frames every later request in that same type (the NETx/VLM behaviour),
+// unless the caller pins one explicitly. The initial broadcast goes out in the pinned or
+// default frame type; a server answering any framing is then matched.
 
 // ncpSocket is the IPX socket the NCP file service listens on (0x0451), matching the
 // server's core/protocol/ncp.NCPSocket.
@@ -30,12 +40,6 @@ var ncpSocket = [2]byte{0x04, 0x51}
 
 // ipxNCPType is the IPX packet type NCP rides (17 = NCP), matching the server transport.
 const ipxNCPType uint8 = 0x11
-
-// etherTypeIPX is the Ethernet II EtherType for IPX (0x8137).
-const etherTypeIPX = 0x8137
-
-// ethHdrLen is the Ethernet II header length (dst6 + src6 + type2).
-const ethHdrLen = 14
 
 // broadcastNode is the IPX broadcast node (all-ones); on Ethernet the IPX node IS the
 // MAC, so a broadcast node yields a broadcast destination MAC (core/router/ipx).
@@ -80,9 +84,20 @@ type ipxTransport struct {
 	srcMAC [6]byte
 	srcNet [4]byte
 
+	// frameType is the Ethernet encapsulation used on OUTBOUND requests. It starts at
+	// the pinned/default type and, unless pinned, is overwritten with the type learned
+	// from the first frame received from the server (frameTypePinned guards that). This
+	// lets the client reach a real NetWare server bound on raw-802.3 / 802.2 rather than
+	// Ethernet II.
+	frameType       ipxport.FrameType
+	frameTypePinned bool
+
 	mu         sync.Mutex
-	serverNode [6]byte // learned from the first reply (broadcast → real node)
-	serverNet  [4]byte
+	serverNode [6]byte // IPX node of the server (from the reply's IPX header)
+	serverNet  [4]byte // IPX network of the server (may be its INTERNAL net, a hop away)
+	serverMAC  [6]byte // Ethernet source MAC of the reply frame — the L2 next hop (the
+	// router's cable MAC when the server is on an internal net), which is where later
+	// unicast requests are addressed at layer 2 even though the IPX DstNode is serverNode.
 	haveServer bool
 
 	// Pending-request correlation. This connectionless transport carries no per-request
@@ -110,17 +125,64 @@ func RandomMAC() [6]byte {
 	return mac
 }
 
-// DialIPX builds an NCP-over-IPX transport over the pcap FrameLink fl. srcMAC is this
-// virtual station's hardware address (the IPX source node): pass RandomMAC() for a
-// synthetic station (the default) or a user-specified MAC to pin it. The first request
-// is broadcast and the server node is learned from its reply. The caller has opened fl
-// with an "ipx" BPF filter.
+// DialIPX builds an NCP-over-IPX transport over the pcap FrameLink fl in the default
+// (learned) frame type. See DialIPXFrame to pin a frame type.
 func DialIPX(fl link.FrameLink, srcMAC [6]byte) Transport {
+	return DialIPXFrame(fl, srcMAC, ipxport.DefaultFrameType, false)
+}
+
+// DialIPXFrame builds an NCP-over-IPX transport over the pcap FrameLink fl. srcMAC is
+// this virtual station's hardware address (the IPX source node): pass RandomMAC() for a
+// synthetic station (the default) or a user-specified MAC to pin it. frameType is the
+// Ethernet encapsulation used on the initial broadcast request; when pinned is false the
+// transport LEARNS the server's frame type from the first frame it receives and switches
+// to it, so it reaches a real NetWare server bound on raw-802.3 / 802.2 rather than
+// Ethernet II. When pinned is true frameType is used for every request and never
+// relearned. The first request is broadcast and the server node + network are learned
+// from its reply. The caller has opened fl with an "ipx" BPF filter.
+func DialIPXFrame(fl link.FrameLink, srcMAC [6]byte, frameType ipxport.FrameType, pinned bool) Transport {
 	t := &ipxTransport{
-		fl:     fl,
-		srcMAC: srcMAC,
-		respCh: make(chan []byte, 4),
-		stop:   make(chan struct{}),
+		fl:              fl,
+		srcMAC:          srcMAC,
+		frameType:       frameType,
+		frameTypePinned: pinned,
+		respCh:          make(chan []byte, 4),
+		stop:            make(chan struct{}),
+	}
+	go t.readLoop()
+	return t
+}
+
+// ServerAddr is a NetWare server's resolved IPX address plus the Ethernet next hop and
+// framing to reach it — what a SAP query yields (see resolve.go). Net/Node is the server's
+// IPX identity (often its INTERNAL network, node 1); MAC is the L2 next hop the SAP reply
+// came from (the server's cable NIC, or a router's, when the service is on an internal
+// net); FrameType is the encapsulation that reply used.
+type ServerAddr struct {
+	Net       [4]byte
+	Node      [6]byte
+	MAC       [6]byte
+	FrameType ipxport.FrameType
+}
+
+// DialIPXResolved builds an NCP-over-IPX transport pre-seeded with a server address
+// resolved out of band (via SAP — resolve.go). Unlike the broadcast-and-learn path, the
+// FIRST CreateConnection is addressed straight to the server's IPX net/node and unicast to
+// the next-hop MAC in the resolved frame type, so it reaches a server whose NCP service
+// lives on an internal network a router hop away (a net-0 broadcast never routes there).
+// When pinned is false the frame type may still be refined from the first reply.
+func DialIPXResolved(fl link.FrameLink, srcMAC [6]byte, srv ServerAddr, pinned bool) Transport {
+	t := &ipxTransport{
+		fl:              fl,
+		srcMAC:          srcMAC,
+		frameType:       srv.FrameType,
+		frameTypePinned: pinned,
+		serverNode:      srv.Node,
+		serverNet:       srv.Net,
+		serverMAC:       srv.MAC,
+		haveServer:      true,
+		respCh:          make(chan []byte, 4),
+		stop:            make(chan struct{}),
 	}
 	go t.readLoop()
 	return t
@@ -136,12 +198,20 @@ func (t *ipxTransport) Send(req []byte) ([]byte, error) {
 	reqConn := uint16(req[ncpConnLow]) | uint16(req[ncpConnHigh])<<8
 
 	t.mu.Lock()
+	// Layer-2 destination (Ethernet) and layer-3 destination (IPX header) are DISTINCT
+	// once the server is learned: the IPX packet is addressed to the server's IPX node
+	// (which may live on its internal network), but the frame is sent to the L2 next
+	// hop — the router's cable MAC we saw the reply come from. Before the server is
+	// learned both are broadcast.
+	dstMAC := broadcastNode
 	dstNode := broadcastNode
 	dstNet := t.srcNet
 	if t.haveServer {
+		dstMAC = t.serverMAC
 		dstNode = t.serverNode
 		dstNet = t.serverNet
 	}
+	frameType := t.frameType
 	if t.closed {
 		t.mu.Unlock()
 		return nil, ErrTransportClosed
@@ -176,7 +246,7 @@ func (t *ipxTransport) Send(req []byte) ([]byte, error) {
 		SrcSock: ncpSocket,
 		Payload: req,
 	}
-	if err := t.writeDatagram(d, dstNode); err != nil {
+	if err := t.writeDatagram(d, dstMAC, frameType); err != nil {
 		return nil, err
 	}
 
@@ -194,24 +264,24 @@ func (t *ipxTransport) Send(req []byte) ([]byte, error) {
 // used by the session to bound Read/Write sizes.
 func (t *ipxTransport) MaxPayload() int { return ipxMaxPayload }
 
-// writeDatagram encapsulates an IPX datagram in an Ethernet II frame to dstMAC and
-// writes it to the link. On Ethernet the destination MAC is the IPX destination node.
-func (t *ipxTransport) writeDatagram(d *ipxproto.Datagram, dstMAC [6]byte) error {
+// writeDatagram encapsulates an IPX datagram in an Ethernet frame of frameType to
+// dstMAC and writes it to the link. The frame type is the pinned/default type or the
+// one learned from the server; the encapsulation itself is done through the same
+// core/port/ipx logic the server uses.
+func (t *ipxTransport) writeDatagram(d *ipxproto.Datagram, dstMAC [6]byte, frameType ipxport.FrameType) error {
 	ipxBytes, err := d.Encode(nil)
 	if err != nil {
 		return err
 	}
-	frame := make([]byte, 0, ethHdrLen+len(ipxBytes))
-	frame = append(frame, dstMAC[:]...)
-	frame = append(frame, t.srcMAC[:]...)
-	frame = append(frame, byte(etherTypeIPX>>8), byte(etherTypeIPX&0xFF))
-	frame = append(frame, ipxBytes...)
-	return t.fl.Write(frame)
+	return t.fl.Write(frameType.Encapsulate(dstMAC, t.srcMAC, ipxBytes))
 }
 
 // readLoop reads frames, strips the Ethernet/IPX encapsulation, and delivers NCP reply
 // datagrams addressed to our node+socket to the pending Send, matched by (sequence,
-// connection). It learns the server node from the first reply.
+// connection). From the first matched reply it learns the server's IPX node+net, the L2
+// next-hop MAC (the reply frame's Ethernet source), and — unless the frame type was
+// pinned — the encapsulation the server speaks, so later requests reach a server bound
+// on raw-802.3 / 802.2 rather than Ethernet II.
 func (t *ipxTransport) readLoop() {
 	for {
 		frame, err := t.fl.Read()
@@ -226,10 +296,14 @@ func (t *ipxTransport) readLoop() {
 			}
 			return // terminal (ErrClosed or other)
 		}
-		payload, ok := stripIPXEncapsulation(frame)
+		payload, frameType, ok := ipxport.Strip(frame)
 		if !ok {
 			continue
 		}
+		// The Ethernet source MAC is the L2 next hop to the server (its own NIC MAC, or a
+		// router's cable MAC when the server sources replies from an internal network).
+		var srcMAC [6]byte
+		copy(srcMAC[:], frame[6:12])
 		d, err := ipxproto.Decode(payload)
 		if err != nil || d.Type != ipxNCPType {
 			continue
@@ -252,12 +326,17 @@ func (t *ipxTransport) readLoop() {
 		respConn := uint16(msg[ncpConnLow]) | uint16(msg[ncpConnHigh])<<8
 
 		t.mu.Lock()
-		// Correlate against the request in flight. The CreateConnection reply carries
-		// the newly-assigned connection number (the request was sent with conn 0), so a
-		// reply whose sequence matches while we still have conn 0 outstanding is accepted
-		// regardless of its connection number; every later exchange matches both.
-		match := t.waiting && respSeq == t.waitSeq &&
-			(respConn == t.waitConn || t.waitConn == 0)
+		// Correlate against the request in flight. Ordinarily the reply's (sequence,
+		// connection) must match the outstanding request. The CreateConnection exchange is
+		// the exception: the request goes out with connection 0, and a real NetWare server
+		// answers it from its internal address with the newly-assigned connection number AND
+		// a sequence of its own (observed: our request seq 1, NW 4.1's reply seq 0). So while
+		// we are still pre-connection (waitConn == 0) — i.e. the create exchange — accept the
+		// reply on the strength of it being the only request in flight, regardless of its
+		// sequence or connection number. Every later exchange matches both strictly.
+		preConnection := t.waitConn == 0
+		match := t.waiting && (preConnection ||
+			(respSeq == t.waitSeq && respConn == t.waitConn))
 		if !match {
 			t.mu.Unlock()
 			continue
@@ -265,7 +344,12 @@ func (t *ipxTransport) readLoop() {
 		if !t.haveServer {
 			t.serverNode = d.SrcNode
 			t.serverNet = d.SrcNet
+			t.serverMAC = srcMAC
 			t.haveServer = true
+			// Learn the server's frame type from its reply unless the caller pinned one.
+			if !t.frameTypePinned {
+				t.frameType = frameType
+			}
 		}
 		t.mu.Unlock()
 
@@ -279,33 +363,8 @@ func (t *ipxTransport) readLoop() {
 	}
 }
 
-// stripIPXEncapsulation returns the IPX datagram bytes from an Ethernet frame,
-// accepting Ethernet II (0x8137), raw 802.3 (0xFFFF magic), and 802.2 LLC
-// (DSAP=SSAP=0xE0) — the same three framings core/port/ipx accepts, so the client reads
-// whatever encapsulation the server sends. The bool is false when the frame is not a
-// recognised IPX encapsulation.
-func stripIPXEncapsulation(frame []byte) ([]byte, bool) {
-	if len(frame) < ethHdrLen {
-		return nil, false
-	}
-	etherType := uint16(frame[12])<<8 | uint16(frame[13])
-	switch {
-	case etherType == etherTypeIPX:
-		return frame[ethHdrLen:], true
-	case etherType <= 0x05DC: // 802.3 length-typed
-		if len(frame) < ethHdrLen+3 {
-			return nil, false
-		}
-		body := frame[ethHdrLen:]
-		if body[0] == 0xFF && body[1] == 0xFF {
-			return body, true // raw 802.3 IPX (no checksum → 0xFFFF magic)
-		}
-		if body[0] == 0xE0 && body[1] == 0xE0 && body[2] == 0x03 {
-			return body[3:], true // 802.2 LLC UI (DSAP=SSAP=0xE0, control=0x03)
-		}
-	}
-	return nil, false
-}
+// (Frame demux is provided by core/port/ipx.Strip, which additionally reports the
+// detected frame type so the transport can learn the server's encapsulation.)
 
 // Close stops the read loop and closes the link.
 func (t *ipxTransport) Close() error {

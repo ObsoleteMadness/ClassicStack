@@ -176,7 +176,7 @@ func (a *ATP) Request(dst Addr, userData uint32, reqData []byte, xo bool, maxRes
 	}
 
 	retryInterval, maxRetries := a.policy()
-	tracef("ATP request → %s transID=%d userData=0x%08x reqLen=%d xo=%t maxResp=%d srcSock=%d",
+	atpf("ATP request → %s transID=%d userData=0x%08x reqLen=%d xo=%t maxResp=%d srcSock=%d",
 		dst, transID, userData, len(reqData), xo, maxResp, srcSocket)
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -185,7 +185,7 @@ func (a *ATP) Request(dst Addr, userData uint32, reqData []byte, xo bool, maxRes
 			mask = missingMask()
 			drain(ch)
 		}
-		tracef("ATP TReq → %s transID=%d attempt=%d/%d bitmap=0x%02x",
+		atpf("ATP TReq → %s transID=%d attempt=%d/%d bitmap=0x%02x",
 			dst, transID, attempt+1, maxRetries+1, mask)
 		if err := a.sendTReq(dst, srcSocket, transID, mask, userData, reqData, xo); err != nil {
 			return Response{}, err
@@ -231,14 +231,14 @@ func (a *ATP) Request(dst Addr, userData uint32, reqData []byte, xo bool, maxRes
 					if resp.eom {
 						eomSeq = int(resp.seq)
 					}
-					tracef("ATP TResp ← transID=%d seq=%d eom=%t userData=0x%08x len=%d",
+					atpf("ATP TResp ← transID=%d seq=%d eom=%t userData=0x%08x len=%d",
 						transID, resp.seq, resp.eom, resp.userData, len(resp.payload))
 				}
 				if haveAll() {
 					break collect
 				}
 			case <-deadline:
-				tracef("ATP timeout transID=%d attempt=%d/%d (no complete response in %s)",
+				atpf("ATP timeout transID=%d attempt=%d/%d (no complete response in %s)",
 					transID, attempt+1, maxRetries+1, retryInterval)
 				break collect // retry
 			}

@@ -5,6 +5,7 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/client"
 	clientafp "github.com/ObsoleteMadness/ClassicStack/client/afp"
+	clientncp "github.com/ObsoleteMadness/ClassicStack/client/ncp"
 	clientsmb "github.com/ObsoleteMadness/ClassicStack/client/smb"
 	"github.com/ObsoleteMadness/ClassicStack/client/uri"
 )
@@ -53,8 +54,51 @@ func maybeBrowseServer(cfg config, arg string) (bool, int) {
 		}
 		printSMBListing(target, listing)
 		return true, 0
+	case "ncp":
+		listing, err := clientncp.Browse(target, opts)
+		if err != nil {
+			return true, fail(err)
+		}
+		printNCPListing(target, listing)
+		return true, 0
 	}
 	return false, 0
+}
+
+// printNCPListing prints the server label and one line per mounted volume, each with the
+// full ncp:// URI to mount it (the input URI's server verbatim, the volume as the path).
+func printNCPListing(target uri.Target, l clientncp.ServerListing) {
+	name := l.ServerName
+	if name == "" {
+		name = target.Server
+	}
+	fmt.Printf("Server:  %s\n", name)
+
+	if len(l.Volumes) == 0 {
+		fmt.Println("\nNo volumes available to this login.")
+		return
+	}
+	fmt.Printf("\nVolumes (%d):\n", len(l.Volumes))
+	for _, v := range l.Volumes {
+		fmt.Printf("  %-28s %s\n", v, ncpVolumeURI(target, v))
+	}
+}
+
+// ncpVolumeURI builds the full ncp:// URI to mount a volume: the input URI's credentials
+// and server (with any ,transport tail), and the volume as the path.
+func ncpVolumeURI(target uri.Target, volume string) string {
+	cred := ""
+	switch {
+	case target.User != "" && target.Pass != "":
+		cred = target.User + ":" + target.Pass + "@"
+	case target.User != "":
+		cred = target.User + ":@"
+	}
+	server := target.Server
+	if target.Transport != "" {
+		server += "," + target.Transport
+	}
+	return fmt.Sprintf("ncp://%s%s/%s", cred, server, volume)
 }
 
 // printSMBListing prints the server label and one line per share, with the full smb:// URI

@@ -95,3 +95,60 @@ func TestParseGlobalFlags(t *testing.T) {
 		t.Errorf("rest = %v", rest)
 	}
 }
+
+// TestParseGlobalFlagsListIfaces checks the boolean -list-ifaces flag sets Config.ListIfaces
+// (taking no value, so the next token is NOT consumed) and may sit among the value flags.
+func TestParseGlobalFlagsListIfaces(t *testing.T) {
+	cfg, rest, err := ParseGlobalFlags([]string{"-ifacetype", "pcap", "-list-ifaces"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ListIfaces {
+		t.Error("ListIfaces = false, want true")
+	}
+	if cfg.IfaceType != "pcap" {
+		t.Errorf("IfaceType = %q, want pcap", cfg.IfaceType)
+	}
+	if len(rest) != 0 {
+		t.Errorf("rest = %v, want empty (a boolean flag consumes no value)", rest)
+	}
+}
+
+// TestParseGlobalFlagsCacheMs checks -cache-ms parses signed integers (including -1 for
+// WinFsp infinite FileInfoTimeout) and sets CacheMsSet.
+func TestParseGlobalFlagsCacheMs(t *testing.T) {
+	cfg, rest, err := ParseGlobalFlags([]string{"-cache-ms", "2500", "afp://x/y", "X:"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.CacheMsSet || cfg.CacheMs != 2500 {
+		t.Errorf("CacheMs=%d Set=%v, want 2500/true", cfg.CacheMs, cfg.CacheMsSet)
+	}
+	if len(rest) != 2 {
+		t.Errorf("rest = %v", rest)
+	}
+
+	cfg, _, err = ParseGlobalFlags([]string{"-cache-ms=-1", "afp://x/y"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.CacheMsSet || cfg.CacheMs != -1 {
+		t.Errorf("CacheMs=%d Set=%v, want -1/true", cfg.CacheMs, cfg.CacheMsSet)
+	}
+
+	cfg, _, err = ParseGlobalFlags([]string{"-cache-ms", "0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.CacheMsSet || cfg.CacheMs != 0 {
+		t.Errorf("CacheMs=%d Set=%v, want 0/true", cfg.CacheMs, cfg.CacheMsSet)
+	}
+
+	cfg, _, err = ParseGlobalFlags([]string{"-v"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CacheMsSet {
+		t.Error("CacheMsSet should be false when -cache-ms is omitted")
+	}
+}

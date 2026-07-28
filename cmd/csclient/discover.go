@@ -7,10 +7,13 @@ import (
 	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/client/atalk"
+	"github.com/ObsoleteMadness/ClassicStack/client/browse"
 	etherdfsclient "github.com/ObsoleteMadness/ClassicStack/client/etherdfs"
 	clientlink "github.com/ObsoleteMadness/ClassicStack/client/link"
 	ncpclient "github.com/ObsoleteMadness/ClassicStack/client/ncp"
+	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/csconnect"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
+	ipxport "github.com/ObsoleteMadness/ClassicStack/core/port/ipx"
 	etherdfsproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/etherdfs"
 	ipxproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx"
 	ncpproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ncp"
@@ -34,8 +37,7 @@ func cmdDiscover(cfg config, args []string) int {
 	case "etherdfs":
 		return discoverEtherDFS(cfg)
 	case "smb":
-		fmt.Fprintf(os.Stderr, "csfs: discover %s is not implemented yet\n", scheme)
-		return 1
+		return discoverSMB(cfg)
 	default:
 		fmt.Fprintf(os.Stderr, "csfs: unknown scheme %q\n", scheme)
 		return 2
@@ -49,7 +51,7 @@ func discoverAFP(cfg config) int {
 	if kind == "" {
 		kind = clientlink.KindLToUDP
 	}
-	opener := clientlink.NewOpener(clientlink.Spec{Kind: kind, Name: cfg.Iface})
+	opener := clientlink.NewOpener(clientlink.Spec{Kind: kind, Name: csconnect.ResolveIface(kind, cfg.Iface)})
 	dl, err := opener.DatagramLinkDDP()
 	if err != nil {
 		return fail(fmt.Errorf("open transport: %w", err))
@@ -77,11 +79,104 @@ func discoverAFP(cfg config) int {
 // Query for the File Server type (0x0004) draws a response from each server naming its
 // NetWare name and IPX address.
 const (
-	sapDiscoverEtherType = 0x8137 // Ethernet II EtherType for IPX
-	sapDiscoverEthHdrLen = 14     // dst6 + src6 + type2
-	sapDiscoverWait      = 2 * time.Second
-	sapDiscoverIPXType   = 0x04 // IPX packet type SAP rides (PEP; the server accepts type 0/4)
+	sapDiscoverWait    = 2 * time.Second
+	sapDiscoverIPXType = 0x04 // IPX packet type SAP rides (PEP; the server accepts type 0/4)
 )
+
+// sapQueryFrameTypes are the Ethernet encapsulations the SAP query is broadcast in when
+// the user pins none: all three legacy framings. A real NetWare server is bound to raw
+// 802.3 or 802.2 rather than Ethernet II (each frame type is a distinct logical IPX net),
+// so querying in every framing is what draws a reply regardless of the server's binding —
+// the read path accepts all three via core/port/ipx.Strip either way.
+var sapQueryFrameTypes = []ipxport.FrameType{ipxport.FrameEthernetII, ipxport.FrameRaw8023, ipxport.FrameLLC8022}
+
+// smbBrowseWindow is how long discover smb listens per NetBIOS carrier after soliciting.
+// It matches csnetview's default: long enough for solicited browsers to re-announce
+// without a long wait.
+const smbBrowseWindow = 4 * time.Second
+
+// discoverSMB enumerates SMB servers the way a real "net view" does — via the master
+// browser, not by trusting broadcast self-announcements. In a real workgroup an ordinary
+// host (e.g. a Win98 File & Print station) announces ONLY to the local master browser and
+// does not answer a broadcast AnnouncementRequest, so a solicit-and-sniff sweep almost never
+// sees it; the authoritative list lives in the master and must be asked for. The whole
+// three-source sweep (solicit+sniff, find-master via __MSBROWSE__/<1D>+GetBackupList, then
+// RAP NetServerEnum2 over an SMB session to the master) lives in client/browse, shared with
+// csnetview. Raw-Ethernet only (the browser rides NetBIOS datagrams).
+func discoverSMB(cfg config) int {
+	kind := cfg.IfaceType
+	if kind == "" {
+		kind = clientlink.KindPcap
+	}
+	if !clientlink.IsRawEtherKind(kind) {
+		return fail(fmt.Errorf("discover smb needs a raw-Ethernet interface (the browser rides NetBIOS datagrams); got -ifacetype %q", kind))
+	}
+
+	var mac [6]byte
+	if cfg.MAC != "" {
+		m, err := parseMAC(cfg.MAC)
+		if err != nil {
+			return fail(err)
+		}
+		mac = m
+	}
+
+	servers, results := browse.Enumerate(browse.Options{
+		Device:    csconnect.ResolveIface(kind, cfg.Iface),
+		Kind:      kind,
+		MAC:       mac,
+		FrameType: cfg.FrameType,
+		Window:    smbBrowseWindow,
+		Trace:     func(line string) { fmt.Println(line) },
+	})
+	// Surface per-carrier open failures so a segment reachable over only one carrier still
+	// reports usefully (e.g. no IPX on the wire).
+	for _, r := range results {
+		if r.Err != nil {
+			fmt.Fprintf(os.Stderr, "  (%s carrier unavailable: %v)\n", r.Protocol, r.Err)
+		}
+	}
+
+	if len(servers) == 0 {
+		fmt.Println("no SMB servers found (no announcements, and no master browser answered)")
+		return 0
+	}
+	for _, s := range servers {
+		fmt.Printf("%s\tsmb://%s/  (%s%s)\n", s.Name, s.Name, smbVia(s), smbServerNote(s))
+	}
+	return 0
+}
+
+// smbVia renders how a server was discovered (its carriers + the most authoritative source).
+func smbVia(s browse.Server) string {
+	carriers := make([]string, 0, len(s.Carriers))
+	for _, c := range s.Carriers {
+		carriers = append(carriers, string(c))
+	}
+	via := strings.Join(carriers, "+")
+	switch s.Source {
+	case browse.SourceBrowseList:
+		via += " browse-list"
+	case browse.SourceMaster:
+		via += " master"
+	}
+	return via
+}
+
+// smbServerNote renders the role/comment detail of a discovered server as a " — ..." suffix.
+func smbServerNote(s browse.Server) string {
+	parts := make([]string, 0, 2)
+	if s.Role != "" {
+		parts = append(parts, s.Role)
+	}
+	if s.Comment != "" {
+		parts = append(parts, s.Comment)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " — " + strings.Join(parts, ", ")
+}
 
 // discoverNCP broadcasts a SAP General Query for NetWare file servers over the selected
 // raw NIC (pcap) and prints each responder's server name and IPX address so it can be
@@ -95,7 +190,7 @@ func discoverNCP(cfg config) int {
 	if kind != clientlink.KindPcap {
 		return fail(fmt.Errorf("discover ncp needs a pcap interface (SAP rides IPX); got -ifacetype %q", kind))
 	}
-	opener := clientlink.NewOpener(clientlink.Spec{Kind: kind, Name: cfg.Iface})
+	opener := clientlink.NewOpener(clientlink.Spec{Kind: kind, Name: csconnect.ResolveIface(kind, cfg.Iface)})
 	if cfg.MAC != "" {
 		mac, err := parseMAC(cfg.MAC)
 		if err != nil {
@@ -114,7 +209,9 @@ func discoverNCP(cfg config) int {
 		srcMAC = ncpclient.RandomMAC()
 	}
 
-	// Broadcast the SAP General Query for the File Server type.
+	// Broadcast the SAP General Query for the File Server type. Send it in every frame
+	// type the user did not pin (a real server is often bound only on raw-802.3 / 802.2,
+	// and each frame type is a distinct logical IPX net), or only the pinned one.
 	query := ncpproto.MarshalQuery(ncpproto.SAPGeneralQuery, ncpproto.SAPServerTypeFileServer, nil)
 	d := &ipxproto.Datagram{
 		Type:    sapDiscoverIPXType,
@@ -124,8 +221,18 @@ func discoverNCP(cfg config) int {
 		SrcSock: ncpproto.SAPSocket,
 		Payload: query,
 	}
-	if err := writeSAPFrame(fl, d, srcMAC); err != nil {
-		return fail(fmt.Errorf("send SAP query: %w", err))
+	frameTypes := sapQueryFrameTypes
+	if cfg.FrameType != "" {
+		ft, err := ipxport.ParseFrameType(cfg.FrameType)
+		if err != nil {
+			return fail(err)
+		}
+		frameTypes = []ipxport.FrameType{ft}
+	}
+	for _, ft := range frameTypes {
+		if err := writeSAPFrame(fl, d, srcMAC, ft); err != nil {
+			return fail(fmt.Errorf("send SAP query: %w", err))
+		}
 	}
 
 	// Collect responses for a short window.
@@ -140,7 +247,7 @@ func discoverNCP(cfg config) int {
 			}
 			break
 		}
-		payload, ok := stripSAPFrame(frame)
+		payload, ft, ok := ipxport.Strip(frame)
 		if !ok {
 			continue
 		}
@@ -158,10 +265,12 @@ func discoverNCP(cfg config) int {
 			}
 			seen[e.Name] = true
 			count++
-			fmt.Printf("%s\tncp://%s/SYS  (net %02X%02X%02X%02X node %02X%02X%02X%02X%02X%02X hops %d)\n",
+			// Report the frame type the advert arrived in — it is the framing to pass to
+			// -frametype (or the default learned framing) to connect to this server.
+			fmt.Printf("%s\tncp://%s/SYS  (net %02X%02X%02X%02X node %02X%02X%02X%02X%02X%02X hops %d frametype %s)\n",
 				e.Name, e.Name,
 				e.Network[0], e.Network[1], e.Network[2], e.Network[3],
-				e.Node[0], e.Node[1], e.Node[2], e.Node[3], e.Node[4], e.Node[5], e.Hops)
+				e.Node[0], e.Node[1], e.Node[2], e.Node[3], e.Node[4], e.Node[5], e.Hops, ft)
 		}
 	}
 	if count == 0 {
@@ -170,30 +279,14 @@ func discoverNCP(cfg config) int {
 	return 0
 }
 
-// writeSAPFrame encapsulates an IPX datagram in an Ethernet II frame and writes it.
-func writeSAPFrame(fl link.FrameLink, d *ipxproto.Datagram, srcMAC [6]byte) error {
+// writeSAPFrame encapsulates an IPX datagram in an Ethernet frame of frameType and writes
+// it, through the same core/port/ipx framing the client transport and server port use.
+func writeSAPFrame(fl link.FrameLink, d *ipxproto.Datagram, srcMAC [6]byte, frameType ipxport.FrameType) error {
 	ipxBytes, err := d.Encode(nil)
 	if err != nil {
 		return err
 	}
-	frame := make([]byte, 0, sapDiscoverEthHdrLen+len(ipxBytes))
-	frame = append(frame, d.DstNode[:]...)
-	frame = append(frame, srcMAC[:]...)
-	frame = append(frame, byte(sapDiscoverEtherType>>8), byte(sapDiscoverEtherType&0xFF))
-	frame = append(frame, ipxBytes...)
-	return fl.Write(frame)
-}
-
-// stripSAPFrame returns the IPX datagram bytes from an Ethernet II IPX frame (the
-// 0x8137 EtherType path), or false when the frame is not IPX-over-Ethernet-II.
-func stripSAPFrame(frame []byte) ([]byte, bool) {
-	if len(frame) < sapDiscoverEthHdrLen {
-		return nil, false
-	}
-	if uint16(frame[12])<<8|uint16(frame[13]) != sapDiscoverEtherType {
-		return nil, false
-	}
-	return frame[sapDiscoverEthHdrLen:], true
+	return fl.Write(frameType.Encapsulate(d.DstNode, srcMAC, ipxBytes))
 }
 
 // etherdfsDiscoverWait bounds how long the EtherDFS discovery collects replies.
@@ -213,7 +306,7 @@ func discoverEtherDFS(cfg config) int {
 	if kind != clientlink.KindPcap {
 		return fail(fmt.Errorf("discover etherdfs needs a pcap interface (raw Ethernet); got -ifacetype %q", kind))
 	}
-	opener := clientlink.NewOpener(clientlink.Spec{Kind: kind, Name: cfg.Iface})
+	opener := clientlink.NewOpener(clientlink.Spec{Kind: kind, Name: csconnect.ResolveIface(kind, cfg.Iface)})
 	if cfg.MAC != "" {
 		mac, err := parseMAC(cfg.MAC)
 		if err != nil {

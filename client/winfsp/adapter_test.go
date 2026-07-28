@@ -153,6 +153,86 @@ func TestRenameAndDelete(t *testing.T) {
 	}
 }
 
+// TestRenameKeepsHandleUsable renames a file while its WinFsp handle is still open and then
+// drives handle delegates against it, exactly as WinFsp does after a successful rename. It
+// regresses the STATUS_INTERNAL_ERROR bug where Rename closed the fork and left the handle
+// with a nil fs.File / stale path: GetFileInfo/Read must succeed on the NEW path afterward.
+func TestRenameKeepsHandleUsable(t *testing.T) {
+	a := newTestAdapter(t)
+
+	// Create + write, then re-open read-write and keep that handle for the rename.
+	var cinfo winfsp.FSP_FSCTL_FILE_INFO
+	ctx, err := a.Create(nil, "\\old.txt", 0, windows.GENERIC_WRITE, 0, nil, 0, &cinfo)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	payload := []byte("survives a rename")
+	var winfo winfsp.FSP_FSCTL_FILE_INFO
+	if _, err := a.Write(nil, ctx, payload, 0, false, false, &winfo); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	// Rename with the handle held open (file != 0) — the path WinFsp actually drives.
+	if err := a.Rename(nil, ctx, "\\old.txt", "\\new.txt", false); err != nil {
+		t.Fatalf("Rename with held handle: %v", err)
+	}
+
+	// WinFsp now re-issues handle delegates against the SAME context; they must work and see
+	// the new path, not a nil file.
+	var ginfo winfsp.FSP_FSCTL_FILE_INFO
+	if err := a.GetFileInfo(nil, ctx, &ginfo); err != nil {
+		t.Fatalf("GetFileInfo after rename (regresses STATUS_INTERNAL_ERROR): %v", err)
+	}
+	if ginfo.FileSize != uint64(len(payload)) {
+		t.Errorf("post-rename FileSize=%d, want %d", ginfo.FileSize, len(payload))
+	}
+	buf := make([]byte, len(payload))
+	rn, err := a.Read(nil, ctx, buf, 0)
+	if err != nil {
+		t.Fatalf("Read after rename: %v", err)
+	}
+	if !bytes.Equal(buf[:rn], payload) {
+		t.Errorf("Read after rename got %q, want %q", buf[:rn], payload)
+	}
+	a.Close(nil, ctx)
+
+	if _, err := a.fsys.Stat("old.txt"); err == nil {
+		t.Errorf("old.txt still present after rename")
+	}
+	if _, err := a.fsys.Stat("new.txt"); err != nil {
+		t.Errorf("new.txt missing after rename: %v", err)
+	}
+}
+
+// TestRenameCaseMismatchedSource regresses the real STATUS_INTERNAL_ERROR bug: WinFsp
+// upper-cases the source name it passes to Rename (it derives it from the normalized
+// FileName, not the case-preserved Open path). On a case-sensitive backend (memfs here, a
+// real AFP server on the wire) renaming that upper-cased name fails with "not found". The
+// Adapter must instead use the open handle's authoritative, correctly-cased source path.
+func TestRenameCaseMismatchedSource(t *testing.T) {
+	a := newTestAdapter(t)
+
+	var cinfo winfsp.FSP_FSCTL_FILE_INFO
+	ctx, err := a.Create(nil, "\\mixedCase.txt", 0, windows.GENERIC_WRITE, 0, nil, 0, &cinfo)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// WinFsp hands the source in a different case than the file was created with, but the
+	// held handle (ctx) still knows the real name.
+	if err := a.Rename(nil, ctx, "\\MIXEDCASE.TXT", "\\renamed.txt", false); err != nil {
+		t.Fatalf("Rename with case-mismatched source (regresses kFPObjectNotFound -> STATUS_INTERNAL_ERROR): %v", err)
+	}
+	a.Close(nil, ctx)
+
+	if _, err := a.fsys.Stat("mixedCase.txt"); err == nil {
+		t.Errorf("mixedCase.txt still present after rename")
+	}
+	if _, err := a.fsys.Stat("renamed.txt"); err != nil {
+		t.Errorf("renamed.txt missing after rename: %v", err)
+	}
+}
+
 // TestStreamSuffixRejected confirms a ':stream' path is rejected rather than routed to a
 // fork (the mount surfaces only the fork backend's namespace).
 func TestStreamSuffixRejected(t *testing.T) {

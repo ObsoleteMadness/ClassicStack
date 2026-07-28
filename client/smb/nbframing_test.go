@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
+	ipxport "github.com/ObsoleteMadness/ClassicStack/core/port/ipx"
 	ipxproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx"
 	nbfproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbeui"
 	nb "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbios"
@@ -72,7 +73,7 @@ func TestNBIPXInitFrameShape(t *testing.T) {
 	frame := waitFirstWrite(t, l)
 	l.Close()
 
-	payload, ok := stripIPXEncapsulation(frame)
+	payload, _, ok := ipxport.Strip(frame)
 	if !ok {
 		t.Fatalf("first frame is not IPX-encapsulated: % x", frame[:min(20, len(frame))])
 	}

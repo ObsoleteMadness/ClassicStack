@@ -10,6 +10,7 @@ import (
 	"github.com/winfsp/go-winfsp/filetime"
 	"golang.org/x/sys/windows"
 
+	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	"github.com/ObsoleteMadness/ClassicStack/core/metastore"
 )
 
@@ -38,8 +39,15 @@ func (a *Adapter) fillFileInfo(info *winfsp.FSP_FSCTL_FILE_INFO, storePath strin
 	}
 
 	// Layer on stored DOS attributes (read-only/hidden/system/archive map 1:1 onto the
-	// FILE_ATTRIBUTE_* low byte — see metastore/dosattr.go).
-	dosAttr, hasDOS := a.fsys.Meta().Attrs(storePath)
+	// FILE_ATTRIBUTE_* low byte — see metastore/dosattr.go). When the FileInfo already
+	// carries wire metadata (AFP enumerate, projected sidecar entry) do not call
+	// Meta().Attrs — that would Stat every listing entry and materialise sidecars.
+	dosAttr, hasDOS := wireDOSAttr(fi)
+	if !wireMetaComplete(fi) && !hasDOS {
+		dosAttr, hasDOS = a.fsys.Meta().Attrs(storePath)
+	} else if wireMetaComplete(fi) {
+		hasDOS = dosAttr.Attrs != 0 || !dosAttr.CreateTime.IsZero() || !dosAttr.AccessTime.IsZero()
+	}
 	if hasDOS {
 		attrs |= uint32(dosAttr.Attrs & metastore.DOSStorableMask)
 	}
@@ -84,6 +92,42 @@ func (a *Adapter) fillFileInfo(info *winfsp.FSP_FSCTL_FILE_INFO, storePath strin
 	}
 	info.HardLinks = 0
 	info.EaSize = 0
+}
+
+// wireMetaComplete reports whether fi.Sys() already came from the wire or a
+// synthesised listing entry and must not trigger Meta().Attrs → Stat.
+func wireMetaComplete(fi iofs.FileInfo) bool {
+	if sys := fi.Sys(); sys != nil {
+		if _, ok := sys.(fs.WireMetaComplete); ok {
+			return true
+		}
+		_, ok := sys.(fs.DOSAttrInfo)
+		return ok
+	}
+	return false
+}
+
+// wireDOSAttr reads DOS attribute bits from fi.Sys() when the backend attached them.
+func wireDOSAttr(fi iofs.FileInfo) (metastore.DOSAttr, bool) {
+	sys := fi.Sys()
+	if sys == nil {
+		return metastore.DOSAttr{}, false
+	}
+	var attr metastore.DOSAttr
+	var has bool
+	if da, ok := sys.(fs.DOSAttrInfo); ok {
+		attr.Attrs = da.DOSAttrs() & metastore.DOSStorableMask
+		if attr.Attrs != 0 {
+			has = true
+		}
+	}
+	if ct, ok := sys.(fs.DOSCreateTimeInfo); ok {
+		if t := ct.DOSCreateTime(); !t.IsZero() {
+			attr.CreateTime = t
+			has = true
+		}
+	}
+	return attr, has
 }
 
 // statFileInfo Stats a store path and fills a FILE_INFO, returning the io/fs.FileInfo too.

@@ -8,7 +8,23 @@ import (
 	clientlink "github.com/ObsoleteMadness/ClassicStack/client/link"
 	"github.com/ObsoleteMadness/ClassicStack/client/uri"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
+	ipxport "github.com/ObsoleteMadness/ClassicStack/core/port/ipx"
 )
+
+// parseFrameType maps the opener's optional frame-type override to a core/port/ipx
+// FrameType and a "pinned" flag. Empty yields (default, unpinned) so the IPX-riding
+// transports learn the server's frame type from its first reply; a non-empty value pins
+// it (rejecting an unrecognised spelling).
+func parseFrameType(s string) (ipxport.FrameType, bool, error) {
+	if s == "" {
+		return ipxport.DefaultFrameType, false, nil
+	}
+	ft, err := ipxport.ParseFrameType(s)
+	if err != nil {
+		return ipxport.DefaultFrameType, false, fmt.Errorf("smb: %w", err)
+	}
+	return ft, true, nil
+}
 
 // register.go plugs the SMB client into the client scheme registry. Importing this
 // package registers "smb"; client.Connect then builds an *FS and (because SMB has no
@@ -110,19 +126,25 @@ func openPcapTransport(opener *clientlink.Opener, serverName string) (Transport,
 	if mac == ([6]byte{}) {
 		mac = RandomMAC()
 	}
+	// The IPX-riding carriers (direct-IPX, NBIPX) honour an optional frame-type pin; empty
+	// lets the transport learn the server's encapsulation from its first reply.
+	frameType, framePinned, err := parseFrameType(opener.Spec.FrameType)
+	if err != nil {
+		return nil, err
+	}
 	switch opener.Spec.Carrier {
 	case CarrierDirectIPX, "":
 		fl, err := opener.FrameLink(ipxBPF)
 		if err != nil {
 			return nil, err
 		}
-		return DialIPX(fl, mac), nil
+		return DialIPXFrame(fl, mac, frameType, framePinned), nil
 	case CarrierNBIPX:
 		fl, err := opener.FrameLink(ipxBPF)
 		if err != nil {
 			return nil, err
 		}
-		return DialNBIPX(fl, mac, serverName)
+		return DialNBIPXFrame(fl, mac, serverName, frameType, framePinned)
 	case CarrierNBF:
 		fl, err := opener.FrameLink(nbfBPF)
 		if err != nil {

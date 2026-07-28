@@ -10,6 +10,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/client/trace"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
+	ipxport "github.com/ObsoleteMadness/ClassicStack/core/port/ipx"
 	ipxproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx"
 )
 
@@ -50,13 +51,6 @@ var directSMBSocket = [2]byte{0x05, 0x50}
 // Protocol), matching the server transport and NBIPX session traffic.
 const ipxPEPType uint8 = 0x04
 
-// etherTypeIPX is the Ethernet II EtherType for IPX (0x8137) — the framing MacIPX and
-// this client's server default speak (core/port/ipx).
-const etherTypeIPX = 0x8137
-
-// ethHdrLen is the Ethernet II header length (dst6 + src6 + type2).
-const ethHdrLen = 14
-
 // broadcastNode is the IPX broadcast node (all-ones); on Ethernet the IPX node IS the
 // MAC, so a broadcast node yields a broadcast destination MAC (core/router/ipx).
 var broadcastNode = [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
@@ -94,9 +88,17 @@ type ipxTransport struct {
 	srcMAC [6]byte
 	srcNet [4]byte // client IPX network (0 = unknown; the server replies to our node regardless)
 
+	// frameType is the Ethernet encapsulation used on OUTBOUND messages. It starts at the
+	// pinned/default type and, unless pinned, is overwritten with the type learned from the
+	// first frame received from the server, so the client reaches a real server bound on
+	// raw-802.3 / 802.2 rather than Ethernet II (see the client/ncp transport).
+	frameType       ipxport.FrameType
+	frameTypePinned bool
+
 	mu         sync.Mutex
-	serverNode [6]byte // learned from the first response (broadcast → real node)
-	serverNet  [4]byte
+	serverNode [6]byte // IPX node of the server (from the response's IPX header)
+	serverNet  [4]byte // IPX network of the server (may be an internal net a hop away)
+	serverMAC  [6]byte // Ethernet source MAC of the response frame — the L2 next hop
 	haveServer bool
 	cid        uint16 // server-assigned Connection ID, echoed on later messages
 
@@ -129,17 +131,28 @@ func RandomMAC() [6]byte {
 	return mac
 }
 
-// DialIPX builds a direct-hosted-SMB-over-IPX transport over the pcap FrameLink fl.
+// DialIPX builds a direct-hosted-SMB-over-IPX transport over the pcap FrameLink fl in
+// the default (learned) frame type. See DialIPXFrame to pin a frame type.
+func DialIPX(fl link.FrameLink, srcMAC [6]byte) Transport {
+	return DialIPXFrame(fl, srcMAC, ipxport.DefaultFrameType, false)
+}
+
+// DialIPXFrame builds a direct-hosted-SMB-over-IPX transport over the pcap FrameLink fl.
 // srcMAC is this virtual station's hardware address (the IPX source node): pass
 // RandomMAC() for a synthetic station (the default) or a user-specified MAC to pin the
-// address. The first request is broadcast and the server node is learned from its reply.
-// The caller has opened fl with an "ipx" BPF filter.
-func DialIPX(fl link.FrameLink, srcMAC [6]byte) Transport {
+// address. frameType is the Ethernet encapsulation used on the initial broadcast; when
+// pinned is false the transport LEARNS the server's frame type from its first reply (so
+// it reaches a server bound on raw-802.3 / 802.2 rather than Ethernet II). The first
+// request is broadcast and the server node is learned from its reply. The caller has
+// opened fl with an "ipx" BPF filter.
+func DialIPXFrame(fl link.FrameLink, srcMAC [6]byte, frameType ipxport.FrameType, pinned bool) Transport {
 	t := &ipxTransport{
-		fl:     fl,
-		srcMAC: srcMAC,
-		respCh: make(chan []byte, 4),
-		stop:   make(chan struct{}),
+		fl:              fl,
+		srcMAC:          srcMAC,
+		frameType:       frameType,
+		frameTypePinned: pinned,
+		respCh:          make(chan []byte, 4),
+		stop:            make(chan struct{}),
 	}
 	go t.readLoop()
 	return t
@@ -151,12 +164,18 @@ func DialIPX(fl link.FrameLink, srcMAC [6]byte) Transport {
 // server correlates the circuit.
 func (t *ipxTransport) Send(req []byte) ([]byte, error) {
 	t.mu.Lock()
+	// L2 (Ethernet) and L3 (IPX) destinations differ once learned: the frame goes to the
+	// next-hop MAC we saw the reply from (a router's cable MAC for an internal-net server),
+	// while the IPX header is addressed to the server's IPX node.
+	dstMAC := broadcastNode
 	dstNode := broadcastNode
 	dstNet := t.srcNet
 	if t.haveServer {
+		dstMAC = t.serverMAC
 		dstNode = t.serverNode
 		dstNet = t.serverNet
 	}
+	frameType := t.frameType
 	cid := t.cid
 	closed := t.closed
 	t.mu.Unlock()
@@ -209,7 +228,7 @@ func (t *ipxTransport) Send(req []byte) ([]byte, error) {
 		SrcSock: directSMBSocket,
 		Payload: msg,
 	}
-	if err := t.writeDatagram(d, dstNode); err != nil {
+	if err := t.writeDatagram(d, dstMAC, frameType); err != nil {
 		return nil, err
 	}
 
@@ -227,19 +246,14 @@ func (t *ipxTransport) Send(req []byte) ([]byte, error) {
 // reassembly), used by the session to bound TRANS2 MaxDataCount and READ/WRITE sizes.
 func (t *ipxTransport) MaxResponse() int { return ipxMaxResponse }
 
-// writeDatagram encapsulates an IPX datagram in an Ethernet II frame to dstMAC and
-// writes it to the link. On Ethernet the destination MAC is the IPX destination node.
-func (t *ipxTransport) writeDatagram(d *ipxproto.Datagram, dstMAC [6]byte) error {
+// writeDatagram encapsulates an IPX datagram in an Ethernet frame of frameType to dstMAC
+// and writes it to the link, through the same core/port/ipx framing the server port uses.
+func (t *ipxTransport) writeDatagram(d *ipxproto.Datagram, dstMAC [6]byte, frameType ipxport.FrameType) error {
 	ipxBytes, err := d.Encode(nil)
 	if err != nil {
 		return err
 	}
-	frame := make([]byte, 0, ethHdrLen+len(ipxBytes))
-	frame = append(frame, dstMAC[:]...)
-	frame = append(frame, t.srcMAC[:]...)
-	frame = append(frame, byte(etherTypeIPX>>8), byte(etherTypeIPX&0xFF))
-	frame = append(frame, ipxBytes...)
-	return t.fl.Write(frame)
+	return t.fl.Write(frameType.Encapsulate(dstMAC, t.srcMAC, ipxBytes))
 }
 
 // readLoop reads frames, strips the Ethernet/IPX encapsulation, and delivers SMB
@@ -259,10 +273,12 @@ func (t *ipxTransport) readLoop() {
 			}
 			return // terminal (ErrClosed or other)
 		}
-		payload, ok := stripIPXEncapsulation(frame)
+		payload, frameType, ok := ipxport.Strip(frame)
 		if !ok {
 			continue
 		}
+		var srcMAC [6]byte
+		copy(srcMAC[:], frame[6:12]) // Ethernet source = L2 next hop to the server
 		d, err := ipxproto.Decode(payload)
 		if err != nil || d.Type != ipxPEPType {
 			continue
@@ -294,8 +310,13 @@ func (t *ipxTransport) readLoop() {
 		if !t.haveServer {
 			t.serverNode = d.SrcNode
 			t.serverNet = d.SrcNet
+			t.serverMAC = srcMAC
 			t.haveServer = true
-			ipxtracef("learned server node %s from first reply", macTrace(d.SrcNode))
+			if !t.frameTypePinned {
+				t.frameType = frameType // learn the server's encapsulation
+			}
+			ipxtracef("learned server node %s (mac %s, frametype %s) from first reply",
+				macTrace(d.SrcNode), macTrace(srcMAC), frameType)
 		}
 		// Learn/refresh the CID the server stamped, so later requests echo it.
 		if len(msg) >= smbCIDOffset+2 {
@@ -315,33 +336,9 @@ func (t *ipxTransport) readLoop() {
 	}
 }
 
-// stripIPXEncapsulation returns the IPX datagram bytes from an Ethernet frame,
-// accepting Ethernet II (0x8137), raw 802.3 (0xFFFF magic), and 802.2 LLC
-// (DSAP=SSAP=0xE0) — the same three framings core/port/ipx accepts, so the client reads
-// whatever encapsulation the server sends. The bool is false when the frame is not a
-// recognised IPX encapsulation.
-func stripIPXEncapsulation(frame []byte) ([]byte, bool) {
-	if len(frame) < ethHdrLen {
-		return nil, false
-	}
-	etherType := uint16(frame[12])<<8 | uint16(frame[13])
-	switch {
-	case etherType == etherTypeIPX:
-		return frame[ethHdrLen:], true
-	case etherType <= 0x05DC: // 802.3 length-typed
-		if len(frame) < ethHdrLen+3 {
-			return nil, false
-		}
-		body := frame[ethHdrLen:]
-		if body[0] == 0xFF && body[1] == 0xFF {
-			return body, true // raw 802.3 IPX (no checksum → 0xFFFF magic)
-		}
-		if body[0] == 0xE0 && body[1] == 0xE0 && body[2] == 0x03 {
-			return body[3:], true // 802.2 LLC UI (DSAP=SSAP=0xE0, control=0x03)
-		}
-	}
-	return nil, false
-}
+// (Frame demux is provided by core/port/ipx.Strip, which additionally reports the
+// detected frame type so the transport can learn the server's encapsulation. NBIPX in
+// this package still uses stripIPXEncapsulation from nbipx.go.)
 
 // Close stops the read loop and closes the link.
 func (t *ipxTransport) Close() error {

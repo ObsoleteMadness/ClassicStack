@@ -49,6 +49,25 @@ func openPcapDDP(device string, network uint16, srcNode uint8) (link.DatagramLin
 	return dl, nil
 }
 
+// listPcapDevices enumerates the host's libpcap/Npcap devices, mapping the adapter's
+// DeviceInfo to the client-ring Interface type. It reuses the SAME adapter/link/pcap
+// enumeration the servers' NIC picker uses, so the device names are identical.
+func listPcapDevices() ([]Interface, error) {
+	devs, err := pcap.ListDevices()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Interface, 0, len(devs))
+	for _, d := range devs {
+		out = append(out, Interface{
+			Name:        d.Name,
+			Description: d.Description,
+			Addresses:   append([]string(nil), d.Addresses...),
+		})
+	}
+	return out, nil
+}
+
 // interfaceMAC resolves the named interface's hardware address, or nil if it cannot
 // be resolved (the EtherTalk framer then stamps a zero source MAC).
 func interfaceMAC(name string) []byte {

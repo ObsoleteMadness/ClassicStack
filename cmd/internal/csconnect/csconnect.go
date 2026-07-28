@@ -1,15 +1,19 @@
 // Package csconnect is the shared transport/URI plumbing for the ClassicStack file
 // clients. It resolves the leading global flags (-ifacetype/-iface/-fork/-mac/-transport/
-// -v), builds a client/link.Opener validated against a URI scheme's declared transports,
-// and opens a target as an fs.ForkFS via the client SDK. Both cmd/csfs (the CLI) and
-// cmd/csmount (the WinFsp mount) drive it, so the scheme×ifacetype matrix and the fork-
-// backend selection have a single source of truth.
+// -cache-ms/-v), builds a client/link.Opener validated against a URI scheme's declared
+// transports, and opens a target as an fs.ForkFS via the client SDK. Both cmd/csfs (the
+// CLI) and cmd/csmount (the WinFsp mount) drive it, so the scheme×ifacetype matrix and the
+// fork-backend selection have a single source of truth.
 package csconnect
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
+	"io"
 	"net"
+	"os"
+	"strconv"
 	"strings"
 
 	"github.com/ObsoleteMadness/ClassicStack/client"
@@ -20,12 +24,18 @@ import (
 
 // Config holds the resolved global flags common to the file clients.
 type Config struct {
-	IfaceType string // ltoudp | tashtalk | pcap | tcp
-	Iface     string // interface/device/host
-	Fork      string // fork container: appledouble | applesingle | derez | passthrough | native | nofork
-	MAC       string // virtual-station MAC for raw-Ethernet transports (empty = random)
-	Transport string // pcap sub-carrier for SMB: ipx (default) | nbipx | nbf
-	Verbose   bool   // -v: print client wire-trace (NBP/ATP/ASP) to stderr
+	IfaceType  string // ltoudp | tashtalk | pcap | tcp
+	Iface      string // interface/device/host
+	Fork       string // fork container: appledouble | applesingle | derez | passthrough | native | nofork
+	MAC        string // virtual-station MAC for raw-Ethernet transports (empty = random)
+	Transport  string // pcap sub-carrier for SMB: ipx (default) | nbipx | nbf
+	FrameType  string // IPX Ethernet encapsulation: ethernet_ii | 802.3 | 802.2 (empty = learn)
+	Verbose    bool   // -v: print client wire-trace (NBP/ATP/ASP) to stderr
+	ListIfaces bool   // -list-ifaces: print capturable pcap NICs and exit (no target needed)
+	// CacheMs is WinFsp FileInfoTimeout in milliseconds (-cache-ms). Used by csmount;
+	// other clients ignore it. -1 means infinite. CacheMsSet is false until the flag appears.
+	CacheMs    int
+	CacheMsSet bool
 }
 
 // ParseGlobalFlags peels the leading -flag/value pairs off args (a hand-rolled parser
@@ -44,6 +54,13 @@ func ParseGlobalFlags(args []string) (Config, []string, error) {
 		// next token so it may sit anywhere among the flags.
 		if base, _, _ := strings.Cut(name, "="); base == "v" || base == "verbose" {
 			cfg.Verbose = true
+			i++
+			continue
+		}
+		// -list-ifaces is a boolean too: print the capturable pcap NICs and exit, so it
+		// takes no value and may sit anywhere among the flags (and needs no target URI).
+		if base, _, _ := strings.Cut(name, "="); base == "list-ifaces" {
+			cfg.ListIfaces = true
 			i++
 			continue
 		}
@@ -67,12 +84,53 @@ func ParseGlobalFlags(args []string) (Config, []string, error) {
 			cfg.MAC = val
 		case "transport":
 			cfg.Transport = strings.ToLower(val)
+		case "frametype", "framing":
+			cfg.FrameType = strings.ToLower(val)
+		case "cache-ms":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return cfg, nil, fmt.Errorf("-cache-ms: %w", err)
+			}
+			cfg.CacheMs = n
+			cfg.CacheMsSet = true
 		default:
 			return cfg, nil, fmt.Errorf("unknown flag -%s", name)
 		}
 		i++
 	}
 	return cfg, args[i:], nil
+}
+
+// PrintInterfaces writes the host's capturable pcap NICs to w (the shared -list-ifaces
+// output), delegating to client/link so every file client prints the same device names
+// that -iface accepts.
+func PrintInterfaces(w io.Writer) { clientlink.PrintInterfaces(w) }
+
+// ResolveIface returns the interface/device name a transport should open, auto-detecting
+// it when the user gave none. A non-empty configured name is returned unchanged (it always
+// wins). A blank name is auto-detected ONLY for a raw-Ethernet transport (pcap/tap), which
+// opens by NIC device name: it falls back to the host's primary (default-route) NIC so a
+// single-NIC client works out of the box ("Easy mode"). ltoudp (host-wide multicast, no
+// NIC) and tcp (name is a host, not a NIC) never take a NIC device, so a blank name is left
+// as-is for them; tashtalk names a serial device a NIC probe cannot supply, so it too is
+// left to report its own missing-device error. The auto-picked NIC is announced on stderr
+// so it is never a hidden default; detection failure is not fatal — the blank name flows on
+// and the transport reports its own "needs a NIC" error. Shared by the connect and the
+// discover paths so both get the same auto-detection.
+func ResolveIface(kind, configured string) string {
+	if configured != "" || !clientlink.IsRawEtherKind(kind) {
+		return configured
+	}
+	def, err := clientlink.DefaultInterface()
+	if err != nil {
+		return configured
+	}
+	addrs := ""
+	if len(def.Addresses) > 0 {
+		addrs = " [" + strings.Join(def.Addresses, ", ") + "]"
+	}
+	fmt.Fprintf(os.Stderr, "using interface %s%s\n", def.Name, addrs)
+	return def.Name
 }
 
 // OpenerFor builds a client/link.Opener for a target, resolving and VALIDATING the
@@ -110,7 +168,9 @@ func OpenerFor(cfg Config, target uri.Target) (*clientlink.Opener, error) {
 		carrier = target.Transport
 	}
 
-	spec := clientlink.Spec{Kind: kind, Name: cfg.Iface, Carrier: carrier}
+	iface := ResolveIface(kind, cfg.Iface)
+
+	spec := clientlink.Spec{Kind: kind, Name: iface, Carrier: carrier, FrameType: cfg.FrameType}
 	opener := clientlink.NewOpener(spec)
 	if cfg.MAC != "" {
 		mac, err := ParseMAC(cfg.MAC)
@@ -133,6 +193,32 @@ func ParseMAC(s string) ([6]byte, error) {
 	var mac [6]byte
 	copy(mac[:], hw)
 	return mac, nil
+}
+
+// RandomMAC returns a synthetic locally-administered unicast station MAC — the shared
+// convention across the client ring (client/ncp.RandomMAC, client/smb, client/etherdfs,
+// client/netbios) and the raw-Ethernet probe tools. A client/probe is a distinct station
+// on the segment the pcap device bridges, NOT the host itself, so it presents its own node
+// address rather than borrow the host NIC's identity (which would collide, and on Windows
+// cannot even be resolved from an "\Device\NPF_{GUID}" name). The first octet has the
+// locally-administered bit set and the group bit clear; the rest are random.
+func RandomMAC() [6]byte {
+	var mac [6]byte
+	_, _ = rand.Read(mac[:])
+	mac[0] = (mac[0] | 0x02) &^ 0x01 // locally-administered, unicast
+	return mac
+}
+
+// StationMAC resolves the source-node MAC a raw-Ethernet probe should send from: the
+// explicit -mac flag when the user pinned one, else a synthetic locally-administered MAC
+// (RandomMAC). It is the single source of truth for the "-mac (default: random
+// locally-administered)" flag shared by csipxping / csncpinfo / csnetsend, so a probe
+// never borrows the host NIC's identity by default.
+func StationMAC(macFlag string) ([6]byte, error) {
+	if macFlag == "" {
+		return RandomMAC(), nil
+	}
+	return ParseMAC(macFlag)
 }
 
 // isLinkKind reports whether s names a client/link transport kind (so a URI-embedded

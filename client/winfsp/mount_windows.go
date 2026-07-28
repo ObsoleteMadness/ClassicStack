@@ -12,12 +12,21 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/metastore"
 )
 
+// DefaultFileInfoTimeoutMs is the WinFsp FileInfoTimeout used when Options.FileInfoTimeoutMs
+// is left at its zero value with FileInfoTimeoutSet false (csmount default: 1s).
+const DefaultFileInfoTimeoutMs = 1000
+
 // Options carries the mount-time knobs.
 type Options struct {
 	// VolumeLabel is the label shown for the mounted volume (empty → "ClassicStack").
 	VolumeLabel string
 	// ReadOnly forces a read-only mount even if the ForkFS itself is writable.
 	ReadOnly bool
+	// FileInfoTimeoutMs is WinFsp FSP_FSCTL_VOLUME_PARAMS.FileInfoTimeout in milliseconds.
+	// 0 disables FSD metadata caching; -1 means infinite (also enables data caching).
+	// When FileInfoTimeoutSet is false, MountAt uses DefaultFileInfoTimeoutMs.
+	FileInfoTimeoutMs  int
+	FileInfoTimeoutSet bool
 }
 
 // storableAttrMask is the subset of Windows FILE_ATTRIBUTE_* bits we persist as DOS
@@ -56,7 +65,7 @@ func New(fsys fs.ForkFS, opts Options) *Adapter { return newAdapter(fsys, opts) 
 // honoured via Options.ReadOnly in the Adapter itself (see newAdapter).
 func MountAt(fsys fs.ForkFS, mountpoint string, opts Options) (*Mount, error) {
 	a := newAdapter(fsys, opts)
-	host, err := winfsp.Mount(a, mountpoint, a.mountOptions()...)
+	host, err := winfsp.Mount(a, mountpoint, a.mountOptions(opts)...)
 	if err != nil {
 		return nil, err
 	}

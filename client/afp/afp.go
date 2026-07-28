@@ -2,27 +2,35 @@
 // the core/fs operations onto AFP commands over an ASP session (client/asp) — Enumerate
 // → ReadDir, GetFileDirParms → Stat, OpenFork/Read/Write → the File I/O, and
 // Get/SetFileDirParms → Finder info (type/creator). Because it implements fs.ForkEngine
-// natively, client.Connect selects the "passthrough" fork backend so a remote AFP
-// volume's resource forks come straight off the wire (OpenFork(Resource)), not from
-// synthesised AppleDouble sidecars.
+// natively, client.Connect defaults to the "passthrough" fork backend so OpenFork hits
+// the wire. Selecting a sidecar layout (-fork derez / appledouble) keeps that native
+// OpenFork and PROJECTS .rdump/.idump / ._name into the FileSystem namespace for a
+// Windows mount — the inverse of the server-hosting case.
 //
-// Paths are '/'-separated and volume-root-relative; they are translated to the AFP wire
-// form (a leading NUL then NUL-joined elements, one path-type charset) and resolved by
-// the server against the volume root CNID.
+// Paths are '/'-separated UTF-8 store paths (Windows / csfs); they are transcoded to
+// MacRoman on the wire (PathTypeLongNames) via core/encoding.
 //
 // Ring: CLIENT.
 package afp
 
 import (
+	"errors"
 	stdfs "io/fs"
 	"strings"
 	"sync"
 	"time"
 
 	aspclient "github.com/ObsoleteMadness/ClassicStack/client/asp"
+	"github.com/ObsoleteMadness/ClassicStack/client/atalk"
+	"github.com/ObsoleteMadness/ClassicStack/client/trace"
+	"github.com/ObsoleteMadness/ClassicStack/core/encoding"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	proto "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 )
+
+// afpLog narrates FP* calls when csfs/csmount -v is on (client/trace).
+var afpLog = trace.Logger("afp")
 
 // pathType is the AFP path-type this client uses. Long names (MacRoman, 31 bytes) is the
 // classic-server baseline; UTF-8 is an AFP-3 refinement not needed for a 2.x server.
@@ -39,8 +47,19 @@ type FS struct {
 	// the owning DDP endpoint, so FS.Close tears the whole transport down).
 	onClose func()
 
+	// Reconnect state: when the ASP session dies (server CloseSession / idle timeout)
+	// we OpenSession + Login + OpenVol again on the same endpoint so a long-lived
+	// mount (csmount) survives. Intentionally empty until connect() fills them.
+	ep      *atalk.Endpoint
+	sls     atalk.Addr
+	user    string
+	pass    string
+	srvInfo proto.ServerInfo
+
 	mu       sync.Mutex
 	readOnly bool
+	closed   bool // intentional FS.Close — do not reconnect
+	cache    attrCache
 }
 
 // Open logs into the server over sess and opens the named volume, returning the FS. The
@@ -64,10 +83,14 @@ func Open(sess *aspclient.Session, volume string) (*FS, error) {
 	return &FS{sess: sess, volID: vp.VolID, name: volume}, nil
 }
 
-// afpWirePath translates a '/'-separated, volume-root-relative store path to the AFP
-// wire pathname: a leading NUL, then the elements joined by NUL, each in the path-type
-// charset (MacRoman here; ASCII passes through unchanged). An empty path names the
+// afpWirePath translates a '/'-separated, volume-root-relative UTF-8 store path to the
+// AFP wire pathname: a leading NUL, then the elements joined by NUL, each encoded in
+// the path-type charset (MacRoman for PathTypeLongNames). An empty path names the
 // volume root and is sent as a single NUL (the "this directory" form the server accepts).
+//
+// Store paths are UTF-8 (as produced by afpDecodeName / Windows). Casting UTF-8 bytes
+// straight onto the wire mangled non-ASCII MacRoman names (e.g. ™ U+2122 → three bytes
+// instead of MacRoman 0xAA), so opens of those folders failed after a listing showed �.
 func afpWirePath(p string) []byte {
 	p = strings.Trim(p, "/")
 	if p == "" {
@@ -79,9 +102,34 @@ func afpWirePath(p string) []byte {
 		if i > 0 {
 			out = append(out, 0x00)
 		}
-		out = append(out, []byte(e)...)
+		out = append(out, afpEncodeName(e)...)
 	}
 	return out
+}
+
+// afpEncodeName encodes one UTF-8 path element to MacRoman wire bytes. Unmappable
+// runes are replaced with '?' so a partial name still reaches the server rather than
+// dropping the whole request.
+func afpEncodeName(utf8 string) []byte {
+	b, err := encoding.UTF8ToMacRoman(utf8)
+	if err == nil {
+		return b
+	}
+	// Replace unmappable runes one-by-one so the rest of the name survives.
+	out := make([]byte, 0, len(utf8))
+	for _, r := range utf8 {
+		if c, ok := encoding.RuneToMacRoman(r); ok {
+			out = append(out, c)
+		} else {
+			out = append(out, '?')
+		}
+	}
+	return out
+}
+
+// afpDecodeName decodes MacRoman wire name bytes to a UTF-8 store/Windows name.
+func afpDecodeName(wire []byte) string {
+	return encoding.MacRomanToUTF8(wire)
 }
 
 // splitPath splits a '/'-separated path into its parent and final element.
@@ -94,9 +142,11 @@ func splitPath(p string) (dir, base string) {
 }
 
 // command runs an AFP command block and returns the reply body, mapping a non-zero
-// result to an error.
-func (f *FS) command(name string, block []byte) ([]byte, error) {
-	body, result, err := f.sess.Command(block)
+// result to an error. When -v is on it narrates the FP* name, path, and result.
+// build is called with the current volume ID so a reconnect (new OpenVol) can rebuild
+// the request rather than replaying a stale VolID.
+func (f *FS) command(name, path string, build func(volID uint16) []byte) ([]byte, error) {
+	body, result, err := f.sessCommand(name, path, build)
 	if err != nil {
 		return nil, err
 	}
@@ -106,14 +156,181 @@ func (f *FS) command(name string, block []byte) ([]byte, error) {
 	return body, nil
 }
 
+// sessCommand runs an AFP command and narrates it under -v. Callers that need the raw
+// AFP result code (Enumerate paging, OpenFork not-found) use this instead of command().
+// path is included in the trace to make it easy to correlate wire calls with store paths.
+//
+// If the ASP session has been closed (server CloseSession / idle timeout), it
+// re-establishes the session and retries the command once with a freshly built block.
+// Fork-ref commands (FPRead/FPWrite/…) must use sessForkCommand instead: after a
+// reconnect the old fork ref is dead and the caller has to OpenFork again.
+func (f *FS) sessCommand(name, path string, build func(volID uint16) []byte) (body []byte, result int32, err error) {
+	return f.sessCommandRetry(name, path, build, true)
+}
+
+// sessForkCommand is like sessCommand but does not retry after reconnect — the
+// command's fork ref is invalid on the new session. It still re-establishes so the
+// next OpenFork / path-based call succeeds, and returns ErrSessionClosed so the
+// caller can reopen the fork and retry.
+func (f *FS) sessForkCommand(name, path string, build func(volID uint16) []byte) (body []byte, result int32, err error) {
+	return f.sessCommandRetry(name, path, build, false)
+}
+
+func (f *FS) sessCommandRetry(name, path string, build func(volID uint16) []byte, retry bool) (body []byte, result int32, err error) {
+	body, result, dead, err := f.sessCommandOnce(name, path, build)
+	if !errors.Is(err, aspclient.ErrSessionClosed) {
+		return body, result, err
+	}
+	if rerr := f.reestablish(dead); rerr != nil {
+		if afpLog.Enabled(log.Trace) {
+			afpLog.Log2(log.Trace, "reconnect failed", log.Str("op", name), log.Str("err", rerr.Error()))
+		}
+		return nil, 0, err
+	}
+	if !retry {
+		if afpLog.Enabled(log.Trace) {
+			afpLog.Log1(log.Trace, "reconnected; fork ref stale", log.Str("op", name))
+		}
+		return nil, 0, aspclient.ErrSessionClosed
+	}
+	if afpLog.Enabled(log.Trace) {
+		afpLog.Log1(log.Trace, "reconnected; retrying", log.Str("op", name))
+	}
+	body, result, _, err = f.sessCommandOnce(name, path, build)
+	return body, result, err
+}
+
+func (f *FS) sessCommandOnce(name, path string, build func(volID uint16) []byte) (body []byte, result int32, sess *aspclient.Session, err error) {
+	if afpLog.Enabled(log.Trace) {
+		if path != "" {
+			afpLog.Log2(log.Trace, "command", log.Str("op", name), log.Str("path", path))
+		} else {
+			afpLog.Log1(log.Trace, "command", log.Str("op", name))
+		}
+	}
+	var volID uint16
+	sess, volID = f.session()
+	if sess == nil {
+		return nil, 0, nil, aspclient.ErrSessionClosed
+	}
+	body, result, err = sess.Command(build(volID))
+	if err != nil {
+		if afpLog.Enabled(log.Trace) {
+			afpLog.Log2(log.Trace, "command transport err", log.Str("op", name), log.Str("err", err.Error()))
+		}
+		return body, result, sess, err
+	}
+	if afpLog.Enabled(log.Trace) && result != proto.NoErr {
+		afpLog.Log2(log.Trace, "command afp result", log.Str("op", name), log.Int("result", int64(result)))
+	}
+	return body, result, sess, nil
+}
+
+// sessWrite runs an ASP Write (FPWrite) with the same session-closed reconnect as
+// sessCommand. On ErrSessionClosed it re-establishes but does NOT auto-retry: the
+// fork ref in the header is stale until the caller reopens the fork.
+func (f *FS) sessWrite(path string, header []byte, data []byte) (body []byte, result int32, err error) {
+	if afpLog.Enabled(log.Trace) {
+		afpLog.Log2(log.Trace, "command", log.Str("op", "FPWrite"), log.Str("path", path))
+	}
+	sess, _ := f.session()
+	if sess == nil {
+		return nil, 0, aspclient.ErrSessionClosed
+	}
+	body, result, err = sess.Write(header, data)
+	if !errors.Is(err, aspclient.ErrSessionClosed) {
+		return body, result, err
+	}
+	if rerr := f.reestablish(sess); rerr != nil {
+		return nil, 0, err
+	}
+	return nil, 0, aspclient.ErrSessionClosed // caller must reopen fork and retry
+}
+
+// session returns the current ASP session and volume ID under the FS lock.
+func (f *FS) session() (*aspclient.Session, uint16) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sess, f.volID
+}
+
+// reestablish opens a new ASP session on the existing endpoint, logs in, and re-opens
+// the volume. dead is the session that returned ErrSessionClosed; if another goroutine
+// already replaced it, this is a no-op. Intentional FS.Close sets closed and skips
+// reconnect.
+func (f *FS) reestablish(dead *aspclient.Session) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed {
+		return aspclient.ErrSessionClosed
+	}
+	if f.sess != dead {
+		// Another caller already reconnected (or cleared sess on failure).
+		if f.sess != nil {
+			return nil
+		}
+		if dead != nil {
+			// Prior reconnect failed and left sess nil; fall through to try again.
+		}
+	}
+	if f.ep == nil || f.name == "" {
+		return errors.New("afp: cannot reconnect: no dial state")
+	}
+
+	if dead != nil {
+		_ = dead.Close() // unbind WSS; idempotent if already stopped
+	} else if f.sess != nil {
+		_ = f.sess.Close()
+	}
+	f.sess = nil
+
+	a := atalk.NewATP(f.ep)
+	sess, err := aspclient.Open(f.ep, a, f.sls)
+	if err != nil {
+		return err
+	}
+	if err := LoginNegotiated(sess, f.user, f.pass, f.srvInfo); err != nil {
+		_ = sess.Close()
+		return err
+	}
+	req := proto.OpenVolRequest{
+		Bitmap:  proto.VolBitmapID | proto.VolBitmapSignature | proto.VolBitmapAttributes,
+		VolName: f.name,
+	}
+	body, result, err := sess.Command(req.Marshal())
+	if err != nil {
+		_ = sess.Close()
+		return err
+	}
+	if result != proto.NoErr {
+		_ = sess.Close()
+		return afpError("FPOpenVol", result)
+	}
+	vp, ok := proto.ParseVolParams(body)
+	if !ok {
+		_ = sess.Close()
+		return errMalformed("FPOpenVol reply")
+	}
+	f.sess = sess
+	f.volID = vp.VolID
+	f.cache.invalidateAll()
+	if afpLog.Enabled(log.Trace) {
+		afpLog.Log1(log.Trace, "session re-established", log.Str("vol", f.name))
+	}
+	return nil
+}
+
 // fileInfo is the fs.FileInfo the adapter returns from parsed AFP params.
 type fileInfo struct {
 	name       string
 	size       int64
+	rsrcLen    int64 // resource-fork length when the bitmap requested it
 	dir        bool
 	modTime    time.Time
 	createTime time.Time
 	afpAttrs   uint16 // FPGetFileDirParms Attributes word (AFP AttrInvisible/System/…)
+	finder     [32]byte
+	hasFinder  bool
 }
 
 func (fi fileInfo) Name() string { return fi.name }
@@ -127,27 +344,35 @@ func (fi fileInfo) Mode() stdfs.FileMode {
 func (fi fileInfo) ModTime() time.Time { return fi.modTime }
 func (fi fileInfo) IsDir() bool        { return fi.dir }
 
-// Sys exposes the file's DOS-equivalent attributes and creation time to a DOS/Windows
-// consumer (the WinFsp mount, via the share's fs-native MetaEngine), mapping the AFP
-// attribute bits — Invisible→Hidden, System→System, WriteInhibit→ReadOnly. Returns nil
-// when nothing maps, so a plain file is not reported as having attributes.
+// Sys exposes AFP-derived metadata to consumers above the FileSystem: DOS attributes
+// (WinFsp MetaEngine), creation time, resource-fork length, and Finder info (the
+// sidecar-export projector uses the last two to decide which .rdump / .idump / ._name
+// entries to synthesise without extra round-trips).
 func (fi fileInfo) Sys() any {
-	dos := afpAttrsToDOS(fi.afpAttrs)
-	if dos == 0 && fi.createTime.IsZero() {
-		return nil
+	return afpMeta{
+		dos:       afpAttrsToDOS(fi.afpAttrs),
+		create:    fi.createTime,
+		rsrcLen:   fi.rsrcLen,
+		finder:    fi.finder,
+		hasFinder: fi.hasFinder,
 	}
-	return afpMeta{dos: dos, create: fi.createTime}
 }
 
-// afpMeta adapts AFP-derived metadata to the fs interfaces the fs-native MetaEngine reads
-// (fs.DOSAttrInfo for the attribute bits, fs.DOSCreateTimeInfo for the creation date).
+// afpMeta adapts AFP-derived metadata to the fs interfaces the MetaEngine and the
+// sidecar-export projector read (DOSAttrInfo, DOSCreateTimeInfo, ResourceLenInfo,
+// FinderInfoBits).
 type afpMeta struct {
-	dos    uint16
-	create time.Time
+	dos       uint16
+	create    time.Time
+	rsrcLen   int64
+	finder    [32]byte
+	hasFinder bool
 }
 
-func (m afpMeta) DOSAttrs() uint16         { return m.dos }
-func (m afpMeta) DOSCreateTime() time.Time { return m.create }
+func (m afpMeta) DOSAttrs() uint16             { return m.dos }
+func (m afpMeta) DOSCreateTime() time.Time     { return m.create }
+func (m afpMeta) ResourceForkLen() int64       { return m.rsrcLen }
+func (m afpMeta) FinderInfo() ([32]byte, bool) { return m.finder, m.hasFinder }
 
 // afpAttrsToDOS maps the AFP file/dir Attributes word to the DOS attribute bits.
 func afpAttrsToDOS(a uint16) uint16 {
@@ -166,12 +391,15 @@ func afpAttrsToDOS(a uint16) uint16 {
 
 // dirEntry is the fs.DirEntry the adapter returns from Enumerate.
 type dirEntry struct {
-	name     string
-	dir      bool
-	size     int64
-	mod      time.Time
-	create   time.Time
-	afpAttrs uint16
+	name      string
+	dir       bool
+	size      int64
+	rsrcLen   int64
+	mod       time.Time
+	create    time.Time
+	afpAttrs  uint16
+	finder    [32]byte
+	hasFinder bool
 }
 
 func (d dirEntry) Name() string { return d.name }
@@ -183,5 +411,9 @@ func (d dirEntry) Type() stdfs.FileMode {
 	return 0
 }
 func (d dirEntry) Info() (stdfs.FileInfo, error) {
-	return fileInfo{name: d.name, size: d.size, dir: d.dir, modTime: d.mod, createTime: d.create, afpAttrs: d.afpAttrs}, nil
+	return fileInfo{
+		name: d.name, size: d.size, rsrcLen: d.rsrcLen, dir: d.dir,
+		modTime: d.mod, createTime: d.create, afpAttrs: d.afpAttrs,
+		finder: d.finder, hasFinder: d.hasFinder,
+	}, nil
 }

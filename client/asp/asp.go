@@ -96,8 +96,9 @@ func Open(ep *atalk.Endpoint, a *atalk.ATP, sls atalk.Addr) (*Session, error) {
 		pending: make(map[uint16][]byte),
 		stop:    make(chan struct{}),
 	}
-	s.wg.Add(1)
+	s.wg.Add(2)
 	go s.serveWSS(wssRaw)
+	go s.tickleServer()
 	return s, nil
 }
 

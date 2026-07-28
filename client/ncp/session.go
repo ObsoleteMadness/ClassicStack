@@ -99,24 +99,8 @@ type DialParams struct {
 // and returns a Session with the volume mounted. Credentials are sent cleartext (empty
 // = guest).
 func Open(tr Transport, p DialParams) (*Session, error) {
-	s := &Session{tr: tr, volume: p.Volume, req: proto.Requester{Task: clientTask}}
-
-	// 1. CreateConnection — the server allocates a service connection and returns its
-	// number, which every later request header carries.
-	ncptracef("CreateConnection")
-	if err := s.createConnection(); err != nil {
-		return nil, err
-	}
-	ncptracef("connection %d assigned", s.conn)
-	// 2. Negotiate Buffer Size — agree the max read/write packet so a reply fits one
-	// datagram. A failure here is non-fatal (older servers may not answer); fall back
-	// to the proposed size.
-	s.negotiateBuffer()
-	ncptracef("NegotiateBuffer → %d bytes", s.rwBuffer)
-	// 3. Login — cleartext (guest when the user is empty).
-	ncptracef("Login user=%q", p.User)
-	if err := s.login(p.User, p.Password); err != nil {
-		s.destroyConnection()
+	s, err := attach(tr, p)
+	if err != nil {
 		return nil, err
 	}
 	// 4. Get Volume Number — resolve the volume name to its number.
@@ -135,6 +119,57 @@ func Open(tr Transport, p DialParams) (*Session, error) {
 	return s, nil
 }
 
+// attach runs the connection + login steps common to Open and a server browse:
+// CreateConnection, Negotiate Buffer Size, Login. It does NOT mount a volume — the caller
+// either resolves+allocates a volume (Open) or enumerates volumes (Browse). On any error
+// the connection is torn down before returning.
+func attach(tr Transport, p DialParams) (*Session, error) {
+	s := &Session{tr: tr, volume: p.Volume, req: proto.Requester{Task: clientTask}}
+
+	// 1. CreateConnection — the server allocates a service connection and returns its
+	// number, which every later request header carries.
+	ncptracef("CreateConnection")
+	if err := s.createConnection(); err != nil {
+		return nil, err
+	}
+	ncptracef("connection %d assigned", s.conn)
+	// 2. Negotiate Buffer Size — agree the max read/write packet so a reply fits one
+	// datagram. A failure here is non-fatal (older servers may not answer); fall back
+	// to the proposed size.
+	s.negotiateBuffer()
+	ncptracef("NegotiateBuffer → %d bytes", s.rwBuffer)
+	// 3. Login — encrypted bindery login (real server) with cleartext fallback; empty
+	// user = GUEST.
+	ncptracef("Login user=%q", p.User)
+	if err := s.login(p.User, p.Password); err != nil {
+		s.destroyConnection()
+		return nil, err
+	}
+	return s, nil
+}
+
+// ListVolumes enumerates the server's mounted volumes by iterating Get Volume Name over
+// the volume-number slots (0..MaxVolumeSlots-1). A slot with a non-OK completion or an
+// empty name is skipped; enumeration stops after the first empty/failed slot that follows
+// at least one found volume is NOT assumed — NetWare leaves gaps, so every slot is probed.
+func (s *Session) ListVolumes() []string {
+	var vols []string
+	for n := 0; n < proto.MaxVolumeSlots; n++ {
+		rep, err := s.command("GetVolumeName", func(r *proto.Requester) []byte {
+			return r.BuildGetVolumeName(uint8(n))
+		})
+		if err != nil || rep == nil {
+			continue // no volume in this slot (server returns an error completion)
+		}
+		name, perr := proto.ParseVolumeName(rep.Body)
+		if perr != nil || name == "" {
+			continue
+		}
+		vols = append(vols, name)
+	}
+	return vols
+}
+
 // createConnection sends TypeCreateConnection and records the assigned connection
 // number on the Requester so every later request carries it.
 func (s *Session) createConnection() error {
@@ -151,6 +186,12 @@ func (s *Session) createConnection() error {
 	}
 	s.conn = rep.Connection
 	s.req.Conn = rep.Connection
+	// A real NetWare server expects the connection's request sequence to restart at 1
+	// after the connection is assigned (CreateConnection is sequence-exempt). Reset now so
+	// the first post-create request is sequence 1; without this it would be sequence 2 and
+	// the server, waiting for 1, drops it and everything after. Our own server ignores the
+	// sequence, so this is safe for both. See Requester.ResetSeq.
+	s.req.ResetSeq()
 	return nil
 }
 
@@ -171,9 +212,90 @@ func (s *Session) negotiateBuffer() {
 	}
 }
 
-// login sends the cleartext Login To File Server. An empty user logs in as guest,
-// which the server always grants.
+// objTypeUser is the NetWare bindery object type for a user (OT_USER = 1).
+const objTypeUser uint16 = 0x0001
+
+// guestUser is the login name used when the URI carries no user: the classic bindery
+// GUEST object a NetWare 3.x server exposes for anonymous access.
+const guestUser = "GUEST"
+
+// login authenticates the connection. It first tries the encrypted bindery login a real
+// NetWare 3.x server requires (Get Login Key → Get Bindery Object ID → Login Encrypted);
+// if the server does not offer a login key (our own server / mars_nwe, which accept the
+// simpler path), it falls back to the cleartext Login To File Server. An empty user logs
+// in as GUEST.
 func (s *Session) login(user, password string) error {
+	name := user
+	if name == "" {
+		name = guestUser
+	}
+
+	// Try to draw a login key. A server that supports encrypted login answers with an
+	// 8-byte key; one that does not (or refuses) makes us fall back to cleartext.
+	if key, ok := s.getLoginKey(); ok {
+		if err := s.loginEncrypted(name, password, key); err != nil {
+			return err
+		}
+		return nil
+	}
+	return s.loginUnencrypted(user, password)
+}
+
+// getLoginKey issues Get Login Key and returns the 8-byte challenge, or ok=false when the
+// server does not support it (any error or a short/again reply → fall back to cleartext).
+func (s *Session) getLoginKey() (key [8]byte, ok bool) {
+	resp, err := s.tr.Send(s.req.BuildGetLoginKey())
+	if err != nil {
+		return key, false
+	}
+	rep, err := proto.ParseReply(resp)
+	if err != nil || !rep.OK() {
+		return key, false
+	}
+	key, err = proto.ParseLoginKey(rep.Body)
+	if err != nil {
+		return key, false
+	}
+	ncptracef("GetLoginKey → encrypted login")
+	return key, true
+}
+
+// loginEncrypted resolves the user's bindery object ID and sends the challenge-response
+// Login Object (Encrypted).
+func (s *Session) loginEncrypted(name, password string, key [8]byte) error {
+	resp, err := s.tr.Send(s.req.BuildGetBinderyObjectID(objTypeUser, name))
+	if err != nil {
+		return fmt.Errorf("ncp: get bindery object id %q: %w", name, err)
+	}
+	rep, err := proto.ParseReply(resp)
+	if err != nil {
+		return fmt.Errorf("ncp: get bindery object id %q: %w", name, err)
+	}
+	if !rep.OK() {
+		return fmt.Errorf("ncp: user %q not found (completion 0x%02X)", name, rep.CompletionCode)
+	}
+	objID, err := proto.ParseBinderyObjectID(rep.Body)
+	if err != nil {
+		return fmt.Errorf("ncp: get bindery object id %q: %w", name, err)
+	}
+
+	resp, err = s.tr.Send(s.req.BuildLoginEncrypted(objTypeUser, name, password, objID, key))
+	if err != nil {
+		return fmt.Errorf("ncp: login: %w", err)
+	}
+	rep, err = proto.ParseReply(resp)
+	if err != nil {
+		return fmt.Errorf("ncp: login: %w", err)
+	}
+	if !rep.OK() {
+		return fmt.Errorf("ncp: login denied for %q (completion 0x%02X)", name, rep.CompletionCode)
+	}
+	return nil
+}
+
+// loginUnencrypted sends the cleartext Login To File Server (the fallback path our own
+// server and mars_nwe accept). An empty user logs in as guest.
+func (s *Session) loginUnencrypted(user, password string) error {
 	resp, err := s.tr.Send(s.req.BuildLogin(user, password))
 	if err != nil {
 		return fmt.Errorf("ncp: login: %w", err)

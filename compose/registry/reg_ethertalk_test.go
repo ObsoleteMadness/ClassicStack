@@ -117,6 +117,59 @@ func TestEtherTalkFactory_InheritsBridgeInterface(t *testing.T) {
 	})
 }
 
+// TestEtherTalkFactory_AutoNIC proves the server "Easy mode" auto-NIC: a NIC port with
+// NO iface of its own AND no namespace default interface (so its effective device is
+// empty) falls back to the injected DefaultDevice — the host's primary NIC — so it comes
+// up LIVE rather than inert. A configured iface still wins (DefaultDevice is a fallback
+// only), and no DefaultDevice keeps the historical inert-but-routed degradation.
+func TestEtherTalkFactory_AutoNIC(t *testing.T) {
+	build := func(t *testing.T, sectionIface string, defaultDevice func() (string, error)) string {
+		t.Helper()
+		var openedIface atomic.Value
+		openedIface.Store("<never-opened>")
+		opener := func(iface, _ string) (link.FrameLink, error) {
+			openedIface.Store(iface)
+			return &idleFrameLink{}, nil
+		}
+		m := config.NewModel()
+		// No [[Interface]] entries → DefaultInterface() is the zero section, so a section
+		// with no iface resolves to an empty device: the auto-NIC precondition.
+		m.Set(&port.Section{SKey: ethertalk.Name, Iface: sectionIface, IsEnabled: true})
+
+		c, ok, err := Build(ethertalk.Name, &BuildContext{Model: m, Opener: opener, DefaultDevice: defaultDevice})
+		if err != nil || !ok || c == nil {
+			t.Fatalf("Build = (%v, %v, %v)", c, ok, err)
+		}
+		ctx := context.Background()
+		if err := c.Start(ctx); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		defer c.Stop(ctx)
+		return openedIface.Load().(string)
+	}
+
+	primary := func() (string, error) { return "\\Device\\NPF_{PRIMARY}", nil }
+
+	t.Run("empty iface falls back to primary NIC", func(t *testing.T) {
+		if got := build(t, "", primary); got != "\\Device\\NPF_{PRIMARY}" {
+			t.Fatalf("opened iface = %q, want the auto-detected primary NIC", got)
+		}
+	})
+	t.Run("configured iface beats auto-detect", func(t *testing.T) {
+		if got := build(t, "eth7", primary); got != "eth7" {
+			t.Fatalf("opened iface = %q, want the configured eth7 (auto-detect must not override)", got)
+		}
+	})
+	t.Run("no resolver leaves the device empty", func(t *testing.T) {
+		// With no DefaultDevice and no configured iface, the effective device stays empty —
+		// the historical behaviour: the opener is invoked with "" (which a real pcap rejects,
+		// giving the inert-but-routed degradation). Auto-detect must add NO new behaviour here.
+		if got := build(t, "", nil); got != "" {
+			t.Fatalf("opened iface = %q, want empty (no auto-detect) when DefaultDevice is nil", got)
+		}
+	})
+}
+
 // TestEtherTalkFactory_NilOpenerInert proves the graceful-degradation contract: a
 // nil Opener (no device backend in this build) still builds an enabled port, but it
 // comes up inert — no opener is ever invoked.

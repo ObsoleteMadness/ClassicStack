@@ -4,6 +4,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/adapter/capture/pcapfile"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/port"
 )
 
@@ -41,6 +42,19 @@ func nicLinkOpener(ctx *BuildContext, sec *port.Section, iface config.InterfaceS
 	// "\Device\NPF_{GUID}" string in iface.Device; on Linux Device is empty and the
 	// friendly Name ("eth0") is itself the pcap device. PcapDevice picks the right one.
 	device := iface.PcapDevice()
+	// "Easy mode" auto-NIC: a NIC port with no interface configured (and no namespace
+	// default) resolves to an empty device. When the cmd edge injected a DefaultDevice
+	// resolver, fall back to the host's primary (default-route) NIC so a single-NIC
+	// server works out of the box. A configured device always wins (this is skipped when
+	// non-empty); a resolver error or no resolver leaves device empty → inert-but-routed,
+	// the same degradation as before. We announce the auto-picked NIC so it is never a
+	// hidden default.
+	if device == "" && ctx.DefaultDevice != nil {
+		if dev, err := ctx.DefaultDevice(); err == nil && dev != "" {
+			device = dev
+			ctx.Logger(sec.InstanceName()).Log1(log.Info, "auto-selected primary NIC", log.Str("device", dev))
+		}
+	}
 	base := func() (link.FrameLink, error) { return open(device, bpf) }
 	return captureOpener(sec, pcapfile.LinkTypeEthernet, base)
 }

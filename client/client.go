@@ -183,6 +183,11 @@ func Connect(ctx context.Context, target uri.Target, opts Options) (fs.ForkFS, e
 	if fork == "" {
 		fork = reg.defaultFork
 	}
+	codec := opts.FilenameCodec
+	if codec == "" && strings.EqualFold(target.Scheme, "afp") {
+		// AFP long names are MacRoman on the wire; store/Windows paths are UTF-8.
+		codec = "macroman-utf8"
+	}
 
 	// The client keeps its CNID/derived-name state in-memory: a client session is
 	// transient, so there is no on-disk metastore to snapshot. Names/attrs the remote
@@ -197,7 +202,7 @@ func Connect(ctx context.Context, target uri.Target, opts Options) (fs.ForkFS, e
 		Name:          target.Volume,
 		ForkBackend:   fork,
 		MetaBackend:   opts.MetaBackend,
-		FilenameCodec: opts.FilenameCodec,
+		FilenameCodec: codec,
 		ReadOnly:      opts.ReadOnly,
 	}
 	return fs.WrapBase(base, spec, store)

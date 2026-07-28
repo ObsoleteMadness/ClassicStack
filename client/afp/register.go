@@ -48,7 +48,7 @@ const afpListeningSocket uint8 = 251
 // volume — returning the *FS (an fs.FileSystem + native fs.ForkEngine).
 func connect(ctx context.Context, target uri.Target, opts client.Options) (fs.FileSystem, error) {
 	_ = ctx
-	ep, sess, _, err := dialAndLogin(target, opts)
+	ep, sess, sls, srvInfo, err := dialAndLogin(target, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +59,13 @@ func connect(ctx context.Context, target uri.Target, opts client.Options) (fs.Fi
 		return nil, err
 	}
 	// Own the endpoint so Close tears everything down: FS.Close closes the session; wrap
-	// it to also close the endpoint.
+	// it to also close the endpoint. Keep dial state so a dropped ASP session can be
+	// re-established without unmounting (csmount keeps the drive mounted).
+	f.ep = ep
+	f.sls = sls
+	f.user = target.User
+	f.pass = target.Pass
+	f.srvInfo = srvInfo
 	f.onClose = func() { _ = ep.Close() }
 	return f, nil
 }
@@ -67,12 +73,12 @@ func connect(ctx context.Context, target uri.Target, opts client.Options) (fs.Fi
 // dialAndLogin runs the AFP connect prologue shared by a volume mount (connect) and a
 // server-root browse (Browse): open the DDP transport, resolve the server, negotiate the
 // login from FPGetSrvrInfo, open the ASP session, and log in. It returns the endpoint,
-// the live session, and the parsed server info. On any failure it tears down what it
-// built and returns the error, so the caller only closes on success.
-func dialAndLogin(target uri.Target, opts client.Options) (*atalk.Endpoint, *aspclient.Session, proto.ServerInfo, error) {
+// the live session, the SLS address, and the parsed server info. On any failure it tears
+// down what it built and returns the error, so the caller only closes on success.
+func dialAndLogin(target uri.Target, opts client.Options) (*atalk.Endpoint, *aspclient.Session, atalk.Addr, proto.ServerInfo, error) {
 	dl, err := opts.Opener.DatagramLinkDDP()
 	if err != nil {
-		return nil, nil, proto.ServerInfo{}, fmt.Errorf("afp: open transport: %w", err)
+		return nil, nil, atalk.Addr{}, proto.ServerInfo{}, fmt.Errorf("afp: open transport: %w", err)
 	}
 	// The workstation asserts the opener's node; a real deployment runs an LLAP/AARP
 	// claim above the FrameLink first (the LToUDP/EtherTalk framer already carries the
@@ -82,7 +88,7 @@ func dialAndLogin(target uri.Target, opts client.Options) (*atalk.Endpoint, *asp
 	srv, err := resolveServer(ep, target.Server)
 	if err != nil {
 		_ = ep.Close()
-		return nil, nil, proto.ServerInfo{}, err
+		return nil, nil, atalk.Addr{}, proto.ServerInfo{}, err
 	}
 	sls := atalk.Addr{Network: srv.Network, Node: srv.Node, Socket: afpListeningSocket}
 	if srv.Socket != 0 {
@@ -115,14 +121,14 @@ func dialAndLogin(target uri.Target, opts client.Options) (*atalk.Endpoint, *asp
 	sess, err := aspclient.Open(ep, a, sls)
 	if err != nil {
 		_ = ep.Close()
-		return nil, nil, proto.ServerInfo{}, err
+		return nil, nil, atalk.Addr{}, proto.ServerInfo{}, err
 	}
 	if err := LoginNegotiated(sess, target.User, target.Pass, srvInfo); err != nil {
 		_ = sess.Close()
 		_ = ep.Close()
-		return nil, nil, proto.ServerInfo{}, err
+		return nil, nil, atalk.Addr{}, proto.ServerInfo{}, err
 	}
-	return ep, sess, srvInfo, nil
+	return ep, sess, sls, srvInfo, nil
 }
 
 // resolveServer turns the URI server field into an AppleTalk address. A literal

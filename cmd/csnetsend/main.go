@@ -21,11 +21,12 @@ package main
 import (
 	"flag"
 	"fmt"
-	"net"
 	"os"
 
+	clientlink "github.com/ObsoleteMadness/ClassicStack/client/link"
 	"github.com/ObsoleteMadness/ClassicStack/client/netbios"
 	"github.com/ObsoleteMadness/ClassicStack/client/trace"
+	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/csconnect"
 )
 
 func main() {
@@ -37,19 +38,32 @@ func main() {
 
 func run() error {
 	var (
-		iface     = flag.String("iface", "", "interface to send from (pcap device or TUN/TAP device name; required)")
+		iface     = flag.String("iface", "", "interface to send from (pcap device or TUN/TAP device name; omit to auto-detect the primary NIC)")
 		ifaceType = flag.String("ifacetype", "pcap", "interface type: pcap | tap")
 		to        = flag.String("to", "", "recipient as \"<name>,<protocol>\" (protocol: nbf | nbipx; required)")
 		from      = flag.String("from", "CLASSICSTACK", "sender name (the From field)")
 		text      = flag.String("text", "", "message text (required)")
 		macFlag   = flag.String("mac", "", "source MAC for our virtual station (default: random locally-administered)")
 		verbose   = flag.Bool("v", false, "verbose wire trace to stderr")
+		listIf    = flag.Bool("list-ifaces", false, "list the capturable pcap NICs (the names -iface accepts) and exit")
 	)
 	flag.Usage = usage
 	flag.Parse()
 	trace.SetVerbose(*verbose)
 
-	if *iface == "" || *to == "" || *text == "" {
+	if *listIf {
+		clientlink.PrintInterfaces(os.Stdout)
+		return nil
+	}
+
+	// Auto-detect the host's primary (default-route) NIC when -iface is omitted, so
+	// "Easy mode" works on a single-NIC box — the same detection the file client and
+	// csncpinfo use. The Messenger datagram rides a raw-Ethernet carrier (pcap/tap), so
+	// ResolveIface fills a blank device name and announces the choice; ltoudp-style
+	// non-NIC kinds do not apply here.
+	ifaceName := csconnect.ResolveIface(*ifaceType, *iface)
+
+	if ifaceName == "" || *to == "" || *text == "" {
 		flag.Usage()
 		return fmt.Errorf("-iface, -to and -text are required")
 	}
@@ -60,19 +74,20 @@ func run() error {
 		return err
 	}
 
-	// Parse an optional pinned virtual-station MAC (else the SDK synthesises a random
-	// locally-administered one, so the client never borrows the host NIC's identity).
+	// Parse an optional pinned virtual-station MAC (else netbios.OpenerFor synthesises a
+	// random locally-administered one from the zero value, so the client never borrows the
+	// host NIC's identity). Uses the shared csconnect parser the whole tool ring shares.
 	var mac [6]byte
 	if *macFlag != "" {
 		var err error
-		if mac, err = parseMAC(*macFlag); err != nil {
+		if mac, err = csconnect.ParseMAC(*macFlag); err != nil {
 			return err
 		}
 	}
 
 	// Build the raw-Ethernet opener for the chosen interface type (pcap or the
 	// libpcap-free TUN/TAP), the same way the SMB file client selects its transport.
-	opener, err := netbios.OpenerFor(*ifaceType, *iface, mac)
+	opener, err := netbios.OpenerFor(*ifaceType, ifaceName, mac)
 	if err != nil {
 		return err
 	}
@@ -90,17 +105,6 @@ func run() error {
 	}
 	fmt.Printf("sent %q to %s over %s\n", *text, target.Name.String(), target.Protocol)
 	return nil
-}
-
-// parseMAC parses a colon/hyphen-separated MAC into a 6-byte array.
-func parseMAC(s string) ([6]byte, error) {
-	hw, err := net.ParseMAC(s)
-	if err != nil || len(hw) != 6 {
-		return [6]byte{}, fmt.Errorf("invalid -mac %q (want aa:bb:cc:dd:ee:ff)", s)
-	}
-	var mac [6]byte
-	copy(mac[:], hw)
-	return mac, nil
 }
 
 func usage() {

@@ -40,6 +40,16 @@ func run(args []string) int {
 		return 2
 	}
 	trace.SetVerbose(cfg.Verbose)
+	// ATP TReq/TResp spam drowns useful NBP/AFP lines under WinFsp's call volume.
+	trace.SetScope("atp", false)
+	if cfg.Verbose {
+		winfsp.TraceTo(os.Stderr)
+	}
+
+	if cfg.ListIfaces {
+		csconnect.PrintInterfaces(os.Stdout)
+		return 0
+	}
 
 	if len(rest) == 1 && (rest[0] == "help" || rest[0] == "-h" || rest[0] == "--help") {
 		usage()
@@ -58,7 +68,11 @@ func run(args []string) int {
 	}
 	defer fs.CloseFS(remote)
 
-	m, err := winfsp.MountAt(remote, mountpoint, winfsp.Options{VolumeLabel: target.Volume})
+	m, err := winfsp.MountAt(remote, mountpoint, winfsp.Options{
+		VolumeLabel:        target.Volume,
+		FileInfoTimeoutMs:  cfg.CacheMs,
+		FileInfoTimeoutSet: cfg.CacheMsSet,
+	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "csmount: mount:", err)
 		return 1
@@ -84,13 +98,20 @@ Usage:
 Flags:
   -ifacetype  transport: ltoudp | tashtalk | pcap | tcp (scheme-validated)
   -iface      interface: IPv4 addr (ltoudp), device (pcap), COM3//dev/tty (tashtalk), host (tcp)
+              (pcap: omit to auto-detect the host's primary/default-route NIC)
   -transport  SMB pcap carrier: ipx (default) | nbipx | nbf
   -mac        virtual-station MAC for raw-Ethernet SMB carriers (empty = random)
   -fork       fork container: appledouble | applesingle | macbinary | derez | passthrough | native | nofork
-  -v          verbose: print the client wire-trace to stderr
+              On AFP, sidecar layouts (derez/appledouble) PROJECT remote forks into the
+              mount as .rdump/.idump or ._name files so Windows can read them.
+  -cache-ms   WinFsp FileInfoTimeout in ms (default 1000). 0 disables FSD metadata cache;
+              -1 is infinite (also enables kernel data caching).
+  -v          verbose: NBP + AFP wire-trace + WinFsp Behaviour* call names to stderr (ATP off)
+  -list-ifaces  list the capturable pcap NICs (the names -iface accepts) and exit
 
 Examples:
   csmount -ifacetype tcp afp://server/Volume X:
+  csmount -fork derez afp://vmac1/System\ 7.5.3 X:
   csmount smb://server,nbf/Share M:
   csmount ncp://SERVER/SYS N:
 `)

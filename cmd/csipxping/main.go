@@ -10,10 +10,11 @@
 // type 0x8137) is small enough to frame inline here; it matches core/port/ipx.
 //
 // IPX node IDs on Ethernet are the 6-byte MAC, so the target is given as a MAC (or
-// "broadcast"); our own source node is the chosen interface's MAC. A reachable host
-// running an IPX Diagnostic Responder (ClassicStack does — see core/service/ipxdiag,
-// and so do real NetWare nodes) answers; csipxping prints the responder's address and
-// the RTT.
+// "broadcast"); our own source node is a synthetic locally-administered station MAC (or
+// the pinned -mac), the same convention the rest of the client ring uses so the probe
+// never borrows the host NIC's identity. A reachable host running an IPX Diagnostic
+// Responder (ClassicStack does — see core/service/ipxdiag, and so do real NetWare nodes)
+// answers; csipxping prints the responder's address and the RTT.
 //
 // Requires the 'pcap' build tag (libpcap/Npcap) and the privilege to open the NIC.
 package main
@@ -26,6 +27,8 @@ import (
 	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/pcap"
+	clientlink "github.com/ObsoleteMadness/ClassicStack/client/link"
+	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/csconnect"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 	ipxproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx/diag"
@@ -50,17 +53,29 @@ func main() {
 
 func run() error {
 	var (
-		iface   = flag.String("iface", "", "network interface to send on (pcap device name; required)")
+		iface   = flag.String("iface", "", "network interface to send on (pcap device name; omit to auto-detect the primary NIC)")
 		target  = flag.String("dst", "broadcast", "target node as a MAC address (aa:bb:cc:dd:ee:ff) or \"broadcast\"")
 		network = flag.String("net", "00000000", "IPX network number, 8 hex digits (0 = local segment)")
 		count   = flag.Int("count", 3, "number of diagnostic requests to send")
 		timeout = flag.Duration("timeout", 2*time.Second, "per-request reply timeout")
 		wait    = flag.Duration("interval", 500*time.Millisecond, "delay between requests")
+		macFlag = flag.String("mac", "", "source MAC for our virtual station (default: random locally-administered)")
+		listIf  = flag.Bool("list-ifaces", false, "list the capturable pcap NICs (the names -iface accepts) and exit")
 	)
 	flag.Parse()
 
-	if *iface == "" {
-		return fmt.Errorf("an -iface is required (a pcap device name; list them with the server's diagnostics)")
+	if *listIf {
+		clientlink.PrintInterfaces(os.Stdout)
+		return nil
+	}
+
+	// Auto-detect the host's primary (default-route) NIC when -iface is omitted, so
+	// "Easy mode" works on a single-NIC box. IPX rides raw Ethernet, so the pcap kind is
+	// what needs a NIC device; ResolveIface fills a blank name (announcing the choice) or
+	// leaves it blank for the open below to report the missing device.
+	ifaceName := csconnect.ResolveIface(clientlink.KindPcap, *iface)
+	if ifaceName == "" {
+		return fmt.Errorf("an -iface is required (a pcap device name; list them with -list-ifaces)")
 	}
 	dstNode, broadcast, err := parseTarget(*target)
 	if err != nil {
@@ -70,14 +85,20 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	srcMAC, err := interfaceMAC(*iface)
+	// The probe sends from a synthetic locally-administered station MAC (or the pinned
+	// -mac) rather than the host NIC's own address — matching the rest of the client ring
+	// (a probe must not borrow the host's identity), and avoiding the Windows-only lookup
+	// that cannot resolve a pcap "\Device\NPF_{GUID}" device name. Replies are matched by
+	// diagnostic socket (see awaitReply), not by destination MAC, so a synthetic source is
+	// fine.
+	srcMAC, err := csconnect.StationMAC(*macFlag)
 	if err != nil {
 		return err
 	}
 
-	fl, err := pcap.Open(pcap.DefaultEtherTalkConfig(*iface))
+	fl, err := pcap.Open(pcap.DefaultEtherTalkConfig(ifaceName))
 	if err != nil {
-		return fmt.Errorf("open %s: %w", *iface, err)
+		return fmt.Errorf("open %s: %w", ifaceName, err)
 	}
 	defer fl.Close()
 
@@ -87,7 +108,7 @@ func run() error {
 		_ = f.SetFilter("ipx or (ether proto 0x8137)")
 	}
 
-	fmt.Printf("IPXPING %s on %s\n", *target, *iface)
+	fmt.Printf("IPXPING %s on %s\n", *target, ifaceName)
 	replies := 0
 	for i := range *count {
 		sent := time.Now()
@@ -246,23 +267,6 @@ func parseNetwork(s string) ([6]byte, error) {
 		out[i] = b
 	}
 	return out, nil
-}
-
-// interfaceMAC resolves the hardware address of the named interface. pcap device
-// names and OS interface names usually coincide; when they do not (e.g. Windows NPF
-// device GUIDs) the caller can still ping but the source node will be zero — so we
-// fail loudly rather than send a zero-node probe.
-func interfaceMAC(name string) ([6]byte, error) {
-	var mac [6]byte
-	ifi, err := net.InterfaceByName(name)
-	if err != nil {
-		return mac, fmt.Errorf("interface %q: %w (on Windows pass the OS interface name, not the NPF device id)", name, err)
-	}
-	if len(ifi.HardwareAddr) != 6 {
-		return mac, fmt.Errorf("interface %q has no 6-byte hardware address", name)
-	}
-	copy(mac[:], ifi.HardwareAddr)
-	return mac, nil
 }
 
 // macString formats a 6-byte node as a colon-separated MAC.

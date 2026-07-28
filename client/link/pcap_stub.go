@@ -24,3 +24,8 @@ func openPcapDDP(device string, network uint16, srcNode uint8) (link.DatagramLin
 	_ = srcNode
 	return nil, errNoPcap
 }
+
+// listPcapDevices reports the missing-tag error in a build without 'pcap', so a
+// -list-ifaces run prints an honest "built without the 'pcap' tag" line rather than a
+// misleading empty list.
+func listPcapDevices() ([]Interface, error) { return nil, errNoPcap }

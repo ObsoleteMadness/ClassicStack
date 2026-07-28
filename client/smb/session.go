@@ -142,16 +142,26 @@ func establishSession(tr Transport, p DialParams) (*Session, error) {
 	s.builder.SessionKey = neg.SessionKey
 	// Advertise no more than the server's own MaxBufferSize.
 	s.negMaxBuffer = neg.MaxBuffer
-	// Clamp READ_ANDX/WRITE_ANDX to the server's negotiated MaxBufferSize. The transport
-	// budget (applyTransportLimits, above) only bounds what the WIRE can carry — for a
-	// reassembling carrier (NBF/NBT/TCP) that is huge, so maxIO stayed at defaultMaxIO
-	// (12 KiB). But a Win9x server advertises a small MaxBufferSize (observed: Win98 =
-	// 2920) and rejects a READ_ANDX asking for more than that with ERRDOS/87 "invalid
-	// parameter" (status 0x00570001). Bound maxIO to the server's buffer net of reply
-	// overhead so the read fits one server message.
+	// Clamp READ_ANDX/WRITE_ANDX and TRANS2 MaxDataCount to the server's negotiated
+	// MaxBufferSize. The transport budget (applyTransportLimits, above) only bounds what
+	// the WIRE can carry — for a reassembling carrier (NBF/NBT/TCP) that is huge, so
+	// maxIO stayed at defaultMaxIO (12 KiB) and MaxTransactBytes stayed 0 (= 0xFFFF).
+	// A Win9x server advertises a small MaxBufferSize (observed: Win98 = 2920) and:
+	//   - rejects a READ_ANDX asking for more with ERRDOS/87 "invalid parameter";
+	//   - answers a FIND_FIRST2 with MaxDataCount 0xFFFF as a MULTI-PART TRANS2 reply
+	//     (TotalDataCount ≫ DataCount) that this client does not reassemble — the first
+	//     fragment alone yields an incomplete listing, and a follow-up FIND_NEXT2 then
+	//     collides with the pending continuation frames ("response shorter than command
+	//     format requires"). Cap MaxDataCount so each FIND fits one server message and
+	//     the client pages the rest via FIND_NEXT2.
 	if s.negMaxBuffer > 0 {
-		if bufCap := int(s.negMaxBuffer) - smbReplyOverhead; bufCap > 0 && bufCap < s.maxIO {
-			s.maxIO = bufCap
+		if bufCap := int(s.negMaxBuffer) - smbReplyOverhead; bufCap > 0 {
+			if bufCap < s.maxIO {
+				s.maxIO = bufCap
+			}
+			if s.builder.MaxTransactBytes == 0 || int(s.builder.MaxTransactBytes) > bufCap {
+				s.builder.MaxTransactBytes = uint16(bufCap)
+			}
 		}
 	}
 
@@ -199,6 +209,25 @@ func (s *Session) EnumShares() ([]proto.ShareInfo, error) {
 	}
 	smbtracef("NetShareEnum ok — %d shares", len(shares))
 	return shares, nil
+}
+
+// EnumServers runs a RAP NetServerEnum2 over the connected IPC$ pipe and returns the
+// browse-list servers the target (a master or backup browser) knows in domain, filtered by
+// serverType (proto.ServerTypeAll for every server). The session must have been opened with
+// OpenIPC. This is the authoritative "net view" query: a master browser answers with every
+// server that announced to it, far more than a broadcast solicit sees.
+func (s *Session) EnumServers(serverType uint32, domain string) ([]proto.ServerInfo, error) {
+	smbtracef("NetServerEnum2 type=%#08x domain=%q", serverType, domain)
+	resp, err := s.send(func(b *proto.Builder) []byte { return b.BuildNetServerEnum2(serverType, domain) })
+	if err != nil {
+		return nil, fmt.Errorf("smb: NetServerEnum2: %w", err)
+	}
+	servers, err := proto.ParseNetServerEnum2(resp)
+	if err != nil {
+		return nil, fmt.Errorf("smb: NetServerEnum2: %w", err)
+	}
+	smbtracef("NetServerEnum2 ok — %d servers", len(servers))
+	return servers, nil
 }
 
 // negotiate sends SMB_COM_NEGOTIATE and parses the selected dialect.

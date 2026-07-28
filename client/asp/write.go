@@ -1,6 +1,8 @@
 package asp
 
 import (
+	"time"
+
 	"github.com/ObsoleteMadness/ClassicStack/client/atalk"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/asp"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/ddp"
@@ -42,6 +44,25 @@ func (s *Session) Write(block, data []byte) (reply []byte, result int32, err err
 		return nil, 0, err
 	}
 	return resp.Data, int32(resp.UserData), nil
+}
+
+// tickleServer sends a client-initiated ASP Tickle to the server every TickleInterval to
+// keep the session alive. The ASP spec (Inside AppleTalk ch.11) requires the workstation
+// to tickle the server; without it an idle server times out the session (~2 minutes).
+func (s *Session) tickleServer() {
+	defer s.wg.Done()
+	t := time.NewTicker(asp.TickleInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.stop:
+			return
+		case <-t.C:
+			ud := asp.MarshalTickleRequest(s.id)
+			// Tickle is ALO (at-least-once, no retry needed): fire-and-forget.
+			_, _ = s.atp.Request(s.server, ud, nil, false, 1)
+		}
+	}
 }
 
 // serveWSS answers server-initiated TReqs on the workstation session socket for the

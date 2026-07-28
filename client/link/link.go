@@ -57,6 +57,14 @@ type Spec struct {
 	// -transport flag threads a value here. Uninterpreted by client/link (it only opens
 	// the L2 link); the scheme's factory reads it.
 	Carrier string
+	// FrameType optionally PINS the Ethernet encapsulation an IPX-riding client transport
+	// (NCP-over-IPX, SMB-over-IPX/NBIPX) sends on: "ethernet_ii" | "802.3" | "802.2" (the
+	// core/port/ipx.ParseFrameType spellings). Empty lets the transport LEARN the server's
+	// frame type from the first reply — the right default, since a real NetWare server is
+	// often bound on raw-802.3 or 802.2 rather than Ethernet II, and each frame type is a
+	// distinct logical IPX net on the wire. Pin it only to force a specific framing.
+	// Uninterpreted by client/link (it only opens the L2 link); the scheme's factory reads it.
+	FrameType string
 }
 
 // RawEtherKinds are the transport kinds that yield a raw Ethernet FrameLink (the carrier

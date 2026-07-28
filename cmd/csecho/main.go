@@ -46,6 +46,11 @@ func run() error {
 	flag.Parse()
 	trace.SetVerbose(*verbose)
 
+	if at.ListIface {
+		atlink.PrintInterfaces(os.Stdout)
+		return nil
+	}
+
 	if *srcNode < 1 || *srcNode > 254 {
 		return fmt.Errorf("src node %d out of range (1..254)", *srcNode)
 	}

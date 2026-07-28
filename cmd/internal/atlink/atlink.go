@@ -13,6 +13,7 @@ package atlink
 
 import (
 	"flag"
+	"io"
 
 	"github.com/ObsoleteMadness/ClassicStack/client/link"
 	corelink "github.com/ObsoleteMadness/ClassicStack/core/link"
@@ -31,6 +32,7 @@ type Options struct {
 	Iface     string // ltoudp/pcap: interface (IPv4 address for ltoudp, device name for pcap)
 	Device    string // tashtalk: serial device path (COM3, /dev/ttyUSB0)
 	Baud      uint   // tashtalk: line speed (0 → adapter default)
+	ListIface bool   // -list-ifaces: print capturable pcap NICs and exit (see PrintInterfaces)
 }
 
 // Flags registers the transport-selection flags on fs and returns the Options the
@@ -45,8 +47,16 @@ func Flags(fs *flag.FlagSet) *Options {
 		"tashtalk: serial device path (e.g. COM3 or /dev/ttyUSB0)")
 	fs.UintVar(&o.Baud, "baud", 0,
 		"tashtalk: serial line speed (0 → adapter default)")
+	fs.BoolVar(&o.ListIface, "list-ifaces", false,
+		"list the capturable pcap NICs (the names -iface accepts) and exit")
 	return o
 }
+
+// PrintInterfaces writes the host's capturable pcap NICs to w — the shared -list-ifaces
+// output for the AppleTalk probe utilities, delegating to client/link so the device names
+// match those the file clients print (and that -iface accepts). It never returns an error;
+// a listing failure is reported in-band.
+func PrintInterfaces(w io.Writer) { link.PrintInterfaces(w) }
 
 // Open builds the selected transport as a DDP DatagramLink, delegating to client/link.
 // network and srcNode are this client's asserted AppleTalk address for the LocalTalk

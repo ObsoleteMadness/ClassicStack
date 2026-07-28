@@ -50,13 +50,79 @@ func wirePath(p string) string {
 	return strings.ReplaceAll(p, "/", "\\")
 }
 
-// ReadDir lists a directory via Search for a File (0x40), the FCB-era one-call-per-
-// entry scan. NetWare's search-attribute picks EITHER files OR directories per pass
-// (its directory bit 0x10), so — like a DOS DIR shell — the client makes two passes:
-// one for files, one for subdirectories, each paging the returned NextSeq until the
-// scan ends (completion 0x9C/0xFF → no more entries). The '/'-path is volume-root-
-// relative.
+// ReadDir lists a directory. It uses the NetWare 3.x File Search Initialize (0x3E) +
+// File Search Continue (0x3F) pair — the scan a real NetWare 3.x/4.x server answers — and
+// falls back to the FCB-era Search for a File (0x40) for the ClassicStack server, which
+// implements 0x40. NetWare's search-attribute picks EITHER files OR directories per pass
+// (directory bit 0x10), so — like a DOS DIR shell — each method makes two passes (files,
+// then subdirectories). The '/'-path is volume-root-relative.
 func (f *FS) ReadDir(dir string) ([]stdfs.DirEntry, error) {
+	// Try the 0x3E/0x3F scan first (real servers). If Initialize itself is unsupported
+	// (an error completion), fall back to the 0x40 scan (our own server).
+	if entries, ok, err := f.readDirSearch3x(dir); ok {
+		return entries, err
+	}
+	return f.readDir40(dir)
+}
+
+// readDirSearch3x enumerates dir with File Search Initialize/Continue. ok is false when
+// the server does not support File Search Initialize (so the caller falls back to 0x40);
+// once Initialize succeeds, ok is true and any later error is returned as-is.
+func (f *FS) readDirSearch3x(dir string) (entries []stdfs.DirEntry, ok bool, err error) {
+	rep, ierr := f.sess.command("File Search Initialize", func(r *proto.Requester) []byte {
+		return r.BuildFileSearchInit(f.sess.rootDir, wirePath(dir))
+	})
+	if ierr != nil {
+		return nil, false, nil // unsupported / not a directory here → fall back
+	}
+	base, perr := proto.ParseFileSearchInit(rep.Body)
+	if perr != nil {
+		return nil, false, nil
+	}
+
+	files, err := f.searchContinuePass(base, proto.NwSearchAttrFiles)
+	if err != nil {
+		return nil, true, err
+	}
+	dirs, err := f.searchContinuePass(base, proto.NwSearchAttrDirs)
+	if err != nil {
+		return nil, true, err
+	}
+	return append(files, dirs...), true, nil
+}
+
+// searchContinuePass pages one File Search Continue scan (one search-attribute) from the
+// Initialize context to its end (completion 0xFF), returning the entries. The context's
+// sequence is fresh per pass, so each pass restarts from the Initialize sequence.
+func (f *FS) searchContinuePass(base proto.FileSearchContext, attr uint8) ([]stdfs.DirEntry, error) {
+	var out []stdfs.DirEntry
+	ctx := base // copy: each pass restarts from the Initialize sequence
+	for {
+		rep, err := f.sess.command("File Search Continue", func(r *proto.Requester) []byte {
+			return r.BuildFileSearchContinue(ctx, attr, proto.SearchAllPattern())
+		})
+		if err != nil {
+			if isNoMoreFiles(err) {
+				break // clean end of scan
+			}
+			return nil, translateErr(err)
+		}
+		e, perr := proto.ParseFileSearchContinue(rep.Body, &ctx)
+		if perr != nil {
+			return nil, errMalformed("File Search Continue reply")
+		}
+		if e.Name == "" || e.Name == "." || e.Name == ".." {
+			continue
+		}
+		out = append(out, dirEntry{name: e.Name, dir: e.IsDir, size: int64(e.Size)})
+	}
+	return out, nil
+}
+
+// readDir40 lists a directory via Search for a File (0x40), the FCB-era one-call-per-entry
+// scan the ClassicStack server implements. Two passes (files, then subdirectories), each
+// paging the returned NextSeq until the scan ends.
+func (f *FS) readDir40(dir string) ([]stdfs.DirEntry, error) {
 	searchPath := searchWildcard(dir)
 	files, err := f.searchPass(searchPath, proto.NwSearchAttrFiles)
 	if err != nil {
@@ -69,9 +135,8 @@ func (f *FS) ReadDir(dir string) ([]stdfs.DirEntry, error) {
 	return append(files, dirs...), nil
 }
 
-// searchPass pages one Search for a File scan (a single search-attribute) to its end,
-// returning the entries it yields. A clean end-of-scan (no-more-files) returns the
-// entries gathered so far, not an error.
+// searchPass pages one Search for a File (0x40) scan (a single search-attribute) to its
+// end, returning the entries it yields. A clean end-of-scan returns the entries gathered.
 func (f *FS) searchPass(searchPath string, attr uint8) ([]stdfs.DirEntry, error) {
 	var out []stdfs.DirEntry
 	seq := proto.SearchBefore

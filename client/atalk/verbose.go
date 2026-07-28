@@ -9,17 +9,20 @@ import (
 
 // verbose.go is the AppleTalk client stack's wire-trace, now built on the shared
 // client/trace facility (which wraps the server's core/log library) rather than an ad-hoc
-// printf. When verbose is on it narrates each NBP lookup, ATP transaction (TReq send,
-// per-attempt timeout, TResp arrival), and the resolved server address, so a stuck
-// connect (e.g. an ATP transaction that times out) is diagnosable without a packet
-// capture. It stays a package-level facility (no threaded logger) so the existing
+// printf. When verbose is on it narrates each NBP lookup, AEP echo, and (under the
+// separate "atp" scope) ATP transactions, so a stuck connect is diagnosable without a
+// packet capture. It stays a package-level facility (no threaded logger) so the existing
 // constructors — NewEndpoint/NewATP/Open — need no signature change; the verbose toggle
 // lives in client/trace and governs every transport at once (see trace.SetVerbose).
+// Tools that want NBP/AFP without per-packet ATP noise (csmount) mute the "atp" scope via
+// trace.SetScope("atp", false).
 
-// atalkLog is the scope-named core/log.Logger the AppleTalk client narrates through. It
-// shares client/trace's one verbose-gated stderr sink, so `csfs -v` turns it on with
-// every other transport's trace.
-var atalkLog = trace.Logger("atalk")
+// atalkLog narrates NBP/AEP (and other non-ATP AppleTalk) events; atpLog narrates ATP
+// TReq/TResp/timeouts. Both share client/trace's verbose-gated stderr sink.
+var (
+	atalkLog = trace.Logger("atalk")
+	atpLog   = trace.Logger("atp")
+)
 
 // SetVerbose enables or disables the client's wire-trace output. Retained for
 // compatibility with callers that toggled the AppleTalk trace specifically; it delegates
@@ -30,14 +33,20 @@ func SetVerbose(on bool) { trace.SetVerbose(on) }
 // Verbose reports whether wire-trace output is enabled.
 func Verbose() bool { return trace.Verbose() }
 
-// tracef narrates one wire-trace line at log.Trace. The Enabled guard means a disabled
-// trace builds no message; the "atalk" scope prefixes the output so it is distinguishable
-// from the command's normal stdout.
+// tracef narrates one non-ATP AppleTalk wire-trace line at log.Trace (NBP, AEP, …).
 func tracef(format string, args ...any) {
 	if !atalkLog.Enabled(log.Trace) {
 		return
 	}
 	atalkLog.Log0(log.Trace, fmt.Sprintf(format, args...))
+}
+
+// atpf narrates one ATP wire-trace line at log.Trace under the "atp" scope.
+func atpf(format string, args ...any) {
+	if !atpLog.Enabled(log.Trace) {
+		return
+	}
+	atpLog.Log0(log.Trace, fmt.Sprintf(format, args...))
 }
 
 // String renders an address as net.node:socket for trace output.

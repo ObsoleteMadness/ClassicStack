@@ -44,7 +44,7 @@ const (
 // afp://server/. It owns the whole session for the call and tears it down before
 // returning, so the caller need not manage a connection.
 func Browse(target uri.Target, opts client.Options) (ServerListing, error) {
-	ep, sess, srvInfo, err := dialAndLogin(target, opts)
+	ep, sess, _, srvInfo, err := dialAndLogin(target, opts)
 	if err != nil {
 		return ServerListing{}, err
 	}

@@ -9,6 +9,7 @@ import (
 	clientlink "github.com/ObsoleteMadness/ClassicStack/client/link"
 	"github.com/ObsoleteMadness/ClassicStack/client/uri"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
+	ipxport "github.com/ObsoleteMadness/ClassicStack/core/port/ipx"
 )
 
 // register.go plugs the NCP client into the client scheme registry. Importing this
@@ -43,7 +44,7 @@ const ipxBPF = "ipx"
 func connect(ctx context.Context, target uri.Target, opts client.Options) (fs.FileSystem, error) {
 	_ = ctx
 
-	tr, err := openTransport(opts.Opener)
+	tr, err := openTransport(opts.Opener, target.Server)
 	if err != nil {
 		return nil, fmt.Errorf("ncp: open transport: %w", err)
 	}
@@ -65,8 +66,17 @@ func connect(ctx context.Context, target uri.Target, opts client.Options) (fs.Fi
 // openTransport builds an NCP Transport from the opener: over-IPX on a raw pcap NIC. The
 // IPX path presents a virtual-station MAC — the opener's pinned MAC, or a synthesised
 // locally-administered random one (RandomMAC) so the client never borrows the host NIC's
-// identity.
-func openTransport(opener *clientlink.Opener) (Transport, error) {
+// identity. Spec.FrameType optionally PINS the Ethernet encapsulation; empty lets the
+// transport learn the server's frame type from its first reply (the right default for a
+// real NetWare server bound on raw-802.3 / 802.2).
+//
+// serverName is resolved to a routable IPX address via SAP FIRST (resolve.go), because a
+// real NetWare server offers NCP on its internal network a router hop away — a net-0
+// broadcast CreateConnection never reaches it. The transport is then pre-seeded with that
+// address so the attach is addressed straight at the service. If SAP resolution fails
+// (e.g. our own in-process server that answers a broadcast directly), it falls back to the
+// broadcast-and-learn path so the existing e2e/self-server flow is unchanged.
+func openTransport(opener *clientlink.Opener, serverName string) (Transport, error) {
 	switch opener.Spec.Kind {
 	case clientlink.KindPcap, "":
 		fl, err := opener.FrameLink(ipxBPF)
@@ -77,10 +87,40 @@ func openTransport(opener *clientlink.Opener) (Transport, error) {
 		if mac == ([6]byte{}) {
 			mac = RandomMAC()
 		}
-		return DialIPX(fl, mac), nil
+		frameType, pinned, err := parseFrameType(opener.Spec.FrameType)
+		if err != nil {
+			_ = fl.Close()
+			return nil, err
+		}
+		// Resolve the server via SAP so the attach is addressed to its real (internal) IPX
+		// net/node and unicast to the next-hop MAC. A pinned frame type restricts the query
+		// to that framing; otherwise all three are tried and the matching reply's framing is
+		// adopted. Resolution failure is non-fatal — fall back to broadcast-and-learn.
+		var queryTypes []ipxport.FrameType
+		if pinned {
+			queryTypes = []ipxport.FrameType{frameType}
+		}
+		if srv, rerr := resolveServer(fl, mac, serverName, queryTypes); rerr == nil {
+			return DialIPXResolved(fl, mac, srv, pinned), nil
+		}
+		return DialIPXFrame(fl, mac, frameType, pinned), nil
 	default:
 		return nil, fmt.Errorf("ncp: transport kind %q not supported", opener.Spec.Kind)
 	}
+}
+
+// parseFrameType maps the opener's optional frame-type override to a core/port/ipx
+// FrameType and a "pinned" flag. An empty string yields (default, unpinned) so the
+// transport learns the server's frame type from its reply; a non-empty value pins it.
+func parseFrameType(s string) (ipxport.FrameType, bool, error) {
+	if s == "" {
+		return ipxport.DefaultFrameType, false, nil
+	}
+	ft, err := ipxport.ParseFrameType(s)
+	if err != nil {
+		return ipxport.DefaultFrameType, false, fmt.Errorf("ncp: %w", err)
+	}
+	return ft, true, nil
 }
 
 // ErrTransportClosed is returned when a Send races a Close.
