@@ -304,6 +304,20 @@ Note the **field widths differ** between the LANMAN and NT forms (SecurityMode 2
 
 **Where:** `core/service/smb/trans2.go` (`packFindBothDir`, `shortNameUTF16`, `is8dot3`); regressions in `trans2_test.go`.
 
+### CLIENT: a FIND_NEXT2 page that returns zero entries is end-of-search, even when the server never sets the EndOfSearch flag — [MS-CIFS] §2.2.6.3.2
+
+**Spec:** the TRANS2 FIND response parameter block carries `EndOfSearch` — "if nonzero, the search can be closed... the last entry has been returned" ([MS-CIFS] §2.2.6.2.2 / §2.2.6.3.2). A well-behaved server sets it on the response that carries the final batch (or on the first empty batch after it), and a client is entitled to page with FIND_NEXT2 until that flag appears. The spec does not say a server MUST set it — only that a nonzero value means end.
+
+**Observed (live `csfs` over SMB-over-NBF → real Windows 98, 2026-07-28):** listing `\WINDOWS` (240 entries, paged across ~13 FIND_NEXT2 batches at Win98's MaxBufferSize 2920). Win98 answers the FIND_NEXT2 that runs off the end of the directory with **SearchCount=0, DataCount=0, and EndOfSearch=0** — it signals exhaustion by returning an empty page, NOT by setting the flag. Two client bugs compounded on top of this:
+
+1. **The search id was not carried across pages.** FIND_NEXT2 responses do not repeat the SID (their param block is SearchCount/EndOfSearch/EaErrorOffset/LastNameOffset only), but `ReadDir` re-read `res.SID` from each FIND_NEXT2 result — which parsed as 0. The *second* FIND_NEXT2 therefore carried SID=0 and Win98 rejected it with **ERRDOS/ERRbadfid (status `0x00060001`)**. Every directory needing three or more pages failed with an "unhandled response"; a directory that fit in two pages happened to work (the one and only FIND_NEXT2 still had the correct SID from FIND_FIRST2).
+
+2. **Relying on the EndOfSearch flag alone looped forever.** With the SID fixed, Win98 stopped erroring but the loop condition `for !res.EndOfSearch` never became true — the client sent the same FIND_NEXT2 hundreds of thousands of times (each returning the empty end-of-search page), so the listing never terminated.
+
+**What we do:** `ReadDir` captures the SID once from the FIND_FIRST2 reply and reuses it for every FIND_NEXT2, and treats a page with **zero entries** as end-of-search in addition to the EndOfSearch flag (and the ERRnofiles/`NO_MORE_FILES` status). One of the three signals ends the paging run. Confirmed live: `\WINDOWS` lists all 240 entries in ~1.9 s with no duplicates and no error.
+
+**Where:** `client/smb/filesystem.go` (`ReadDir`); regression in `client/smb` (`TestReadDirPagesUntilEmptyPage`).
+
 ### TRANS2 FIND over a connectionless transport (direct SMB over IPX) MUST honour MaxDataCount — one datagram, then page — [MS-CIFS] §2.2.4.46.1
 
 **Spec:** a TRANS2 request carries `MaxDataCount`, "the maximum number of data bytes the client will accept in the transaction response" ([MS-CIFS] §2.2.4.46.1). Over a reassembling transport (NBT/TCP) the server MAY chunk a larger reply into TRANS2 continuations (DataDisplacement reassembly), so packing beyond one message is tolerable there; the spec does not spell out the connectionless case.
@@ -872,3 +886,13 @@ With these plus the two NBF sections above, the SMB-over-NBF client completes NE
 **What we do:** `BuildNetShareEnum` sets **MaxParameterCount = 8** (the RAP reply param block: Status + Converter + EntriesReturned + EntriesAvailable) and MaxDataCount = the receive-buffer length (the share records). Win98 then returns a correctly-framed reply; the client parses the SHARE_INFO_1 records (20-byte netname/type + remark-heap pointer, Converter-biased) into the share list. `csfs smb://win98-nbf,nbf/` now prints the server + its shares, each with a ready-to-paste URI, and `csfs ls smb://win98-nbf,nbf/C-DRIVE` lists the drive.
 
 **Where:** `core/protocol/smb/smb.go` (`Cap*`, `Flag*`/`FlagsRequest`, `Flags2EAS`, `ShareType*`), `core/protocol/smb/client.go` (`NegotiateResult` fields + `SupportsNTStatus`, `Builder.{NTStatus,SessionKey}`, `flags2()`, `header()` Flags, `BuildSessionSetup`, `BuildTreeConnectIPC`, `BuildNetShareEnum`/`ParseNetShareEnum`), `client/smb/{session.go,browse.go}` (`establishSession`, `OpenIPC`, `EnumShares`, `Browse`), `client/smb/nbf.go` (`sendRR`/`sendRRFinal`/`ackInbound`, `respCorrelator`, `sendDataAck`), `cmd/csfs/{browse.go,main.go}` (SMB server-root listing). Coverage: `core/protocol/smb/netshareenum_test.go`.
+
+### SMB client: TRANS2 FIND MaxDataCount must fit the server's MaxBufferSize; MaxParameterCount must not be 0/0xFFFF
+
+**Context:** `csfs ls smb://win98-nbf,nbf/C-DRIVE/WINDOWS` returned only ~25 directories (of ~240 entries); `ls …/WINCD` failed with `smb: response shorter than command format requires` right after TREE_CONNECT.
+
+**Observed (live Win98 File & Print over NBF, MaxBufferSize=2920):** FIND_FIRST2 with `MaxDataCount=0xFFFF` (and `MaxParameterCount=0`) produced a **multi-part** TRANS2 reply — `TotalDataCount` ≈ 25 KiB while `DataCount` ≈ 2854 (one MaxBuffer-sized fragment), with `EndOfSearch=1` and `SearchCount=242` on WINDOWS (search complete, data still fragmented) or `EndOfSearch=0` on WINCD. This client reads only the first fragment (no TRANS2 response reassembly). Consequences: (1) incomplete listings from the first fragment alone; (2) a follow-up FIND_NEXT2 collides with pending continuation frames and parses as `ErrShortResponse`.
+
+**What we do:** after NEGOTIATE, clamp `Builder.MaxTransactBytes` to `MaxBufferSize − smbReplyOverhead` (same budget already applied to READ/WRITE), so each FIND fits one server message and the client pages via FIND_NEXT2. Set TRANS2 `MaxParameterCount = 32` (covers FIND_FIRST2's 10-byte reply params) — never 0 or 0xFFFF, matching the RAP NetShareEnum Win98 framing erratum above. FIND SearchAttributes also include ReadOnly|Archive (0x0037) so a strict attribute mask still returns ordinary files.
+
+**Where:** `client/smb/session.go` (`establishSession` MaxTransactBytes clamp); `core/protocol/smb/clientfileops.go` (`buildTrans2` MaxParameterCount, `BuildFindFirst2` SearchAttributes).
