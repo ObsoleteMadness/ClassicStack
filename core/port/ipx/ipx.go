@@ -51,9 +51,16 @@ type DeliveryCallback func(d *ipxproto.Datagram)
 type Port struct {
 	*frameport.Port
 
-	srcMAC    [6]byte
-	frameType FrameType // outbound Ethernet encapsulation (§ ipx_frame_type)
-	cb        atomicCallback
+	srcMAC     [6]byte
+	frameType  FrameType   // default outbound encapsulation (§ ipx_frame_type)
+	frameTypes []FrameType // every advertised encapsulation (§ ipx_frame_types)
+	cb         atomicCallback
+
+	// learned maps a peer MAC to the frame type its last inbound frame used, so a unicast
+	// reply is sent in the same framing the request arrived in — the multi-frame-type
+	// behaviour of a real NetWare server. Broadcast/unlearned peers use frameType.
+	learnMu sync.Mutex
+	learned map[[6]byte]FrameType
 }
 
 // New builds the real IPX port. frame is the Ethernet FrameLink (nil → inert
@@ -95,10 +102,29 @@ func NewInstanceFromOpener(sec *port.Section, open func() (link.FrameLink, error
 	if err != nil {
 		return nil, err
 	}
-	p := &Port{srcMAC: srcMAC, frameType: ft}
+	// The advertised frame-type set is the explicit ipx_frame_types list (each parsed),
+	// or — when unset — just the single default/ipx_frame_type. SAP/RIP advertisers read
+	// FrameTypes so a broadcast reaches clients on every configured framing.
+	frameTypes := []FrameType{ft}
+	if len(sec.IPXFrameTypes) > 0 {
+		frameTypes = frameTypes[:0]
+		for _, s := range sec.IPXFrameTypes {
+			f, err := ParseFrameType(s)
+			if err != nil {
+				return nil, err
+			}
+			frameTypes = append(frameTypes, f)
+		}
+	}
+	p := &Port{srcMAC: srcMAC, frameType: ft, frameTypes: frameTypes, learned: make(map[[6]byte]FrameType)}
 	p.Port = frameport.New(sec, open, p.onFrame, logger)
 	return p, nil
 }
+
+// FrameTypes returns every Ethernet encapsulation the port advertises on (the parsed
+// ipx_frame_types list, or the single default frame type). SAP/RIP advertisers emit one
+// broadcast per returned frame type so a client bound to any framing discovers the server.
+func (p *Port) FrameTypes() []FrameType { return p.frameTypes }
 
 // SetDeliveryCallback installs the inbound delivery callback. May be called
 // before or after Start.
@@ -108,9 +134,9 @@ func (p *Port) SetDeliveryCallback(cb DeliveryCallback) { p.cb.store(cb) }
 func (p *Port) SrcMAC() [6]byte { return p.srcMAC }
 
 // onFrame is the frameport FrameSink: demux the Ethernet encapsulation, decode
-// the IPX datagram, and deliver it.
+// the IPX datagram, remember the framing this source used, and deliver it.
 func (p *Port) onFrame(frame link.Frame) {
-	payload, ok := stripEncapsulation(frame)
+	payload, frameType, ok := Strip(frame)
 	if !ok {
 		return
 	}
@@ -119,49 +145,60 @@ func (p *Port) onFrame(frame link.Frame) {
 		p.CountDecodeError()
 		return
 	}
+	// Remember the frame type this peer speaks so a unicast reply mirrors it — the
+	// multi-frame-type behaviour of a real NetWare server. Keyed by the Ethernet source
+	// MAC (the L2 identity a reply is addressed to), which for Ethernet IPX equals the
+	// source node.
+	if len(frame) >= 12 {
+		var src [6]byte
+		copy(src[:], frame[6:12])
+		p.learnMu.Lock()
+		p.learned[src] = frameType
+		p.learnMu.Unlock()
+	}
 	if cb := p.cb.load(); cb != nil {
 		cb(d)
 	}
 }
 
-// stripEncapsulation returns the IPX datagram bytes from an Ethernet frame,
-// accepting Ethernet II (0x8137), raw 802.3 (0xFFFF magic), and 802.2 LLC
-// (DSAP=SSAP=0xE0). The bool is false when the frame is not a recognised IPX
-// encapsulation. (Ported from the legacy port/ipx handleFrame.)
-func stripEncapsulation(frame link.Frame) ([]byte, bool) {
-	if len(frame) < ethHdrLen {
-		return nil, false
-	}
-	etherType := uint16(frame[12])<<8 | uint16(frame[13])
-	switch {
-	case etherType == etherTypeIPX:
-		return frame[ethHdrLen:], true
-	case etherType <= 0x05DC: // 802.3 length-typed
-		if len(frame) < ethHdrLen+3 {
-			return nil, false
-		}
-		body := frame[ethHdrLen:]
-		if body[0] == 0xFF && body[1] == 0xFF {
-			return body, true // raw 802.3 IPX (no checksum → 0xFFFF magic)
-		}
-		if body[0] == llcIPX[0] && body[1] == llcIPX[1] && body[2] == llcIPX[2] {
-			return body[3:], true // 802.2 LLC UI
-		}
-	}
-	return nil, false
-}
+// broadcastMAC is the all-ones Ethernet destination a broadcast IPX datagram targets.
+var broadcastMAC = [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
 
-// Send encapsulates and transmits an IPX datagram to dstMAC using this port's
-// configured frame type (Ethernet II by default; see ipx_frame_type / ParseFrameType).
-// The IPX dst node is NOT consulted for the Ethernet dest here — the caller
-// (mini-router, M4) supplies the resolved MAC; pass the broadcast MAC for
-// broadcast traffic.
+// Send encapsulates and transmits an IPX datagram to dstMAC. A UNICAST is framed in the
+// frame type this peer last spoke to us in (learned per source MAC on inbound), so a
+// reply mirrors the request's framing — the multi-frame-type behaviour of a real NetWare
+// server; an unheard peer takes the configured default. A BROADCAST (all-ones dest, e.g.
+// a SAP/RIP advert) is emitted ONCE PER advertised frame type (ipx_frame_types), so
+// clients bound to any framing receive it. The IPX dst node is NOT consulted for the
+// Ethernet dest here — the caller (mini-router) supplies the resolved MAC.
 func (p *Port) Send(dstMAC [6]byte, d *ipxproto.Datagram) error {
 	ipxBytes, err := d.Encode(nil)
 	if err != nil {
 		return err
 	}
-	return p.Port.Send(p.frameType.encapsulate(dstMAC, p.srcMAC, ipxBytes))
+	if dstMAC == broadcastMAC {
+		var firstErr error
+		for _, ft := range p.frameTypes {
+			if err := p.Port.Send(ft.encapsulate(dstMAC, p.srcMAC, ipxBytes)); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		return firstErr
+	}
+	return p.Port.Send(p.replyFrameType(dstMAC).encapsulate(dstMAC, p.srcMAC, ipxBytes))
+}
+
+// replyFrameType picks the frame type for a unicast to dstMAC: the framing dstMAC last
+// used inbound (learned), else the configured default. A broadcast dest (all-ones) is
+// never learned, so it takes the default.
+func (p *Port) replyFrameType(dstMAC [6]byte) FrameType {
+	p.learnMu.Lock()
+	ft, ok := p.learned[dstMAC]
+	p.learnMu.Unlock()
+	if ok {
+		return ft
+	}
+	return p.frameType
 }
 
 // atomicCallback is a tiny lock-protected DeliveryCallback holder (atomic.Value

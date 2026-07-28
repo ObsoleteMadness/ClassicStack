@@ -281,13 +281,16 @@ func (cn *Conn) getVolumeName(args []byte) ([]byte, error) {
 	return nil, errNoSuchVolume
 }
 
-// createDir answers Create Directory (0x16/0x0A): args are dir handle(1),
-// rights mask(1, not stored), then a length-prefixed path.
+// createDir answers Create Directory (0x16/0x0A): args are dir handle(1), then a
+// length-prefixed path, then a trailing access-rights mask(1, not stored). The path
+// PRECEDES the rights byte (Novell "Create Directory" wire order, mars_nwe
+// nw_creat_dir); an earlier version read the path at a fixed offset 2 as though rights
+// came first, which failed every real client's frame with 0xFB (errFuncNotSupported).
 func (cn *Conn) createDir(args []byte) ([]byte, error) {
 	if len(args) < 3 {
 		return nil, errBadHandle
 	}
-	vol, store, err := cn.resolveWireAt(args[0], args, 2)
+	vol, store, err := cn.resolveWireAt(args[0], args, 1)
 	if err != nil {
 		return nil, err
 	}

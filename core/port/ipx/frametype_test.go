@@ -158,9 +158,9 @@ func lastSent(t *testing.T, fl *fakeFrameLink) []byte {
 // accepted by its own inbound path.
 func assertRoundTrips(t *testing.T, _ *Port, _ *fakeFrameLink, frame []byte) {
 	t.Helper()
-	payload, ok := stripEncapsulation(frame)
+	payload, _, ok := Strip(frame)
 	if !ok {
-		t.Fatalf("stripEncapsulation rejected our own % x frame", frame[12:16])
+		t.Fatalf("Strip rejected our own % x frame", frame[12:16])
 	}
 	if _, err := ipxproto.Decode(payload); err != nil {
 		t.Fatalf("decode of stripped payload failed: %v", err)

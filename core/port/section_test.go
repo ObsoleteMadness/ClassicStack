@@ -2,6 +2,7 @@ package port
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
@@ -83,17 +84,22 @@ func TestSectionValidate(t *testing.T) {
 }
 
 func TestSectionCloneCopiesNewFields(t *testing.T) {
-	orig := &Section{SKey: "EtherTalk", Iface: "eth0", IsEnabled: true, MAC: "00:11:22:aa:bb:cc", SeedNetwork: 10, SeedNetworkEnd: 20, SeedZone: "Eng"}
+	orig := &Section{SKey: "EtherTalk", Iface: "eth0", IsEnabled: true, MAC: "00:11:22:aa:bb:cc", SeedNetwork: 10, SeedNetworkEnd: 20, SeedZone: "Eng", IPXFrameTypes: []string{"802.3", "802.2"}}
 	cp, ok := orig.Clone().(*Section)
 	if !ok {
 		t.Fatal("Clone did not return *Section")
 	}
-	if *cp != *orig {
+	if !reflect.DeepEqual(cp, orig) {
 		t.Fatalf("Clone = %+v, want %+v", *cp, *orig)
 	}
 	// Mutating the clone must not touch the original.
 	cp.MAC = "ff:ff:ff:ff:ff:ff"
 	if orig.MAC == cp.MAC {
 		t.Fatal("Clone shares MAC field with original")
+	}
+	// The frame-type slice must be deep-copied, not shared.
+	cp.IPXFrameTypes[0] = "ethernet_ii"
+	if orig.IPXFrameTypes[0] == cp.IPXFrameTypes[0] {
+		t.Fatal("Clone shares IPXFrameTypes slice with original")
 	}
 }

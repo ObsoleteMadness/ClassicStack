@@ -68,6 +68,46 @@ func (t FrameType) String() string {
 	}
 }
 
+// Encapsulate builds a complete Ethernet frame carrying ipxBytes in this frame
+// type, addressed dst←src. It is the exported form of encapsulate so the client
+// transports (client/ncp, client/smb, client/etherdfs) frame outbound IPX in the
+// server's frame type through the SAME logic the server port uses, rather than
+// hardcoding Ethernet II — see the frame-type-must-match-server errata.
+func (t FrameType) Encapsulate(dst, src [6]byte, ipxBytes []byte) []byte {
+	return t.encapsulate(dst, src, ipxBytes)
+}
+
+// Strip returns the IPX datagram bytes carried in an Ethernet frame together with
+// the FrameType the frame was encapsulated in — the inverse of Encapsulate. It
+// recognises Ethernet II (0x8137), raw 802.3 (IPX's 0xFFFF "no checksum" magic),
+// and 802.2 LLC (DSAP=SSAP=0xE0, UI control 0x03). The bool is false when the frame
+// is not a recognised IPX encapsulation. A client transport uses the returned
+// FrameType to LEARN the server's frame type from a received frame and reply in the
+// same encapsulation (the reference NETx/VLM behaviour), so it interoperates with a
+// real NetWare server bound on raw-802.3 / 802.2 rather than Ethernet II.
+func Strip(frame []byte) ([]byte, FrameType, bool) {
+	if len(frame) < ethHdrLen {
+		return nil, DefaultFrameType, false
+	}
+	etherType := uint16(frame[12])<<8 | uint16(frame[13])
+	switch {
+	case etherType == etherTypeIPX:
+		return frame[ethHdrLen:], FrameEthernetII, true
+	case etherType <= 0x05DC: // 802.3 length-typed
+		if len(frame) < ethHdrLen+3 {
+			return nil, DefaultFrameType, false
+		}
+		body := frame[ethHdrLen:]
+		if body[0] == 0xFF && body[1] == 0xFF {
+			return body, FrameRaw8023, true // raw 802.3 IPX (no checksum → 0xFFFF magic)
+		}
+		if body[0] == llcIPX[0] && body[1] == llcIPX[1] && body[2] == llcIPX[2] {
+			return body[3:], FrameLLC8022, true // 802.2 LLC UI
+		}
+	}
+	return nil, DefaultFrameType, false
+}
+
 // encapsulate builds a complete Ethernet frame carrying ipxBytes in this frame
 // type, addressed dst←src. For the length-typed framings (raw 802.3 and 802.2
 // LLC) the EtherType field is the 802.3 payload length; Ethernet II uses the

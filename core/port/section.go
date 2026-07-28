@@ -65,12 +65,22 @@ type Section struct {
 	Baud   int    `toml:"baud"`
 
 	// IPXFrameType selects the Ethernet encapsulation an IPX port uses on OUTBOUND
-	// frames (Novell "frame type"). Recognised values are "ethernet_ii", "802.3"
-	// (raw / Novell-Ethernet), and "802.2" (IEEE 802.2 LLC). Empty defaults to
-	// Ethernet II, which is what a MacIPX client speaks — see the ipx port's
-	// ParseFrameType. Inbound frames are always accepted in every framing regardless
-	// of this setting. Ignored by non-IPX transports.
+	// frames (Novell "frame type") when it has not learned a peer's framing. Recognised
+	// values are "ethernet_ii", "802.3" (raw / Novell-Ethernet), and "802.2" (IEEE
+	// 802.2 LLC). Empty defaults to Ethernet II, which is what a MacIPX client speaks —
+	// see the ipx port's ParseFrameType. Inbound frames are always accepted in every
+	// framing regardless of this setting, and a unicast reply is sent in the SAME frame
+	// type the request arrived in (like a real NetWare server bound to several frame
+	// types at once). Ignored by non-IPX transports.
 	IPXFrameType string `toml:"ipx_frame_type"`
+
+	// IPXFrameTypes optionally lists EVERY Ethernet encapsulation the IPX port advertises
+	// on (SAP/RIP broadcasts are emitted once per listed frame type), so clients bound to
+	// any of raw-802.3 / 802.2 / Ethernet II all discover the server — the multi-frame-type
+	// binding a real NetWare server offers. Each entry uses the ParseFrameType spellings.
+	// Empty falls back to the single IPXFrameType (or its Ethernet-II default). Unicast
+	// replies still mirror the request's frame type regardless of this list.
+	IPXFrameTypes []string `toml:"ipx_frame_types,omitempty"`
 
 	// Capture is a pcap file path for THIS port's wire traffic ("" = no capture).
 	// Capture is a property of the port that owns the segment (like Device/SeedZone),
@@ -116,6 +126,9 @@ var _ config.InterfaceProvider = (*Section)(nil)
 // Clone returns a deep copy.
 func (s *Section) Clone() config.Section {
 	cp := *s
+	if s.IPXFrameTypes != nil {
+		cp.IPXFrameTypes = append([]string(nil), s.IPXFrameTypes...)
+	}
 	return &cp
 }
 
