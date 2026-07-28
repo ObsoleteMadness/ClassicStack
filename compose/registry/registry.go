@@ -99,6 +99,14 @@ type BuildContext struct {
 	// (adapter/serial) alongside Opener, so the kind→opener dispatch (M11.c/D6) can
 	// pick NIC vs serial from the resolved interface rather than the port type.
 	Serial SerialOpener
+	// DefaultDevice resolves the host's PRIMARY (default-route) NIC to the pcap device
+	// name a NIC port should open when its effective interface names none — the server
+	// "Easy mode" auto-NIC. It is injected at the cmd edge (pcap.ListDevices +
+	// core/hostinfo.PrimaryDevice) so this registry stays pcap-free, mirroring Opener.
+	// nil (a tag-free build, or a test) disables auto-detection: an unnamed NIC port
+	// stays inert-but-routed exactly as before. nicLinkOpener calls it only as a
+	// fallback, so a configured iface always wins.
+	DefaultDevice func() (string, error)
 	// Instance is the per-instance name a REPEATED port factory should build (§M11):
 	// a transport is a repeated section, so the runtime calls the factory once per
 	// instance with Instance set to that instance's name, and the factory resolves

@@ -115,6 +115,13 @@ type Options struct {
 	// (the UI's NIC picker). Injected at the cmd edge (adapter/link/pcap.ListDevices) so
 	// the runtime/supervisor pull in no pcap/cgo dependency. nil → ListInterfaces empty.
 	InterfaceEnumerator func() ([]control.InterfaceInfo, error)
+	// DefaultDevice resolves the host's primary (default-route) NIC to the pcap device a
+	// NIC port opens when its interface names none (server "Easy mode" auto-NIC). Injected
+	// at the cmd edge (pcap.ListDevices + core/hostinfo.PrimaryDevice) and threaded into
+	// every BuildContext so an unnamed NIC port comes up LIVE on the primary NIC instead of
+	// inert. nil (a tag-free build, or a test) disables auto-detection. A configured iface
+	// always wins — this is a fallback only.
+	DefaultDevice func() (string, error)
 	// MacIPEgress builds the IP-side egress adapter for the MacIP gateway from its
 	// section params + the service's lease predicate. Injected at the cmd edge
 	// (adapter/macipgw, which needs pcap/cgo) and called during cross-wiring when the
@@ -192,12 +199,13 @@ func Build(opts Options) (*Runtime, error) {
 	}
 
 	ctx := &registry.BuildContext{
-		Model:     opts.Model,
-		Router:    rtr,
-		Telemetry: opts.Telemetry,
-		Opener:    opts.Opener,
-		Serial:    opts.Serial,
-		LogSinks:  opts.LogSinks,
+		Model:         opts.Model,
+		Router:        rtr,
+		Telemetry:     opts.Telemetry,
+		Opener:        opts.Opener,
+		Serial:        opts.Serial,
+		DefaultDevice: opts.DefaultDevice,
+		LogSinks:      opts.LogSinks,
 	}
 
 	// First pass: build the components, recording which names actually exist so the

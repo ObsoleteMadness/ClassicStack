@@ -129,7 +129,7 @@ func Run(ctx context.Context, args []string, v Version) error {
 	// device links, otherwise their stubs return ErrUnavailable and ports come up
 	// inert-but-routed. Per-port wire capture is now a port property (Section.Capture),
 	// wrapped inside the compose registry openers, so no capture decoration is needed here.
-	rt, err := runtime.Build(runtime.Options{Model: m, Telemetry: telemetry, Opener: pcapOpener, Serial: serialOpener, InterfaceEnumerator: interfaceEnumerator, MacIPEgress: macipEgressOpener})
+	rt, err := runtime.Build(runtime.Options{Model: m, Telemetry: telemetry, Opener: pcapOpener, Serial: serialOpener, InterfaceEnumerator: interfaceEnumerator, DefaultDevice: defaultDevice, MacIPEgress: macipEgressOpener})
 	if err != nil {
 		return fmt.Errorf("build runtime: %w", err)
 	}
@@ -252,4 +252,27 @@ func interfaceEnumerator() ([]control.InterfaceInfo, error) {
 		out = append(out, control.InterfaceInfo{Name: d.Name, Description: d.Description, Addr: addr})
 	}
 	return out, nil
+}
+
+// defaultDevice resolves the host's PRIMARY (default-route) NIC to the pcap device name a
+// NIC port opens when its interface names none — the server "Easy mode" auto-NIC threaded
+// into every BuildContext. It enumerates the pcap devices, then lets core/hostinfo pick
+// the one bound to the routing-table primary interface (pcap-free, cross-platform, no
+// privileges; only an IP match bridges an OS interface to Npcap's "\Device\NPF_{GUID}").
+// Under the pcap tag it resolves a real device; the stub's ListDevices errors and this
+// returns that error, which nicLinkOpener treats as "no auto-NIC" → inert-but-routed.
+func defaultDevice() (string, error) {
+	devs, err := pcap.ListDevices()
+	if err != nil {
+		return "", err
+	}
+	hd := make([]hostinfo.Device, len(devs))
+	for i, d := range devs {
+		hd[i] = hostinfo.Device{Name: d.Name, Addresses: d.Addresses}
+	}
+	pick, err := hostinfo.PrimaryDevice(hd)
+	if err != nil {
+		return "", err
+	}
+	return pick.Name, nil
 }
