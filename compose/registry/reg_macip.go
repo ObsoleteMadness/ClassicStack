@@ -1,4 +1,9 @@
-//go:build macip || all
+//go:build (macip && router) || all
+
+// MacIP is a DDP/ATP socket-72 service: it rides the shared AppleTalk router and
+// builds via routerFor (ddpservice.go, gated `router || all`). So its registration
+// requires `router` as well as `macip` — a `macip`-only build has no routerFor and
+// would not link. The umbrella `all` tag satisfies both.
 
 package registry
 

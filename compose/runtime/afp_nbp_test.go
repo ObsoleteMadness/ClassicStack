@@ -1,3 +1,12 @@
+//go:build (afp && router) || all
+
+// This test drives the real registry-built stack, so it only compiles when the
+// components it asserts on are actually registered: AFP registers under the `afp`
+// tag (reg_afp.go) and NBP under the `router` tag (reg_nbp.go). Under a bare
+// `go test` (no tags) neither init() links, so the build would find "NBP not built"
+// — hence the constraint mirrors the two registration gates (satisfied together by
+// the umbrella `all` tag).
+
 package runtime
 
 // afp_nbp_test.go guards AFP Chooser discovery: the AFP file server must register its

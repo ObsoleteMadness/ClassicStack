@@ -1,4 +1,8 @@
-//go:build ipxgw || all
+//go:build (ipxgw && router) || all
+
+// The IPX gateway builds via routerFor (ddpservice.go, gated `router || all`), so its
+// registration requires `router` as well as `ipxgw` — an `ipxgw`-only build has no
+// routerFor and would not link. The umbrella `all` tag satisfies both.
 
 package registry
 

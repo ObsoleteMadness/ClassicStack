@@ -1,4 +1,9 @@
-//go:build netboot || all
+//go:build (netboot && router) || all
+
+// Netboot (ABP boot server) builds via routerFor (ddpservice.go, gated `router || all`),
+// so its registration requires `router` as well as `netboot` — a `netboot`-only build has
+// no routerFor and would not link. The CI matrix always pairs them ("netboot router"); the
+// umbrella `all` tag satisfies both.
 
 package registry
 
