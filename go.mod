@@ -27,3 +27,6 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.8.2 // indirect
 )
+
+// Local patch: expose FileInfoTimeout Option (upstream leaves it at 0).
+replace github.com/winfsp/go-winfsp => ./third_party/go-winfsp
