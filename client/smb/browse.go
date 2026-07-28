@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/ObsoleteMadness/ClassicStack/client"
+	clientlink "github.com/ObsoleteMadness/ClassicStack/client/link"
 	"github.com/ObsoleteMadness/ClassicStack/client/uri"
 	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/smb"
 )
@@ -18,6 +19,47 @@ type ServerListing struct {
 	ServerName string
 	Dialect    string
 	Shares     []Share
+}
+
+// BrowseServer is one server a master browser reported in its browse list (RAP
+// NetServerEnum2): the server name, the SV_TYPE_* bits it advertises, and its comment.
+type BrowseServer struct {
+	Name    string
+	Type    uint32
+	Comment string
+}
+
+// EnumServers connects to master (a master or backup browser named by masterName) over the
+// carrier the opener selects, binds its IPC$ pipe, and runs a RAP NetServerEnum2 for the
+// authoritative browse list of servers it knows in workgroup (workgroup "" = the master's
+// own domain). It is the session half of a "net view": the datagram probe finds the master
+// (client/netbios.FindMaster), and this asks that master who is on the workgroup — far more
+// than a broadcast solicit sees, since ordinary hosts announce only to the master. user /
+// pass authenticate the IPC$ session (typically empty for an anonymous browse).
+func EnumServers(opener *clientlink.Opener, masterName, workgroup, user, pass string) ([]BrowseServer, error) {
+	if opener == nil {
+		return nil, fmt.Errorf("smb: enum servers: an opener is required")
+	}
+	tr, err := openTransport(opener, masterName)
+	if err != nil {
+		return nil, fmt.Errorf("smb: open transport: %w", err)
+	}
+	sess, err := OpenIPC(tr, DialParams{ServerName: masterName, User: user, Password: pass})
+	if err != nil {
+		_ = tr.Close()
+		return nil, err
+	}
+	defer sess.Close()
+
+	servers, err := sess.EnumServers(protocol.ServerTypeAll, workgroup)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]BrowseServer, 0, len(servers))
+	for _, s := range servers {
+		out = append(out, BrowseServer{Name: s.Name, Type: s.Type, Comment: s.Comment})
+	}
+	return out, nil
 }
 
 // Share is one enumerated share: its name, whether it is the IPC$ pipe or a disk tree,

@@ -72,12 +72,20 @@ func (c *Conn) Browse(window time.Duration) ([]Host, error) {
 }
 
 // solicit broadcasts a browser AnnouncementRequest so every listening browser re-announces
-// itself now. The response computer name is left empty (hosts broadcast their re-announce
-// to the segment, which this carrier is already listening on).
+// itself now.
 func (c *Conn) solicit() error {
-	body := browserproto.AnnouncementRequest{}.Marshal()
 	dtracef("%s browser AnnouncementRequest (solicit re-announce)", c.proto)
-	return c.SendMailslot(mailslotproto.NameBrowse, browseGroupName, body, true)
+	return c.SendMailslot(mailslotproto.NameBrowse, browseGroupName, c.announcementRequestBody(), true)
+}
+
+// announcementRequestBody builds the browser AnnouncementRequest with our station's computer
+// name as the ResponseName. The ResponseName is NOT optional on the wire: a real Win98/NT
+// browser rejects an AnnouncementRequest that carries no NUL-terminated response computer
+// name (Wireshark flags it "Malformed Packet: BROWSER") and never re-announces — the exact
+// reason a solicit saw nothing. The responding host unicasts its HostAnnouncement to this
+// name, and since we're a NetBIOS station on the segment it reaches us.
+func (c *Conn) announcementRequestBody() []byte {
+	return browserproto.AnnouncementRequest{ResponseName: c.srcName.String()}.Marshal()
 }
 
 // decodeFrame strips this carrier's L2 encapsulation from one inbound frame and, if it
@@ -85,52 +93,71 @@ func (c *Conn) solicit() error {
 // receive mirror of sendNBF / sendNBIPX and reuses the same core codecs the server
 // ingests announcements with.
 func (c *Conn) decodeFrame(frame []byte) *Host {
-	if len(frame) < ethHdrLen {
+	payload, addr := c.browserDatagram(frame)
+	if payload == nil {
 		return nil
+	}
+	return announcementToHost(payload, c.proto, addr)
+}
+
+// browserPayload strips this carrier's framing from one inbound frame and returns the
+// mailslot datagram payload (the SMB_COM_TRANSACTION mailslot write), or nil if the frame
+// is not a NetBIOS datagram for this carrier. It is the shared unwrap used by both the
+// announcement decode (decodeFrame) and the GetBackupList-response decode (masterbrowse.go).
+func (c *Conn) browserPayload(frame []byte) []byte {
+	payload, _ := c.browserDatagram(frame)
+	return payload
+}
+
+// browserDatagram strips this carrier's L2 encapsulation and returns the mailslot payload
+// plus the printable source address (MAC for NBF, IPX net.node for NBIPX), or nil.
+func (c *Conn) browserDatagram(frame []byte) ([]byte, string) {
+	if len(frame) < ethHdrLen {
+		return nil, ""
 	}
 	switch c.proto {
 	case NBF:
-		return c.decodeNBFFrame(frame)
+		return c.decodeNBFDatagram(frame)
 	case NBIPX:
-		return c.decodeNBIPXFrame(frame)
+		return c.decodeNBIPXDatagram(frame)
 	}
-	return nil
+	return nil, ""
 }
 
-// decodeNBFFrame decodes an NBF UI datagram frame to a browser announcement. The 802.3
+// decodeNBFDatagram decodes an NBF UI datagram frame to its mailslot payload. The 802.3
 // body must carry the NetBIOS LLC header (0xF0 0xF0 0x03); the NBF frame must be a
-// DATAGRAM / DATAGRAM_BROADCAST whose payload is the mailslot browser transaction.
-func (c *Conn) decodeNBFFrame(frame []byte) *Host {
+// DATAGRAM / DATAGRAM_BROADCAST.
+func (c *Conn) decodeNBFDatagram(frame []byte) ([]byte, string) {
 	body := frame[ethHdrLen:]
 	if len(body) < 3 || body[0] != llcNetBIOS[0] || body[1] != llcNetBIOS[1] || body[2] != llcNetBIOS[2] {
-		return nil
+		return nil, ""
 	}
 	f, err := nbf.Decode(body[3:])
 	if err != nil || (f.Command != nbf.CmdDatagram && f.Command != nbf.CmdDatagramBroadcast) {
-		return nil
+		return nil, ""
 	}
 	var srcMAC [6]byte
 	copy(srcMAC[:], frame[6:12])
-	return announcementToHost(f.Payload, NBF, macString(srcMAC))
+	return f.Payload, macString(srcMAC)
 }
 
-// decodeNBIPXFrame decodes an IPX type-20 NMPI MailslotSend frame to a browser
-// announcement. The IPX source net.node is the printable address.
-func (c *Conn) decodeNBIPXFrame(frame []byte) *Host {
+// decodeNBIPXDatagram decodes an IPX type-20 NMPI MailslotSend frame to its mailslot
+// payload. The IPX source net.node is the printable address.
+func (c *Conn) decodeNBIPXDatagram(frame []byte) ([]byte, string) {
 	etherType := uint16(frame[12])<<8 | uint16(frame[13])
 	if etherType != etherTypeIPX {
-		return nil
+		return nil, ""
 	}
 	d, err := ipxproto.Decode(frame[ethHdrLen:])
 	if err != nil || d.Type != ipxNetBIOSTyp {
-		return nil
+		return nil, ""
 	}
 	nmpi, err := nb.DecodeNMPIPacket(d.Payload)
 	if err != nil || nmpi.Opcode != nb.NMPIOpMailslotSend {
-		return nil
+		return nil, ""
 	}
 	addr := fmt.Sprintf("%s.%s", netString(d.SrcNet), macString(d.SrcNode))
-	return announcementToHost(nmpi.Payload, NBIPX, addr)
+	return nmpi.Payload, addr
 }
 
 // announcementToHost unwraps the mailslot envelope and the browser frame from a datagram
