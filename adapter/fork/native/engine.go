@@ -1,4 +1,4 @@
-//go:build forknative
+//go:build forknative || all
 
 package native
 

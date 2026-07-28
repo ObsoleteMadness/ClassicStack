@@ -1,4 +1,4 @@
-//go:build !forknative
+//go:build !forknative && !all
 
 package fs
 
@@ -10,7 +10,8 @@ import "errors"
 // generic "unknown fork backend" error. The real adapter (adapter/fork/native, real
 // host resource-fork syscalls — HFS+ "..namedfork/rsrc") links only under that tag and
 // registers the same name, replacing this stub. The split is by mutually-exclusive
-// build tag (this file is !forknative), so exactly one "native" registration exists.
+// build tag (this file is !forknative && !all), so exactly one "native" registration
+// exists.
 // Mirrors the macgarden/zipfs disabled-stub pattern, but the host-syscall code lives in
 // adapter/ (out of the core ring), so a TinyGo/headless build links only this stub.
 

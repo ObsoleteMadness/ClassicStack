@@ -1,4 +1,4 @@
-//go:build !perfcounters
+//go:build !perfcounters && !all
 
 package metrics
 

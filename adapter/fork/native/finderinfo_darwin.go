@@ -1,4 +1,4 @@
-//go:build forknative && darwin
+//go:build (forknative || all) && darwin
 
 package native
 

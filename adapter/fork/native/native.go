@@ -1,4 +1,4 @@
-//go:build forknative
+//go:build forknative || all
 
 // Package native implements the "native" fork adapter: real HOST resource-fork access
 // via OS facilities, registered into the core/fs fork-adapter registry under the
