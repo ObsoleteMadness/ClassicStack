@@ -474,6 +474,14 @@ func BuildShare(spec ShareSpec, b bus.Bus) (ForkFS, error) {
 // remote SMB share gets resource forks from the same sidecar adapter a local share
 // does, and DOS-attr/8.3-name derivation works identically.
 //
+// Client-mount inversion: when the base ALREADY implements ForkEngine (AFP native
+// forks) AND the chosen backend is a sidecar layout (derez / appledouble / …),
+// WrapBase keeps the native ForkEngine for OpenFork and wraps the FileSystem so
+// those sidecar paths are PROJECTED into the namespace — the opposite of the
+// server-hosting case, where the same adapters consume sidecars from disk. A
+// Windows mount with -fork derez therefore shows .rdump/.idump files synthesised
+// from the remote resource fork / Finder info.
+//
 // spec supplies ForkBackend / MetaBackend / FilenameCodec / ReadOnly exactly as for
 // a locally-built share (withDefaults is applied here so a zero-valued spec is
 // valid); store is the metastore backing CNIDs and the "metastore" MetaEngine
@@ -486,12 +494,21 @@ func WrapBase(base FileSystem, spec ShareSpec, store metastore.Store) (ForkFS, e
 	if err != nil {
 		return nil, err
 	}
-	// A fork adapter is MANDATORY: always resolve exactly one over the fork-unaware
-	// base FS (withDefaults sets "appledouble" when unspecified; "nofork" is the
-	// explicit no-forks choice). An unknown name is a hard error.
-	forkEngine, err := forkAdapterByName(spec.ForkBackend, spec, base)
-	if err != nil {
-		return nil, err
+
+	native, hasNative := base.(ForkEngine)
+	var forkEngine ForkEngine
+	if hasNative && sidecarExportBackend(spec.ForkBackend) {
+		// Project sidecars into the FileSystem namespace; OpenFork stays native.
+		base = newSidecarExportFS(base, native, spec.ForkBackend)
+		forkEngine = native
+	} else {
+		// A fork adapter is MANDATORY: always resolve exactly one over the fork-unaware
+		// base FS (withDefaults sets "appledouble" when unspecified; "nofork" is the
+		// explicit no-forks choice). An unknown name is a hard error.
+		forkEngine, err = forkAdapterByName(spec.ForkBackend, spec, base)
+		if err != nil {
+			return nil, err
+		}
 	}
 	// A MetaEngine is likewise MANDATORY: derived names, CNIDs, and DOS
 	// attributes/dates over one swappable seam (meta.go/meta_registry.go). The

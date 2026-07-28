@@ -30,6 +30,14 @@ type DOSCreateTimeInfo interface {
 	DOSCreateTime() time.Time
 }
 
+// WireMetaComplete marks a FileInfo.Sys() value whose metadata already came from
+// the wire or from a synthesised directory entry. Consumers such as the WinFsp
+// mount must not call Meta().Attrs for these paths — that would Stat every
+// listing entry and, for projected sidecars, read forks too early.
+type WireMetaComplete interface {
+	WireMetaComplete()
+}
+
 // MetaEngine is the single per-share interface for everything the storage seam
 // tracks about a path beyond its bytes: derived DOS/AFP names, CNIDs, and DOS
 // attributes/dates a host filesystem cannot natively represent. It plays the

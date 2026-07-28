@@ -95,3 +95,10 @@ func UTF8ToMacRoman(s string) ([]byte, error) {
 	}
 	return out, nil
 }
+
+// RuneToMacRoman maps one Unicode rune to its MacRoman byte. ok is false when the
+// rune is outside the MacRoman repertoire (callers substitute '?' or reject).
+func RuneToMacRoman(r rune) (byte, bool) {
+	b, ok := runeToMacRoman[r]
+	return b, ok
+}
