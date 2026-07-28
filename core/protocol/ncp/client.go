@@ -44,6 +44,15 @@ func (r *Requester) NextSeq() uint8 {
 	return r.seq
 }
 
+// ResetSeq resets the request sequence to 0 so the NEXT request carries sequence 1. A
+// real NetWare server assigns the service connection on CreateConnection and then expects
+// the connection's request sequence to restart at 1 (ncpfs sets conn->sequence = 0 right
+// after the allocate-slot reply). CreateConnection itself is sequence-exempt on the
+// server, so the client must reset here once the connection is assigned — otherwise the
+// first post-create request arrives at sequence 2 (Create consumed 1) and the server,
+// waiting for sequence 1, silently drops it and every request after.
+func (r *Requester) ResetSeq() { r.seq = 0 }
+
 // marshalRequest prepends the 6-byte NCP request header (type, sequence, conn-low,
 // task, conn-high, function) to body and returns the whole packet. typ is TypeRequest
 // for an ordinary function call. The sequence is bumped here so every packet a

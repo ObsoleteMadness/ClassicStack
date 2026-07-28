@@ -60,6 +60,67 @@ func (r *Requester) BuildLogin(user, password string) []byte {
 	return r.marshalRequest(fnConnBindery, wrapSubfunction(sf17LoginUnencrypted, args))
 }
 
+// --- Encrypted bindery login (NetWare 3.x): GetLoginKey / GetBinderyObjectID / Login ---
+//
+// A default-configured real NetWare server refuses the cleartext login and requires the
+// challenge-response bindery login: draw an 8-byte login key, resolve the user name to a
+// 4-byte object ID, then send a password digest keyed by both. This is CLIENT-side only;
+// the ClassicStack server stays on the cleartext NW-3.1 path. See nwcrypt.go for the
+// shuffle/nw_encrypt algorithm (ncpfs / DDJ 11/93 attribution).
+
+// BuildGetLoginKey builds Get Login Key (0x17/0x17): no args; the reply body is the
+// 8-byte challenge key.
+func (r *Requester) BuildGetLoginKey() []byte {
+	return r.marshalRequest(fnConnBindery, wrapSubfunction(sf17GetLoginKey, nil))
+}
+
+// ParseLoginKey reads the 8-byte login key from a Get Login Key reply body.
+func ParseLoginKey(body []byte) ([8]byte, error) {
+	var key [8]byte
+	if len(body) < 8 {
+		return key, ErrShortBody
+	}
+	copy(key[:], body[:8])
+	return key, nil
+}
+
+// BuildGetBinderyObjectID builds Get Bindery Object ID (0x17/0x35): object-type(2 BE) +
+// length-prefixed name. The reply body is object-id(4 BE), object-type(2 BE), then a
+// 48-byte NUL-padded name.
+func (r *Requester) BuildGetBinderyObjectID(objType uint16, name string) []byte {
+	args := beU16b(objType)
+	args = appendByteString(args, name)
+	return r.marshalRequest(fnConnBindery, wrapSubfunction(sf17GetBinderyObjectID, args))
+}
+
+// ParseBinderyObjectID reads the 4-byte object ID (big-endian) from a Get Bindery Object
+// ID reply body.
+func ParseBinderyObjectID(body []byte) (uint32, error) {
+	if len(body) < 4 {
+		return 0, ErrShortBody
+	}
+	return uint32(body[0])<<24 | uint32(body[1])<<16 | uint32(body[2])<<8 | uint32(body[3]), nil
+}
+
+// BuildLoginEncrypted builds Login Object Encrypted (0x17/0x18): the 8-byte
+// challenge-response (nwEncrypt of the shuffled password), object-type(2 BE), and the
+// length-prefixed user name. objectID is the user's bindery object ID from
+// BuildGetBinderyObjectID; key is the server's login key from BuildGetLoginKey.
+func (r *Requester) BuildLoginEncrypted(objType uint16, name, password string, objectID uint32, key [8]byte) []byte {
+	// shuffle the password keyed by the object ID in NETWORK byte order (big-endian),
+	// matching ncpfs (htonl(object_id)); then fold in the challenge key.
+	lon := [4]byte{byte(objectID >> 24), byte(objectID >> 16), byte(objectID >> 8), byte(objectID)}
+	var digest [16]byte
+	shuffle(lon, []byte(password), &digest)
+	var resp [8]byte
+	nwEncrypt(key, digest, &resp)
+
+	args := append([]byte(nil), resp[:]...)
+	args = appendBE16(args, objType)
+	args = appendByteString(args, name)
+	return r.marshalRequest(fnConnBindery, wrapSubfunction(sf17LoginEncrypted, args))
+}
+
 // --- Get Volume Number (0x16/0x05) ---
 
 // BuildGetVolumeNumber builds Get Volume Number (0x16/0x05): a length-prefixed volume
@@ -67,6 +128,30 @@ func (r *Requester) BuildLogin(user, password string) []byte {
 func (r *Requester) BuildGetVolumeNumber(volume string) []byte {
 	args := appendByteString(nil, volume)
 	return r.marshalRequest(fnDirServices, wrapSubfunction(sf16GetVolumeNumber, args))
+}
+
+// MaxVolumeSlots is the number of volume-number slots a browse iterates (0..63).
+const MaxVolumeSlots = maxVolumeSlots
+
+// BuildGetVolumeName builds Get Volume Name (0x16/0x06): a single volume-number byte. The
+// reply body is a 1-byte length followed by the volume name. Iterating the volume number
+// 0..MaxVolumeSlots-1 enumerates a server's mounted volumes (a not-OK completion or empty
+// name means no volume in that slot) — the NetWare 3.x way to browse a server's volumes.
+func (r *Requester) BuildGetVolumeName(volumeNumber uint8) []byte {
+	return r.marshalRequest(fnDirServices, wrapSubfunction(sf16GetVolumeName, []byte{volumeNumber}))
+}
+
+// ParseVolumeName reads the volume name (1-byte length + bytes) from a Get Volume Name
+// reply body. An empty name is returned as "".
+func ParseVolumeName(body []byte) (string, error) {
+	if len(body) < 1 {
+		return "", ErrShortBody
+	}
+	n := int(body[0])
+	if len(body) < 1+n {
+		return "", ErrShortBody
+	}
+	return string(body[1 : 1+n]), nil
 }
 
 // ParseVolumeNumber reads the 1-byte volume number from a Get Volume Number reply.
@@ -386,6 +471,92 @@ func ParseSearchReply(body []byte) (SearchEntry, error) {
 
 // nwAttrDirectory is the NetWare DOS directory attribute bit (fileio.go).
 const nwAttrDirectory uint8 = 0x10
+
+// --- File Search Initialize / Continue (0x3E / 0x3F): the NetWare 3.x directory scan ---
+//
+// A real NetWare 3.x/4.x server enumerates a directory with the two-call File Search
+// Initialize (62/0x3E) + File Search Continue (63/0x3F) pair, NOT the FCB-era Search for a
+// File (0x40) above (which a real server answers 0xFF/no-files). Initialize takes a dir
+// handle + subpath and returns a search context (volume, directory id, sequence); Continue
+// pages that context with a wildcard pattern, one entry per call, until completion 0xFF
+// (end of scan). Layout ported from ncpfs lib/filemgmt.c ncp_file_search_init /
+// ncp_file_search_continue (CLAUDE.md #7).
+
+// searchAllPattern is the NetWare "match every 8.3 name" wildcard for File Search
+// Continue: "*.*" with each character's high bit set (0x2A→0xAA '*', 0x2E→0xAE '.'), the
+// server's marker for a wildcard match-any (observed on the wire from a real NW 4.1
+// client: bytes AA AE AA). Sent as a length-prefixed string.
+var searchAllPattern = string([]byte{0xAA, 0xAE, 0xAA})
+
+// FileSearchContext is the search state File Search Initialize returns and File Search
+// Continue pages: the volume number, directory id, and the running sequence.
+type FileSearchContext struct {
+	VolumeNumber uint8
+	DirectoryID  uint16
+	Sequence     uint16
+}
+
+// BuildFileSearchInit builds File Search Initialize (0x3E): dir-handle(1) + pstring path
+// (the directory to scan, relative to the handle; "" scans the handle's own directory).
+func (r *Requester) BuildFileSearchInit(handle uint8, path string) []byte {
+	body := []byte{handle}
+	body = appendByteString(body, path)
+	return r.marshalRequest(fnFileSearchInit, body)
+}
+
+// ParseFileSearchInit reads the search context from a File Search Initialize reply:
+// volume-number(1), directory-id(2 HL/BE), sequence(2 HL/BE), access-rights(1).
+func ParseFileSearchInit(body []byte) (FileSearchContext, error) {
+	if len(body) < 6 {
+		return FileSearchContext{}, ErrShortBody
+	}
+	return FileSearchContext{
+		VolumeNumber: body[0],
+		DirectoryID:  uint16(body[1])<<8 | uint16(body[2]),
+		Sequence:     uint16(body[3])<<8 | uint16(body[4]),
+	}, nil
+}
+
+// BuildFileSearchContinue builds File Search Continue (0x3F): volume-number(1),
+// directory-id(2 HL), sequence(2 HL), search-attributes(1), pstring pattern. Pass
+// searchAllPattern to match every entry. attr selects files vs directories via the
+// directory bit (0x10), like the 0x40 scan.
+func (r *Requester) BuildFileSearchContinue(ctx FileSearchContext, attr uint8, pattern string) []byte {
+	body := []byte{ctx.VolumeNumber}
+	body = appendBE16(body, ctx.DirectoryID)
+	body = appendBE16(body, ctx.Sequence)
+	body = append(body, attr)
+	body = appendByteString(body, pattern)
+	return r.marshalRequest(fnFileSearchCont, body)
+}
+
+// SearchAllPattern is the exported match-every-entry wildcard for File Search Continue.
+func SearchAllPattern() string { return searchAllPattern }
+
+// ParseFileSearchContinue reads one entry from a File Search Continue reply: sequence(2
+// HL) + reserved(2), then the entry record — a 14-byte name at offset 4, the attribute
+// byte at offset 18, and (for a file) a 4-byte length at offset 20 (HL/BE). It updates
+// ctx.Sequence to page the next call.
+func ParseFileSearchContinue(body []byte, ctx *FileSearchContext) (SearchEntry, error) {
+	const fixed = 2 + 2 + 14 + 1 // sequence, reserved, name, attribute
+	if len(body) < fixed {
+		return SearchEntry{}, ErrShortBody
+	}
+	ctx.Sequence = uint16(body[0])<<8 | uint16(body[1])
+	var e SearchEntry
+	e.NextSeq = ctx.Sequence
+	e.Name = trimNUL(body[4:18])
+	attr := body[18]
+	e.IsDir = attr&nwAttrDirectory != 0
+	if !e.IsDir {
+		// File length is a 4-byte HL/BE word at offset 20 (ncpfs file_length,
+		// ncp_reply_dword_hl(conn, 20)).
+		if len(body) >= 24 {
+			e.Size = be32(body[20:])
+		}
+	}
+	return e, nil
+}
 
 // --- little wire helpers (big-endian body fields) ---
 

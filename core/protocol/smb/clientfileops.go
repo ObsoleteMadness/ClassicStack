@@ -346,6 +346,44 @@ func ParseQueryInformation(resp []byte) (FileInfo, error) {
 	}, nil
 }
 
+// --- QUERY_INFORMATION_DISK (share free/total space) ---
+
+// DiskInfo is the parsed SMB_COM_QUERY_INFORMATION_DISK result: total and free bytes
+// derived from the FAT-style allocation-unit fields.
+type DiskInfo struct {
+	Total uint64
+	Free  uint64
+}
+
+// BuildQueryInformationDisk builds an SMB_COM_QUERY_INFORMATION_DISK request (WCT=0,
+// [MS-CIFS] §2.2.4.24.1): no words, no byte area — the Tid in the header identifies the
+// share whose capacity is reported.
+func (b *Builder) BuildQueryInformationDisk() []byte {
+	return b.frame(CommandQueryInformationDisk, nil, nil)
+}
+
+// ParseQueryInformationDisk parses an SMB_COM_QUERY_INFORMATION_DISK response (WCT=5,
+// [MS-CIFS] §2.2.4.24.2): TotalUnits(2) BlocksPerUnit(2) BlockSize(2) FreeUnits(2)
+// Reserved(2). Byte counts are units × blocks-per-unit × block-size.
+func ParseQueryInformationDisk(resp []byte) (DiskInfo, error) {
+	_, words, _, err := respBody(CommandQueryInformationDisk, resp)
+	if err != nil {
+		return DiskInfo{}, err
+	}
+	if len(words) < 8 {
+		return DiskInfo{}, ErrShortResponse
+	}
+	totalUnits := uint64(bp.LE16(words[0:2]))
+	blocksPerUnit := uint64(bp.LE16(words[2:4]))
+	blockSize := uint64(bp.LE16(words[4:6]))
+	freeUnits := uint64(bp.LE16(words[6:8]))
+	unitBytes := blocksPerUnit * blockSize
+	return DiskInfo{
+		Total: totalUnits * unitBytes,
+		Free:  freeUnits * unitBytes,
+	}, nil
+}
+
 // filetimeEpochDelta100ns is the 100-ns tick count between the FILETIME epoch
 // (1601-01-01) and the Unix epoch (1970-01-01).
 const filetimeEpochDelta100ns = 116444736000000000
@@ -409,11 +447,15 @@ func (b *Builder) BuildFindFirst2(dir string, maxCount uint16) []byte {
 	// InformationLevel(2) SearchStorageType(4) FileName(SMB_STRING).
 	pattern := findPattern(dir)
 	params := make([]byte, 12)
-	bp.PutLE16(params[0:2], AttrHidden|AttrSystem|AttrDirectory) // SearchAttributes
-	bp.PutLE16(params[2:4], maxCount)                            // SearchCount
-	bp.PutLE16(params[4:6], findCloseAtEOSFlag)                  // Flags: close at end-of-search
-	bp.PutLE16(params[6:8], findFileBothDirInfo)                 // InformationLevel
-	bp.PutLE32(params[8:12], 0)                                  // SearchStorageType
+	// SearchAttributes is inclusive for Hidden/System/Directory ([smb6.0] SEARCH): with
+	// those bits set, normal (Archive) files are returned too. Include ReadOnly|Archive
+	// as well so a server that treats the field as a strict attribute mask still lists
+	// ordinary files — matching OPEN_ANDX and observed Win9x redirector requests (0x0037).
+	bp.PutLE16(params[0:2], AttrReadOnly|AttrHidden|AttrSystem|AttrDirectory|AttrArchive)
+	bp.PutLE16(params[2:4], maxCount)            // SearchCount
+	bp.PutLE16(params[4:6], findCloseAtEOSFlag)  // Flags: close at end-of-search
+	bp.PutLE16(params[6:8], findFileBothDirInfo) // InformationLevel
+	bp.PutLE32(params[8:12], 0)                  // SearchStorageType
 	params = append(params, encodePathBytes(pattern, b.Unicode)...)
 	if b.Unicode {
 		params = append(params, 0, 0)
@@ -541,16 +583,23 @@ func (b *Builder) buildTrans2(sub uint16, params, data []byte) []byte {
 	dataOffset := paramOffset + len(params)
 	dataOffset = (dataOffset + 1) &^ 1 // 2-align the data block
 
-	// MaxDataCount: the largest reply the server may return in one transaction. A
-	// connectionless transport (SMB over IPX) has no reassembly, so the caller sets
-	// b.MaxTransactBytes to a datagram-safe cap; otherwise (TCP/NBT) accept a large reply.
+	// MaxDataCount: the largest reply DATA block the server may return in one
+	// transaction. Zero MaxTransactBytes means "no client cap" (0xFFFF); a datagram
+	// transport or a small-buffer server (Win9x MaxBufferSize) sets a finite cap so the
+	// reply fits one message — this client does not reassemble multi-part TRANS2 replies.
 	maxData := uint16(0xFFFF)
 	if b.MaxTransactBytes != 0 {
 		maxData = b.MaxTransactBytes
 	}
+	// MaxParameterCount must be the expected reply-param budget, NOT 0 and NOT 0xFFFF.
+	// Observed (Win98): a too-large value is echoed as TotalParameterCount and misframes
+	// the param/data split (same RAP NetShareEnum erratum); 0 yields an empty param block
+	// so FIND_FIRST2's SID/EndOfSearch cannot be read. 32 covers FIND_FIRST2's 10-byte
+	// reply params and the smaller QUERY_* reply param words.
+	const maxParamReply = 32
 	bp.PutLE16(words[0:2], uint16(len(params))) // TotalParameterCount
 	bp.PutLE16(words[2:4], uint16(len(data)))   // TotalDataCount
-	bp.PutLE16(words[4:6], 0)                   // MaxParameterCount
+	bp.PutLE16(words[4:6], maxParamReply)       // MaxParameterCount
 	bp.PutLE16(words[6:8], maxData)             // MaxDataCount
 	words[8] = 0                                // MaxSetupCount
 	// words[9] Reserved
