@@ -138,7 +138,10 @@ func (l *localFS) CreateDir(path string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Mkdir(h, 0o755); err != nil {
+	// 0755 is intentional: this creates a user-visible directory on a shared
+	// AFP/SMB volume, which must be traversable by the file-sharing daemon and
+	// follows Netatalk's default volume permissions. It is not private state.
+	if err := os.Mkdir(h, 0o755); err != nil { // #nosec G301 -- shared-volume directory, Netatalk-compatible mode
 		return err
 	}
 	l.publish(OpCreate, h, "")
@@ -150,7 +153,10 @@ func (l *localFS) CreateFile(path string) (File, error) {
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(h, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
+	// 0644 is intentional: this is a user file on a shared AFP/SMB volume and
+	// must be readable by the file-sharing daemon and other volume users, per
+	// Netatalk's default file permissions. It is not private state.
+	f, err := os.OpenFile(h, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644) // #nosec G302,G304 -- shared-volume file; h is confined to the share root by l.host()
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +170,9 @@ func (l *localFS) OpenFile(path string, flag int) (File, error) {
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(h, flag, 0o644)
+	// 0644 applies only if O_CREATE is set in flag; same shared-volume rationale
+	// as CreateFile — user files on an AFP/SMB volume, Netatalk-compatible mode.
+	f, err := os.OpenFile(h, flag, 0o644) // #nosec G302,G304 -- shared-volume file; h is confined to the share root by l.host()
 	if err != nil {
 		return nil, err
 	}

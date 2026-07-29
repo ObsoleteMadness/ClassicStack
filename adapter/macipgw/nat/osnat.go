@@ -1,11 +1,11 @@
 package nat
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"io"
 	"log/slog"
-	"math/rand"
 	"net"
 	"strconv"
 	"sync"
@@ -488,7 +488,21 @@ func (n *OSNAT) tcpConnect(key osFlowKey, macISN uint32, mss uint16, synWindow u
 		return
 	}
 
-	ourISN := rand.Uint32()
+	// The host-side TCP Initial Sequence Number is drawn from crypto/rand:
+	// a predictable ISN would let an off-path attacker forge segments into a
+	// forwarded flow (RFC 6528), so it must not come from a weak PRNG.
+	var isnBuf [4]byte
+	if _, err := rand.Read(isnBuf[:]); err != nil {
+		// crypto/rand should never fail; if it does, abandon the flow rather
+		// than fall back to a predictable ISN.
+		n.log.Debug("macip-nat: ISN entropy", "err", err)
+		n.tcpMu.Lock()
+		delete(n.tcpFlows, key)
+		n.tcpMu.Unlock()
+		n.sendTCPRST(serverIPb, clientIP, serverPort, clientPort, macISN+1)
+		return
+	}
+	ourISN := binary.BigEndian.Uint32(isnBuf[:])
 	flow := &tcpFwdFlow{
 		conn:     conn,
 		clientIP: clientIP, serverIP: serverIPb,

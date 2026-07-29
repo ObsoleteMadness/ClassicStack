@@ -38,7 +38,10 @@ func traceInit() {
 			traceWriter = os.Stderr
 			return
 		}
-		f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		// The trace path is supplied by the operator via an environment
+		// variable to enable opt-in debug logging; it is trusted input, not
+		// attacker-controlled, and the file is created private (0600).
+		f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) // #nosec G304,G703 -- operator-supplied debug trace path
 		if err == nil {
 			traceWriter = f
 		}

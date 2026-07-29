@@ -228,7 +228,7 @@ func (s *Store) save() error {
 		return err
 	}
 	tmpName := tmp.Name()
-	cleanup := func() { tmp.Close(); os.Remove(tmpName) }
+	cleanup := func() { _ = tmp.Close(); _ = os.Remove(tmpName) } // best-effort cleanup on the error paths below
 	if err := tmp.Chmod(0o600); err != nil {
 		cleanup()
 		return err
@@ -242,7 +242,7 @@ func (s *Store) save() error {
 		return err
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName) // best-effort cleanup; returning the close error
 		return err
 	}
 	return os.Rename(tmpName, s.path)

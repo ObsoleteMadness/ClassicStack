@@ -289,7 +289,7 @@ func (p *Port) onFrame(frame link.Frame) {
 		conn.mu.Unlock()
 
 		if isCommand && pf {
-			p.sendRR(srcMAC)
+			_ = p.sendRR(srcMAC) // best-effort LLC2 ack; a lost RR is re-driven by the peer's next poll
 		}
 		for _, raw := range retransmits {
 			_ = p.Port.Send(raw)
@@ -314,7 +314,7 @@ func (p *Port) onFrame(frame link.Frame) {
 		conn.ackLocked(ctrl1 >> 1)
 		conn.mu.Unlock()
 		if ctrl1&0x01 != 0 { // peer polled — acknowledge
-			p.sendRR(srcMAC)
+			_ = p.sendRR(srcMAC) // best-effort LLC2 ack; a lost RR is re-driven by the peer's next poll
 		}
 		p.deliverNBF(srcMAC, dstMAC, body[4:])
 	}
@@ -440,7 +440,7 @@ func (p *Port) handleSABME(srcMAC, dstMAC [6]byte) {
 		p.conns[srcMAC] = conn
 	}
 	p.connsMu.Unlock()
-	p.sendUA(srcMAC)
+	_ = p.sendUA(srcMAC) // best-effort SABME ack; the peer retransmits SABME if the UA is lost
 }
 
 // handleDISC tears down the connection (dropping its recovery state and reply
@@ -450,7 +450,7 @@ func (p *Port) handleDISC(srcMAC, dstMAC [6]byte) {
 		return
 	}
 	p.dropConn(srcMAC)
-	p.sendUA(srcMAC)
+	_ = p.sendUA(srcMAC) // best-effort DISC ack; the peer retransmits DISC if the UA is lost
 }
 
 // Send transmits an NBF frame to dstMAC. Session-layer commands (0x14–0x1F) ride

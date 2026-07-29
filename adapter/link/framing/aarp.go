@@ -342,11 +342,16 @@ func (d *aarpLink) seedNetwork() uint16 {
 	if d.seedMax <= d.seedMin {
 		return d.seedMin
 	}
-	return d.seedMin + uint16(rand.Intn(int(d.seedMax-d.seedMin)+1))
+	// Weak RNG is fine: this only picks a tentative AppleTalk network for AARP
+	// probing. Uniqueness is guaranteed by the probe/defend exchange, not by
+	// the randomness, so it is not a security boundary.
+	return d.seedMin + uint16(rand.Intn(int(d.seedMax-d.seedMin)+1)) // #nosec G404 -- tentative AARP network; uniqueness from probe/defend, not RNG
 }
 
 // defaultRandNode picks a node value in the valid AppleTalk range 1..254 (0 invalid,
 // 255 broadcast).
 func defaultRandNode() uint8 {
-	return uint8(1 + rand.Intn(254))
+	// Weak RNG is fine: AARP probe/defend resolves any node-number collision,
+	// so this is a starting guess, not a security-sensitive value.
+	return uint8(1 + rand.Intn(254)) // #nosec G404 -- tentative AARP node; uniqueness from probe/defend, not RNG
 }

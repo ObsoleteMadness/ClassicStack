@@ -22,7 +22,9 @@ import (
 // Read returns the raw bytes of the extension-map file at path. A missing file yields
 // empty content with no error (the UI shows an empty grid the operator can fill in).
 func Read(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
+	// path is the operator-configured extension-map file (server.toml / UI),
+	// i.e. trusted input, not an attacker-controlled request parameter.
+	data, err := os.ReadFile(path) // #nosec G304 -- operator-configured config path
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -42,7 +44,7 @@ func Save(path string, content []byte) (backup string, err error) {
 			return "", fmt.Errorf("extmap: backup %s: %w", path, err)
 		}
 	}
-	if err := os.WriteFile(path, content, 0o644); err != nil {
+	if err := os.WriteFile(path, content, 0o600); err != nil {
 		return backup, fmt.Errorf("extmap: write %s: %w", path, err)
 	}
 	return backup, nil

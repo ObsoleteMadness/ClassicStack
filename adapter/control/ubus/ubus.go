@@ -673,17 +673,17 @@ func (c *AdapterClient) Subscribe(topics ...string) (<-chan bus.Event, func(), e
 	reader := bufio.NewReader(conn)
 	line, err := reader.ReadBytes('\n')
 	if err != nil {
-		conn.Close()
+		_ = conn.Close() // best-effort cleanup; returning the read error
 		return nil, nil, err
 	}
 
 	var resp Response
 	if err := json.Unmarshal(line, &resp); err != nil {
-		conn.Close()
+		_ = conn.Close() // best-effort cleanup; returning the unmarshal error
 		return nil, nil, err
 	}
 	if resp.Error != "" {
-		conn.Close()
+		_ = conn.Close() // best-effort cleanup; returning the ubus error
 		return nil, nil, fmt.Errorf("ubus subscribe error: %s", resp.Error)
 	}
 

@@ -48,6 +48,7 @@ package zipfs
 import (
 	"archive/zip"
 	"errors"
+	"fmt"
 	"io"
 	iofs "io/fs"
 	"os"
@@ -185,12 +186,12 @@ func (z *zipFS) openReader() (*zip.Reader, *os.File, error) {
 	}
 	info, err := f.Stat()
 	if err != nil {
-		f.Close()
+		_ = f.Close() // best-effort cleanup; returning the original error
 		return nil, nil, err
 	}
 	r, err := zip.NewReader(f, info.Size())
 	if err != nil {
-		f.Close()
+		_ = f.Close() // best-effort cleanup; returning the original error
 		return nil, nil, err
 	}
 	return r, f, nil
@@ -304,7 +305,7 @@ func (z *zipFS) stageNew(name string) (*stagedFile, error) {
 		return nil, err
 	}
 	tmp := tf.Name()
-	tf.Close()
+	_ = tf.Close() // handle is unused after Name(); bytes land via later WriteAt
 	s := &stagedFile{tmp: tmp, modTime: time.Now()}
 	z.staged[name] = s
 	delete(z.tomb, name)
@@ -325,7 +326,7 @@ func (z *zipFS) stageExisting(name string) (*stagedFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer af.Close()
+	defer af.Close() // #nosec G104 -- deferred best-effort close of a read-only archive handle
 	ze := findMember(r, name)
 	if ze == nil {
 		return z.stageNew(name)
@@ -334,18 +335,29 @@ func (z *zipFS) stageExisting(name string) (*stagedFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rc.Close()
+	defer rc.Close() // #nosec G104 -- deferred best-effort close of a read-only member reader
 	tf, err := os.CreateTemp(filepath.Dir(z.path), ".zipfs-stage-*")
 	if err != nil {
 		return nil, err
 	}
 	tmp := tf.Name()
-	if _, err := io.Copy(tf, rc); err != nil {
-		tf.Close()
-		os.Remove(tmp)
+	// Bound the inflate against a decompression bomb: a member may not expand
+	// past the uncompressed size it declares in the central directory. We copy
+	// through a limit of declared+1 and treat any overflow as a corrupt/hostile
+	// archive rather than letting it fill the disk.
+	limit := int64(ze.UncompressedSize64)
+	n, err := io.Copy(tf, io.LimitReader(rc, limit+1)) // #nosec G110 -- bounded by LimitReader
+	if err != nil {
+		_ = tf.Close() // best-effort cleanup; returning the copy error
+		_ = os.Remove(tmp)
 		return nil, err
 	}
-	tf.Close()
+	if n > limit {
+		_ = tf.Close() // best-effort cleanup; returning the bomb error
+		_ = os.Remove(tmp)
+		return nil, fmt.Errorf("zipfs: member %q exceeds its declared uncompressed size (%d bytes)", name, limit)
+	}
+	_ = tf.Close() // staged bytes are re-opened via WriteAt; close error is not actionable here
 	s := &stagedFile{tmp: tmp, modTime: m.modTime}
 	z.staged[name] = s
 	z.dirty = true
@@ -383,15 +395,17 @@ func (z *zipFS) flushLocked() error {
 	}
 
 	tmpArchive := z.path + ".tmp"
-	out, err := os.Create(tmpArchive)
+	// tmpArchive derives from z.path, the operator-configured archive location
+	// (share spec), not attacker-controlled input.
+	out, err := os.Create(tmpArchive) // #nosec G304 -- operator-configured archive path
 	if err != nil {
 		return err
 	}
 	w := zip.NewWriter(out)
 	cleanup := func(e error) error {
 		_ = w.Close()
-		out.Close()
-		os.Remove(tmpArchive)
+		_ = out.Close()
+		_ = os.Remove(tmpArchive)
 		return e
 	}
 
@@ -441,31 +455,31 @@ func (z *zipFS) flushLocked() error {
 	}
 
 	if err := w.Close(); err != nil {
-		out.Close()
-		os.Remove(tmpArchive)
+		_ = out.Close() // best-effort cleanup; returning the writer error
+		_ = os.Remove(tmpArchive)
 		return err
 	}
 	if err := out.Close(); err != nil {
-		os.Remove(tmpArchive)
+		_ = os.Remove(tmpArchive) // best-effort cleanup; returning the close error
 		return err
 	}
 
 	// Release the fresh source reader before replacing the file (Windows can't rename
 	// over an open handle), then atomically swap in the new archive.
 	if srcFile != nil {
-		srcFile.Close()
-		srcFile = nil // defeat the deferred Close above (already closed)
+		_ = srcFile.Close() // best-effort; we only need the handle released before rename
+		srcFile = nil       // defeat the deferred Close above (already closed)
 		srcReader = nil
 	}
 	if err := os.Rename(tmpArchive, z.path); err != nil {
-		os.Remove(tmpArchive)
+		_ = os.Remove(tmpArchive) // best-effort cleanup; returning the rename error
 		return err
 	}
 
 	// Fold staged files into the archive: drop the temp files and clear the overlay,
 	// then re-scan the new central directory so subsequent reads stream from it.
 	for _, s := range z.staged {
-		os.Remove(s.tmp)
+		_ = os.Remove(s.tmp) // best-effort temp cleanup after a successful flush
 	}
 	z.staged = make(map[string]*stagedFile)
 	z.tomb = make(map[string]struct{})
@@ -747,7 +761,7 @@ func (z *zipFS) Rename(oldp, newp string) error {
 // tombstone the original so the next flush omits it. Caller holds z.mu.
 func (z *zipFS) tombstoneLocked(name string) {
 	if s, ok := z.staged[name]; ok {
-		os.Remove(s.tmp)
+		_ = os.Remove(s.tmp) // best-effort temp cleanup; tombstone below is authoritative
 		delete(z.staged, name)
 	}
 	if _, ok := z.meta[name]; ok {
@@ -850,7 +864,7 @@ func (z *zipFS) Close() error {
 	defer z.mu.Unlock()
 	err := z.flushLocked()
 	for _, s := range z.staged {
-		os.Remove(s.tmp)
+		_ = os.Remove(s.tmp) // best-effort temp cleanup at Close
 	}
 	z.staged = make(map[string]*stagedFile)
 	return err
@@ -861,7 +875,9 @@ func (z *zipFS) Close() error {
 // openWriteHandle returns a write handle over a staged temp file. Caller holds z.mu.
 func (z *zipFS) openWriteHandle(name string, s *stagedFile, flag int) (corefs.File, error) {
 	fl := os.O_RDWR
-	tf, err := os.OpenFile(s.tmp, fl, 0o644)
+	// 0600: this is a private host-side staging temp file, not user-visible
+	// content — the member's mode inside the archive is set at flush time.
+	tf, err := os.OpenFile(s.tmp, fl, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -891,7 +907,7 @@ func (z *zipFS) openReadHandle(name string) (corefs.File, error) {
 	}
 	ze := findMember(r, name)
 	if ze == nil {
-		af.Close()
+		_ = af.Close() // best-effort cleanup; returning not-exist
 		return nil, iofs.ErrNotExist
 	}
 	return &zipReadFile{archive: af, ze: ze, name: name, size: m.size, modTime: m.modTime}, nil
@@ -1008,7 +1024,7 @@ type zipReadFile struct {
 
 func (f *zipReadFile) reopen() error {
 	if f.rc != nil {
-		f.rc.Close()
+		_ = f.rc.Close() // best-effort; discarding the old member reader before reopening
 		f.rc = nil
 	}
 	rc, err := f.ze.Open()

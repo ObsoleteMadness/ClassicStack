@@ -50,11 +50,15 @@ func New(path string, lt LinkType, snaplen uint32) (*Sink, error) {
 		snaplen = defaultSnapLen
 	}
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		// 0750: a capture directory may hold packet dumps with sensitive
+		// payloads, so it should not be world-readable.
+		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return nil, fmt.Errorf("pcapfile: mkdir %s: %w", dir, err)
 		}
 	}
-	f, err := os.Create(path)
+	// The capture path is an operator-configured destination (server.toml / UI),
+	// i.e. trusted input, not an attacker-controlled request parameter.
+	f, err := os.Create(path) // #nosec G304 -- operator-configured capture path
 	if err != nil {
 		return nil, fmt.Errorf("pcapfile: open %s: %w", path, err)
 	}

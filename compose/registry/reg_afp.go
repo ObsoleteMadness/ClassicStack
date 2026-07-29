@@ -32,7 +32,9 @@ func init() {
 			if path == "" {
 				return nil
 			}
-			data, err := os.ReadFile(path)
+			// path is the operator-configured extension-map file from the
+			// volume/AFP config, i.e. trusted input, not attacker-controlled.
+			data, err := os.ReadFile(path) // #nosec G304 -- operator-configured config path
 			if err != nil {
 				logger.Log(log.Warn, "AFP extension map unreadable; type/creator defaulting disabled for volumes using it",
 					log.Str("path", path), log.Str("error", err.Error()))

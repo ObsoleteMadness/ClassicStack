@@ -134,7 +134,13 @@ func (s *Server) Start() error {
 	// Wrap every route in the web-admin access gate (§4-ter): first-run setup until an
 	// admin is configured, HTTP Basic auth thereafter. The SPA's own static assets are
 	// exempted inside the gate so the page can load to drive setup/login.
-	s.server = &http.Server{Handler: s.authGate(mux)}
+	// ReadHeaderTimeout bounds how long a client may take to send request
+	// headers, preventing a Slowloris-style connection-exhaustion attack on
+	// the management interface.
+	s.server = &http.Server{
+		Handler:           s.authGate(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 
 	s.wg.Add(1)
 	go func() {
@@ -952,7 +958,11 @@ func (c *AdapterClient) post(path string, body any) error {
 // getJSON GETs path and decodes the JSON body into dest, mapping 501 to
 // control.ErrUnavailable (the round-trip of the "not in this build" sentinel).
 func (c *AdapterClient) getJSON(path string, dest any) error {
-	res, err := c.client.Get(c.baseURL + path)
+	// baseURL is the operator's own control-plane endpoint and path is an
+	// internal, literal API route — not an attacker-controlled URL, so this is
+	// not an SSRF sink.
+	res, err := c.client.Get(c.baseURL + path) // #nosec G704 -- fixed control-plane endpoint + internal route
+
 	if err != nil {
 		return err
 	}
@@ -1125,7 +1135,11 @@ func (c *AdapterClient) Config() (*config.Model, error) {
 // revision. HTTP-only surface (Basic auth is an HTTP-transport concern), so it is on
 // the concrete client, not the shared Client interface. Fails (409) if already set.
 func (c *AdapterClient) Setup(user, password string) (string, error) {
-	body, _ := json.Marshal(struct {
+	// Marshalling the password is intentional: this is the first-run setup
+	// request whose purpose is to transmit the new admin credential to the
+	// control plane (sent over the management HTTPS transport, then hashed
+	// server-side). It is not accidental secret exposure.
+	body, _ := json.Marshal(struct { // #nosec G117 -- setup request deliberately carries the new admin password
 		User     string `json:"user"`
 		Password string `json:"password"`
 	}{User: user, Password: password})
@@ -1315,7 +1329,7 @@ func (c *AdapterClient) Subscribe(topics ...string) (<-chan bus.Event, func(), e
 	}
 
 	if res.StatusCode != http.StatusOK {
-		res.Body.Close()
+		_ = res.Body.Close() // best-effort cleanup; returning the status error
 		return nil, nil, fmt.Errorf("SSE connection failed: %s", res.Status)
 	}
 

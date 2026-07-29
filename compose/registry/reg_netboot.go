@@ -68,14 +68,16 @@ func init() {
 // a payload already ending in a valid trailer is served untouched, anything
 // else is padded and trailered. Returns nil (inert service) on failure.
 func loadPayload(path, imagePath string, blockSize int, logger log.Logger) []byte {
-	data, err := os.ReadFile(path)
+	// path/imagePath are operator-configured netboot payload/image locations
+	// (server.toml / UI), i.e. trusted input, not attacker-controlled.
+	data, err := os.ReadFile(path) // #nosec G304 -- operator-configured netboot payload path
 	if err != nil {
 		logger.Log1(log.Error, "netboot: cannot read payload", log.Str("err", err.Error()))
 		return nil
 	}
 	switch {
 	case imagePath != "":
-		img, err := os.ReadFile(imagePath)
+		img, err := os.ReadFile(imagePath) // #nosec G304 -- operator-configured netboot image path
 		if err != nil {
 			logger.Log1(log.Error, "netboot: cannot read image", log.Str("err", err.Error()))
 			return nil
@@ -124,7 +126,9 @@ func (d *bootDisk) Size() int64 { return d.size }
 // openBootDisk opens the writable EBP disk image read-write. Returns nil
 // (EBP disabled) on failure.
 func openBootDisk(path string, logger log.Logger) netboot.Disk {
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	// path is the operator-configured EBP disk image (server.toml / UI),
+	// i.e. trusted input, not attacker-controlled.
+	f, err := os.OpenFile(path, os.O_RDWR, 0) // #nosec G304 -- operator-configured disk image path
 	if err != nil {
 		logger.Log1(log.Error, "netboot: cannot open disk image", log.Str("err", err.Error()))
 		return nil

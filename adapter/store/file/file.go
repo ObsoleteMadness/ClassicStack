@@ -66,7 +66,9 @@ func (s *Store) Save(data []byte) (revision string, err error) {
 	}
 
 	if dir := filepath.Dir(s.Path); dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		// 0750: config stores may hold credentials, so the containing
+		// directory should not be world-readable.
+		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return "", err
 		}
 	}

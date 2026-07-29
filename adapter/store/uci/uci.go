@@ -34,7 +34,10 @@ var _ config.Store = (*Store)(nil)
 // Load reads config. Runs 'uci export classicstack' if uci is present, else reads CfgPath.
 func (s *Store) Load() ([]byte, error) {
 	if s.hasUCI() {
-		out, err := exec.Command(s.uciCmd, "export", "classicstack").Output()
+		// Fixed binary ("uci") and literal arguments; no external input flows
+		// into the command line.
+		out, err := exec.Command(s.uciCmd, "export", "classicstack").Output() // #nosec G204 -- fixed command and literal args
+
 		if err == nil {
 			return out, nil
 		}
@@ -51,17 +54,22 @@ func (s *Store) Load() ([]byte, error) {
 // Save writes config. Writes to CfgPath, and runs 'uci commit classicstack' if uci is present.
 func (s *Store) Save(data []byte) (string, error) {
 	if dir := filepath.Dir(s.CfgPath); dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		// 0750: UCI config may hold credentials; keep the directory
+		// non-world-readable. (On OpenWrt /etc/config is root-owned anyway.)
+		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return "", err
 		}
 	}
-	if err := os.WriteFile(s.CfgPath, data, 0o644); err != nil {
+	// 0644 matches OpenWrt's /etc/config convention (UCI files are root-owned
+	// and world-readable by design); the uci tool itself expects this mode.
+	if err := os.WriteFile(s.CfgPath, data, 0o644); err != nil { // #nosec G306 -- matches /etc/config convention
 		return "", err
 	}
 
 	if s.hasUCI() {
-		// Run uci commit classicstack to apply/validate the changes on-target
-		_ = exec.Command(s.uciCmd, "commit", "classicstack").Run()
+		// Run uci commit classicstack to apply/validate the changes on-target.
+		// Fixed binary and literal arguments; no external input on the cmd line.
+		_ = exec.Command(s.uciCmd, "commit", "classicstack").Run() // #nosec G204 -- fixed command and literal args
 	}
 
 	return s.CfgPath, nil

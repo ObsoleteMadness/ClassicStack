@@ -413,7 +413,10 @@ func (s *Service) routeToWorkstation(sess *session, frame []byte) {
 	if s.rtr == nil {
 		return
 	}
-	s.rtr.Route(ddp.Datagram{
+	// Best-effort server-initiated send (tickle / attention / dataWrite / TRel):
+	// a routing failure is recovered by the session's own ATP retransmit/timeout
+	// machinery, and this notification path has no caller to surface it to.
+	_ = s.rtr.Route(ddp.Datagram{
 		DestNetwork: sess.net,
 		DestNode:    sess.node,
 		DestSocket:  sess.wss,

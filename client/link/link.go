@@ -150,7 +150,9 @@ const (
 // LLAP node-claim would replace.
 func pickClientNode() uint8 {
 	span := int(llapUserNodeMax - llapUserNodeMin + 1) // 127 candidates
-	return llapUserNodeMin + uint8(rand.Intn(span))
+	// Weak RNG is fine: this is the "guess a candidate node" step described
+	// above, not a security-sensitive value.
+	return llapUserNodeMin + uint8(rand.Intn(span)) // #nosec G404 -- candidate-node guess on a simulated segment, not a security value
 }
 
 // NewOpener builds an Opener for spec with a default asserted AppleTalk address. The

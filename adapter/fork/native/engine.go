@@ -45,7 +45,11 @@ func (e *nativeForkEngine) OpenFork(path string, fork corefs.ForkType, flag int)
 	if !ok {
 		return nil, stdfs.ErrNotExist
 	}
-	f, err := os.OpenFile(sp, flag, 0o644)
+	// 0644 (if O_CREATE): the resource-fork stream is a companion of a
+	// shared-volume user file and shares its permission model (see core/fs).
+	// sp is derived from a share-relative path already validated by the base FS,
+	// not an attacker-controlled absolute path.
+	f, err := os.OpenFile(sp, flag, 0o644) // #nosec G302,G304 -- shared-volume fork stream, path validated by base FS
 	if err != nil {
 		if errors.Is(err, stdfs.ErrNotExist) && flag&os.O_CREATE == 0 {
 			return nil, stdfs.ErrNotExist

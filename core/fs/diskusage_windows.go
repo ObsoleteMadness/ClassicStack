@@ -20,11 +20,14 @@ func diskUsage(path string) (total, free uint64, err error) {
 	kernel32 := syscall.NewLazyDLL("kernel32.dll")
 	getDiskFreeSpaceEx := kernel32.NewProc("GetDiskFreeSpaceExW")
 	var freeToCaller, totalBytes, totalFree uint64
+	// unsafe.Pointer is mandatory to pass the UTF-16 path and the output
+	// counters to the Win32 GetDiskFreeSpaceExW syscall; this is the standard
+	// syscall-interop pattern (mirrors the Go stdlib) with no pointer arithmetic.
 	r1, _, callErr := getDiskFreeSpaceEx.Call(
-		uintptr(unsafe.Pointer(pathPtr)),
-		uintptr(unsafe.Pointer(&freeToCaller)),
-		uintptr(unsafe.Pointer(&totalBytes)),
-		uintptr(unsafe.Pointer(&totalFree)),
+		uintptr(unsafe.Pointer(pathPtr)),       // #nosec G103 -- Win32 syscall interop
+		uintptr(unsafe.Pointer(&freeToCaller)), // #nosec G103 -- Win32 syscall interop
+		uintptr(unsafe.Pointer(&totalBytes)),   // #nosec G103 -- Win32 syscall interop
+		uintptr(unsafe.Pointer(&totalFree)),    // #nosec G103 -- Win32 syscall interop
 	)
 	if r1 == 0 {
 		return 0, 0, callErr

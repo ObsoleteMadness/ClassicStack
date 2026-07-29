@@ -41,7 +41,7 @@ func open(path string) (metastore.Store, error) {
 	// "database is locked" on the in-memory DSN and keeps ordering simple.
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS kv (k BLOB PRIMARY KEY, v BLOB NOT NULL)`); err != nil {
-		db.Close()
+		_ = db.Close() // best-effort cleanup; returning the create-table error
 		return nil, fmt.Errorf("metastore/sqlite: create table: %w", err)
 	}
 	return &store{db: db}, nil

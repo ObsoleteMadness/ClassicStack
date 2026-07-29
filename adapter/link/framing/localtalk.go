@@ -430,8 +430,10 @@ func (d *ltDatagramLink) publishClaim(node uint8) {
 	}
 }
 
-// defaultLLAPRand is the engine's reroll RNG when none is injected.
-func defaultLLAPRand() uint8 { return uint8(rand.Intn(256)) }
+// defaultLLAPRand is the engine's reroll RNG when none is injected. Weak RNG is
+// fine: it only rerolls a tentative LLAP node number, and the ENQ/ACK node-claim
+// exchange—not the randomness—is what guarantees uniqueness.
+func defaultLLAPRand() uint8 { return uint8(rand.Intn(256)) } // #nosec G404 -- tentative LLAP node; uniqueness from ENQ/ACK node-claim, not RNG
 
 // encode builds an LLAP frame carrying dg. It chooses short vs long per the
 // intra-network test, stamps the LLAP dst node from dg.DestNode (0xFF broadcast)

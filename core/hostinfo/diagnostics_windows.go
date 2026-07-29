@@ -44,10 +44,12 @@ func getCPULoad() float64 {
 	defer cpuMu.Unlock()
 
 	var idle, kernel, user FILETIME
+	// unsafe.Pointer is mandatory to pass the FILETIME output structs to the
+	// Win32 GetSystemTimes syscall; standard syscall-interop, no pointer math.
 	ret, _, _ := procGetSystemTimes.Call(
-		uintptr(unsafe.Pointer(&idle)),
-		uintptr(unsafe.Pointer(&kernel)),
-		uintptr(unsafe.Pointer(&user)),
+		uintptr(unsafe.Pointer(&idle)),   // #nosec G103 -- Win32 syscall interop
+		uintptr(unsafe.Pointer(&kernel)), // #nosec G103 -- Win32 syscall interop
+		uintptr(unsafe.Pointer(&user)),   // #nosec G103 -- Win32 syscall interop
 	)
 	if ret == 0 {
 		return 0
@@ -91,8 +93,10 @@ func filetimeDiff(newVal, oldVal FILETIME) uint64 {
 
 func getMemoryInfo() (total uint64, free uint64) {
 	var memoryStatus MEMORYSTATUSEX
-	memoryStatus.Length = uint32(unsafe.Sizeof(memoryStatus))
-	ret, _, _ := procGlobalMemoryStatusEx.Call(uintptr(unsafe.Pointer(&memoryStatus)))
+	// unsafe.Sizeof/Pointer are mandatory to size and pass the MEMORYSTATUSEX
+	// struct to the Win32 GlobalMemoryStatusEx syscall; standard interop.
+	memoryStatus.Length = uint32(unsafe.Sizeof(memoryStatus))                          // #nosec G103 -- Win32 syscall interop
+	ret, _, _ := procGlobalMemoryStatusEx.Call(uintptr(unsafe.Pointer(&memoryStatus))) // #nosec G103 -- Win32 syscall interop
 	if ret == 0 {
 		return 0, 0
 	}

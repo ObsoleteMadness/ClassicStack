@@ -39,17 +39,17 @@ func (s *memStore) save() error {
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(buf); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
+		_ = tmp.Close() // best-effort cleanup; returning the write error
+		_ = os.Remove(tmpName)
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
+		_ = tmp.Close() // best-effort cleanup; returning the sync error
+		_ = os.Remove(tmpName)
 		return err
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName) // best-effort cleanup; returning the close error
 		return err
 	}
 	return os.Rename(tmpName, s.path)
