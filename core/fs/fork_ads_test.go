@@ -3,6 +3,7 @@ package fs
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"os"
 	"testing"
 )
@@ -188,12 +189,92 @@ func TestADSForkEngine_DeleteAndMoveMetadata(t *testing.T) {
 	}
 }
 
-func TestForkEngineByName_ADSIsRealEngine(t *testing.T) {
-	eng, err := forkAdapterByName("ads", ShareSpec{}, newMemFS(ShareSpec{}))
-	if err != nil {
-		t.Fatalf("forkAdapterByName(ads): %v", err)
+func TestADSForkEngine_CommentStream(t *testing.T) {
+	e := newADSTestEngine()
+	if _, err := e.fs.CreateFile("doc"); err != nil {
+		t.Fatalf("create data: %v", err)
 	}
-	if _, ok := eng.(*adsForkEngine); !ok {
-		t.Fatalf("ads backend = %T, want *adsForkEngine", eng)
+
+	// Absent before any write.
+	if _, ok := e.ReadComment("doc"); ok {
+		t.Fatal("ReadComment before write: want ok=false")
+	}
+
+	comment := []byte("Get Info comment")
+	if err := e.WriteComment("doc", comment); err != nil {
+		t.Fatalf("WriteComment: %v", err)
+	}
+	got, ok := e.ReadComment("doc")
+	if !ok || !bytes.Equal(got, comment) {
+		t.Fatalf("ReadComment: ok=%v got=%q, want %q", ok, got, comment)
+	}
+	// The bytes must land in the SFM :Comments stream path.
+	raw, err := e.readAll(commentStreamPath("doc"))
+	if err != nil || !bytes.Equal(raw, comment) {
+		t.Fatalf("comment stream = %q err=%v, want %q", raw, err, comment)
+	}
+
+	// It rides along on a move.
+	if err := e.MoveMetadata("doc", "moved"); err != nil {
+		t.Fatalf("MoveMetadata: %v", err)
+	}
+	if c, ok := e.ReadComment("moved"); !ok || !bytes.Equal(c, comment) {
+		t.Errorf("comment lost on move: ok=%v got=%q", ok, c)
+	}
+	if _, ok := e.ReadComment("doc"); ok {
+		t.Error("old path kept comment after move")
+	}
+
+	// An empty WriteComment removes the stream (RemoveComment semantics).
+	if err := e.WriteComment("moved", nil); err != nil {
+		t.Fatalf("WriteComment(empty): %v", err)
+	}
+	if _, ok := e.ReadComment("moved"); ok {
+		t.Error("comment survived empty WriteComment")
+	}
+}
+
+// hostBackedMemFS is a memFS that also claims to be host-backed, to exercise the ads
+// factory's NTFS volume check (which only fires for a real host volume).
+type hostBackedMemFS struct {
+	FileSystem
+	hostRoot string
+}
+
+func (h hostBackedMemFS) HostPath(storePath string) (string, bool) {
+	if storePath == "" {
+		return h.hostRoot, true
+	}
+	return h.hostRoot + "/" + storePath, true
+}
+
+// TestADSFactory_NTFSGate proves the ads factory's volume check: a non-host base
+// (memfs) is allowed (streams are simulated as keys), a host base on a non-NTFS volume
+// is rejected with ErrNotNTFS, and a host base on NTFS is accepted.
+func TestADSFactory_NTFSGate(t *testing.T) {
+	// Non-host base: allowed regardless of any probe.
+	if _, err := forkAdapterByName("ads", ShareSpec{}, newMemFS(ShareSpec{})); err != nil {
+		t.Fatalf("ads over memfs (non-host) = %v, want nil", err)
+	}
+
+	// Swap in a deterministic volume probe for the host-backed cases.
+	saved := volumeIsNTFS
+	defer func() { volumeIsNTFS = saved }()
+
+	hostBase := hostBackedMemFS{FileSystem: newMemFS(ShareSpec{}), hostRoot: `X:\share`}
+
+	volumeIsNTFS = func(string) (bool, bool) { return false, true } // FAT/exFAT
+	if _, err := forkAdapterByName("ads", ShareSpec{}, hostBase); !errors.Is(err, ErrNotNTFS) {
+		t.Fatalf("ads over host non-NTFS = %v, want ErrNotNTFS", err)
+	}
+
+	volumeIsNTFS = func(string) (bool, bool) { return true, true } // NTFS
+	if _, err := forkAdapterByName("ads", ShareSpec{}, hostBase); err != nil {
+		t.Fatalf("ads over host NTFS = %v, want nil", err)
+	}
+
+	volumeIsNTFS = func(string) (bool, bool) { return false, false } // undeterminable → fail closed
+	if _, err := forkAdapterByName("ads", ShareSpec{}, hostBase); !errors.Is(err, ErrNotNTFS) {
+		t.Fatalf("ads over host with unknown volume = %v, want ErrNotNTFS", err)
 	}
 }
