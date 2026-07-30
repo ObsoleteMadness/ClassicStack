@@ -176,7 +176,9 @@ enabled = false
 #   name           volume display name (max 31 chars)
 #   path           host directory
 #   fs_type        filesystem backend: local_fs (default), memfs, …
-#   fork_backend   appledouble | ads | xattr | native | auto (blank = default)
+#   fork_backend   appledouble | ads | xattr | hfs | native | auto (blank = default)
+#                  native = the host's own layout (ads on Windows, hfs on macOS,
+#                  xattr on Linux)
 #   filename_codec wire↔store name codec (blank = default)
 #   read_only      true makes the whole volume read-only
 #   allowed_users  access allow-list (empty = guest/world)

@@ -384,8 +384,11 @@ List pcap device names with `.\classicstack.exe -list-pcap-devices`.
 - **AFP resource forks / Finder info** are handled by the `-fork` backend chosen at
   connect time (`appledouble` — the SMB/NCP/EtherDFS default, `applesingle`,
   `macbinary`, `derez`, `native`, `nofork`, or `passthrough` — the AFP default, native
-  forks straight off the wire). The mount reflects whatever namespace that backend
-  produces; it does not invent NTFS stream names.
+  forks straight off the wire). Sidecar backends project forks into the namespace as
+  ordinary files; `native` (which on Windows means the `ads` layout) surfaces the
+  resource fork, Finder info, and comment as NTFS named streams under the Services-for-
+  Macintosh names (`:AFP_Resource`, `:AFP_AfpInfo`, `:Comments`), so Windows tools and
+  the SMB redirector see the same streams a real SFM/AFP server exposes.
 - **DOS attributes** (hidden / system / read-only) and **file dates** are read live from
   the server and surfaced to Explorer — AFP maps Invisible→hidden, System→system,
   WriteInhibit→read-only; SMB uses the server's FileAttributes and timestamps directly.

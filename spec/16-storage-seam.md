@@ -25,9 +25,10 @@ name in `BuildShare`, default `appledouble`), so a fork-less share uses the expl
 | `appledouble-dir` | `dir/.AppleDouble/name` sidecar (Netatalk folder form) | **implemented** — sidecar-layout variant |
 | `applesingle` | TRUE AppleSingle: data + resource + FinderInfo in one container file (magic `0x00051600`); resource fork 4K-allocated, data fork last | **implemented** (`core/fs/fork_applesingle.go`) |
 | `macbinary` | MacBinary II: 128-byte header + data fork + (128-padded) resource fork in one file | **implemented** (`core/fs/fork_macbinary.go`) |
-| `ads` | NTFS alternate data stream (`name:AFP_Resource`, `name:AFP_AfpInfo`) — SFM layout | **implemented** (`core/fs/fork_ads.go`) |
+| `ads` | NTFS alternate data stream (`name:AFP_Resource`, `name:AFP_AfpInfo`, `name:Comments`) — SFM layout | **implemented** (`core/fs/fork_ads.go`) |
 | `xattr` | Netatalk extended-attribute layout (`org.netatalk.Metadata`, `org.netatalk.ResourceFork`) | **implemented** (`core/fs/fork_xattr.go`) |
-| `native` | real host fork: resource fork via `..namedfork/rsrc`, FinderInfo via `com.apple.FinderInfo` xattr (macOS) | **implemented**, `adapter/fork/native` under `-tags forknative`; a build without the tag links a core stub that errors with a rebuild hint |
+| `hfs` | real HFS+/APFS host fork: resource fork via `..namedfork/rsrc`, FinderInfo via `com.apple.FinderInfo` xattr (macOS) | **implemented** (`adapter/fork/hfs`, darwin-only, no build tag) |
+| `native` | per-OS ALIAS for the host's own layout: `ads` on Windows, `hfs` on darwin, `xattr` on Linux (`core/fs/fork_native*.go`) | **implemented** — resolves at build time; no tag |
 | `derez` | DeRez/`rdump` TEXT sidecar for the resource fork + `idump` sidecar for type/creator — the resource fork is checked into git as diffable text (Elliot Nunn's macresources format) | **implemented** (`core/fs/fork_derez.go` + `core/macresources`) |
 | `nofork` / `null` / `none` | discards metadata (explicit no-forks / placeholder shares) | implemented |
 
@@ -75,19 +76,61 @@ prodosInfo [6]byte
 reserved2  [6]byte
 ```
 
-The resource fork is the `AFP_Resource` stream. `core/fs/fork_ads.go` emits this
-record so a name written by ClassicStack is readable by Windows SFM/SMB and
-vice-versa; the FinderInfo bytes are identical to the AppleDouble FinderInfo
-entry, so only the container differs. Stream paths are addressed through the base
-`FileSystem` using the host `path:stream` syntax (`name:AFP_Resource`,
-`name:AFP_AfpInfo`); on a non-NTFS `FileSystem` these degrade to ordinary sidecar
+The resource fork is the `AFP_Resource` stream and the Finder comment is the
+`Comments` stream (the SFM `AFP_COMM_STREAM`). `core/fs/fork_ads.go` emits these
+so a name written by ClassicStack is readable by Windows SFM/SMB and vice-versa;
+the FinderInfo bytes are identical to the AppleDouble FinderInfo entry, so only
+the container differs. Stream paths are addressed through the base `FileSystem`
+using the host `path:stream` syntax (`name:AFP_Resource`, `name:AFP_AfpInfo`,
+`name:Comments`); on a non-NTFS `FileSystem` these degrade to ordinary sidecar
 paths, which keeps the record handling testable without NTFS but means the
 on-disk *container* is host-native streams only when the base FileSystem maps
-`path:stream` to real ADS. The engine preserves `backupTime` and `prodosInfo` on
-a FinderInfo round-trip so a record written by Windows SFM is not clobbered, and
-treats a missing or wrong-signature `AFP_AfpInfo` stream as "no FinderInfo"
-rather than an error (SFM tolerance). The SFM ADS layout has no comment stream,
-so AFP comments are not persisted on `ads` shares.
+`path:stream` to real ADS. On `local_fs` over a real NTFS host they resolve to
+genuine alternate data streams — verified end-to-end by `TestADSOverLocalFS_RealNTFS`
+(the streams are real ADS, invisible to `ReadDir`, and ride along on move/delete).
+
+The engine preserves `backupTime` and `prodosInfo` on a FinderInfo round-trip so
+a record written by Windows SFM is not clobbered, and treats a missing or
+wrong-signature `AFP_AfpInfo` stream as "no FinderInfo" rather than an error (SFM
+tolerance). An empty `WriteComment` removes the `Comments` stream (SFM
+RemoveComment semantics). The stream names MUST match NT SFM (`macfile.h`
+`AFP_*_STREAM`).
+
+The **volume-level** SFM streams — `AFP_IdIndex` (the CNID database) and
+`AFP_DeskTop` (the desktop DB) — are NOT part of the per-file fork engine.
+ClassicStack tracks CNIDs in the range-scannable metastore (`meta_ads.go`),
+because CNID's subtree-rebind needs range scanning that SFM's single opaque
+`AFP_IdIndex` stream cannot provide; the AFP desktop DB is a separate service
+concern. Reproducing those two streams byte-for-byte would not improve
+interoperability of an individual file's forks, so they are deliberately omitted.
+
+The `AfpInfo` record type and its codec are the exported `fs.AfpInfo` DTO
+(`core/fs/afpinfo.go`, `Marshal`/`UnmarshalAfpInfo`), the single source of truth
+shared by `fork_ads.go` and the WinFsp mount client below.
+
+### 1b-i. WinFsp mount client: forks as SFM streams
+
+The `csmount` client (`client/winfsp`) can present a remote share's forks the
+same way — as NTFS named streams using the NT Services-for-Macintosh names —
+when native forks are enabled (`-fork native` → `Options.NativeForks`). Beside
+the unnamed data stream it surfaces:
+
+| stream | source (`fs.ForkEngine`) |
+|---|---|
+| `:AFP_Resource` | `OpenFork(ResourceFork)` |
+| `:AFP_AfpInfo` | `Read`/`WriteFinderInfo` wrapped in the 60-byte `fs.AfpInfo` record |
+| `:Comments` | `Read`/`WriteComment` |
+
+`GetStreamInfo` enumerates only the streams that currently carry content, so a
+plain file advertises just the data stream. Because go-winfsp exposes the stream
+name to the open/create delegates as the `path:stream` suffix, the adapter peels
+the suffix (only when `NativeForks` is on) and routes the handle to the fork; the
+record streams (AfpInfo/Comments) are buffered in the handle and flushed back
+through the `ForkEngine` on close. With native forks off the mount has no streams
+and a `:stream` path is rejected, matching the pre-stream behaviour. This mirrors
+the server-side `ads` layout above so a fork is addressed by the same stream name
+whether ClassicStack is serving or mounting it. SFM's server-internal volume
+streams (`AFP_DeskTop`, `AFP_IdIndex`) are not surfaced.
 
 ### 1c. Netatalk EA layout (`core/fs/fork_xattr.go`)
 
