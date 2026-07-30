@@ -49,6 +49,9 @@ type FileSystemRef struct {
 	getReparsePoint       BehaviourGetReparsePoint
 	getReparsePointByName BehaviourGetReparsePointByName
 	setReparsePoint       BehaviourSetReparsePoint
+	getStreamInfoRaw      BehaviourGetStreamInfoRaw
+	getEaRaw              BehaviourGetEaRaw
+	setEaRaw              BehaviourSetEaRaw
 }
 
 // ntStatusNoRef is returned when user context to inner
@@ -1929,6 +1932,39 @@ func Mount(
 		fileSystemRef.getDirInfoByName = inner
 		fileSystemOps.GetDirInfoByName = go_delegateGetDirInfoByName
 	}
+	if inner, ok := fs.(BehaviourGetStreamInfoRaw); ok {
+		attributes |= FspFSAttributeNamedStreams
+		fileSystemRef.getStreamInfoRaw = inner
+		fileSystemOps.GetStreamInfo = go_delegateGetStreamInfo
+	} else if inner, ok := fs.(BehaviourGetStreamInfo); ok {
+		attributes |= FspFSAttributeNamedStreams
+		fileSystemRef.getStreamInfoRaw = &behaviourGetStreamInfoDelegate{
+			getStreamInfo: inner,
+		}
+		fileSystemOps.GetStreamInfo = go_delegateGetStreamInfo
+	}
+	if inner, ok := fs.(BehaviourGetEaRaw); ok {
+		attributes |= FspFSAttributeExtendedAttributes
+		fileSystemRef.getEaRaw = inner
+		fileSystemOps.GetEa = go_delegateGetEa
+	} else if inner, ok := fs.(BehaviourGetEa); ok {
+		attributes |= FspFSAttributeExtendedAttributes
+		fileSystemRef.getEaRaw = &behaviourGetEaDelegate{
+			getEa: inner,
+		}
+		fileSystemOps.GetEa = go_delegateGetEa
+	}
+	if inner, ok := fs.(BehaviourSetEaRaw); ok {
+		attributes |= FspFSAttributeExtendedAttributes
+		fileSystemRef.setEaRaw = inner
+		fileSystemOps.SetEa = go_delegateSetEa
+	} else if inner, ok := fs.(BehaviourSetEa); ok {
+		attributes |= FspFSAttributeExtendedAttributes
+		fileSystemRef.setEaRaw = &behaviourSetEaDelegate{
+			setEa: inner,
+		}
+		fileSystemOps.SetEa = go_delegateSetEa
+	}
 	if inner, ok := fs.(BehaviourDeviceIoControl); ok {
 		fileSystemRef.deviceIoControl = inner
 		fileSystemOps.Control = go_delegateDeviceIoControl
@@ -1971,6 +2007,17 @@ func Mount(
 	volumeParams.VolumeCreationTime =
 		*(*uint64)(unsafe.Pointer(&nowFiletime))
 	volumeParams.FileInfoTimeout = option.fileInfoTimeout
+	if option.fileInfoTimeout != 0 {
+		// Extend metadata caching to named-stream and EA info so
+		// the FSD does not round-trip GetStreamInfo/GetEa on every
+		// probe. The per-category timeouts are only honoured when
+		// their FileSystemAttribute2 valid bit is set.
+		volumeParams.FileSystemAttribute2 |=
+			FspFSAttribute2StreamInfoTimeoutValid |
+				FspFSAttribute2EaTimeoutValid
+		volumeParams.StreamInfoTimeout = option.fileInfoTimeout
+		volumeParams.EaTimeout = option.fileInfoTimeout
+	}
 	volumeParams.FileSystemAttribute = attributes
 	copy(volumeParams.Prefix[:], utf16Prefix)
 	copy(volumeParams.FileSystemName[:], utf16Name)

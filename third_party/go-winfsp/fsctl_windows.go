@@ -165,18 +165,24 @@ type FSP_FSCTL_DIR_INFO struct {
 	Padding1   uint64
 }
 
+// FSP_FSCTL_STREAM_INFO is followed by a variable-length
+// UTF-16 StreamNameBuf (not included in the Go struct, since
+// it is a C flexible array member). unsafe.Sizeof must be
+// exactly 24 for FileSystemAddStreamInfo's offset math.
 type FSP_FSCTL_STREAM_INFO struct {
 	Size                 uint16
 	StreamSize           uint64
 	StreamAllocationSize uint64
-	StreamNameBuf        *uint16
 }
 
+// FSP_FSCTL_NOTIFY_INFO is followed by a variable-length
+// UTF-16 FileNameBuf (not included in the Go struct, since
+// it is a C flexible array member). unsafe.Sizeof must be
+// exactly 12.
 type FSP_FSCTL_NOTIFY_INFO struct {
-	Size        uint16
-	Filter      uint32
-	Action      uint32
-	FileNameBuf *uint16
+	Size   uint16
+	Filter uint32
+	Action uint32
 }
 
 type FSP_FSCTL_TRANSACT_FULL_CONTEXT struct {

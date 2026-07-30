@@ -75,11 +75,15 @@ type REPARSE_DATA_BUFFER_MOUNT_POINT struct {
 
 const FILE_NEED_EA = 0x00000080
 
+// FILE_FULL_EA_INFORMATION is followed by EaName
+// (EaNameLength bytes + NUL) and then the EA value
+// (EaValueLength bytes). EaName is the first byte of
+// that flexible tail.
 type FILE_FULL_EA_INFORMATION struct {
 	NextEntryOffset uint32
 	Flags           uint8
 	EaNameLength    uint8
-	EaValueLength   int16
+	EaValueLength   uint16
 	EaName          [1]byte
 }
 
