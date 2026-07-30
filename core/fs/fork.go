@@ -33,9 +33,11 @@ const (
 //     has no resource forks" adapter, so every share has exactly one adapter and a
 //     fork-less share is a deliberate choice, not a silent fallback.
 //
-// "ads", "xattr", "applesingle", "macbinary" register themselves from their own files;
-// "native" is the host resource-fork adapter (adapter/fork/native under -tags
-// forknative, with a core stub when absent — fork_native_stub.go).
+// "ads", "xattr", "applesingle", "macbinary" register themselves from their own files.
+// "native" is a per-OS ALIAS for the host's own fork layout (fork_native.go): it resolves
+// to "ads" on Windows, "hfs" on darwin, "xattr" on Linux — so a share can say "store
+// forks the way this host does" without naming a platform. The hfs engine (HFS+ host
+// syscalls) lives in adapter/fork/hfs and self-registers on darwin.
 func init() {
 	register := func(name string, sidecar func(string) string, aliases ...string) {
 		f := func(spec ShareSpec, base FileSystem) (ForkEngine, error) {

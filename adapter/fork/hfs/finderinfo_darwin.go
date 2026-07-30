@@ -1,6 +1,6 @@
-//go:build (forknative || all) && darwin
+//go:build darwin
 
-package native
+package hfs
 
 import (
 	"golang.org/x/sys/unix"
@@ -12,7 +12,7 @@ const finderInfoXattr = "com.apple.FinderInfo"
 
 // ReadFinderInfo reads the host file's com.apple.FinderInfo xattr. ok is false when the
 // attribute is absent (a file with no Finder info), which is not an error.
-func (e *nativeForkEngine) ReadFinderInfo(path string) (info [32]byte, ok bool, err error) {
+func (e *hfsForkEngine) ReadFinderInfo(path string) (info [32]byte, ok bool, err error) {
 	hp, resolved := e.hostPathOf(path)
 	if !resolved {
 		return [32]byte{}, false, nil
@@ -33,7 +33,7 @@ func (e *nativeForkEngine) ReadFinderInfo(path string) (info [32]byte, ok bool, 
 
 // WriteFinderInfo writes the 32-byte Finder info to the host file's
 // com.apple.FinderInfo xattr.
-func (e *nativeForkEngine) WriteFinderInfo(path string, info [32]byte) error {
+func (e *hfsForkEngine) WriteFinderInfo(path string, info [32]byte) error {
 	hp, resolved := e.hostPathOf(path)
 	if !resolved {
 		return nil

@@ -14,7 +14,7 @@ func TestForkAdapterRegistry_BuiltinsResolve(t *testing.T) {
 	for _, name := range []string{
 		"appledouble", "auto", // AppleDouble default + alias
 		"appledouble-default", "appledouble-osxzip", "appledouble-dir", // per-layout variants
-		"ads", "xattr", // host-stream layouts
+		"ads", "xattr", // host-stream layouts (ads over memfs simulates streams as keys)
 		"applesingle", "macbinary", // single-container backends
 		"derez",                  // rdump/idump text sidecars (macresources)
 		"nofork", "null", "none", // explicit no-forks + legacy aliases
@@ -28,10 +28,12 @@ func TestForkAdapterRegistry_BuiltinsResolve(t *testing.T) {
 		}
 	}
 
-	// "native" is registered but DISABLED without -tags forknative: it resolves (not
-	// "unknown") but errors with a rebuild hint, so a misconfig is actionable.
-	if _, err := forkAdapterByName("native", ShareSpec{}, base); err == nil {
-		t.Fatal("forkAdapterByName(native) without forknative: expected disabled error, got nil")
+	// "native" is a per-OS alias (windows→ads, darwin→hfs, linux→xattr — fork_native.go).
+	// It must always RESOLVE (never "unknown fork backend"); whether it then succeeds or
+	// errors over this memfs base is platform-dependent (xattr succeeds over any base;
+	// ads/hfs need a host-backed NTFS/HFS volume), so we only assert it is registered.
+	if _, err := forkAdapterByName("native", ShareSpec{}, base); err != nil && err.Error() == "fs: unknown fork backend" {
+		t.Fatal("forkAdapterByName(native): not registered (unknown fork backend)")
 	}
 
 	// Case-insensitive (the registry lower-cases names).
