@@ -9,12 +9,18 @@
 // os.FileInfo.
 //
 // Resource forks are surfaced through the fork backend chosen at client.Connect
-// (-fork). On a native-fork protocol (AFP) a sidecar backend (derez / appledouble)
-// PROJECTS those forks into the mount namespace as ordinary sidecar files
-// (.rdump/.idump, ._name, …) so Windows tools can read them — the inverse of the
-// server-hosting case, where the same adapters consume sidecars from a local disk.
-// go-winfsp does not expose NTFS alternate-data-stream enumeration or EA get/set, so
-// those are not mapped as streams.
+// (-fork). There are two modes:
+//
+//   - Sidecar backends (derez / appledouble) PROJECT forks into the mount namespace
+//     as ordinary sidecar files (.rdump/.idump, ._name, …) so Windows tools can read
+//     them — the inverse of the server-hosting case, where the same adapters consume
+//     sidecars from a local disk.
+//   - Native forks (-fork native → Options.NativeForks) surface a file's resource fork
+//     and Apple metadata as NTFS named streams, using the stream names NT Services for
+//     Macintosh defines — :AFP_Resource, :AFP_AfpInfo, :Comments (streams_windows.go).
+//     This is the SFM/AFP-server layout, so the Windows shell and SMB redirector see the
+//     same streams a real server exposes. When native forks are off the mount has no
+//     streams and a ':stream' path is rejected as invalid.
 //
 // Ring: CLIENT. Windows-only; the non-Windows build is a stub returning ErrUnsupported.
 package winfsp

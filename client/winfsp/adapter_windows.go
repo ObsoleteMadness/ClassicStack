@@ -28,10 +28,11 @@ const writeAccessMask = windows.FILE_WRITE_DATA | windows.FILE_APPEND_DATA |
 // Adapter wraps a core/fs.ForkFS and implements go-winfsp's Behaviour* delegates. One
 // Adapter serves any protocol, because every client.Connect returns the same ForkFS shape.
 type Adapter struct {
-	fsys     fs.ForkFS
-	readOnly bool
-	volLabel string
-	handles  *handleTable
+	fsys        fs.ForkFS
+	readOnly    bool
+	volLabel    string
+	nativeForks bool // surface resource forks / Apple metadata as NTFS SFM streams
+	handles     *handleTable
 }
 
 // newAdapter builds an Adapter over an already-connected ForkFS. The mount is read-only
@@ -42,10 +43,11 @@ func newAdapter(fsys fs.ForkFS, opts Options) *Adapter {
 		label = "ClassicStack"
 	}
 	return &Adapter{
-		fsys:     fsys,
-		readOnly: opts.ReadOnly || fsys.Capabilities().ReadOnly,
-		volLabel: label,
-		handles:  newHandleTable(),
+		fsys:        fsys,
+		readOnly:    opts.ReadOnly || fsys.Capabilities().ReadOnly,
+		volLabel:    label,
+		nativeForks: opts.NativeForks,
+		handles:     newHandleTable(),
 	}
 }
 
@@ -85,10 +87,27 @@ func (a *Adapter) Open(
 	info *winfsp.FSP_FSCTL_FILE_INFO,
 ) (uintptr, error) {
 	trace("Open name=%q createOptions=%#x grantedAccess=%#x", name, createOptions, grantedAccess)
-	storePath, err := toStorePath(name)
+	base, streamRaw := a.peelStream(name)
+	storePath, err := toStorePath(base)
 	if err != nil {
 		trace("Open → err=%v", err)
 		return 0, err
+	}
+	if streamRaw != "" {
+		k, ok := lookupStream(streamRaw)
+		if !ok {
+			trace("Open stream=%q → err=%v", streamRaw, errNoSuchStream)
+			return 0, errNoSuchStream
+		}
+		if k != streamData {
+			ctx, err := a.openStream(storePath, k, a.flagFor(grantedAccess), info)
+			if err != nil {
+				trace("Open %q:%s → err=%v", storePath, k.streamName(), err)
+			} else {
+				trace("Open → ctx=%d path=%q stream=%s", ctx, storePath, k.streamName())
+			}
+			return ctx, err
+		}
 	}
 	ctx, err := a.openStore(storePath, a.flagFor(grantedAccess), info)
 	if err != nil {
@@ -105,6 +124,13 @@ func (a *Adapter) Open(
 func (a *Adapter) Close(_ *winfsp.FileSystemRef, file uintptr) {
 	trace("Close ctx=%d", file)
 	if h, ok := a.handles.remove(file); ok {
+		if h.stream != streamData {
+			// Persist a dirty record stream (resource-fork writes already went through
+			// the fs.File) before dropping the handle.
+			if err := a.flushStream(h); err != nil {
+				trace("Close stream=%s flush err=%v", h.stream.streamName(), err)
+			}
+		}
 		if h.f != nil {
 			_ = h.f.Close()
 		}
@@ -163,10 +189,28 @@ func (a *Adapter) Create(
 		trace("Create → err=%v", os.ErrPermission)
 		return 0, os.ErrPermission
 	}
-	storePath, err := toStorePath(name)
+	base, streamRaw := a.peelStream(name)
+	storePath, err := toStorePath(base)
 	if err != nil {
 		trace("Create → err=%v", err)
 		return 0, err
+	}
+	if streamRaw != "" {
+		// Creating a named stream: the base file must already exist (Windows opens the
+		// base before its stream). Route to the stream open — for the record streams this
+		// starts an empty buffer, for the resource fork it opens the fork O_RDWR|O_CREATE.
+		k, ok := lookupStream(streamRaw)
+		if !ok || k == streamData {
+			trace("Create stream=%q → err=%v", streamRaw, errNoSuchStream)
+			return 0, errNoSuchStream
+		}
+		ctx, err := a.openStream(storePath, k, os.O_RDWR, info)
+		if err != nil {
+			trace("Create %q:%s → err=%v", storePath, k.streamName(), err)
+		} else {
+			trace("Create → ctx=%d path=%q stream=%s", ctx, storePath, k.streamName())
+		}
+		return ctx, err
 	}
 	if createOptions&fileDirectoryFile != 0 {
 		if err := a.fsys.CreateDir(storePath); err != nil {
@@ -208,11 +252,22 @@ func (a *Adapter) Overwrite(
 	_ uint32, _ bool, _ uint64, info *winfsp.FSP_FSCTL_FILE_INFO,
 ) error {
 	h, ok := a.handles.get(file)
-	if !ok || h.f == nil {
+	if !ok {
 		return os.ErrInvalid
 	}
 	if a.readOnly {
 		return os.ErrPermission
+	}
+	// A truncating open of a stream (FILE_OVERWRITE/SUPERSEDE) empties that fork/record,
+	// never the base file.
+	if h.stream != streamData {
+		if err := a.truncateStream(h, 0); err != nil {
+			return err
+		}
+		return a.streamFileInfo(info, h)
+	}
+	if h.f == nil {
+		return os.ErrInvalid
 	}
 	if err := h.f.Truncate(0); err != nil {
 		return err
@@ -228,7 +283,16 @@ func (a *Adapter) Read(
 ) (int, error) {
 	trace("Read ctx=%d offset=%d len=%d", file, offset, len(buf))
 	h, ok := a.handles.get(file)
-	if !ok || h.f == nil {
+	if !ok {
+		trace("Read → err=%v", os.ErrInvalid)
+		return 0, os.ErrInvalid
+	}
+	if h.stream != streamData {
+		n, err := a.readStream(h, buf, offset)
+		trace("Read stream=%s → n=%d err=%v", h.stream.streamName(), n, err)
+		return n, err
+	}
+	if h.f == nil {
 		trace("Read → err=%v", os.ErrInvalid)
 		return 0, os.ErrInvalid
 	}
@@ -258,7 +322,19 @@ func (a *Adapter) Write(
 ) (int, error) {
 	trace("Write ctx=%d offset=%d len=%d eof=%v", file, offset, len(buf), writeToEndOfFile)
 	h, ok := a.handles.get(file)
-	if !ok || h.f == nil {
+	if !ok {
+		trace("Write → err=%v", os.ErrInvalid)
+		return 0, os.ErrInvalid
+	}
+	if h.stream != streamData {
+		n, err := a.writeStream(h, buf, offset, writeToEndOfFile)
+		if err == nil {
+			_ = a.streamFileInfo(info, h)
+		}
+		trace("Write stream=%s → n=%d err=%v", h.stream.streamName(), n, err)
+		return n, err
+	}
+	if h.f == nil {
 		trace("Write → err=%v", os.ErrInvalid)
 		return 0, os.ErrInvalid
 	}
@@ -286,7 +362,16 @@ func (a *Adapter) Write(
 
 func (a *Adapter) Flush(_ *winfsp.FileSystemRef, file uintptr, info *winfsp.FSP_FSCTL_FILE_INFO) error {
 	h, ok := a.handles.get(file)
-	if !ok || h.f == nil {
+	if !ok {
+		return nil // volume flush → no-op
+	}
+	if h.stream != streamData {
+		if err := a.flushStream(h); err != nil {
+			return err
+		}
+		return a.streamFileInfo(info, h)
+	}
+	if h.f == nil {
 		return nil // volume flush → no-op
 	}
 	if err := h.f.Sync(); err != nil {
@@ -304,6 +389,11 @@ func (a *Adapter) GetFileInfo(_ *winfsp.FileSystemRef, file uintptr, info *winfs
 	if !ok {
 		trace("GetFileInfo → err=%v (no handle)", os.ErrInvalid)
 		return os.ErrInvalid
+	}
+	if h.stream != streamData {
+		err := a.streamFileInfo(info, h)
+		trace("GetFileInfo path=%q stream=%s → err=%v", h.path, h.stream.streamName(), err)
+		return err
 	}
 	_, err := a.statFileInfo(info, h.path)
 	if err != nil {
@@ -358,7 +448,18 @@ func (a *Adapter) SetFileSize(
 	info *winfsp.FSP_FSCTL_FILE_INFO,
 ) error {
 	h, ok := a.handles.get(file)
-	if !ok || h.f == nil {
+	if !ok {
+		return os.ErrInvalid
+	}
+	if h.stream != streamData {
+		if !setAllocationSize {
+			if err := a.truncateStream(h, int64(newSize)); err != nil {
+				return err
+			}
+		}
+		return a.streamFileInfo(info, h)
+	}
+	if h.f == nil {
 		return os.ErrInvalid
 	}
 	if a.readOnly {
@@ -404,6 +505,19 @@ func (a *Adapter) Cleanup(_ *winfsp.FileSystemRef, file uintptr, _ string, clean
 	}
 	h, ok := a.handles.get(file)
 	if !ok {
+		return
+	}
+	if h.stream != streamData {
+		// Deleting a stream clears that fork/record only — never the base file. Truncating
+		// the fork/record to zero and flushing removes its content; the ForkEngine drops an
+		// empty resource fork / Finder info / comment.
+		if err := a.truncateStream(h, 0); err == nil {
+			_ = a.flushStream(h)
+		}
+		if h.f != nil {
+			_ = h.f.Close()
+			h.f = nil
+		}
 		return
 	}
 	// Close the data handle before removing so the backend can unlink cleanly.
@@ -605,4 +719,10 @@ var (
 	_ winfsp.BehaviourSetSecurity      = (*Adapter)(nil)
 	_ winfsp.BehaviourReadDirectory    = (*Adapter)(nil)
 	_ winfsp.BehaviourGetDirInfoByName = (*Adapter)(nil)
+
+	// The stream-aware wrapper adds NTFS named-stream enumeration; it is the object
+	// mounted when native forks are enabled (see Adapter.mountable). The bare *Adapter
+	// must NOT satisfy BehaviourGetStreamInfo, or streams-off mounts would advertise
+	// streams — that is enforced by keeping GetStreamInfo on streamAdapter only.
+	_ winfsp.BehaviourGetStreamInfo = streamAdapter{}
 )

@@ -22,6 +22,11 @@ type Options struct {
 	VolumeLabel string
 	// ReadOnly forces a read-only mount even if the ForkFS itself is writable.
 	ReadOnly bool
+	// NativeForks surfaces a file's resource fork and Apple metadata as NTFS named
+	// streams (:AFP_Resource / :AFP_AfpInfo / :Comments), following NT Services-for-
+	// Macintosh stream names — see streams_windows.go. csmount sets it for -fork native.
+	// When false the mount has no streams and a ':stream' path is rejected as invalid.
+	NativeForks bool
 	// FileInfoTimeoutMs is WinFsp FSP_FSCTL_VOLUME_PARAMS.FileInfoTimeout in milliseconds.
 	// 0 disables FSD metadata caching; -1 means infinite (also enables data caching).
 	// When FileInfoTimeoutSet is false, MountAt uses DefaultFileInfoTimeoutMs.
@@ -65,7 +70,7 @@ func New(fsys fs.ForkFS, opts Options) *Adapter { return newAdapter(fsys, opts) 
 // honoured via Options.ReadOnly in the Adapter itself (see newAdapter).
 func MountAt(fsys fs.ForkFS, mountpoint string, opts Options) (*Mount, error) {
 	a := newAdapter(fsys, opts)
-	host, err := winfsp.Mount(a, mountpoint, a.mountOptions(opts)...)
+	host, err := winfsp.Mount(a.mountable(), mountpoint, a.mountOptions(opts)...)
 	if err != nil {
 		return nil, err
 	}

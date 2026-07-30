@@ -72,6 +72,11 @@ func run(args []string) int {
 		VolumeLabel:        target.Volume,
 		FileInfoTimeoutMs:  cfg.CacheMs,
 		FileInfoTimeoutSet: cfg.CacheMsSet,
+		// Surface resource forks / Apple metadata as NTFS SFM streams (:AFP_Resource /
+		// :AFP_AfpInfo / :Comments) rather than projecting sidecars, when the user asks
+		// for the host-native layout. "native" aliases to "ads" on Windows, so accept
+		// both spellings (and "hfs", the mac name, for symmetry).
+		NativeForks: cfg.Fork == "native" || cfg.Fork == "ads" || cfg.Fork == "hfs",
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "csmount: mount:", err)
@@ -101,9 +106,11 @@ Flags:
               (pcap: omit to auto-detect the host's primary/default-route NIC)
   -transport  SMB pcap carrier: ipx (default) | nbipx | nbf
   -mac        virtual-station MAC for raw-Ethernet SMB carriers (empty = random)
-  -fork       fork container: appledouble | applesingle | macbinary | derez | passthrough | native | nofork
-              On AFP, sidecar layouts (derez/appledouble) PROJECT remote forks into the
-              mount as .rdump/.idump or ._name files so Windows can read them.
+  -fork       fork container: appledouble | applesingle | macbinary | derez | passthrough | native | ads | nofork
+              Sidecar layouts (derez/appledouble) PROJECT remote forks into the mount as
+              .rdump/.idump or ._name files. "native" (= "ads" on Windows) instead exposes
+              the resource fork / Finder info / comment as NTFS SFM streams (:AFP_Resource,
+              :AFP_AfpInfo, :Comments) so Windows tools see them like a real SFM server.
   -cache-ms   WinFsp FileInfoTimeout in ms (default 1000). 0 disables FSD metadata cache;
               -1 is infinite (also enables kernel data caching).
   -v          verbose: NBP + AFP wire-trace + WinFsp Behaviour* call names to stderr (ATP off)

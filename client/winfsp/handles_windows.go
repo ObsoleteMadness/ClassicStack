@@ -20,6 +20,14 @@ type openFile struct {
 	flag       int     // os.O_* the data fork was opened with (for a post-rename reopen)
 	dirBuf     winfsp.DirBuffer
 	dirBufUsed bool // true once WinFsp took the buffer via GetOrNewDirBuffer
+
+	// Named-stream (SFM) handle state, set when this handle targets a stream other than
+	// the data fork (see streams_windows.go). streamData means f above is the resource
+	// fork's fs.File; the record streams (AfpInfo/Comments) have no live fs.File and are
+	// served from streamBuf, flushed back through the ForkEngine on write.
+	stream      streamKind
+	streamBuf   []byte // in-memory contents of a record stream (AfpInfo/Comments)
+	streamDirty bool   // streamBuf was written and must be flushed to the ForkEngine
 }
 
 // handleTable maps the opaque WinFsp fileContext uintptr to our *openFile. The context is

@@ -234,7 +234,8 @@ func TestRenameCaseMismatchedSource(t *testing.T) {
 }
 
 // TestStreamSuffixRejected confirms a ':stream' path is rejected rather than routed to a
-// fork (the mount surfaces only the fork backend's namespace).
+// fork when native forks are OFF (the default here). With NativeForks enabled the SFM
+// streams are routed instead — see streams_test.go.
 func TestStreamSuffixRejected(t *testing.T) {
 	a := newTestAdapter(t)
 	var info winfsp.FSP_FSCTL_FILE_INFO
