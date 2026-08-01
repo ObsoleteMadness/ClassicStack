@@ -38,16 +38,27 @@ type leaseEntry struct {
 	atNetwork uint16
 	atNode    uint8
 	lastSeen  time.Time
+	// freedAt is when this slot last became free (evicted). The allocator prefers the
+	// slot with the OLDEST freedAt so a returning host is more likely to get its previous
+	// address back — the draft's "use the timer to locate the oldest unused table entry"
+	// rule (MacIPGP §3.8.2). A never-used slot has the zero time, which sorts oldest.
+	freedAt time.Time
+	// missed counts consecutive NBP-ARP Confirm periods with no reply for this lease
+	// (§3.8.2). Any liveness signal — a Confirm reply or inbound IP data — resets it; after
+	// confirmMissLimit periods the lease is reclaimed.
+	missed int
 }
 
-// ipPool manages a contiguous pool of IPv4 addresses for assignment to MacIP
-// clients. Slot index i maps to the address base+i, so index 0 is the network
-// address (base) and index 1 is the gateway (base+1). BOTH are reserved and never
-// handed out: assignment starts at index 2 (base+2), the first true host address.
-// This matches the original macipgw (macip.c init_ip: my address = net+1, ipent[0]
-// pre-marked ASSIGN_FIXED, lease_ip returns from the next free slot). The pool is the
-// static-assignment path; DHCP-relayed leases are an adapter concern injected through
-// RegisterExternal.
+// ipPool manages the gateway's "Dynamic Range" (MacIPGP draft §3.8.2 / §3.2.3) — the
+// contiguous block of IPv4 addresses it can ASSIGN to MacIP clients. Slot index i maps to
+// the address base+i, so index 0 is the network address (base) and index 1 is the gateway
+// (base+1). BOTH are reserved and never handed out: assignment starts at index 2 (base+2),
+// the first true host address. This matches the original macipgw (macip.c init_ip: my
+// address = net+1, ipent[0] pre-marked ASSIGN_FIXED, lease_ip returns from the next free
+// slot). Each entry mirrors the draft's table row — { IP address; timer; flags; AppleTalk
+// address } — with lastSeen as the timer, used/reserved as the flags, and atNetwork/atNode
+// as the AppleTalk address. This is the static-assignment path; DHCP-relayed leases are an
+// adapter concern injected through RegisterExternal.
 type ipPool struct {
 	mu      sync.Mutex
 	base    uint32       // network base address
@@ -58,7 +69,17 @@ type ipPool struct {
 	extByAT map[[3]byte]uint32
 	extByIP map[uint32][3]byte
 	extSeen map[[3]byte]time.Time
+
+	// conflicts holds in-range addresses a pre-assign NBP-ARP probe (§3.8.2) found a live
+	// host already using, mapped to when the conflict was noted. The allocator skips them
+	// so we do not re-offer a duplicate; they age out (conflictTTL) in case that host
+	// leaves, since the gateway is not otherwise tracking it.
+	conflicts map[uint32]time.Time
 }
+
+// conflictTTL bounds how long a probe-detected duplicate address is kept out of the pool
+// before the allocator may try it again.
+const conflictTTL = 5 * time.Minute
 
 // atKey packs an AppleTalk endpoint into a comparable map key.
 func atKey(atNetwork uint16, atNode uint8) [3]byte {
@@ -79,11 +100,12 @@ func newIPPool(network IPv4, hostCount int) *ipPool {
 	entries := make([]leaseEntry, hostCount)
 	entries[1].reserved = true // gateway (base+1); index 0 (base) is the network addr
 	return &ipPool{
-		base:    network.u32(),
-		entries: entries,
-		extByAT: make(map[[3]byte]uint32),
-		extByIP: make(map[uint32][3]byte),
-		extSeen: make(map[[3]byte]time.Time),
+		base:      network.u32(),
+		entries:   entries,
+		extByAT:   make(map[[3]byte]uint32),
+		extByIP:   make(map[uint32][3]byte),
+		extSeen:   make(map[[3]byte]time.Time),
+		conflicts: make(map[uint32]time.Time),
 	}
 }
 
@@ -108,22 +130,30 @@ func (p *ipPool) assign(requested IPv4, atNetwork uint16, atNode uint8) (ip IPv4
 		}
 	}
 
+	p.ageConflictsLocked()
+
 	// Honour a specific requested IP if it falls in range and is free (never the
-	// reserved network/gateway slots, and never an address held by a learned
-	// external binding).
+	// reserved network/gateway slots, never an address held by a learned external
+	// binding, and never one a probe found a live host already using).
 	if !requested.IsZero() {
 		idx := int(requested.u32() - p.base)
 		if idx >= 1 && idx < len(p.entries) && !p.entries[idx].used && !p.entries[idx].reserved {
-			if _, taken := p.extByIP[requested.u32()]; !taken {
+			_, extTaken := p.extByIP[requested.u32()]
+			_, conflict := p.conflicts[requested.u32()]
+			if !extTaken && !conflict {
 				p.entries[idx] = leaseEntry{used: true, atNetwork: atNetwork, atNode: atNode, lastSeen: time.Now()}
 				return requested, true, true
 			}
 		}
 	}
 
-	// Allocate the next free slot (index 1 is the reserved gateway; the scan skips it
-	// via the reserved flag, so the first assignable address is base+2). Skip any
-	// address still held only as an external/learned binding.
+	// Allocate a free slot, preferring the one freed LONGEST ago (oldest freedAt; a
+	// never-used slot's zero time sorts oldest) — the draft's "locate the oldest unused
+	// table entry" rule (§3.8.2), which maximises the chance a returning host later finds
+	// its previous address still free. Index 1 is the reserved gateway (skipped via the
+	// reserved flag, so the first assignable address is base+2). Skip any address still
+	// held only as an external/learned binding.
+	best := -1
 	for i := 1; i < len(p.entries); i++ {
 		if p.entries[i].used || p.entries[i].reserved {
 			continue
@@ -132,10 +162,59 @@ func (p *ipPool) assign(requested IPv4, atNetwork uint16, atNode uint8) (ip IPv4
 		if _, taken := p.extByIP[addr]; taken {
 			continue
 		}
-		p.entries[i] = leaseEntry{used: true, atNetwork: atNetwork, atNode: atNode, lastSeen: time.Now()}
-		return fromU32(addr), true, true
+		if _, conflict := p.conflicts[addr]; conflict {
+			continue
+		}
+		if best < 0 || p.entries[i].freedAt.Before(p.entries[best].freedAt) {
+			best = i
+		}
 	}
-	return IPv4{}, false, false
+	if best < 0 {
+		return IPv4{}, false, false
+	}
+	addr := p.base + uint32(best)
+	p.entries[best] = leaseEntry{used: true, atNetwork: atNetwork, atNode: atNode, lastSeen: time.Now()}
+	return fromU32(addr), true, true
+}
+
+// noteConflict marks an in-range address as one a live host already holds (found by a
+// pre-assign or Confirm NBP-ARP probe, §3.8.2), and frees the slot the tentative assign
+// claimed for it so the allocator picks a different address on retry. A no-op for
+// out-of-range addresses. The conflict record ages out (conflictTTL) so the address can be
+// tried again later if the other host leaves.
+func (p *ipPool) noteConflict(ip IPv4) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.conflicts[ip.u32()] = time.Now()
+	if idx := int(ip.u32() - p.base); idx >= 1 && idx < len(p.entries) && !p.entries[idx].reserved {
+		p.entries[idx] = leaseEntry{freedAt: time.Now()}
+	}
+}
+
+// release frees the slot tentatively claimed for ip WITHOUT recording a conflict — used to
+// undo a claim when the request is abandoned (e.g. the service is stopping). A no-op for
+// out-of-range or reserved slots, or a slot no longer held by this endpoint.
+func (p *ipPool) release(ip IPv4, atNetwork uint16, atNode uint8) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	idx := int(ip.u32() - p.base)
+	if idx < 1 || idx >= len(p.entries) || p.entries[idx].reserved {
+		return
+	}
+	e := &p.entries[idx]
+	if e.used && e.atNetwork == atNetwork && e.atNode == atNode {
+		*e = leaseEntry{freedAt: time.Now()}
+	}
+}
+
+// ageConflictsLocked drops conflict records older than conflictTTL. Caller holds mu.
+func (p *ipPool) ageConflictsLocked() {
+	now := time.Now()
+	for ip, at := range p.conflicts {
+		if now.Sub(at) > conflictTTL {
+			delete(p.conflicts, ip)
+		}
+	}
 }
 
 // lookupByIP resolves the AppleTalk endpoint that owns an IP, checking static
@@ -152,22 +231,6 @@ func (p *ipPool) lookupByIP(ip IPv4) (uint16, uint8, bool) {
 		return uint16(k[0])<<8 | uint16(k[1]), k[2], true
 	}
 	return 0, 0, false
-}
-
-// lookupIPByAT resolves the IP leased to an AppleTalk endpoint.
-func (p *ipPool) lookupIPByAT(atNetwork uint16, atNode uint8) (IPv4, bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for i := 1; i < len(p.entries); i++ {
-		e := p.entries[i]
-		if e.used && e.atNetwork == atNetwork && e.atNode == atNode {
-			return fromU32(p.base + uint32(i)), true
-		}
-	}
-	if v, ok := p.extByAT[atKey(atNetwork, atNode)]; ok {
-		return fromU32(v), true
-	}
-	return IPv4{}, false
 }
 
 // RegisterExternal records an adapter-assigned (e.g. DHCP relay) lease that may
@@ -267,7 +330,7 @@ func (p *ipPool) clearStaticForATLocked(atNetwork uint16, atNode uint8) {
 	for i := 1; i < len(p.entries); i++ {
 		e := &p.entries[i]
 		if e.used && !e.reserved && e.atNetwork == atNetwork && e.atNode == atNode {
-			*e = leaseEntry{}
+			*e = leaseEntry{freedAt: time.Now()}
 		}
 	}
 }
@@ -280,6 +343,7 @@ func (p *ipPool) updateSeen(atNetwork uint16, atNode uint8) {
 		e := &p.entries[i]
 		if e.used && e.atNetwork == atNetwork && e.atNode == atNode {
 			e.lastSeen = time.Now()
+			e.missed = 0 // data traffic is a liveness signal — reset the Confirm miss count
 			return
 		}
 	}
@@ -289,28 +353,93 @@ func (p *ipPool) updateSeen(atNetwork uint16, atNode uint8) {
 	}
 }
 
+// staticLease is one active static-pool lease for the Confirm loop.
+type staticLease struct {
+	ip        IPv4
+	atNetwork uint16
+	atNode    uint8
+}
+
+// staticLeases snapshots the active static-pool leases (not external/DHCP ones) so the
+// Confirm loop can NBP-ARP-probe each without holding the lock across the probe.
+func (p *ipPool) staticLeases() []staticLease {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var out []staticLease
+	for i := 1; i < len(p.entries); i++ {
+		e := p.entries[i]
+		if e.used && !e.reserved {
+			out = append(out, staticLease{ip: fromU32(p.base + uint32(i)), atNetwork: e.atNetwork, atNode: e.atNode})
+		}
+	}
+	return out
+}
+
+// confirmHit records a successful NBP-ARP Confirm for a lease: refresh its timer and clear
+// the miss count. No-op if the slot is no longer that endpoint's lease.
+func (p *ipPool) confirmHit(ip IPv4, atNetwork uint16, atNode uint8) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	idx := int(ip.u32() - p.base)
+	if idx < 1 || idx >= len(p.entries) {
+		return
+	}
+	e := &p.entries[idx]
+	if e.used && e.atNetwork == atNetwork && e.atNode == atNode {
+		e.lastSeen = time.Now()
+		e.missed = 0
+	}
+}
+
+// confirmMiss records a missed Confirm period for a lease and evicts it once it has missed
+// confirmMissLimit periods (§3.8.2: 5 periods with no reply → the entry is reclaimed).
+// Returns true if the lease was evicted (so the caller can withdraw its IPADDRESS name).
+func (p *ipPool) confirmMiss(ip IPv4, atNetwork uint16, atNode uint8, limit int) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	idx := int(ip.u32() - p.base)
+	if idx < 1 || idx >= len(p.entries) {
+		return false
+	}
+	e := &p.entries[idx]
+	if !e.used || e.atNetwork != atNetwork || e.atNode != atNode {
+		return false
+	}
+	e.missed++
+	if e.missed >= limit {
+		*e = leaseEntry{freedAt: time.Now()}
+		return true
+	}
+	return false
+}
+
 // expire evicts static and external (DHCP/snooped) leases unseen for longer than
 // leaseDuration. External bindings age on the same clock as static ones so a
-// snooped static-Mac binding does not linger after that Mac goes away.
-func (p *ipPool) expire() {
+// snooped static-Mac binding does not linger after that Mac goes away. It returns the
+// IPs whose leases were evicted so the caller can withdraw their IPADDRESS NBP names.
+func (p *ipPool) expire() []IPv4 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
+	var evicted []IPv4
 	for i := 1; i < len(p.entries); i++ {
 		e := &p.entries[i]
 		if e.used && now.Sub(e.lastSeen) > leaseDuration {
-			*e = leaseEntry{}
+			evicted = append(evicted, fromU32(p.base+uint32(i)))
+			*e = leaseEntry{freedAt: now} // remember when it freed so the allocator can prefer the oldest
 		}
 	}
 	for k, seen := range p.extSeen {
 		if now.Sub(seen) > leaseDuration {
 			if ip, ok := p.extByAT[k]; ok {
+				evicted = append(evicted, fromU32(ip))
 				delete(p.extByIP, ip)
 			}
 			delete(p.extByAT, k)
 			delete(p.extSeen, k)
 		}
 	}
+	return evicted
 }
 
 // poolStats is a point-in-time count of active leases.

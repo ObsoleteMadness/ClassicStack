@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"context"
 	"sync"
+	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
@@ -50,6 +51,22 @@ type RegisteredName struct {
 	AnyObject bool
 }
 
+// NBPEntity is one resolved NBP tuple returned by Lookup: the object/type/zone
+// strings and the AppleTalk address (network.node:socket) the responder gave.
+type NBPEntity struct {
+	Object  []byte
+	Type    []byte
+	Zone    []byte
+	Network uint16
+	Node    uint8
+	Socket  uint8
+}
+
+// defaultLookupWindow bounds how long Lookup waits for LkUp-Rply replies before
+// returning what it collected. NBP has no "no more replies" signal, so a requester
+// always waits a fixed window (Inside AppleTalk, NBP; matches the client requester).
+const defaultLookupWindow = 2 * time.Second
+
 type item struct {
 	d    ddp.Datagram
 	from router.RoutedPort
@@ -64,6 +81,12 @@ type Service struct {
 
 	nameMu sync.RWMutex
 	names  []RegisteredName
+
+	// pending holds in-flight self-originated Lookup requests keyed by NBP id, so
+	// inbound LkUp-Rply datagrams (which the router dispatches here on socket 2) are
+	// delivered to the waiting Lookup goroutine instead of being dropped.
+	pendMu  sync.Mutex
+	pending map[byte]chan NBPEntity
 
 	mu      sync.Mutex
 	running bool
@@ -81,7 +104,7 @@ type Service struct {
 
 // New builds an NBP name-information service bound to the router it replies through.
 func New(rtr router.ServiceRouter, logger log.Logger) *Service {
-	return &Service{rtr: rtr, logger: logger}
+	return &Service{rtr: rtr, logger: logger, pending: make(map[byte]chan NBPEntity)}
 }
 
 // Name returns the component name.
@@ -156,6 +179,95 @@ func (s *Service) Names() []RegisteredName {
 	copy(out, s.names)
 	return out
 }
+
+// Lookup broadcasts a BrRq for object:type in zone and returns every LkUp-Rply tuple
+// received within the default collection window. An empty (or "=") object/type is the
+// name wildcard; an empty (or "*") zone is the this-zone wildcard. This is the requester
+// side of NBP — used, e.g., by the MacIP gateway's startup reregistration search for
+// "=:IPADDRESS@*" (spec/14-macip-gateway.md §3). Safe to call only while running.
+func (s *Service) Lookup(object, typ, zone []byte) []NBPEntity {
+	return s.LookupTimeout(object, typ, zone, defaultLookupWindow)
+}
+
+// LookupTimeout is Lookup with a caller-chosen collection window (a window ≤ 0 uses the
+// default). It registers a pending waiter keyed by a fresh NBP id, broadcasts the BrRq on
+// every attached port, then returns the de-duplicated replies collected before the window
+// elapses or the service stops.
+func (s *Service) LookupTimeout(object, typ, zone []byte, window time.Duration) []NBPEntity {
+	if window <= 0 {
+		window = defaultLookupWindow
+	}
+	obj := wildcardOrName(object, nbp.NameWildcard)
+	tp := wildcardOrName(typ, nbp.NameWildcard)
+	zn := wildcardOrName(zone, nbp.ZoneWildcard)
+
+	s.mu.Lock()
+	running := s.running
+	stop := s.stop
+	s.mu.Unlock()
+	if !running {
+		return nil
+	}
+
+	id := nbpID()
+	rply := make(chan NBPEntity, 64)
+	s.pendMu.Lock()
+	// A prior waiter under the same id (id collisions are possible) is superseded; its
+	// goroutine will simply time out. Overwrite so late replies reach the newest waiter.
+	s.pending[id] = rply
+	s.pendMu.Unlock()
+	defer func() {
+		s.pendMu.Lock()
+		if s.pending[id] == rply {
+			delete(s.pending, id)
+		}
+		s.pendMu.Unlock()
+	}()
+
+	// Broadcast the BrRq on every attached port; the local router turns it into LkUps
+	// across the zones, and matching responders reply on socket 2 back to us.
+	for _, p := range s.rtr.Ports() {
+		pkt := nbp.BuildLkUp(nbp.CtrlBrRq, id, p.Network(), p.Node(), Socket, obj, tp, zn)
+		p.Broadcast(ddp.Datagram{
+			DestNetwork: 0, SrcNetwork: p.Network(), DestNode: 0xFF, SrcNode: p.Node(),
+			DestSocket: Socket, SrcSocket: Socket, DDPType: DDPType, Data: pkt,
+		})
+	}
+	s.bump(&s.brrq)
+
+	var out []NBPEntity
+	seen := map[string]bool{}
+	deadline := time.After(window)
+	for {
+		select {
+		case ent := <-rply:
+			key := string(ent.Object) + ":" + string(ent.Type) + ":" + string(ent.Zone)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, ent)
+		case <-deadline:
+			return out
+		case <-stop:
+			return out
+		}
+	}
+}
+
+// wildcardOrName returns the single wildcard byte for an empty/wildcard input, else the
+// input bytes copied.
+func wildcardOrName(b []byte, wildcard byte) []byte {
+	if len(b) == 0 || (len(b) == 1 && (b[0] == nbp.NameWildcard || b[0] == nbp.ZoneWildcard)) {
+		return []byte{wildcard}
+	}
+	return append([]byte(nil), b...)
+}
+
+// nbpID returns a per-lookup NBP id byte. It need not be globally unique — only distinct
+// enough that a stale reply from a prior lookup is unlikely to be confused; the low byte
+// of the current time is sufficient for the gateway's one-shot reregistration search.
+func nbpID() byte { return byte(time.Now().UnixNano()) }
 
 // Start launches the responder goroutine. Idempotent (§3).
 func (s *Service) Start(ctx context.Context) error {
@@ -260,6 +372,34 @@ func (s *Service) handlePacket(d ddp.Datagram, from router.RoutedPort) {
 	case nbp.CtrlLkUp:
 		s.bump(&s.lkup)
 		s.handleLkUp(d, from, pkt.Tuple.Object, pkt.Tuple.Type, pkt.Tuple.Zone, replyNet)
+	case nbp.CtrlLkUpRply:
+		// Reply to one of our own self-originated Lookups (§Lookup). Deliver it to the
+		// waiting goroutine keyed by NBP id; drop it if no lookup is pending.
+		s.deliverReply(pkt)
+	}
+}
+
+// deliverReply hands an inbound LkUp-Rply tuple to the pending Lookup waiter registered
+// under its NBP id, if any. Non-blocking: a full waiter channel drops the extra reply
+// (the collection window is best-effort).
+func (s *Service) deliverReply(pkt nbp.Packet) {
+	s.pendMu.Lock()
+	ch := s.pending[pkt.NBPID]
+	s.pendMu.Unlock()
+	if ch == nil {
+		return
+	}
+	ent := NBPEntity{
+		Object:  append([]byte(nil), pkt.Tuple.Object...),
+		Type:    append([]byte(nil), pkt.Tuple.Type...),
+		Zone:    append([]byte(nil), pkt.Tuple.Zone...),
+		Network: pkt.Tuple.Network,
+		Node:    pkt.Tuple.Node,
+		Socket:  pkt.Tuple.Socket,
+	}
+	select {
+	case ch <- ent:
+	default:
 	}
 }
 
