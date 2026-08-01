@@ -493,12 +493,19 @@ func (e *sessionEngine) closeAll() {
 
 // emitDatagram sends a connectionless NetBIOS datagram (a browser HostAnnounce /
 // election / backup-list frame) as an NBF UI frame carrying the source/destination
-// NetBIOS names and the payload. A broadcast (ReplyTo nil) goes to the NetBIOS
-// multicast MAC as a CmdDatagramBroadcast group frame. A directed reply (ReplyTo set
-// by the inbound datagram — a browser GetBackupList / AnnouncementRequest answer) is
-// sent as a CmdDatagram unicast to the requester's MAC (carried in ReplyTo.Node), so
-// the answer reaches the one station that asked. A directed reply with no usable MAC
-// falls back to the multicast send (the receiving node still dispatches it by name).
+// NetBIOS names and the payload. It ALWAYS uses CmdDatagram (0x08), never
+// CmdDatagramBroadcast (0x09): a real Windows/WfW/Win98 browser routes an inbound
+// datagram by its destination NetBIOS name and dispatches only 0x08 frames — every
+// browser datagram in captures/win98nbf-win31nbf.pcapng (Host/Domain announcements,
+// GetBackupList request AND response, RequestAnnouncement, LocalMasterAnnounce) is a
+// 0x08 Datagram, none is a 0x09 broadcast, and a 0x09 to a group name a client is not
+// registered for is silently dropped (the exact failure fixed on the client's
+// discovery path). A directed reply (ReplyTo set by the inbound datagram — a browser
+// GetBackupList / AnnouncementRequest answer) is unicast to the requester's MAC
+// (carried in ReplyTo.Node) so the answer reaches the one station that asked; a
+// "broadcast" (ReplyTo nil) goes to the NetBIOS functional multicast MAC, where the
+// destination NAME in the frame selects the recipient(s). The wire command is 0x08 in
+// both cases — only the L2 destination MAC differs.
 func (e *sessionEngine) emitDatagram(d Datagram) error {
 	if e.sender == nil {
 		return nil
@@ -506,12 +513,11 @@ func (e *sessionEngine) emitDatagram(d Datagram) error {
 	frame := &nbf.Frame{Payload: d.Payload}
 	frame.DestinationName = [16]byte(d.Destination)
 	frame.SourceName = [16]byte(d.Source)
+	frame.Command = nbf.CmdDatagram
 
 	if r := d.ReplyTo; r != nil && r.Transport == TransportNetBEUI && r.Node != ([6]byte{}) {
-		frame.Command = nbf.CmdDatagram
 		return e.sender.Send(r.Node, frame)
 	}
-	frame.Command = nbf.CmdDatagramBroadcast
 	return e.sender.SendBroadcast(frame)
 }
 

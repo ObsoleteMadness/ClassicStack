@@ -118,21 +118,23 @@ func (c *Conn) SendMailslot(mailslotName string, dst nb.Name, body []byte, broad
 	}
 }
 
-// sendNBF emits a mailslot payload as an NBF UI datagram: DATAGRAM_BROADCAST (0x09) to
-// the NetBIOS functional-address multicast MAC for a broadcast, or a directed DATAGRAM
-// (0x08) — still to the multicast MAC, since a client with no name→MAC map reaches a
-// named station by letting every node dispatch by the destination name (the same
-// fallback the server's emitDatagram uses when it has no unicast MAC). Mirrors
-// core/service/netbios/nbf.go emitDatagram.
+// sendNBF emits a mailslot payload as an NBF UI datagram to the NetBIOS
+// functional-address multicast MAC. It ALWAYS uses the DATAGRAM (0x08) command, never
+// DATAGRAM_BROADCAST (0x09): a real Windows/WfW/Win98 browser routes an inbound datagram
+// by its destination NetBIOS name (WORKGROUP<1D>, WORKGROUP<1E>, <computer><00>) and
+// dispatches ONLY 0x08 frames — every browser datagram in captures/win98nbf-win31nbf.pcapng
+// (Host/Domain announcements, GetBackupList request AND response, RequestAnnouncement) is a
+// 0x08 Datagram, none is a 0x09 broadcast. A 0x09 addressed to a group name the master is
+// not registered for is silently dropped, which is why our GetBackupList drew no reply. The
+// name in the frame does the routing; the multicast MAC just fans it to every node so the
+// named recipient sees it. The broadcast flag now only affects addressing decisions in the
+// callers (which destination NAME to use), not the wire command.
 func (c *Conn) sendNBF(dst nb.Name, payload []byte, broadcast bool) error {
+	_ = broadcast // browser datagrams are always CmdDatagram (0x08); the dst NAME routes them.
 	frame := &nbf.Frame{Payload: payload}
 	frame.DestinationName = [16]byte(dst)
 	frame.SourceName = [16]byte(c.srcName)
-	if broadcast {
-		frame.Command = nbf.CmdDatagramBroadcast
-	} else {
-		frame.Command = nbf.CmdDatagram
-	}
+	frame.Command = nbf.CmdDatagram
 	body, err := frame.Encode()
 	if err != nil {
 		return err

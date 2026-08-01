@@ -42,8 +42,7 @@ const (
 
 // RAP status codes ([MS-ERREF] Win32) returned in the 2-byte RAP Status param.
 const (
-	rapStatusInvalidFunction uint16 = 1  // ERROR_INVALID_FUNCTION
-	rapStatusReqNotAccepted  uint16 = 71 // ERROR_REQ_NOT_ACCEP (a potential browser)
+	rapStatusReqNotAccepted uint16 = 71 // ERROR_REQ_NOT_ACCEP (a potential browser)
 )
 
 // SV_TYPE_* bits NetServerEnum2 filters on ([MS-SRVS]).
@@ -208,35 +207,55 @@ func parseRAPDetailLevel(area []byte) (uint16, bool) {
 	return bp.LE16(area[p : p+2]), true
 }
 
-// netServerEnum2Filter best-effort extracts the SV_TYPE_* filter from the RAP
-// NetServerEnum2 request (after the function code: ParamDesc + DataDesc strings,
-// ReceiveBufferLength, then ServerType). A parse miss returns 0 (no filter).
-func netServerEnum2Filter(area []byte) uint32 {
+// netServerEnum2Params best-effort extracts the detail LEVEL and the SV_TYPE_* filter
+// from the RAP NetServerEnum2 request. Layout after \PIPE\LANMAN\0: Function(2),
+// ParamDesc\0, DataDesc\0, Level(2), ReceiveBufferLength(2), ServerType(4). A parse miss
+// returns (0, 0). The level is the real discriminator between the domain enumeration
+// (level 0, returns domains) and the server list (level 1, returns SERVER_INFO_1) — a real
+// WfW/Win98 redirector sends servertype 0xFFFFFFFF (DOMAIN_ENUM bit INCLUDED) for the
+// level-1 server list, so the type mask alone cannot tell the two calls apart.
+func netServerEnum2Params(area []byte) (level uint16, serverType uint32) {
 	marker := lanmanPipe + "\x00"
 	idx := indexFold(area, marker)
 	if idx < 0 {
-		return 0
+		return 0, 0
 	}
 	p := idx + len(marker) + 2 // past the function code
 	for range 2 {              // skip ParamDesc + DataDesc (NUL-terminated)
 		n := indexByte(area[p:], 0)
 		if n < 0 {
-			return 0
+			return 0, 0
 		}
 		p += n + 1
 	}
-	if p+2+4 > len(area) {
-		return 0
+	if p+2+2+4 > len(area) {
+		return 0, 0
 	}
-	p += 2 // ReceiveBufferLength
-	return bp.LE32(area[p : p+4])
+	level = bp.LE16(area[p : p+2])
+	p += 2 + 2 // Level + ReceiveBufferLength
+	return level, bp.LE32(area[p : p+4])
 }
 
-// handleNetServerEnum2 answers a RAP NetServerEnum2 from the browse list. A
-// potential browser (no list available) answers ERROR_REQ_NOT_ACCEP; a
-// DOMAIN_ENUM-mixed-with-other-bits request answers ERROR_INVALID_FUNCTION; a plain
-// server-list request returns the browse-list entries.
+// handleNetServerEnum2 answers a RAP NetServerEnum2 from the browse list. The DETAIL
+// LEVEL is the discriminator, matching a real WfW/Win98 redirector
+// (captures/win98nbf-win31nbf.pcapng): level 0 with servertype 0x80000000 is the domain
+// enumeration (returns our workgroup); level 1 is the server list — and a real client sends
+// servertype 0xFFFFFFFF for it (the DOMAIN_ENUM bit is INCLUDED, not cleared), so we must
+// NOT treat that as an invalid mix. A potential browser (no list available) answers
+// ERROR_REQ_NOT_ACCEP.
 func (s *Service) handleNetServerEnum2(h protocol.Header, area []byte) []byte {
+	level, serverType := netServerEnum2Params(area)
+
+	// Level 0 = domain enumeration: report our own workgroup as the one domain. This is
+	// the DOMAIN_ENUM call (servertype 0x80000000 at level 0), independent of the browse
+	// list, so it is answered even with no browser wired. The level-0 reply uses the
+	// name-only "B16" record (16 bytes), NOT the 26-byte SERVER_INFO_1 — a real WfW client
+	// sends ReturnDesc "B16" for this call and parses 16-byte records
+	// (captures/win98nbf-win31nbf.pcapng frame 47: TotalDataCount=16 for one WORKGROUP entry).
+	if level == 0 && serverType&svTypeDomainEnum != 0 {
+		return buildDomainEnumResponse(h, []string{s.workgroup()})
+	}
+
 	provider := s.browseProvider()
 	if provider == nil {
 		// No browser wired (e.g. a NetBIOS-less direct-TCP :445 deployment): there is
@@ -249,14 +268,7 @@ func (s *Service) handleNetServerEnum2(h protocol.Header, area []byte) []byte {
 	if !provider.Available() {
 		return buildRAPError(h, rapStatusReqNotAccepted)
 	}
-	serverType := netServerEnum2Filter(area)
-	if serverType&svTypeDomainEnum != 0 && serverType != svTypeDomainEnum {
-		return buildRAPError(h, rapStatusInvalidFunction)
-	}
-	if serverType&svTypeDomainEnum != 0 {
-		// DOMAIN_ENUM alone: report our own workgroup as the one domain.
-		return buildNetServerEnum2Response(h, []BrowseServer{{Name: s.workgroup(), Type: svTypeDomainEnum}})
-	}
+	// Level 1 (or anything not the domain enumeration): the authoritative server list.
 	return buildNetServerEnum2Response(h, provider.ServerEntries())
 }
 
@@ -430,6 +442,27 @@ func buildNetServerEnum2Response(h protocol.Header, entries []BrowseServer) []by
 	}
 	copy(data[commentBase:], commentData)
 
+	return buildTransactionResponse(h, params, data)
+}
+
+// buildDomainEnumResponse packs a level-0 NetServerEnum2 DOMAIN enumeration reply: each
+// domain is a bare 16-byte name record ("B16" ReturnDesc), with NO version/type/comment
+// fields and NO comment heap — the shape a real WfW/Win98 client expects for the level-0
+// call (captures/win98nbf-win31nbf.pcapng frame 47). The RAP parameter block is the usual
+// Status/Converter/EntriesReturned/EntriesAvailable; the data block is just the names.
+func buildDomainEnumResponse(h protocol.Header, domains []string) []byte {
+	const nameSize = 16 // "B16" record: a 16-byte name only.
+
+	const paramLen = 8
+	params := make([]byte, paramLen)
+	// params[0:2] Status = 0, params[2:4] Converter = 0 (name-only records carry no pointers).
+	bp.PutLE16(params[4:6], uint16(len(domains))) // EntriesReturned
+	bp.PutLE16(params[6:8], uint16(len(domains))) // EntriesAvailable
+
+	data := make([]byte, len(domains)*nameSize)
+	for i, d := range domains {
+		copy(data[i*nameSize:(i+1)*nameSize], browserName(d))
+	}
 	return buildTransactionResponse(h, params, data)
 }
 

@@ -133,9 +133,19 @@ func enumerateCarrier(opener *clientlink.Opener, station nb.Name, p netbios.Prot
 		merge(agg, h.Name, p, SourceAnnouncement, hostRole(h), h.Comment, h.OSVersion)
 	}
 
-	// Source 2: find the master browser (__MSBROWSE__ / <1D> + GetBackupList).
+	// Learn the workgroup to target if the caller pinned none: a real GetBackupList /
+	// AnnouncementRequest is a DIRECTED datagram to <workgroup><1D> (the local master's
+	// registered name), not a broadcast to a wildcard group — the master only answers a
+	// request bearing its own name (captures/win98nbf-win31nbf.pcapng frames 19/25). The
+	// sniff's Host/Domain announcements carry the workgroup, so adopt it before FindMaster.
+	workgroup := opts.Workgroup
+	if workgroup == "" {
+		workgroup = workgroupFromHosts(hosts)
+	}
+
+	// Source 2: find the master browser (<workgroup><1D> directed + __MSBROWSE__ + GetBackupList).
 	tracef(opts, "[%s] locating master browser ...", p)
-	master, _ := c.FindMaster(opts.Workgroup, window)
+	master, _ := c.FindMaster(workgroup, window)
 	_ = c.Close() // done with the datagram carrier; the SMB session opens its own FrameLink
 	res.MasterName = master.MasterName
 	res.BackupBrowsers = master.BackupBrowsers
@@ -146,8 +156,14 @@ func enumerateCarrier(opener *clientlink.Opener, station nb.Name, p netbios.Prot
 
 	// Source 3: ask the master (or a backup browser) for the authoritative server list.
 	for _, tgt := range enumTargets(master) {
-		servers := enumServers(opts, p, tgt, master.Workgroup)
+		tracef(opts, "[%s] asking %s for the server list (NetServerEnum2 over IPC$) ...", p, tgt)
+		servers, err := enumServers(opts, p, tgt, master.Workgroup)
+		if err != nil {
+			tracef(opts, "[%s] %s: NetServerEnum2 failed: %v", p, tgt, err)
+			continue
+		}
 		if len(servers) == 0 {
+			tracef(opts, "[%s] %s returned an empty server list", p, tgt)
 			continue
 		}
 		tracef(opts, "[%s] %s returned %d servers (NetServerEnum2)", p, tgt, len(servers))
@@ -176,19 +192,16 @@ func enumTargets(m netbios.MasterInfo) []string {
 }
 
 // enumServers opens an anonymous SMB IPC$ session to master over carrier p and runs RAP
-// NetServerEnum2, returning the browse-list servers (empty on any failure). A browse needs
-// no credentials — the master answers an anonymous query with its full list.
-func enumServers(opts Options, p netbios.Protocol, master, workgroup string) []clientsmb.BrowseServer {
+// NetServerEnum2, returning the browse-list servers. A browse needs no credentials — the
+// master answers an anonymous query with its full list. The error is returned (not
+// swallowed) so the caller can trace WHY a master that was found did not yield a list.
+func enumServers(opts Options, p netbios.Protocol, master, workgroup string) ([]clientsmb.BrowseServer, error) {
 	spec := clientlink.Spec{Kind: opts.Kind, Name: opts.Device, Carrier: string(p), FrameType: opts.FrameType}
 	opener := clientlink.NewOpener(spec)
 	if opts.MAC != ([6]byte{}) {
 		opener.MAC = opts.MAC
 	}
-	servers, err := clientsmb.EnumServers(opener, master, workgroup, "", "")
-	if err != nil {
-		return nil
-	}
-	return servers
+	return clientsmb.EnumServers(opener, master, workgroup, "", "")
 }
 
 // merge inserts or enriches a discovered server, keeping the most authoritative source and
@@ -224,6 +237,23 @@ func addCarrier(cs []netbios.Protocol, p netbios.Protocol) []netbios.Protocol {
 		return cs
 	}
 	return append(cs, p)
+}
+
+// workgroupFromHosts extracts the workgroup name from a sniffed host list so a subsequent
+// GetBackupList can be directed to <workgroup><1D>. A DomainAnnouncement's Host carries it
+// as a "workgroup X" comment (announcementToHost stamps that form); a plain host/master
+// announcement does not name its workgroup on the wire, so the domain announce is the one
+// reliable source. Returns "" when no host named a workgroup (the caller then broadcasts).
+func workgroupFromHosts(hosts []netbios.Host) string {
+	const prefix = "workgroup "
+	for _, h := range hosts {
+		if strings.HasPrefix(strings.ToLower(h.Comment), prefix) {
+			if wg := strings.TrimSpace(h.Comment[len(prefix):]); wg != "" {
+				return wg
+			}
+		}
+	}
+	return ""
 }
 
 // hostRole maps an announcement's role to a server Role label ("" for an ordinary host).

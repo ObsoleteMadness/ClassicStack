@@ -22,15 +22,28 @@ func (f *fakeBrowseProvider) ServerEntries() []BrowseServer { return f.entries }
 // call: the byte area is "\PIPE\LANMAN\0" + function(2) + ParamDesc\0 + DataDesc\0
 // + ReceiveBufferLength(2) + ServerType(4). The transaction words are zeroed (the
 // handler reads only the byte area).
+// lanmanReq builds a RAP request over IPC$ at detail level 1 (the server-list form). Use
+// lanmanReqLevel for a specific level (e.g. 0 for the domain enumeration).
 func lanmanReq(tid uint16, fn uint16, serverType uint32) []byte {
+	return lanmanReqLevel(tid, fn, 1, serverType)
+}
+
+// lanmanReqLevel builds a RAP NetServerEnum2/NetShareEnum request with the given detail
+// level, mirroring the real wire layout: \PIPE\LANMAN\0 Function(2) ParamDesc\0 DataDesc\0
+// Level(2) ReceiveBufferLength(2) ServerType(4). The Level word is load-bearing — the
+// server routes the domain enumeration (level 0) vs the server list (level 1) on it.
+func lanmanReqLevel(tid uint16, fn uint16, level uint16, serverType uint32) []byte {
 	area := append([]byte("\\PIPE\\LANMAN"), 0)
 	fnb := make([]byte, 2)
 	bp.PutLE16(fnb, fn)
 	area = append(area, fnb...)
-	area = append(area, []byte("WrLeh")...) // ParamDesc
+	area = append(area, []byte("WrLehDO")...) // ParamDesc (WfW server-list form)
 	area = append(area, 0)
 	area = append(area, []byte("B16BBDz")...) // DataDesc
 	area = append(area, 0)
+	lv := make([]byte, 2)
+	bp.PutLE16(lv, level) // detail Level
+	area = append(area, lv...)
 	rb := make([]byte, 2)
 	bp.PutLE16(rb, 0xFFFF) // ReceiveBufferLength
 	area = append(area, rb...)
@@ -97,6 +110,42 @@ func TestNetServerEnum2ReturnsBrowseList(t *testing.T) {
 	}
 }
 
+// TestNetServerEnum2ServerParsesOnClient is the definitive "a real client discovering us"
+// check: feed the server a real-WfW-shape NetServerEnum2 (level 1, servertype 0xFFFFFFFF)
+// and decode its reply with the CLIENT-direction parser (protocol.ParseNetServerEnum2, the
+// same code csfs/csnetview run). It proves the server's SERVER_INFO_1 records + comment heap
+// are well-formed on the wire — names, SV_TYPE bits, and comments all round-trip — so a real
+// WfW/Win98 "net view" of ClassicStack lists every entry with its role and remark.
+func TestNetServerEnum2ServerParsesOnClient(t *testing.T) {
+	provider := &fakeBrowseProvider{
+		available: true,
+		entries: []BrowseServer{
+			{Name: "CLASSICSTACK", Type: 0x00402003, Comment: "the file server"},
+			{Name: "WIN98BOX", Type: 0x00000003, Comment: ""},
+			{Name: "WIN311BOX", Type: 0x00002003, Comment: "Windows 3.1 NetBeui"},
+		},
+	}
+	svc, sess, tid := ipcSession(t, provider)
+
+	reply := svc.Dispatch(sess, lanmanReqLevel(tid, rapNetServerEnum2, 1, 0xFFFFFFFF))
+
+	// The whole SMB_COM_TRANSACTION reply must parse through the client's own decoder.
+	servers, err := protocol.ParseNetServerEnum2(reply)
+	if err != nil {
+		t.Fatalf("client ParseNetServerEnum2 rejected the server reply: %v", err)
+	}
+	if len(servers) != len(provider.entries) {
+		t.Fatalf("parsed %d servers, want %d", len(servers), len(provider.entries))
+	}
+	for i, want := range provider.entries {
+		got := servers[i]
+		if got.Name != want.Name || got.Type != want.Type || got.Comment != want.Comment {
+			t.Errorf("server %d = {%q %#x %q}, want {%q %#x %q}",
+				i, got.Name, got.Type, got.Comment, want.Name, want.Type, want.Comment)
+		}
+	}
+}
+
 // TestNetServerEnum2PotentialBrowser proves a potential browser (Available=false)
 // answers ERROR_REQ_NOT_ACCEP in the RAP Status field (SMB status still success).
 func TestNetServerEnum2PotentialBrowser(t *testing.T) {
@@ -108,14 +157,53 @@ func TestNetServerEnum2PotentialBrowser(t *testing.T) {
 	}
 }
 
-// TestNetServerEnum2DomainEnumMixed proves DOMAIN_ENUM mixed with another type bit
-// is rejected with ERROR_INVALID_FUNCTION.
-func TestNetServerEnum2DomainEnumMixed(t *testing.T) {
+// TestNetServerEnum2WfWFullMask proves a level-1 server-list request carrying the FULL
+// 0xFFFFFFFF server-type mask (DOMAIN_ENUM bit INCLUDED) — exactly what a real WfW/Win98
+// redirector sends (captures/win98nbf-win31nbf.pcapng frame 49) — returns the browse list,
+// NOT an ERROR_INVALID_FUNCTION. Clearing the bit (0x7FFFFFFF) was what Win98 itself
+// rejected with RAP status 0x0001, so we must accept the full mask.
+func TestNetServerEnum2WfWFullMask(t *testing.T) {
+	provider := &fakeBrowseProvider{
+		available: true,
+		entries:   []BrowseServer{{Name: "CLASSICSTACK", Type: 0x00402003}, {Name: "OTHERBOX", Type: 0x2}},
+	}
+	svc, sess, tid := ipcSession(t, provider)
+	reply := svc.Dispatch(sess, lanmanReqLevel(tid, rapNetServerEnum2, 1, 0xFFFFFFFF))
+	status, returned, _ := rapParams(t, reply)
+	if status != 0 {
+		t.Fatalf("RAP status = %d, want success for the WfW full-mask server list", status)
+	}
+	if returned != 2 {
+		t.Fatalf("entries returned = %d, want 2", returned)
+	}
+}
+
+// TestNetServerEnum2DomainEnum proves a level-0 request with the DOMAIN_ENUM mask returns
+// our workgroup as the single domain entry, and — matching a real WfW client
+// (captures/win98nbf-win31nbf.pcapng frame 47) — as a NAME-ONLY "B16" record: 16 bytes per
+// entry, no version/type/comment fields, no comment heap. Emitting a 26-byte SERVER_INFO_1
+// here would make a real client misparse the reply.
+func TestNetServerEnum2DomainEnum(t *testing.T) {
 	svc, sess, tid := ipcSession(t, &fakeBrowseProvider{available: true})
-	reply := svc.Dispatch(sess, lanmanReq(tid, rapNetServerEnum2, svTypeDomainEnum|0x00000002))
-	status, _, _ := rapParams(t, reply)
-	if status != rapStatusInvalidFunction {
-		t.Fatalf("RAP status = %d, want ERROR_INVALID_FUNCTION(1)", status)
+	svc.SetWorkgroup("WORKGROUP")
+	reply := svc.Dispatch(sess, lanmanReqLevel(tid, rapNetServerEnum2, 0, svTypeDomainEnum))
+	status, returned, _ := rapParams(t, reply)
+	if status != 0 {
+		t.Fatalf("RAP status = %d, want success for the domain enumeration", status)
+	}
+	if returned != 1 {
+		t.Fatalf("domain entries returned = %d, want 1 (our workgroup)", returned)
+	}
+	// TotalDataCount must be 16 (one B16 name record), NOT 26 (a SERVER_INFO_1). WCT=10,
+	// the transaction words follow the header+WCT byte; TotalDataCount is word[1].
+	w := reply[protocol.HeaderLen+1:]
+	if td := bp.LE16(w[2:4]); td != 16 {
+		t.Fatalf("domain-enum TotalDataCount = %d, want 16 (a name-only B16 record)", td)
+	}
+	// The record is the 16-byte workgroup name at the data offset.
+	dataOffset := protocol.HeaderLen + 1 + 20 + 2 + 8
+	if name := string(trimNul(reply[dataOffset : dataOffset+16])); name != "WORKGROUP" {
+		t.Fatalf("domain name = %q, want WORKGROUP", name)
 	}
 }
 

@@ -603,3 +603,45 @@ func TestNBF_DatagramDroppedWithoutConsumer(t *testing.T) {
 		t.Fatal("a datagram without a consumer produced wire traffic")
 	}
 }
+
+// TestNBF_EmitDatagramUsesDatagramCommand guards the capture-verified fix on the SERVER
+// egress: a browser announcement/election we emit (ReplyTo nil → SendBroadcast) must be an
+// NBF Datagram (0x08), never a DatagramBroadcast (0x09). A real Win/WfW browser routes an
+// inbound datagram by its destination NAME and dispatches only 0x08 frames; every browser
+// datagram in captures/win98nbf-win31nbf.pcapng is a 0x08 Datagram. A directed reply
+// (ReplyTo with a MAC) is likewise 0x08, unicast to that MAC.
+func TestNBF_EmitDatagramUsesDatagramCommand(t *testing.T) {
+	svc, _, port, _ := newWiredEngine(t)
+	src := protocol.NewName("CLASSICSTACK", protocol.NameTypeFileServer)
+	dst := protocol.NewName("WORKGROUP", 0x1D) // local-master-browser group name
+
+	// Broadcast announcement (no ReplyTo) → SendBroadcast, command 0x08.
+	if err := svc.SendDatagram(Datagram{Source: src, Destination: dst, Payload: []byte("announce")}); err != nil {
+		t.Fatalf("SendDatagram (broadcast): %v", err)
+	}
+	if len(port.broadcast) != 1 {
+		t.Fatalf("broadcast datagram emitted %d frames, want 1", len(port.broadcast))
+	}
+	if got := port.broadcast[0].Command; got != nbf.CmdDatagram {
+		t.Fatalf("broadcast NBF command = %#x, want CmdDatagram %#x (never CmdDatagramBroadcast %#x)",
+			got, nbf.CmdDatagram, nbf.CmdDatagramBroadcast)
+	}
+
+	// Directed reply (ReplyTo carries the requester MAC) → unicast Send, also command 0x08.
+	peer := [6]byte{0x00, 0x86, 0xB0, 0xA4, 0xB8, 0x81}
+	if err := svc.SendDatagram(Datagram{
+		Source:      src,
+		Destination: protocol.NewName("WIN311-NBF", protocol.NameTypeWorkstation),
+		Payload:     []byte("backup-list"),
+		ReplyTo:     &DatagramEndpoint{Transport: TransportNetBEUI, Node: peer},
+	}); err != nil {
+		t.Fatalf("SendDatagram (directed): %v", err)
+	}
+	sent := port.lastSent(nbf.CmdDatagram)
+	if sent == nil {
+		t.Fatal("directed reply did not emit a CmdDatagram frame")
+	}
+	if got := port.sent[len(port.sent)-1]; got.dst != peer {
+		t.Fatalf("directed reply dst MAC = %v, want %v", got.dst, peer)
+	}
+}

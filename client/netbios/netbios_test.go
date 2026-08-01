@@ -7,6 +7,7 @@ import (
 	browserproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/browser"
 	mailslotproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/mailslot"
 	messengerproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/messenger"
+	nbf "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbeui"
 	nb "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbios"
 )
 
@@ -137,8 +138,61 @@ func TestAnnouncementToHost_HostAnnouncement(t *testing.T) {
 	}
 }
 
+// TestSendNBF_UsesDatagramCommand guards the capture-verified fix: every NBF browser
+// datagram we emit — even a "broadcast" one — must be a DATAGRAM (0x08), never a
+// DATAGRAM_BROADCAST (0x09). A real Win98/WfW master routes an inbound datagram by its
+// destination NetBIOS name and dispatches only 0x08 frames; a 0x09 to a group name it is
+// not registered for is silently dropped, which is why our GetBackupList drew no reply.
+// Every browser datagram in captures/win98nbf-win31nbf.pcapng is a 0x08 Datagram.
+func TestSendNBF_UsesDatagramCommand(t *testing.T) {
+	t.Parallel()
+	c := &Conn{proto: NBF, srcMAC: RandomMAC(), srcName: nb.NewName("CLIENT", NameTypeWorkstation)}
+	captured := &captureLink{}
+	c.fl = captured
+	// broadcast=true is the case that used to emit 0x09; it must now still be 0x08.
+	if err := c.SendMailslot(mailslotproto.NameBrowse, browseGroupName, []byte{0x01}, true); err != nil {
+		t.Fatalf("SendMailslot: %v", err)
+	}
+	// Skip the 14-byte Ethernet header + 3-byte LLC UI header; the NBF frame follows.
+	body := captured.last[ethHdrLen+len(llcNetBIOS):]
+	f, err := nbf.Decode(body)
+	if err != nil {
+		t.Fatalf("nbf.Decode: %v", err)
+	}
+	if f.Command != nbf.CmdDatagram {
+		t.Fatalf("NBF command = %#x, want CmdDatagram %#x (never CmdDatagramBroadcast %#x)",
+			f.Command, nbf.CmdDatagram, nbf.CmdDatagramBroadcast)
+	}
+}
+
+// TestRequestBackupList_DirectsToLocalMaster guards that a GetBackupList with no known
+// workgroup is DIRECTED to defaultWorkgroup<1D> (the local-master name), not broadcast to a
+// wildcard group. In captures/win98nbf-win31nbf.pcapng frame 25 the real client addresses
+// its GetBackupList to WORKGROUP<1D>, and only then does the master answer (frame 26).
+func TestRequestBackupList_DirectsToLocalMaster(t *testing.T) {
+	t.Parallel()
+	c := &Conn{proto: NBF, srcMAC: RandomMAC(), srcName: nb.NewName("CLIENT", NameTypeWorkstation)}
+	captured := &captureLink{}
+	c.fl = captured
+	if err := c.requestBackupList(""); err != nil { // empty workgroup → default
+		t.Fatalf("requestBackupList: %v", err)
+	}
+	body := captured.last[ethHdrLen+len(llcNetBIOS):]
+	f, err := nbf.Decode(body)
+	if err != nil {
+		t.Fatalf("nbf.Decode: %v", err)
+	}
+	dst := nb.Name(f.DestinationName)
+	if got, want := browserproto.NormalizeName(dst.String()), defaultWorkgroup; got != want {
+		t.Fatalf("GetBackupList destination = %q, want %q", got, want)
+	}
+	if got, want := dst.Type(), nameTypeLocalMaster; got != want {
+		t.Fatalf("GetBackupList destination suffix = %#x, want <1D> local master %#x", got, want)
+	}
+}
+
 // TestDecodeNBFFrame_EndToEnd drives the full NBF receive path: build the exact frame
-// sendNBF produces (LLC + NBF DATAGRAM_BROADCAST + browse mailslot) and decode it back.
+// sendNBF produces (LLC + NBF DATAGRAM + browse mailslot) and decode it back.
 func TestDecodeNBFFrame_EndToEnd(t *testing.T) {
 	t.Parallel()
 	ann := browserproto.Announcement{

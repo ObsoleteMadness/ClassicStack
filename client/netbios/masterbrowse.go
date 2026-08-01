@@ -58,6 +58,15 @@ const getBackupListRequestedCount = 8
 // it lets a listener match a reply to this request (any non-zero value works).
 const getBackupListToken uint32 = 0x43535442 // "CSTB"
 
+// defaultWorkgroup is the workgroup a directed browser probe targets when the caller
+// pinned none and the sniff learned none. A GetBackupList / AnnouncementRequest MUST be a
+// directed datagram to <workgroup><1D> — the master only answers a request bearing its
+// registered local-master name, never a wildcard group broadcast (which it is not
+// registered for and silently drops, captures/win98nbf-win31nbf.pcapng frame 25). WORKGROUP
+// is the near-universal default on legacy Win/WfW/OS-2 segments, so it is the best blind
+// target; a caller that knows its workgroup passes it and this is not used.
+const defaultWorkgroup = "WORKGROUP"
+
 // MasterInfo is what a master-browser probe found on one carrier: which host is acting as
 // the (local) master browser, the workgroup it serves, and the backup browsers it named.
 // Any field may be empty when the segment answered only partially (a common case on a
@@ -149,6 +158,18 @@ func (c *Conn) FindMaster(workgroup string, window time.Duration) (MasterInfo, e
 					info.BackupBrowsers = append(info.BackupBrowsers, name)
 				}
 			}
+			// The GetBackupList response IS the master's answer, so it identifies the
+			// master even when no LocalMasterAnnounce was heard — the common real-wire
+			// case (captures/win98nbf-win31nbf.pcapng frame 26: WIN98-NBF answers naming
+			// itself, and WIN311 mounts it without ever receiving a 0x0F announcement). A
+			// master lists itself first in its own backup list ([MS-BRWS] §3.2.5.5), so
+			// adopt the first named server as the master when step 1 found none.
+			if info.MasterName == "" && len(info.BackupBrowsers) > 0 {
+				info.MasterName = info.BackupBrowsers[0]
+				if src := c.backupListSource(frame); src != "" {
+					info.MasterAddress = src
+				}
+			}
 		}
 		// A master may also re-announce here; capture it if step 1 missed it.
 		if h := c.decodeFrame(frame); h != nil && h.Role == "master" && info.MasterName == "" {
@@ -170,12 +191,15 @@ func (c *Conn) solicitMasters(workgroup string) error {
 	if err := c.SendMailslot(mailslotproto.NameBrowse, browseGroupName, body, true); err != nil {
 		return err
 	}
-	// Directed solicit to the workgroup's local master browser, when a workgroup is known.
-	if workgroup != "" {
-		dtracef("%s browser AnnouncementRequest → %s<1D> (local master)", c.proto, workgroup)
-		if err := c.SendMailslot(mailslotproto.NameBrowse, nb.NewName(workgroup, nameTypeLocalMaster), body, false); err != nil {
-			return err
-		}
+	// Directed solicit to the workgroup's local master browser. Fall back to the default
+	// workgroup when the caller knows none, so the <1D>-registered master is still poked
+	// by name (a wildcard broadcast never reaches it — see requestBackupList).
+	if workgroup == "" {
+		workgroup = defaultWorkgroup
+	}
+	dtracef("%s browser AnnouncementRequest → %s<1D> (local master)", c.proto, workgroup)
+	if err := c.SendMailslot(mailslotproto.NameBrowse, nb.NewName(workgroup, nameTypeLocalMaster), body, false); err != nil {
+		return err
 	}
 	// Directed solicit to the segment master via the __MSBROWSE__ special name.
 	dtracef("%s browser AnnouncementRequest → __MSBROWSE__ (segment master)", c.proto)
@@ -183,21 +207,24 @@ func (c *Conn) solicitMasters(workgroup string) error {
 }
 
 // requestBackupList sends a GetBackupList datagram to the master browser, asking for its
-// backup browsers. It is directed to the workgroup's master-browser name <workgroup><1D>
-// when known, else broadcast so any master answers.
+// backup browsers. It is ALWAYS directed to the local-master-browser name <workgroup><1D>
+// (defaultWorkgroup<1D> when the caller knows no workgroup) — a real master answers a
+// GetBackupList only when it is addressed to its registered <1D> name, not to a wildcard
+// group (captures/win98nbf-win31nbf.pcapng frames 25→26). The datagram still fans out to
+// the functional multicast MAC; the destination NAME is what the master matches on.
 func (c *Conn) requestBackupList(workgroup string) error {
 	body := browserproto.GetBackupListRequest{
 		RequestedCount: getBackupListRequestedCount,
 		Token:          getBackupListToken,
 	}.Marshal()
-	dst := browseGroupName
-	broadcast := true
-	if workgroup != "" {
-		dst = nb.NewName(workgroup, nameTypeLocalMaster)
-		broadcast = false
+	if workgroup == "" {
+		workgroup = defaultWorkgroup
 	}
+	dst := nb.NewName(workgroup, nameTypeLocalMaster)
 	dtracef("%s browser GetBackupList → %s", c.proto, dst.String())
-	return c.SendMailslot(mailslotproto.NameBrowse, dst, body, broadcast)
+	// broadcast=false: a directed (0x08) datagram by name; sendNBF fans it to the
+	// multicast MAC regardless, so every node — including the master — receives it.
+	return c.SendMailslot(mailslotproto.NameBrowse, dst, body, false)
 }
 
 // decodeBackupList strips this carrier's framing from one inbound frame and, if it carries
@@ -223,4 +250,13 @@ func (c *Conn) decodeBackupList(frame []byte) ([]string, bool) {
 		return nil, false
 	}
 	return resp.BackupServers, true
+}
+
+// backupListSource returns the printable source address (MAC for NBF, IPX net.node for
+// NBIPX) the frame arrived from — the master browser's L2/L3 address, recorded on the
+// MasterInfo so a caller can render "master via <addr>". Empty when the frame is not a
+// datagram for this carrier.
+func (c *Conn) backupListSource(frame []byte) string {
+	_, addr := c.browserDatagram(frame)
+	return addr
 }

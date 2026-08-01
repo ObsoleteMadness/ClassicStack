@@ -22,11 +22,14 @@ import (
 // RAP NetServerEnum2 constants (the SMB_COM_TRANSACTION on IPC$ \PIPE\LANMAN).
 const (
 	rapNetServerEnum2 uint16 = 0x0068 // NetServerEnum2 function code (104)
-	// Descriptor strings for level 1. ParamDesc "WrLehDz": server-type level W, receive
-	// buffer r/L, entries-read e, available h, server-type-mask D, domain-name z. ReturnDesc
-	// "B16BBDz": SERVER_INFO_1 = name B16, version-major B, version-minor B, server-type D,
-	// comment pointer z.
-	rapNetServerEnum2ParamDesc  = "WrLehDz"
+	// Descriptor strings for level 1, byte-for-byte from a real WfW/Win98 redirector —
+	// captures/win98nbf-win31nbf.pcapng frame 49 RAP block:
+	//   68 00 "WrLehDO\0" "B16BBDz\0" 01 00  00 20  ff ff ff ff
+	// ParamDesc "WrLehDO": level W, receive-buffer r/L, entries-read e, available h,
+	// server-type-mask D, and the domain as a NULL POINTER "O" (send no domain string —
+	// enumerate the server's own primary domain). ReturnDesc "B16BBDz": SERVER_INFO_1 =
+	// name B16, version-major B, version-minor B, server-type D, comment pointer z.
+	rapNetServerEnum2ParamDesc  = "WrLehDO"
 	rapNetServerEnum2ReturnDesc = "B16BBDz"
 	rapServerInfo1Level         = 1 // detail level 1 → SERVER_INFO_1
 	// rapNetServerEnum2ReplyParamLen is the reply parameter block size: Status(2) +
@@ -39,17 +42,13 @@ const (
 // version-minor(1) + server-type(4) + comment-pointer(4) = 26 bytes ([MS-RAP]).
 const serverInfo1Size = 26
 
-// svTypeDomainEnum is the SV_TYPE_DOMAIN_ENUM bit (0x80000000): a NetServerEnum2 with this
-// bit set enumerates WORKGROUPS instead of servers, and it is mutually exclusive with the
-// server-type bits — a server (including ClassicStack's own IPC$ handler) answers
-// ERROR_INVALID_FUNCTION for a mask that mixes DOMAIN_ENUM with other bits. So the
-// "every server" mask must clear it.
-const svTypeDomainEnum uint32 = 0x80000000
-
-// ServerTypeAll requests every server type in a NetServerEnum2: all SV_TYPE_* bits EXCEPT
-// SV_TYPE_DOMAIN_ENUM (which selects a workgroup enumeration and must not be combined with
-// server-type bits). This is the mask a "net view" server enumeration sends.
-const ServerTypeAll uint32 = 0xFFFFFFFF &^ svTypeDomainEnum
+// ServerTypeAll requests every server type in a NetServerEnum2 server-list (level 1) call.
+// It is the FULL 0xFFFFFFFF mask — the DOMAIN_ENUM bit (0x80000000) is INCLUDED, exactly as
+// a real WfW/Win98 redirector sends it (captures/win98nbf-win31nbf.pcapng frame 49). The
+// domain enumeration is distinguished by the detail LEVEL (0 vs 1), not by clearing this
+// bit: a level-1 request with servertype 0x7FFFFFFF (DOMAIN_ENUM cleared) is what Win98
+// rejected with RAP status 0x0001 (ERROR_INVALID_FUNCTION) — observed live.
+const ServerTypeAll uint32 = 0xFFFFFFFF
 
 // ServerInfo is one enumerated browser-list server: its name, the SV_TYPE_* bits it
 // advertises, its OS/browser version, and the operator comment.
@@ -63,11 +62,18 @@ type ServerInfo struct {
 
 // BuildNetServerEnum2 builds the SMB_COM_TRANSACTION request that carries a RAP
 // NetServerEnum2 (level 1) over the IPC$ \PIPE\LANMAN pipe. serverType is the SV_TYPE_*
-// bitmask to filter by (ServerTypeAll for every server); domain is the workgroup to
-// enumerate ("" = the server's own primary domain). The TID must already name the IPC$
+// bitmask to filter by (ServerTypeAll for every server). The TID must already name the IPC$
 // tree. The framing mirrors BuildNetShareEnum: the transaction parameter area is the RAP
-// request (function + descriptors + level + receive-buffer + type-mask + domain), no data.
+// request (function + descriptors + level + receive-buffer + type-mask), no data.
+//
+// The domain is sent as a RAP NULL POINTER ("O" in the param descriptor) — the server
+// enumerates its own primary domain, exactly as a real WfW/Win98 redirector does. There is
+// therefore NO domain string on the wire; the domain argument is retained on the API for
+// callers/back-compat but is intentionally not marshalled (a NUL-terminated empty domain,
+// which the old "WrLehDz" descriptor implied, made Win98 reject the call with RAP status
+// 0x0001 / ERROR_INVALID_FUNCTION — captures/win98nbf-win31nbf.pcapng frame 49).
 func (b *Builder) BuildNetServerEnum2(serverType uint32, domain string) []byte {
+	_ = domain // the "O" (null pointer) descriptor sends no domain string; see doc above.
 	// RAP request parameter block.
 	rap := make([]byte, 0, 48)
 	rap = bp.AppendLE16(rap, rapNetServerEnum2)
@@ -78,8 +84,7 @@ func (b *Builder) BuildNetServerEnum2(serverType uint32, domain string) []byte {
 	rap = bp.AppendLE16(rap, rapServerInfo1Level)
 	rap = bp.AppendLE16(rap, rapReceiveBufferLen)
 	rap = bp.AppendLE32(rap, serverType) // the "D" server-type mask
-	rap = append(rap, []byte(domain)...) // the "z" domain name
-	rap = append(rap, 0)                 // NUL terminator for the domain
+	// No domain bytes: the "O" descriptor passes the domain as a null pointer.
 
 	name := lanmanPipe + "\x00" // the transaction Name (the pipe), OEM/ASCII
 

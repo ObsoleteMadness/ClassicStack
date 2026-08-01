@@ -2,11 +2,22 @@ package netbios
 
 import (
 	"testing"
+	"time"
 
+	corelink "github.com/ObsoleteMadness/ClassicStack/core/link"
 	browserproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/browser"
 	mailslotproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/mailslot"
 	nb "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbios"
 )
+
+// scriptLink is a FrameLink that replays a fixed inbound frame on every Read, so it is
+// available in both of FindMaster's time-bounded read halves (announce-listen, then
+// backup-list) without a real NIC. Writes are discarded (the solicits FindMaster emits).
+type scriptLink struct{ frame []byte }
+
+func (l *scriptLink) Write(corelink.Frame) error    { return nil }
+func (l *scriptLink) Read() (corelink.Frame, error) { return corelink.Frame(l.frame), nil }
+func (l *scriptLink) Close() error                  { return nil }
 
 // TestMSBrowseName checks the special __MSBROWSE__ segment-master group name is built with
 // the exact [MS-BRWS] framing bytes: 0x01 0x02 "__MSBROWSE__" 0x02, suffix <01>. nb.NewName
@@ -42,6 +53,40 @@ func TestDecodeBackupList_RoundTrip(t *testing.T) {
 	}
 	if len(servers) != 2 || servers[0] != "BACKUP1" || servers[1] != "BACKUP2" {
 		t.Fatalf("backup servers = %v, want [BACKUP1 BACKUP2]", servers)
+	}
+}
+
+// TestFindMaster_LearnsMasterFromBackupList proves the capture-verified path: when NO
+// LocalMasterAnnouncement is heard, FindMaster still identifies the master from the
+// GetBackupList RESPONSE alone (its first named server is the master itself). In
+// captures/win98nbf-win31nbf.pcapng WIN311 never receives a 0x0F announcement — it learns
+// WIN98-NBF is the master purely from frame 26's backup-list answer, then mounts it.
+func TestFindMaster_LearnsMasterFromBackupList(t *testing.T) {
+	t.Parallel()
+	// Build the exact backup-list response frame the master puts on the wire (self-encode
+	// the same way sendNBF does), so the scripted link replays a realistic inbound frame.
+	respBody := browserproto.GetBackupListResponse{
+		Token:         getBackupListToken,
+		BackupServers: []string{"WIN98-NBF"},
+	}.Marshal()
+	enc := &Conn{proto: NBF, srcMAC: [6]byte{0x00, 0x86, 0xB0, 0xA4, 0xB8, 0x81}, srcName: nb.NewName("WIN98-NBF", NameTypeFileServer)}
+	sink := &captureLink{}
+	enc.fl = sink
+	if err := enc.SendMailslot(mailslotproto.NameBrowse, nb.NewName("WIN311-NBF", NameTypeWorkstation), respBody, false); err != nil {
+		t.Fatalf("encode response: %v", err)
+	}
+
+	c := &Conn{proto: NBF, srcMAC: RandomMAC(), srcName: nb.NewName("WIN311-NBF", NameTypeWorkstation)}
+	// Replay the response in both read halves: FindMaster reads announcements first (where
+	// this frame is a non-announcement no-op), then the backup-list half (where it is
+	// decoded and promotes the master), so make it available in both.
+	c.fl = &scriptLink{frame: sink.last}
+	info, err := c.FindMaster("WORKGROUP", 20*time.Millisecond)
+	if err != nil {
+		t.Fatalf("FindMaster: %v", err)
+	}
+	if info.MasterName != "WIN98-NBF" {
+		t.Fatalf("MasterName = %q, want WIN98-NBF (learned from the GetBackupList response)", info.MasterName)
 	}
 }
 

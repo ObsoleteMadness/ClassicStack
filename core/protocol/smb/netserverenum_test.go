@@ -14,12 +14,15 @@ const (
 	svTypeMasterBrowse uint32 = 0x00040000
 )
 
-// TestBuildNetServerEnum2Request checks the RAP NetServerEnum2 request shape: WCT=14, the
-// \PIPE\LANMAN transaction name, the "WrLehDz"/"B16BBDz" descriptors + level 1, the
-// server-type mask, the domain, and MaxParameterCount = 8 (the same too-large-value misframe
-// hazard NetShareEnum has).
+// TestBuildNetServerEnum2Request checks the RAP NetServerEnum2 request matches the real
+// WfW/Win98 wire shape (captures/win98nbf-win31nbf.pcapng frame 49): WCT=14, the
+// \PIPE\LANMAN transaction name, the "WrLehDO"/"B16BBDtz" descriptors + level 1, the
+// server-type mask, MaxParameterCount = 8, and — the load-bearing part — NO trailing domain
+// string (the "O" descriptor passes the domain as a null pointer). Sending a NUL-terminated
+// domain with the old "WrLehDz" made Win98 reject the call with RAP status 0x0001.
 func TestBuildNetServerEnum2Request(t *testing.T) {
 	b := &Builder{PID: 0xFEFF, TID: 0x1234, UID: 5}
+	// Pass a non-empty domain to prove it is NOT marshalled (null-pointer semantics).
 	req := b.BuildNetServerEnum2(ServerTypeAll, "WORKGROUP")
 
 	h, err := DecodeHeader(req)
@@ -37,10 +40,23 @@ func TestBuildNetServerEnum2Request(t *testing.T) {
 	if got := bp.LE16(w[4:6]); got != rapNetServerEnum2ReplyParamLen {
 		t.Errorf("MaxParameterCount = %d, want %d", got, rapNetServerEnum2ReplyParamLen)
 	}
-	for _, want := range []string{`\PIPE\LANMAN`, "WrLehDz", "B16BBDz", "WORKGROUP"} {
+	for _, want := range []string{`\PIPE\LANMAN`, "WrLehDO", "B16BBDz"} {
 		if indexOf(req, want) < 0 {
 			t.Errorf("request missing %q", want)
 		}
+	}
+	// The domain must NOT appear on the wire — it is a null pointer ("O").
+	if indexOf(req, "WORKGROUP") >= 0 {
+		t.Error("request carries a domain string, but the \"O\" descriptor must send none")
+	}
+	// The old ParamDesc must be gone (it triggers Win98 ERROR_INVALID_FUNCTION).
+	if indexOf(req, "WrLehDz") >= 0 {
+		t.Error("request still carries the old \"WrLehDz\" descriptor")
+	}
+	// The server-type mask must be the FULL 0xFFFFFFFF (DOMAIN_ENUM bit included), the WfW
+	// form — a cleared bit (0x7FFFFFFF) is what Win98 rejected. It is the last 4 bytes.
+	if got := bp.LE32(req[len(req)-4:]); got != 0xFFFFFFFF {
+		t.Errorf("server-type mask = %#08x, want 0xFFFFFFFF (full WfW mask)", got)
 	}
 }
 
