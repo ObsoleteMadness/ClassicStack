@@ -46,8 +46,18 @@ const (
 	ChainSocket = Socket + 1
 	// NBPType is the NBP type name booting clients look up.
 	NBPType = "BootServer"
-	// DefaultPace is the default inter-packet delay for the ABP block flood
-	// (LToUDP has no link backpressure; TashTalk serial self-paces).
+	// DefaultPace is the default inter-packet delay for the ABP block flood.
+	//
+	// This is netboot's SERVICE-level pace. It coexists with the LocalTalk port's
+	// per-destination-node pacing (core/link.Pace, configured via a port's pace_ms):
+	// the port enforces a universal minimum inter-frame gap for EVERY service (the
+	// floor that keeps any producer from overrunning a slow classic-Mac receiver on a
+	// backpressure-free LToUDP segment), while this value is netboot's OWN base gap.
+	// The effective gap is the larger of the two, so on LToUDP (default port floor
+	// 3 ms) the flood paces at 3 ms even though this is 2 ms; on TashTalk (port floor
+	// 0, the serial line self-paces) it paces at this value. Netboot keeps its own
+	// pace because it also drives the retry-aware backoff (chainBackoffPace) the port
+	// cannot express — see DefaultChainPace.
 	DefaultPace = 2 * time.Millisecond
 	// DefaultChainPace is the default inter-packet delay for ChainBoot EBP
 	// read-reply bursts. The chain client must catch every block of a chunk in
@@ -56,6 +66,13 @@ const (
 	// chunks retried 9× at 2 ms, spec/19). Real LocalTalk can never deliver a
 	// 530-byte frame faster than ~18 ms (230.4 kbit/s), so 10 ms is still 2×
 	// real line rate.
+	//
+	// This stays a service-level pace (not the port floor) because the chain path
+	// ALSO backs it off per consecutive retry (chainBackoffPace): a re-request means
+	// the previous burst was dropped mid-assembly, so each retry doubles the gap,
+	// bounded to land inside the client's 1 s retry timer. The port's fixed per-node
+	// floor cannot express that retry-aware escalation, so netboot owns it and the
+	// port floor merely raises the base when it is the larger of the two.
 	DefaultChainPace = 10 * time.Millisecond
 )
 
@@ -201,6 +218,12 @@ type chainReadState struct {
 // doubled per consecutive retry (capped at 16× base), bounded so the whole
 // burst — the initial hold plus count blocks — lands well inside the client's
 // 1-second retry timer (≤ 800 ms total), and never below the configured base.
+//
+// The ≤800 ms budget assumes this pace is the DOMINANT inter-frame delay. The
+// LocalTalk port may add its own per-node floor (core/link.Pace) on top, but the
+// default floor (3 ms) is well below the chain base (10 ms), so max(floor, pace) ==
+// pace here and the budget holds. If a port floor is ever raised above the chain
+// base the effective burst would grow — keep the floor default under DefaultChainPace.
 func chainBackoffPace(base time.Duration, retries int, count uint32) time.Duration {
 	if retries <= 0 {
 		return base

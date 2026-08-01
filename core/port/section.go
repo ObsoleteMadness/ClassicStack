@@ -90,6 +90,18 @@ type Section struct {
 	// per frame (0 = full frame). Best-effort: an unopenable path never fails Start.
 	Capture        string `toml:"capture"`
 	CaptureSnaplen int    `toml:"capture_snaplen"`
+
+	// PaceMs is the minimum inter-frame gap, in milliseconds, enforced per
+	// DESTINATION NODE on outbound frames (LocalTalk transports only: LToUDP,
+	// TashTalk). A classic-Mac LLAP receiver drops frames that arrive back-to-back
+	// with no gap; LToUDP has no link backpressure (RTS/CTS is synthesised locally
+	// and never sent, LLAP is unacknowledged), so an open-loop per-node pace is the
+	// only lever the port has to keep a fast producer (AFP bulk replies, MacIP data,
+	// netboot floods) from overrunning a slow receiver. 0 selects the transport's
+	// default (LToUDP: a light 3 ms floor; TashTalk self-paces on the serial line, so
+	// its default is 0). A negative value disables pacing entirely. Ignored by
+	// non-LocalTalk transports (EtherTalk/IPX ride real NICs with their own flow control).
+	PaceMs int `toml:"pace_ms"`
 }
 
 // Key returns the shared SCHEMA key (the registry/codec key, matched per transport

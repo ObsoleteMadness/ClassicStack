@@ -3,6 +3,8 @@
 package registry
 
 import (
+	"time"
+
 	"github.com/ObsoleteMadness/ClassicStack/adapter/capture/pcapfile"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/framing"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/ltoudp"
@@ -100,6 +102,47 @@ func registerLocalTalk(key string, openerFor segmentOpener, respondToEnq bool) {
 	})
 }
 
+// Per-transport default write-pace (min inter-frame gap per destination node), in
+// milliseconds, used when a section leaves PaceMs at 0. A negative PaceMs disables
+// pacing outright (link.Pace treats a non-positive gap as a no-op).
+const (
+	// defaultLToUDPPaceMs is a light 3 ms floor: the LToUDP transport has no link
+	// backpressure and a captured MacTCP session showed a classic-Mac receiver
+	// dropping frames that arrived <2 ms apart while coping at ~30 ms spacing. 3 ms
+	// kills the tightest back-to-back bursts (the actual loss driver) at negligible
+	// cost to light traffic; closed-loop flow control above (MacIP TCP window) does
+	// the adaptive smoothing.
+	defaultLToUDPPaceMs = 3
+	// defaultTashTalkPaceMs is 0: the serial line self-paces (each frame takes real
+	// wire time at 1 Mbit/s), so no software floor is needed by default.
+	defaultTashTalkPaceMs = 0
+)
+
+// paceOpener decorates a per-Start FrameLink opener with per-destination-node write
+// pacing (link.Pace). The gap comes from Section.PaceMs, falling back to defMs when
+// PaceMs is 0; a negative PaceMs disables pacing. A nil base returns nil unchanged.
+// Applied beneath captureOpener so a capture reflects the paced wire timing.
+func paceOpener(sec *port.Section, defMs int, base func() (link.FrameLink, error)) func() (link.FrameLink, error) {
+	if base == nil {
+		return base
+	}
+	ms := defMs
+	if sec != nil && sec.PaceMs != 0 {
+		ms = sec.PaceMs // includes negative → disabled (link.Pace no-op)
+	}
+	if ms <= 0 {
+		return base
+	}
+	gap := int64(ms) * int64(time.Millisecond)
+	return func() (link.FrameLink, error) {
+		fl, err := base()
+		if err != nil || fl == nil {
+			return fl, err
+		}
+		return link.Pace(fl, gap), nil
+	}
+}
+
 // ltoudpOpen is the LToUDP transport open seam, swappable in tests so the factory's
 // live-wiring (LiveAddr binding, per-Start reopen) can be exercised without binding a
 // real socket. Production points it at the pure-Go ltoudp adapter.
@@ -129,6 +172,11 @@ func ltoudpLinkOpener(ctx *BuildContext, sec *port.Section) func() (link.FrameLi
 	}
 	iface := sec.Iface
 	base := func() (link.FrameLink, error) { return ltoudpOpen(iface) }
+	// Per-node write pacing: LToUDP has no link backpressure, so a fast producer
+	// overruns a slow classic-Mac receiver unless successive frames to the same node
+	// are spaced out. Applied BENEATH capture so the .pcap reflects the paced wire
+	// timing that actually reaches the segment. Default 3 ms (see defaultLToUDPPaceMs).
+	base = paceOpener(sec, defaultLToUDPPaceMs, base)
 	// LToUDP presents clean LLAP frames upward, so a Section.Capture writes DLT_LTALK.
 	return captureOpener(sec, pcapfile.LinkTypeLocalTalk, base)
 }
@@ -147,6 +195,10 @@ func tashtalkLinkOpener(ctx *BuildContext, sec *port.Section) func() (link.Frame
 	}
 	iface := config.InterfaceSection{Kind: config.IfaceKindSerial, Device: device, Baud: sec.Baud}
 	base := serialLinkOpener(ctx, iface, tashtalkFrame)
+	// TashTalk self-paces on the 1 Mbit/s serial line (each frame takes real wire
+	// time to clock out), so its default pace is 0 — but an operator can still set
+	// pace_ms to add a floor. Applied beneath capture like LToUDP.
+	base = paceOpener(sec, defaultTashTalkPaceMs, base)
 	// TashTalk frames the serial byte stream as LLAP, so a Section.Capture writes DLT_LTALK.
 	return captureOpener(sec, pcapfile.LinkTypeLocalTalk, base)
 }
