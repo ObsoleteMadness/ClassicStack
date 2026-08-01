@@ -12,15 +12,17 @@ It bridges legacy Apple networking protocols to modern environments, supporting 
 
 ## Remember!
 1. Always confirm implementation details with the specifications found in /spec/*.md
-2. Use consts rather than hard-coded values, especially for responses, errors, etc. 
+2. Use consts rather than hard-coded values, especially for responses, errors, etc. Prefer grouping them in in a const file per package/area rather than throughout the source code.
 3. Use the names from the specification for functions, consts, etc and include a comment with a breif description from the spec for any functions.
-4. Captures of protocols can be found in /captures. Use `tshark` to review protocol captures to aid in diagnosing faults. 
-5. When the observation from a capture differs from the spec, document it in the code and in `/spec/errata.md`
+4. Captures of protocols can be found in /captures. Use `tshark` to review protocol captures to aid in diagnosing faults. Under windows `tshark` is in `c:\Program Files\Wireshark\tshark.exe`
+5. When the observation from a capture differs from the **spec**, document it in the code and in `/spec/errata.md`. REMEMBER: OUR OWN BUGS ARE NOT ERRATA. Captures of "real" clients/servers should be prioritised as "golden" implementations. 
 6. Where we do not have a spec and implementation is from observation, add details on wire format, observed commands, observed responses. Eg, the MacIPX Gateway implementation will be based on observed IPX encapsulation over AppleTalk traffic between a Novell Server and a Macintosh MacIPX client.
-7. If code is from 3rd parties, **Always** attribute it to the original authors. 
+7. If code is from 3rd parties or based on it, **Always** attribute it to the original authors. Our code base is licensed under the GPL3 - make sure code used is compatible with the license. If the upstream code is say MIT/Apache/BSD licensed, that code can be explictly used under dual license of either GPL3 or the original MIT/Apache/BSD license. Always respect the intent of the author: eg MIT must attribute the author in documentation, or readme files, or about boxes. Include license details in the code headers.
 8. Check for linting errors before committing.
 9. Run gofmt before commiting.
 10. Use DTOs for protocol level representations. Ie rather than manipulating bytes in protocol function calls, each struct should be self serialising/deserialising.  Eg a `processRequest(data []byte)` method should call request.Unmarshal(data []byte) rather than attempt to decode the request in the function body. 
+11. While we run on desktop (Linux, MacOS, Windows), the project aims to run on memory constrained devices. Where possible, use zero-copy, sync.pool, etc. 
+12. Fuctions handling data should always emit a debug log. Eg DHCP relay log a debug log with the request/response. MacTCP should log debug logs when a session is established/renewed/ended. Errors must always be logged to error log, not silently ignored. 
 
 
 ## Commands
