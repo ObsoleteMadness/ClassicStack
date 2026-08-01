@@ -118,6 +118,11 @@ func NewWithConfig(rtr router.ServiceRouter, names *nbp.Service, bindings []Zone
 	if cfg.IPXNetwork == 0 {
 		cfg.IPXNetwork = DefaultIPXNetwork
 	}
+	if logger == nil {
+		// Keep the logger always-non-nil at the seam (no call-site guards); a sink-less
+		// logger discards. Matches the project's logging-injection pattern.
+		logger = log.New(Name)
+	}
 	copied := make([]ZoneBinding, len(bindings))
 	for i, b := range bindings {
 		copied[i] = ZoneBinding{
@@ -225,6 +230,9 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 
 	go s.run(ctx, s.ch, s.stop)
+	s.logger.Log(log.Info, "ipxgw: started",
+		log.Int("ipx_network", int64(s.cfg.IPXNetwork)),
+		log.Int("bindings", int64(len(bindings))))
 	return nil
 }
 
@@ -275,6 +283,7 @@ func (s *Service) Stop(ctx context.Context) error {
 		ipxRouter.UnregisterBroadcast()
 	}
 	s.wg.Wait()
+	s.logger.Log0(log.Info, "ipxgw: stopped")
 	return nil
 }
 

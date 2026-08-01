@@ -269,11 +269,18 @@ function setConn(text, cls) {
 // Telemetry: a single SSE stream feeds live stats, state changes and logs to
 // whichever view is mounted. Views register callbacks; the bus dispatches by
 // topic. The browser's EventSource auto-reconnects.
+//
+// Log lines are buffered HERE (not only while the Logs tab is mounted) so an
+// operator action on the dashboard — Start/Stop/Apply/Save — still appears when
+// they switch to Logs. Cap keeps memory bounded for a long-lived SPA session.
 // ---------------------------------------------------------------------------
+const LOG_BUFFER_MAX = 2000;
 const telemetry = {
   source: null,
   // latest per-component stats sample: { Component: {Counters, Gauges} }
   stats: {},
+  // rolling log history from the SSE "log" topic (control + component audit lines)
+  logs: [],
   onStats: new Set(),
   onState: new Set(),
   onLog: new Set(),
@@ -291,7 +298,12 @@ const telemetry = {
       try { this.onState.forEach((cb) => cb(JSON.parse(e.data))); } catch (_) {}
     });
     es.addEventListener("log", (e) => {
-      try { this.onLog.forEach((cb) => cb(JSON.parse(e.data))); } catch (_) {}
+      try {
+        const rec = JSON.parse(e.data);
+        this.logs.push(rec);
+        if (this.logs.length > LOG_BUFFER_MAX) this.logs.splice(0, this.logs.length - LOG_BUFFER_MAX);
+        this.onLog.forEach((cb) => cb(rec));
+      } catch (_) {}
     });
     this.source = es;
   },
@@ -987,6 +999,9 @@ const FIELD_META = {
   HostIP: { label: "Host IP", desc: "The host-side IP of the gateway." },
   DefaultGateway: { label: "Default gateway", desc: "Upstream router the gateway forwards to." },
   DHCPRelay: { label: "DHCP relay", desc: "Relay client DHCP to an upstream server instead of leasing locally." },
+  // MacIPX (IPXGW) gateway
+  IPXNetwork: { label: "IPX network", desc: "IPX network number the gateway announces, as a decimal integer (0 = the 0x10 default MACIPXGW uses)." },
+  Bindings: { label: "NBP bindings", desc: "\"Object:Zone\" names the gateway advertises via NBP (one per line; empty = one \"IPX Gateway\" name per zone the router knows)." },
   Snaplen: { label: "Snap length", desc: "Bytes captured per packet (0 = full frame)." },
   // Section titles (panel summaries) that need a friendlier label than the humanised key.
   Identity: { label: "Server identity", desc: "" },
@@ -995,6 +1010,7 @@ const FIELD_META = {
   Router: { label: "Router", desc: "" },
   NetBIOS: { label: "NetBIOS", desc: "" },
   MacIP: { label: "MacIP gateway", desc: "" },
+  IPXGW: { label: "MacIPX gateway", desc: "" },
   AdminAuth: { label: "Web-admin account", desc: "" },
   AFP: { label: "AFP server", desc: "" },
   SMB: { label: "SMB server", desc: "" },
@@ -1327,6 +1343,12 @@ const SERVER_DEFAULTS = {
     Broadcast: "", SubnetMask: "", HostCount: 0, Interface: "", HostMAC: "", HostIP: "",
     DefaultGateway: "", DHCPRelay: false,
   },
+  // IPXGW (AppleTalk-to-IPX / MacIPX) gateway: the AppleTalk-side counterpart of
+  // Novell's MACIPXGW.NLM that Classic Mac OS MacIPX clients connect to. Rides the
+  // AppleTalk router on DDP socket 78 and publishes "IPX Gateway" NBP names so Macs
+  // discover it. Field shape mirrors ipxgw.Section (JSON uses Go field names — the
+  // struct carries no json tags — so IPXNetwork, not ipx_network).
+  IPXGW: { Enabled: false, IPXNetwork: 0, Bindings: [] },
 };
 
 // LIST_OWNERS maps a repeated-section schema key to the component that owns its live
@@ -2206,15 +2228,15 @@ class CsUsers extends HTMLElement {
 
 // ---------------------------------------------------------------------------
 // Logs tab: streams the live log over SSE (the shared telemetry bus), with a
-// level filter and follow toggle. History is whatever arrives after subscribe.
+// level filter and follow toggle. Lines are buffered on `telemetry.logs` for
+// the whole session, so Start/Stop/Apply/Save done on other tabs still show.
 // ---------------------------------------------------------------------------
 const LOG_LEVELS = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
 class CsLogs extends HTMLElement {
-  lines = [];
-  minLevel = 1; // DEBUG
+  minLevel = 2; // INFO — audit lines from control plane + component start/stop
   follow = true;
   connectedCallback() {
-    this.logCb = (rec) => this.append(rec);
+    this.logCb = () => this.repaint();
     telemetry.onLog.add(this.logCb);
   }
   disconnectedCallback() {
@@ -2235,22 +2257,17 @@ class CsLogs extends HTMLElement {
       el("div", { class: "log-controls" }, [
         el("label", { class: "inline" }, ["Level", sel]),
         el("label", { class: "inline" }, [follow, "Follow"]),
-        button("Clear", "", () => { this.lines = []; this.repaint(); }),
+        button("Clear", "", () => { telemetry.logs = []; this.repaint(); }),
         button("Download", "", () => this.download()),
       ]),
       this.output,
     ]));
     this.repaint();
   }
-  append(rec) {
-    this.lines.push(rec);
-    if (this.lines.length > 2000) this.lines.shift();
-    if (this.output) this.repaint();
-  }
   repaint() {
     if (!this.output) return;
     const frag = document.createDocumentFragment();
-    for (const r of this.lines) {
+    for (const r of telemetry.logs) {
       const lvl = r.Level == null ? 2 : r.Level;
       if (lvl < this.minLevel) continue;
       const name = LOG_LEVELS[lvl] || "INFO";
@@ -2264,7 +2281,7 @@ class CsLogs extends HTMLElement {
     if (this.follow) this.output.scrollTop = this.output.scrollHeight;
   }
   download() {
-    const text = this.lines.map((r) => {
+    const text = telemetry.logs.map((r) => {
       const name = LOG_LEVELS[r.Level == null ? 2 : r.Level] || "INFO";
       const ts = r.Time || "";
       return `${ts} ${name} ${r.Component || ""} ${r.Msg || ""}`;

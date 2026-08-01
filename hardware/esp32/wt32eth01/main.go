@@ -17,9 +17,11 @@ import (
 
 	configtoml "github.com/ObsoleteMadness/ClassicStack/adapter/config/toml"
 	controlhttp "github.com/ObsoleteMadness/ClassicStack/adapter/control/http"
+	logbus "github.com/ObsoleteMadness/ClassicStack/adapter/log/bus"
 	storefile "github.com/ObsoleteMadness/ClassicStack/adapter/store/file"
 	"github.com/ObsoleteMadness/ClassicStack/core/control"
 	"github.com/ObsoleteMadness/ClassicStack/core/hostinfo"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 
 	"github.com/ObsoleteMadness/ClassicStack/hardware/peripherals/lan8720a"
 	_ "github.com/ObsoleteMadness/ClassicStack/hardware/peripherals/sdcard"
@@ -124,6 +126,11 @@ func main() {
 		return uart, nil
 	}
 
+	// Bus log sink: fans component + control-plane Info+ records onto the telemetry
+	// "log" topic so the web-UI Logs tab sees Start/Stop and config audit lines.
+	logLevel := registry.ParseLevel(m.Logging.Level)
+	busLogSink := logbus.New(telemetry, log.NewLevelVar(logLevel))
+
 	// 5. Build and Start the Supervisor
 	println("Building ClassicStack runtime...")
 	rt, err := runtime.Build(runtime.Options{
@@ -131,6 +138,7 @@ func main() {
 		Telemetry: telemetry,
 		Opener:    opener,
 		Serial:    serialOpener,
+		LogSinks:  []log.Sink{busLogSink},
 	})
 	if err != nil {
 		println("Fatal: failed to build runtime:", err.Error())
@@ -147,6 +155,7 @@ func main() {
 	// 6. Start Web UI
 	println("Starting Web UI on :8080...")
 	plane := control.New(rt.Supervisor(), codec, store, telemetry)
+	plane.SetLogger(log.New("control", busLogSink))
 	httpServer := controlhttp.NewServer(plane, ":8080")
 	if err := httpServer.Start(); err != nil {
 		println("Error starting Web UI:", err.Error())

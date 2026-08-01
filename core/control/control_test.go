@@ -9,6 +9,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/auth"
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 )
 
 type fakeSection struct{ key string }
@@ -424,5 +425,65 @@ func TestPlane_SaveAndDiagnostics(t *testing.T) {
 	_, derr := p.Diagnostics().ListZones(context.Background())
 	if !errors.Is(derr, ErrUnavailable) {
 		t.Fatalf("Diagnostics().ListZones() error = %v, want ErrUnavailable", derr)
+	}
+}
+
+// auditSink collects log records so management-action Info lines can be asserted.
+type auditSink struct {
+	recs []log.Record
+}
+
+func (s *auditSink) Write(rec log.Record) {
+	copyRec := rec
+	copyRec.Fields = append([]log.Field(nil), rec.Fields...)
+	s.recs = append(s.recs, copyRec)
+}
+func (s *auditSink) Min() log.Level { return log.Info }
+func (s *auditSink) Close() error   { return nil }
+
+func (s *auditSink) hasMsg(msg string) bool {
+	for _, r := range s.recs {
+		if r.Msg == msg {
+			return true
+		}
+	}
+	return false
+}
+
+// TestPlane_ManagementActionsLogInfo asserts Start/Stop/Restart and configuration
+// changes emit Info audit lines (the trail the web-UI Logs tab shows).
+func TestPlane_ManagementActionsLogInfo(t *testing.T) {
+	sup := &fakeSupervisor{model: config.NewModel()}
+	sink := &auditSink{}
+	p := New(sup, fakeCodec{}, &fakeStore{}, bus.New(4))
+	p.SetLogger(log.New("control", sink))
+
+	ctx := context.Background()
+	if err := p.Start(ctx, "AFP"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := p.Stop(ctx, "AFP"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := p.Restart(ctx, "AFP"); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	if err := p.Reconfigure(ctx, "AFP", fakeSection{key: "AFP"}); err != nil {
+		t.Fatalf("Reconfigure: %v", err)
+	}
+	if _, err := p.Save(ctx); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	for _, want := range []string{
+		"control: started",
+		"control: stopped",
+		"control: restarted",
+		"control: configuration applied",
+		"control: configuration saved",
+	} {
+		if !sink.hasMsg(want) {
+			t.Errorf("missing Info log %q; got %#v", want, sink.recs)
+		}
 	}
 }

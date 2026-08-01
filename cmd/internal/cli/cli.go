@@ -33,6 +33,7 @@ import (
 	configuci "github.com/ObsoleteMadness/ClassicStack/adapter/config/uci"
 	controlhttp "github.com/ObsoleteMadness/ClassicStack/adapter/control/http"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/pcap"
+	logbus "github.com/ObsoleteMadness/ClassicStack/adapter/log/bus"
 	adaptermetrics "github.com/ObsoleteMadness/ClassicStack/adapter/metrics"
 	adapterserial "github.com/ObsoleteMadness/ClassicStack/adapter/serial"
 	storefile "github.com/ObsoleteMadness/ClassicStack/adapter/store/file"
@@ -43,6 +44,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/control"
 	"github.com/ObsoleteMadness/ClassicStack/core/hostinfo"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 
 	// Blank-import the components so their build-tagged init()s self-register with the
 	// compose registry (the §8 replacement for *_disabled.go). A component whose build
@@ -121,15 +123,32 @@ func Run(ctx context.Context, args []string, v Version) error {
 		return fmt.Errorf("load %s: %w", *configPath, err)
 	}
 
-	// Telemetry bus the supervisor and control plane publish on.
-	telemetry := bus.New(32)
+	// Telemetry bus the supervisor and control plane publish on. Buffer is sized
+	// above a full stats flush (one StatSample per component every ~2s) so a burst
+	// of samples cannot crowd out log audit lines on the SSE subscriber channel.
+	telemetry := bus.New(256)
+
+	// Bus log sink: fans every component (and control-plane) Info+ record onto the
+	// telemetry "log" topic so the web-UI / ubus log viewer sees Start/Stop and
+	// configuration-change audit lines. Threshold follows [Logging] Level.
+	logLevel := registry.ParseLevel(m.Logging.Level)
+	busLogSink := logbus.New(telemetry, log.NewLevelVar(logLevel))
 
 	// Build the supervised runtime. The pcap opener + serial opener are injected here
 	// so compose/runtime pulls in no cgo/libpcap; under the pcap tag they open real
 	// device links, otherwise their stubs return ErrUnavailable and ports come up
 	// inert-but-routed. Per-port wire capture is now a port property (Section.Capture),
 	// wrapped inside the compose registry openers, so no capture decoration is needed here.
-	rt, err := runtime.Build(runtime.Options{Model: m, Telemetry: telemetry, Opener: pcapOpener, Serial: serialOpener, InterfaceEnumerator: interfaceEnumerator, DefaultDevice: defaultDevice, MacIPEgress: macipEgressOpener})
+	rt, err := runtime.Build(runtime.Options{
+		Model:               m,
+		Telemetry:           telemetry,
+		Opener:              pcapOpener,
+		Serial:              serialOpener,
+		InterfaceEnumerator: interfaceEnumerator,
+		DefaultDevice:       defaultDevice,
+		MacIPEgress:         macipEgressOpener,
+		LogSinks:            []log.Sink{busLogSink},
+	})
 	if err != nil {
 		return fmt.Errorf("build runtime: %w", err)
 	}
@@ -150,6 +169,13 @@ func Run(ctx context.Context, args []string, v Version) error {
 	var httpServer *controlhttp.Server
 	if *httpAddr != "" {
 		plane := control.New(rt.Supervisor(), codec, store, telemetry)
+		// Management-action logger: stderr + bus so Start/Stop/Restart and config
+		// apply/save from any front-end (web UI, ubus) produce Info audit lines both
+		// on the console and in the Logs tab.
+		plane.SetLogger(log.New("control",
+			log.NewStderrSink(log.NewLevelVar(logLevel)),
+			busLogSink,
+		))
 		// Wire the real diagnostics probe surface (zone/routing-table reads) now that the
 		// router exists; replaces the core's "unavailable" default. A no-router build
 		// passes nil, which keeps the probes reporting ErrUnavailable.

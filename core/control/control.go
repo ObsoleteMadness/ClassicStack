@@ -8,6 +8,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	"github.com/ObsoleteMadness/ClassicStack/core/hostinfo"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 )
 
 var (
@@ -71,6 +72,10 @@ type Plane interface {
 	// the router (the probe's data source) exists — core ships only the unavailable
 	// default, keeping core/control free of router knowledge. A nil impl is ignored.
 	SetDiagnostics(d Diagnostics)
+	// SetLogger installs the management-action logger used for Info audit lines when an
+	// operator Start/Stop/Restart/Reconfigure/Save (and related) through any front-end
+	// (HTTP web UI, ubus, inproc). A nil logger keeps the sink-less no-op default.
+	SetLogger(l log.Logger)
 
 	// User administration (the web UI's user CRUD). Users live in the auth store,
 	// not the config model, so these are a surface of their own rather than config
@@ -187,9 +192,12 @@ type plane struct {
 	store     config.Store
 	telemetry bus.Bus
 	diag      Diagnostics
+	logger    log.Logger
 }
 
 // New builds a Plane over a Supervisor, a config Codec/Store, and the telemetry bus.
+// The plane starts with a sink-less no-op logger; the compose edge installs a real one
+// via SetLogger so operator actions produce Info audit lines on stderr and the bus.
 func New(sup Supervisor, codec config.Codec, store config.Store, telemetry bus.Bus) Plane {
 	return &plane{
 		sup:       sup,
@@ -197,6 +205,7 @@ func New(sup Supervisor, codec config.Codec, store config.Store, telemetry bus.B
 		store:     store,
 		telemetry: telemetry,
 		diag:      unavailableDiagnostics{},
+		logger:    log.New("control"),
 	}
 }
 
@@ -230,7 +239,13 @@ func (p *plane) Reconfigure(ctx context.Context, name string, section config.Sec
 	// values the operator did not change. Restore those from the live stored section so
 	// a blind round-trip never overwrites a stored secret with the placeholder.
 	section = p.unmaskAgainstLive(name, section)
-	return p.sup.Reconfigure(ctx, name, section)
+	if err := p.sup.Reconfigure(ctx, name, section); err != nil {
+		p.logger.Log2(log.Error, "control: reconfigure failed",
+			log.Str("component", name), log.Str("err", err.Error()))
+		return err
+	}
+	p.logger.Log1(log.Info, "control: configuration applied", log.Str("component", name))
+	return nil
 }
 
 // unmaskAgainstLive restores redacted secret fields in an inbound section from the
@@ -268,18 +283,42 @@ func (p *plane) AddInstance(ctx context.Context, owner string, section config.Na
 		// original named section if a masker ever returns a non-named clone.
 		ns = section
 	}
-	return p.sup.AddInstance(ctx, owner, ns)
+	if err := p.sup.AddInstance(ctx, owner, ns); err != nil {
+		p.logger.Log(log.Error, "control: add instance failed",
+			log.Str("owner", owner), log.Str("key", ns.Key()),
+			log.Str("instance", ns.InstanceName()), log.Str("err", err.Error()))
+		return err
+	}
+	p.logger.Log(log.Info, "control: instance added",
+		log.Str("owner", owner), log.Str("key", ns.Key()),
+		log.Str("instance", ns.InstanceName()))
+	return nil
 }
 
 // RemoveInstance deletes the named instance and reconciles the owner. No secret
 // handling: a delete carries no values.
 func (p *plane) RemoveInstance(ctx context.Context, owner, key, instanceName string) error {
-	return p.sup.RemoveInstance(ctx, owner, key, instanceName)
+	if err := p.sup.RemoveInstance(ctx, owner, key, instanceName); err != nil {
+		p.logger.Log(log.Error, "control: remove instance failed",
+			log.Str("owner", owner), log.Str("key", key),
+			log.Str("instance", instanceName), log.Str("err", err.Error()))
+		return err
+	}
+	p.logger.Log(log.Info, "control: instance removed",
+		log.Str("owner", owner), log.Str("key", key),
+		log.Str("instance", instanceName))
+	return nil
 }
 
 func (p *plane) Save(ctx context.Context) (revision string, err error) {
 	_ = ctx
-	return p.persist()
+	revision, err = p.persist()
+	if err != nil {
+		p.logger.Log1(log.Error, "control: config save failed", log.Str("err", err.Error()))
+		return "", err
+	}
+	p.logger.Log1(log.Info, "control: configuration saved", log.Str("revision", revision))
+	return revision, nil
 }
 
 // persist validates the live model and writes it to the store, returning the new
@@ -320,12 +359,44 @@ func (p *plane) AdminConfigured() bool {
 func (p *plane) SetAdmin(ctx context.Context, a config.AdminAuth) (revision string, err error) {
 	_ = ctx
 	p.sup.SetAdminAuth(a)
-	return p.persist()
+	revision, err = p.persist()
+	if err != nil {
+		p.logger.Log1(log.Error, "control: admin credential save failed", log.Str("err", err.Error()))
+		return "", err
+	}
+	p.logger.Log1(log.Info, "control: admin credential saved", log.Str("revision", revision))
+	return revision, nil
 }
 
-func (p *plane) Start(ctx context.Context, name string) error   { return p.sup.Start(ctx, name) }
-func (p *plane) Stop(ctx context.Context, name string) error    { return p.sup.Stop(ctx, name) }
-func (p *plane) Restart(ctx context.Context, name string) error { return p.sup.Restart(ctx, name) }
+func (p *plane) Start(ctx context.Context, name string) error {
+	if err := p.sup.Start(ctx, name); err != nil {
+		p.logger.Log2(log.Error, "control: start failed",
+			log.Str("component", name), log.Str("err", err.Error()))
+		return err
+	}
+	p.logger.Log1(log.Info, "control: started", log.Str("component", name))
+	return nil
+}
+
+func (p *plane) Stop(ctx context.Context, name string) error {
+	if err := p.sup.Stop(ctx, name); err != nil {
+		p.logger.Log2(log.Error, "control: stop failed",
+			log.Str("component", name), log.Str("err", err.Error()))
+		return err
+	}
+	p.logger.Log1(log.Info, "control: stopped", log.Str("component", name))
+	return nil
+}
+
+func (p *plane) Restart(ctx context.Context, name string) error {
+	if err := p.sup.Restart(ctx, name); err != nil {
+		p.logger.Log2(log.Error, "control: restart failed",
+			log.Str("component", name), log.Str("err", err.Error()))
+		return err
+	}
+	p.logger.Log1(log.Info, "control: restarted", log.Str("component", name))
+	return nil
+}
 
 func (p *plane) Status() []Unit                           { return p.sup.Status() }
 func (p *plane) HostInfo() (hostinfo.HostInfo, error)     { return hostinfo.Get(), nil }
@@ -335,13 +406,25 @@ func (p *plane) ListInterfaces() ([]InterfaceInfo, error) { return p.sup.ListInt
 // SetInterface stages a named interface-namespace entry and reconciles referencing
 // ports (forwarded to the supervisor, which holds the model lock).
 func (p *plane) SetInterface(ctx context.Context, iface config.InterfaceSection) error {
-	return p.sup.SetInterface(ctx, iface)
+	if err := p.sup.SetInterface(ctx, iface); err != nil {
+		p.logger.Log2(log.Error, "control: set interface failed",
+			log.Str("interface", iface.Name), log.Str("err", err.Error()))
+		return err
+	}
+	p.logger.Log1(log.Info, "control: interface configured", log.Str("interface", iface.Name))
+	return nil
 }
 
 // RemoveInterface drops a named interface-namespace entry and reconciles referencing
 // ports.
 func (p *plane) RemoveInterface(ctx context.Context, name string) error {
-	return p.sup.RemoveInterface(ctx, name)
+	if err := p.sup.RemoveInterface(ctx, name); err != nil {
+		p.logger.Log2(log.Error, "control: remove interface failed",
+			log.Str("interface", name), log.Str("err", err.Error()))
+		return err
+	}
+	p.logger.Log1(log.Info, "control: interface removed", log.Str("interface", name))
+	return nil
 }
 func (p *plane) ListFSTypes() []string    { return p.sup.ListFSTypes() }
 func (p *plane) Diagnostics() Diagnostics { return p.diag }
@@ -351,6 +434,14 @@ func (p *plane) Diagnostics() Diagnostics { return p.diag }
 func (p *plane) SetDiagnostics(d Diagnostics) {
 	if d != nil {
 		p.diag = d
+	}
+}
+
+// SetLogger installs the management-action logger. A nil logger keeps the current
+// logger (the sink-less default from New, or a previously installed one).
+func (p *plane) SetLogger(l log.Logger) {
+	if l != nil {
+		p.logger = l
 	}
 }
 
