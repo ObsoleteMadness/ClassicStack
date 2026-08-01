@@ -48,6 +48,17 @@ func init() {
 		// the section is enabled — a disabled gateway wants no egress.
 		if sec != nil && enabled {
 			ep := sec.EgressParams()
+			// Resolve the section's interface NAME through the [[interface]] namespace to
+			// the real pcap device (Npcap's "\Device\NPF_{GUID}" on Windows), the same
+			// way every other pcap-bound port does (reg_ipx/reg_netbeui/reg_ethertalk).
+			// EgressParams carries the raw name; without this the egress opener was handed
+			// "br-lan" and libpcap could not open it — the gateway silently fell back to
+			// AppleTalk-only and MacTCP got no usable address.
+			if ep.Interface != "" {
+				if dev := ctx.Model.EffectiveInterfaceFor(sec).PcapDevice(); dev != "" {
+					ep.Interface = dev
+				}
+			}
 			svc.SetEgressParams(&ep)
 		}
 		return svc, nil

@@ -8,6 +8,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/pcap"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/macipgw"
 	"github.com/ObsoleteMadness/ClassicStack/compose/runtime"
+	"github.com/ObsoleteMadness/ClassicStack/core/hostinfo"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/macip"
 )
 
@@ -38,9 +39,18 @@ func macipEgressOpener(params macip.EgressParams, ownsIP func(macip.IPv4) bool) 
 		}
 	}
 	if defGW == "" {
-		// Fall back to the host IP as a last resort (bridge mode still needs SOME next
-		// hop for off-subnet sends; NAT mode uses the OS stack and ignores it). An empty
-		// gateway is tolerated by the egress (off-subnet bridge sends just fail).
+		// Auto-detect the host's default-route gateway from the OS routing table (the
+		// real upstream router, e.g. 192.168.0.1). This is the gateway advertised to
+		// MacTCP in bridge mode and the next hop for off-subnet bridge sends; the legacy
+		// run-core resolved it the same way (DetectDefaultGatewayForPcapInterface).
+		if gw, err := hostinfo.DefaultGateway(); err == nil {
+			defGW = gw.String()
+		}
+	}
+	if defGW == "" {
+		// Last resort when the routing table could not be read: the host IP still gives
+		// off-subnet bridge sends SOME next hop (NAT mode ignores it), though it is not a
+		// real gateway. The MacIP gateway logs when it advertises this fallback.
 		defGW = hostIP
 	}
 	if hostMAC == "" {

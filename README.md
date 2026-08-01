@@ -503,6 +503,13 @@ thanks to:
   the Python Snefru-128 port behind `core/hash/snefru` (S-boxes from Ralph C.
   Merkle's Snefru / Xerox). Payload/PRAM groundwork by **Rob Braun (bbraun)**.
   Cross-checked against Apple's SuperMario `os/netboot` source.
+- **macipgw** (AppleTalk MacIP Gateway) by **Stefan Bethke** (© 1997, 2013) and
+  **Jason King** (© 2015) — the golden reference for our MacIP gateway
+  (`core/service/macip`): the ATP config exchange and `struct macip_req` wire layout,
+  the `MACIP_ASSIGN`/`SERVER`/`ERROR` functions and error strings, the
+  `IPADDRESS`/`IPGATEWAY` NBP naming, source-IP ARP snooping, and the 586-byte MacIP
+  MTU. An independent Go reimplementation over our egress seam; macipgw is GPLv2+
+  (compatible with our GPLv3).
 
 ## License
 This work is released under the terms of the GPL-3.0. 

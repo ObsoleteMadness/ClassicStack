@@ -52,9 +52,11 @@ type Section struct {
 	// over a pcap raw-Ethernet link); core never touches them. Empty fields are
 	// auto-detected from the chosen Interface where possible.
 
-	// Interface is the host pcap device the gateway bridges IP traffic onto (the
-	// physical-network NIC). Empty disables IP egress → AppleTalk-only mode.
-	Interface string `toml:"interface"`
+	// Iface is the NAME of the interface (the [[interface]] namespace entry) the
+	// gateway bridges IP traffic onto. The Interface() method resolves it through the
+	// namespace to the real pcap device at the compose edge. Empty disables IP egress
+	// → AppleTalk-only mode. The toml key stays "interface" for config compatibility.
+	Iface string `toml:"interface"`
 	// HostMAC is the IP-side Ethernet MAC the gateway sources frames from and answers
 	// proxy-ARP with (colon/dash hex). Empty → auto-detected from Interface.
 	HostMAC string `toml:"host_mac"`
@@ -71,6 +73,17 @@ type Section struct {
 
 // Key returns the section key.
 func (s *Section) Key() string { return SectionKey }
+
+// Interface satisfies config.InterfaceProvider so Model.EffectiveInterfaceFor
+// resolves the section's Interface NAME through the [[interface]] namespace — the
+// same override every pcap-bound port declares (core/port.Section.Interface). This
+// is what turns the operator-friendly name ("br-lan") into the real pcap device
+// (Npcap's "\Device\NPF_{GUID}") at the compose edge; without it the raw name was
+// handed to libpcap and the IP-side egress silently failed to open. An empty
+// Interface returns an empty reference (no override → AppleTalk-only).
+func (s *Section) Interface() config.InterfaceSection {
+	return config.InterfaceSection{Name: s.Iface}
+}
 
 // Clone returns a deep copy (all fields are value types).
 func (s *Section) Clone() config.Section {
@@ -141,7 +154,7 @@ type EgressParams struct {
 func (s *Section) EgressParams() EgressParams {
 	parse := func(v string) IPv4 { ip, _ := ParseIPv4(v); return ip }
 	return EgressParams{
-		Interface:      strings.TrimSpace(s.Interface),
+		Interface:      strings.TrimSpace(s.Iface),
 		HostMAC:        strings.TrimSpace(s.HostMAC),
 		HostIP:         strings.TrimSpace(s.HostIP),
 		DefaultGateway: strings.TrimSpace(s.DefaultGateway),
@@ -156,8 +169,12 @@ func (s *Section) EgressParams() EgressParams {
 	}
 }
 
-// compile-time assertion: *Section satisfies config.Section.
-var _ config.Section = (*Section)(nil)
+// compile-time assertions: *Section satisfies config.Section and, so its interface
+// NAME resolves through the namespace, config.InterfaceProvider.
+var (
+	_ config.Section           = (*Section)(nil)
+	_ config.InterfaceProvider = (*Section)(nil)
+)
 
 // SectionFromModel resolves the MacIP section from the model, or nil when none is set.
 func SectionFromModel(m *config.Model) *Section {

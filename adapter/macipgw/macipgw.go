@@ -169,6 +169,23 @@ func (e *Egress) Close() error {
 	return nil
 }
 
+// GatewayIP reports the IP-side gateway identity the core should advertise to MacTCP
+// clients: the configured GatewayIP when set, otherwise the resolved IP-side default
+// (upstream) gateway. In bridge mode the Mac's lease is on the real LAN subnet, so its
+// gateway must be a real on-subnet IP — mirroring the legacy resolveMacIPGatewayIP,
+// which used the upstream gateway in non-NAT mode. Returns the zero IPv4 when neither is
+// known (the core then keeps whatever it had). The core adopts this at Start so the
+// IPGATEWAY NBP name and MacTCP's gateway are never 0.0.0.0.
+func (e *Egress) GatewayIP() macip.IPv4 {
+	if gw := e.gwIP.To4(); gw != nil && !gw.Equal(net.IPv4zero) {
+		return toIPv4(gw)
+	}
+	if gw := net.ParseIP(e.cfg.DefaultGateway).To4(); gw != nil && !gw.Equal(net.IPv4zero) {
+		return toIPv4(gw)
+	}
+	return macip.IPv4{}
+}
+
 // SetInbound installs core's inbound-IP callback (macip.IPEgress). Called once before
 // Start.
 func (e *Egress) SetInbound(fn func(packet []byte)) {
@@ -199,6 +216,14 @@ func (e *Egress) SendIP(pkt []byte) error {
 	return e.ether.sendIPPacket(pkt)
 }
 
+// AssignerActive reports whether this egress is currently sourcing client addresses
+// from the IP network (macip.AddressAssigner) — true only in DHCP-relay mode. In NAT
+// and bridge modes e.dhcp is nil, so the core must NOT delegate assignment here (AssignIP
+// would always fail); it uses its static pool instead. Structurally *Egress always
+// carries AssignIP, so this method is how core distinguishes "can actually assign" from
+// "merely has the method".
+func (e *Egress) AssignerActive() bool { return e.dhcp != nil }
+
 // AssignIP relays DHCP for an AppleTalk node and returns the resulting config
 // (macip.AddressAssigner). Only present in DHCP-relay mode; in other modes core uses
 // its static pool and never calls this. On success the adapter announces the address
@@ -221,6 +246,12 @@ func (e *Egress) AssignIP(atNet uint16, atNode uint8, requested macip.IPv4) (mac
 	e.ether.sendGratuitousARP(res.assignedIP)
 
 	cfg := macip.AssignedConfig{IP: toIPv4(res.assignedIP)}
+	if res.router != nil {
+		// Propagate the DHCP-supplied router so the core advertises a gateway that is
+		// on the client's own (real LAN) subnet; otherwise MacTCP is handed the static
+		// GatewayIP, sees it off-subnet from its lease, and refuses to route off-net.
+		cfg.Router = toIPv4(res.router)
+	}
 	if res.nameserver != nil {
 		cfg.Nameserver = toIPv4(res.nameserver)
 	}

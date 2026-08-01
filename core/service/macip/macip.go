@@ -10,6 +10,16 @@
 // stats; the egress moves IP packets to/from the physical network.
 //
 // Ring: CORE (stdlib only, reflection-free — IPv4 is [4]byte, no net package).
+//
+// Attribution: the MacIP wire protocol implemented here — the ATP config exchange
+// (struct macip_req layout, MACIP_ASSIGN/SERVER/ERROR functions, the "No Address
+// Available."/"Unknown Operation." error strings), the IPADDRESS/IPGATEWAY NBP
+// naming, the arp_set() source-IP snooping, and the 586-byte MacIP MTU — follows the
+// original C "AppleTalk MacIP Gateway" (macipgw) by Stefan Bethke (© 1997, 2013) and
+// Jason King (© 2015), released under the GNU General Public License v2-or-later.
+// This is an independent Go reimplementation; macipgw is used as the golden reference
+// for wire behaviour. macipgw's GPLv2+ terms are compatible with this project's GPLv3
+// licence. See spec/14-macip-gateway.md and the README "Status and attribution".
 package macip
 
 import (
@@ -35,9 +45,10 @@ const (
 	ddpTypeATP   = 3
 	ddpTypeMacIP = 22
 
-	// MacIP config function codes.
-	macIPFuncAssign = 1 // Mac requests an IP address
-	macIPFuncServer = 3 // Mac checks the server is still alive
+	// MacIP config function codes (macip.c: MACIP_ASSIGN/MACIP_SERVER/MACIP_ERROR).
+	macIPFuncAssign = 1  // Mac requests an IP address
+	macIPFuncServer = 3  // Mac checks the server is still alive
+	macIPFuncError  = -1 // gateway reports failure; error string carried in reply
 
 	// macIPVersion is the protocol version sent in TResp (matches macipgw).
 	macIPVersion = 1
@@ -49,11 +60,35 @@ const (
 
 	// macIPCtrlLen is the minimum MacIP user-data size: version(2)+pad(2)+function(4).
 	macIPCtrlLen = 8
-	// configDataLen is the full MacIP config payload size used in responses.
-	configDataLen = 28
+
+	// The config-reply user-data mirrors the original macipgw struct macip_req exactly
+	// (macip.c) so any MacTCP client that reads its layout by fixed offset is satisfied:
+	//
+	//   control  version(2) pad(2) function(4)                             = 8 bytes
+	//   data     ipaddr(4) nameserver(4) broadcast(4) pad2(4) subnet(4)
+	//            pad3(4) pad4(4) pad5(4)                                    = 32 bytes
+	//   error    char[22]                                                  = 22 bytes
+	//
+	// On success macipgw sends sizeof(struct macip_req) - 21 = 62 - 21 = 41 bytes of
+	// MacIP user-data: control(8) + the full 32-byte data block + 1 leading NUL of the
+	// error field. On failure it appends the NUL-terminated error string. We match those
+	// lengths byte-for-byte. (These lengths are the MacIP user-data only; the 4-byte ATP
+	// TResp header — ctrl/seq/tid — is prepended separately, so the wire buffer is
+	// 4 + configUserLen bytes.)
+	configCtrlLen   = 8                                   // version+pad+function
+	configFieldsLen = 32                                  // ip/ns/bcast/pad2/subnet/pad3/pad4/pad5
+	configUserLen   = configCtrlLen + configFieldsLen + 1 // 41: +1 NUL error byte
+	configErrLen    = 22                                  // error[] capacity in struct macip_req_data
 
 	// expiryInterval is how often stale static leases are evicted.
 	expiryInterval = 30 * time.Second
+)
+
+// MacIP error strings, byte-for-byte from the original macipgw (macip.c error_noip/
+// error_noop), sent in the reply's error field when the function is macIPFuncError.
+const (
+	errNoIP = "No Address Available." // pool exhausted (MACIP_ASSIGN failure)
+	errNoOp = "Unknown Operation."    // unrecognised function code
 )
 
 // IPEgress is the IP-side network seam (adapter-provided). The service hands it
@@ -79,8 +114,29 @@ type IPEgress interface {
 // back to the service Config. The egress is responsible for any proxy-ARP / gratuitous
 // announcement for the assigned IP and for registering inbound routing for it (the core
 // records the lease via RegisterExternalLease before replying).
+//
+// AssignerActive reports whether this egress is CURRENTLY sourcing addresses (i.e. DHCP
+// relay is actually enabled). Go interface satisfaction is structural: the NAT/bridge
+// egress carries an AssignIP method for all modes but only performs DHCP when relay is
+// configured. Without this gate, core would delegate to it in NAT mode too — where
+// AssignIP always fails (no DHCP), and the "ok=false ⇒ do not reply" contract would then
+// silently swallow EVERY config request, so the Mac never gets an IP and the static pool
+// is never consulted. Core only delegates when AssignerActive returns true; otherwise it
+// uses the static pool. An egress that implements AddressAssigner MUST implement this.
 type AddressAssigner interface {
 	AssignIP(atNetwork uint16, atNode uint8, requested IPv4) (AssignedConfig, bool)
+	AssignerActive() bool
+}
+
+// GatewayReporter is an OPTIONAL capability of an IPEgress: it reports the IP-side
+// gateway identity (the real on-subnet upstream/default gateway) the core should
+// advertise to MacTCP clients. In bridge mode the client's lease is on the real LAN
+// subnet, so its gateway must be a real on-subnet IP rather than the (possibly unset)
+// configured GatewayIP. The core adopts this at Start when its own GatewayIP is zero,
+// so the IPGATEWAY NBP name and the config reply are never 0.0.0.0 — the "MacTCP shows
+// 0.0.0.0 and won't send" failure. A zero return leaves the core's GatewayIP unchanged.
+type GatewayReporter interface {
+	GatewayIP() IPv4
 }
 
 // AssignedConfig is the result of an egress-driven (DHCP) address assignment. Any
@@ -90,6 +146,13 @@ type AssignedConfig struct {
 	Nameserver IPv4 // DNS server (zero ⇒ Config.Nameserver)
 	Broadcast  IPv4 // broadcast address (zero ⇒ Config.Broadcast)
 	SubnetMask IPv4 // subnet mask (zero ⇒ Config.SubnetMask)
+	// Router is the IP-side default gateway the DHCP server supplied (option 3). In
+	// bridge + DHCP-relay mode the client's lease is on the real LAN subnet, so the
+	// gateway MacTCP must use is this router (on that same subnet), NOT the gateway's
+	// configured GatewayIP — which may be on a different (or unset) subnet and would
+	// make MacTCP reject it as off-subnet, breaking all off-net routing. The service
+	// adopts it as its advertised IPGATEWAY identity (§NBP). Zero ⇒ keep Config.GatewayIP.
+	Router IPv4
 }
 
 // Config carries the gateway's IP-side identity, advertised to MacIP clients.
@@ -128,7 +191,28 @@ type Service struct {
 	dataOut uint64 // DDP-22 → IP egress
 	dataIn  uint64 // IP egress → AppleTalk
 	dropped uint64
+
+	// flowMu guards flows: the last receive-window/ACK each Mac TCP flow advertised,
+	// learned from Mac→peer segments. Observation only (diagnostics + a record of what
+	// the window throttle acts on). Bounded by maxTrackedFlows so a scan/flood cannot
+	// grow it without limit.
+	flowMu sync.Mutex
+	flows  map[flowKey]macFlow
 }
+
+// flowKey identifies one Mac TCP flow by the Mac's IP+port and the peer's IP+port,
+// in the Mac→peer direction (so the window/ACK we record is always the Mac's).
+type flowKey struct {
+	macIP    IPv4
+	peerIP   IPv4
+	macPort  uint16
+	peerPort uint16
+}
+
+// maxTrackedFlows caps the observed-flow table so a port scan or SYN flood from a Mac
+// cannot grow it unbounded. When full, new flows are simply not recorded (observation
+// is best-effort; it never affects forwarding).
+const maxTrackedFlows = 512
 
 type item struct {
 	d    ddp.Datagram
@@ -142,6 +226,11 @@ func New(rtr router.ServiceRouter, names *nbp.Service, egress IPEgress, cfg Conf
 	if cfg.HostCount < 1 {
 		cfg.HostCount = 254
 	}
+	if logger == nil {
+		// Keep the logger always-non-nil at the seam (no call-site guards); a sink-less
+		// logger discards. Matches the project's logging-injection pattern.
+		logger = log.New(Name)
+	}
 	return &Service{
 		cfg:    cfg,
 		rtr:    rtr,
@@ -149,6 +238,7 @@ func New(rtr router.ServiceRouter, names *nbp.Service, egress IPEgress, cfg Conf
 		egress: egress,
 		logger: logger,
 		pool:   newIPPool(cfg.Network, cfg.HostCount),
+		flows:  make(map[flowKey]macFlow),
 	}
 }
 
@@ -262,6 +352,18 @@ func (s *Service) Start(ctx context.Context) error {
 
 	if s.egress != nil {
 		s.egress.SetInbound(s.onInboundIP)
+		// Before advertising, adopt the egress-reported on-subnet gateway when our own
+		// GatewayIP is unset (gateway_ip left blank in bridge mode). Otherwise the NBP
+		// IPGATEWAY name and the config reply carry 0.0.0.0 and MacTCP refuses to send.
+		if s.cfg.GatewayIP.IsZero() {
+			if gr, ok := s.egress.(GatewayReporter); ok {
+				if gw := gr.GatewayIP(); !gw.IsZero() {
+					s.mu.Lock()
+					s.cfg.GatewayIP = gw
+					s.mu.Unlock()
+				}
+			}
+		}
 	}
 	if s.nbp != nil {
 		s.nbp.RegisterName(ipv4String(s.cfg.GatewayIP), []byte("IPGATEWAY"), s.cfg.Zone, Socket)
@@ -269,6 +371,20 @@ func (s *Service) Start(ctx context.Context) error {
 
 	go s.inboundLoop(ctx, stop)
 	go s.expiryLoop(stop)
+
+	s.mu.Lock()
+	gw := s.cfg.GatewayIP
+	zone := s.cfg.Zone
+	network := s.cfg.Network
+	hostCount := s.cfg.HostCount
+	hasEgress := s.egress != nil
+	s.mu.Unlock()
+	s.logger.Log(log.Info, "macip: started",
+		log.Str("gateway", string(ipv4String(gw))),
+		log.Str("network", string(ipv4String(network))),
+		log.Int("host_count", int64(hostCount)),
+		log.Str("zone", string(zone)),
+		log.Bool("egress", hasEgress))
 	return nil
 }
 
@@ -289,6 +405,7 @@ func (s *Service) Stop(ctx context.Context) error {
 		s.nbp.UnregisterName(ipv4String(s.cfg.GatewayIP), []byte("IPGATEWAY"), zone)
 	}
 	s.wg.Wait()
+	s.logger.Log0(log.Info, "macip: stopped")
 	return nil
 }
 
@@ -402,6 +519,14 @@ func (s *Service) handleATPConfig(d ddp.Datagram, rx router.RoutedPort) {
 		copy(requestedIP[:], userData[8:12])
 	}
 
+	// Only MACIP_ASSIGN and MACIP_SERVER are defined; anything else gets a MACIP_ERROR
+	// reply carrying "Unknown Operation." — matching macipgw's switch default arm.
+	if function != macIPFuncAssign && function != macIPFuncServer {
+		s.logger.Log1(log.Info, "macip: unknown config function", log.Int("function", int64(function)))
+		s.sendATPConfigError(d, rx, tid, errNoOp)
+		return
+	}
+
 	// Server-check (func=3) reuses an existing lease where one exists.
 	if function == macIPFuncServer {
 		if ip, ok := s.pool.lookupIPByAT(atNet, atNode); ok {
@@ -426,22 +551,32 @@ func (s *Service) handleATPConfig(d ddp.Datagram, rx router.RoutedPort) {
 		return
 	}
 
-	assignedIP, ok := s.pool.assign(requestedIP, atNet, atNode)
+	assignedIP, fresh, ok := s.pool.assign(requestedIP, atNet, atNode)
 	if !ok {
-		assignedIP = IPv4{}
-	} else {
-		s.bump(&s.assigns)
+		// Pool exhausted: reply MACIP_ERROR with "No Address Available." rather than a
+		// bogus 0.0.0.0 assignment, matching macipgw's lease_ip()-failed path.
+		s.logger.Log(log.Warn, "macip: address pool exhausted, no lease available")
+		s.sendATPConfigError(d, rx, tid, errNoIP)
+		return
+	}
+	s.bump(&s.assigns)
+	if fresh {
+		s.logAllocated(assignedIP, atNet, atNode)
 	}
 	s.sendATPConfigResp(d, rx, tid, AssignedConfig{IP: assignedIP})
 }
 
 // assigner returns the egress as an AddressAssigner when it implements the optional
-// capability (DHCP-relay egress), else nil (static-pool assignment).
+// capability AND is actively sourcing addresses (DHCP relay enabled), else nil
+// (static-pool assignment). The AssignerActive gate is essential: the NAT/bridge egress
+// structurally satisfies AddressAssigner in every mode but only does DHCP when relay is
+// configured — without the gate, NAT mode would delegate to an egress whose AssignIP
+// always fails, silently dropping every config request (the Mac never gets an IP).
 func (s *Service) assigner() AddressAssigner {
 	s.mu.Lock()
 	e := s.egress
 	s.mu.Unlock()
-	if as, ok := e.(AddressAssigner); ok {
+	if as, ok := e.(AddressAssigner); ok && as.AssignerActive() {
 		return as
 	}
 	return nil
@@ -470,12 +605,61 @@ func (s *Service) assignViaEgress(as AddressAssigner, d ddp.Datagram, rx router.
 		}
 		s.pool.RegisterExternal(r.cfg.IP, atNet, atNode)
 		s.bump(&s.assigns)
+		s.logAllocated(r.cfg.IP, atNet, atNode)
+		// In DHCP-relay mode the lease is on the real LAN subnet; adopt the DHCP-supplied
+		// router as the advertised IPGATEWAY identity so MacTCP is given a gateway on its
+		// own subnet (see AssignedConfig.Router). Done once, when we first learn a router.
+		s.adoptGatewayIP(r.cfg.Router)
 		s.sendATPConfigResp(d, rx, tid, r.cfg)
 	}
 }
 
+// logAllocated emits the Info audit line for a freshly assigned MacIP address.
+func (s *Service) logAllocated(ip IPv4, atNet uint16, atNode uint8) {
+	s.logger.Log(log.Info, "macip: allocated IP",
+		log.Str("ip", string(ipv4String(ip))),
+		log.Int("at_network", int64(atNet)),
+		log.Int("at_node", int64(atNode)))
+}
+
+// adoptGatewayIP makes the DHCP-supplied router the gateway's advertised IPGATEWAY
+// identity when we do not already advertise it. This is what lets a bridge + DHCP-relay
+// gateway hand MacTCP a router on the client's own subnet: the NBP object name is the
+// gateway IP as text (spec §2), and MacTCP uses that as its gateway, so it must be
+// re-registered under the router IP. A no-op when router is zero or already adopted.
+func (s *Service) adoptGatewayIP(router IPv4) {
+	if router.IsZero() {
+		return
+	}
+	s.mu.Lock()
+	if s.cfg.GatewayIP == router {
+		s.mu.Unlock()
+		return
+	}
+	old := s.cfg.GatewayIP
+	s.cfg.GatewayIP = router
+	names := s.nbp
+	zone := s.cfg.Zone
+	s.mu.Unlock()
+
+	if names != nil {
+		// Swap the NBP registration to the new identity so a Chooser/NBP lookup returns the
+		// on-subnet gateway. Unregister the old name only if it was ever registered (non-zero).
+		if !old.IsZero() {
+			names.UnregisterName(ipv4String(old), []byte("IPGATEWAY"), zone)
+		}
+		names.RegisterName(ipv4String(router), []byte("IPGATEWAY"), zone, Socket)
+	}
+	s.logger.Log1(log.Info, "macip: adopted DHCP-supplied gateway as advertised IPGATEWAY",
+		log.Str("gateway", string(ipv4String(router))))
+}
+
 // sendATPConfigResp builds and sends an ATP TResp with the IP configuration. Zero-valued
-// fields in cfg fall back to the service Config defaults.
+// fields in cfg fall back to the service Config defaults. The reply layout and length
+// mirror the original macipgw struct macip_req (see configUserLen): an 8-byte control
+// (version/pad/function) followed by a 33-byte data block (ip/nameserver/broadcast/
+// pad2/subnet/pad3/pad4/pad5 = 32 bytes, then the first NUL of the error field) — the
+// exact "sizeof(macip_req) - 21 = 41" success length macipgw emits.
 func (s *Service) sendATPConfigResp(d ddp.Datagram, rx router.RoutedPort, tid uint16, cfg AssignedConfig) {
 	ns := cfg.Nameserver
 	if ns.IsZero() {
@@ -489,7 +673,43 @@ func (s *Service) sendATPConfigResp(d ddp.Datagram, rx router.RoutedPort, tid ui
 	if mask.IsZero() {
 		mask = s.cfg.SubnetMask
 	}
-	resp := make([]byte, 4+configDataLen)
+	resp := s.newConfigReply(tid, macIPFuncAssign)
+	copy(resp[12:16], cfg.IP[:])
+	copy(resp[16:20], ns[:])
+	copy(resp[20:24], bc[:])
+	// resp[24:28] = pad2; resp[28:32] = subnet; resp[32:44] = pad3/4/5; resp[44] = NUL.
+	copy(resp[28:32], mask[:])
+	s.rtr.Reply(d, rx, ddpTypeATP, resp)
+}
+
+// sendATPConfigError sends a MACIP_ERROR reply carrying msg in the error field, matching
+// macipgw's failure path (config_input: MACIP_ERROR + error_noip/error_noop, with len
+// extended by the NUL-terminated string). The nameserver/broadcast/subnet fields are
+// still populated (macipgw always sets them before the switch), only the function code
+// and appended error string differ.
+func (s *Service) sendATPConfigError(d ddp.Datagram, rx router.RoutedPort, tid uint16, msg string) {
+	if len(msg) >= configErrLen {
+		msg = msg[:configErrLen-1] // never overrun the 22-byte error[] field
+	}
+	resp := s.newConfigReply(tid, macIPFuncError)
+	copy(resp[16:20], s.cfg.Nameserver[:])
+	copy(resp[20:24], s.cfg.Broadcast[:])
+	copy(resp[28:32], s.cfg.SubnetMask[:])
+	// Error string starts at the error field (data offset 32 → resp offset 44). macipgw
+	// copies sizeof(str) bytes (including the terminating NUL) and lengthens the reply
+	// by sizeof(str)-1 beyond the 41-byte base, i.e. len(msg) extra bytes.
+	errStart := 4 + configCtrlLen + 32 // ATP hdr(4) + control(8) + 32-byte data block
+	resp = append(resp, make([]byte, len(msg)+1)...)
+	copy(resp[errStart:], msg)
+	s.rtr.Reply(d, rx, ddpTypeATP, resp)
+}
+
+// newConfigReply allocates a base config reply: 4-byte ATP TResp header (EOM, seq 0,
+// tid) + 8-byte control (version, pad, 32-bit function) + the 33-byte success data
+// block, all zeroed except the header/version/function. fn is the MacIP function code
+// written big-endian (macIPFuncError = -1 → 0xFFFFFFFF, matching htonl(MACIP_ERROR)).
+func (s *Service) newConfigReply(tid uint16, fn int32) []byte {
+	resp := make([]byte, 4+configUserLen)
 	resp[0] = atpFuncTResp | atpEOM
 	resp[1] = 0 // seq 0
 	resp[2] = byte(tid >> 8)
@@ -497,16 +717,12 @@ func (s *Service) sendATPConfigResp(d ddp.Datagram, rx router.RoutedPort, tid ui
 	resp[4] = byte(macIPVersion >> 8)
 	resp[5] = byte(macIPVersion)
 	// resp[6:8] = pad
-	resp[8] = byte(macIPFuncAssign >> 24)
-	resp[9] = byte(macIPFuncAssign >> 16)
-	resp[10] = byte(macIPFuncAssign >> 8)
-	resp[11] = byte(macIPFuncAssign)
-	copy(resp[12:16], cfg.IP[:])
-	copy(resp[16:20], ns[:])
-	copy(resp[20:24], bc[:])
-	// resp[24:28] = pad2
-	copy(resp[28:32], mask[:])
-	s.rtr.Reply(d, rx, ddpTypeATP, resp)
+	u := uint32(fn)
+	resp[8] = byte(u >> 24)
+	resp[9] = byte(u >> 16)
+	resp[10] = byte(u >> 8)
+	resp[11] = byte(u)
+	return resp
 }
 
 // handleMacIPData processes a DDP type 22 packet: a raw IP packet from a Mac.
@@ -515,18 +731,47 @@ func (s *Service) handleMacIPData(d ddp.Datagram) {
 		s.bump(&s.dropped)
 		return
 	}
-	var dstIP IPv4
+	var dstIP, srcIP IPv4
 	copy(dstIP[:], d.Data[16:20])
+	copy(srcIP[:], d.Data[12:16])
 	s.pool.updateSeen(d.SrcNetwork, d.SrcNode)
+	// Snoop the source IP↔AppleTalk binding so a STATICALLY addressed Mac (one that
+	// never leased from our pool) is reachable for return traffic — mirrors the
+	// original macipgw arp_set() on every received IP packet (see pool.learnSource).
+	if s.pool.learnSource(srcIP, d.SrcNetwork, d.SrcNode) {
+		s.logger.Log(log.Info, "macip: learned Mac IP↔AppleTalk binding (address taken)",
+			log.Str("ip", string(ipv4String(srcIP))),
+			log.Int("at_network", int64(d.SrcNetwork)),
+			log.Int("at_node", int64(d.SrcNode)))
+	}
+
+	// Learn what this Mac advertises about its own receive capacity (window/ACK) from
+	// the segment it is sending. Observation only (diagnostics).
+	s.observeMacTCP(d.Data)
+
+	// Forward the Mac's segment to the egress UNMODIFIED — matching the golden reference
+	// (macipgw macip_output and the pre-refactor main branch, which never rewrite an
+	// egress-bound packet). We used to clamp the Mac's advertised TCP receive window down
+	// to a few DDP segments here, believing a classic MacTCP receiver over-advertises and
+	// the peer must be throttled. That was WRONG for NAT mode, where the egress is our own
+	// OSNAT TCP-terminating proxy (adapter/macipgw/nat): OSNAT already paces itself on the
+	// Mac's REAL advertised window (space = macAck + macWindow − ourSeq) and never
+	// retransmits, so feeding it a falsified small window starved that loop — a single
+	// dropped segment drove space to 0 and the flow DEADLOCKED (capture ltoudp-netboot.pcap:
+	// the Mac ACKs only the first of a burst, then the connection wedges and RSTs). The
+	// real burst constraint is the LToUDP transport, and the per-node link pace
+	// (link.Pace) is the right and only place to address it — not a TCP-window rewrite on
+	// the data path. So: no window clamp; let OSNAT own MSS (flow.mss) and window.
+	out := d.Data
 
 	// If the destination is another pool client, deliver directly over AppleTalk.
 	if atNet, atNode, ok := s.pool.lookupByIP(dstIP); ok {
-		s.routeIPToMac(atNet, atNode, d.Data)
+		s.routeIPToMac(atNet, atNode, out)
 		return
 	}
 	// Otherwise hand it to the IP egress.
 	if s.egress != nil {
-		if err := s.egress.SendIP(d.Data); err != nil {
+		if err := s.egress.SendIP(out); err != nil {
 			s.bump(&s.dropped)
 		} else {
 			s.bump(&s.dataOut)
@@ -551,26 +796,65 @@ func (s *Service) onInboundIP(packet []byte) {
 	s.routeIPToMac(atNet, atNode, packet)
 }
 
-// routeIPToMac wraps an IP packet in DDP type 22 and routes it to a Mac client.
-// Fragmentation (MaxIPPerDDP) is an egress concern when the link MTU demands it;
-// the core service forwards the packet as received.
+// routeIPToMac wraps an IP packet in DDP type 22 and routes it to a Mac client,
+// forwarding it UNMODIFIED — matching the golden reference (macipgw macip_output and
+// the pre-refactor main branch, neither of which rewrites a packet bound for the Mac).
+// We used to clamp the inbound TCP MSS option here so no peer segment could exceed one
+// DDP packet, but that is unnecessary and off-model: in NAT mode the SYN-ACK toward the
+// Mac is synthesised by our own OSNAT proxy (adapter/macipgw/nat), which already sets the
+// MSS from flow.mss (capped at osNATMaxSegment); on the pool client→client path both ends
+// are classic Macs whose own MSS (≤536) governs. Oversize-to-Mac therefore does not arise,
+// and rewriting the segment only risks the kind of throttle-interaction regression that
+// deadlocked NAT (see handleMacIPData). The transport burst constraint on LToUDP is the
+// per-node link pace's job (link.Pace), not a TCP rewrite. A copy is still taken because
+// the DDP datagram needs its own buffer and the caller may pass a shared inbound slice.
 func (s *Service) routeIPToMac(atNet uint16, atNode uint8, pkt []byte) {
 	if !validATEndpoint(atNet, atNode) {
 		return
 	}
+	data := append([]byte(nil), pkt...)
 	err := s.rtr.Route(ddp.Datagram{
 		DestNetwork: atNet,
 		DestNode:    atNode,
 		DestSocket:  Socket,
 		SrcSocket:   Socket,
 		DDPType:     ddpTypeMacIP,
-		Data:        append([]byte(nil), pkt...),
+		Data:        data,
 	}, true)
 	if err == nil {
 		s.bump(&s.dataIn)
 	} else {
 		s.bump(&s.dropped)
 	}
+}
+
+// observeMacTCP records the receive-window/ACK a Mac advertised in a segment it sent
+// (Mac→peer), keyed by the flow 4-tuple. Observation only: diagnostics plus a record of
+// the pre-clamp window the throttle (clampAdvertisedWindow) is acting on. Best-effort
+// and bounded by maxTrackedFlows.
+func (s *Service) observeMacTCP(pkt []byte) {
+	f, ok := observeFromMac(pkt)
+	if !ok {
+		return
+	}
+	seg := tcpSegment(pkt)
+	if seg == nil {
+		return
+	}
+	var macIP, peerIP IPv4
+	copy(macIP[:], pkt[12:16])  // source = the Mac
+	copy(peerIP[:], pkt[16:20]) // dest = the peer
+	key := flowKey{
+		macIP:    macIP,
+		peerIP:   peerIP,
+		macPort:  uint16(seg[0])<<8 | uint16(seg[1]),
+		peerPort: uint16(seg[2])<<8 | uint16(seg[3]),
+	}
+	s.flowMu.Lock()
+	if _, exists := s.flows[key]; exists || len(s.flows) < maxTrackedFlows {
+		s.flows[key] = f
+	}
+	s.flowMu.Unlock()
 }
 
 func normalizeATSource(d ddp.Datagram, rx router.RoutedPort) (uint16, uint8) {
