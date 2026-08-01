@@ -151,6 +151,96 @@ iface = "br-lan"
 enabled = false
 
 
+# --- MacIP gateway (build tag `macip`) ---------------------------------------
+# IP-over-AppleTalk for classic MacTCP / MacIP clients (DDP type 22, socket 72).
+# Rides the AppleTalk router so any LocalTalk/EtherTalk segment in
+# [router].members reaches it, and publishes an "IPGATEWAY" NBP name (object =
+# gateway_ip) so Macs find it. Section key is exact-case: [MacIP].
+# See spec/14-macip-gateway.md.
+#
+# AppleTalk / lease-pool side (advertised to clients):
+#   enabled       gate the gateway on/off
+#   mode          "bridge" (proxy-ARP onto an existing subnet; default) or
+#                 "nat" (hand out a private subnet and NAT upstream)
+#   zone          AppleTalk zone for the IPGATEWAY NBP name (blank = router
+#                 default / first zone)
+#   gateway_ip    IPv4 identity advertised to clients (also the NBP object name)
+#   network       subnet base (blank = derived from gateway_ip + subnet_mask)
+#   nameserver    DNS server advertised to clients (blank = unset)
+#   broadcast     subnet broadcast (blank = derived)
+#   subnet_mask   mask advertised to clients (blank = 255.255.255.0)
+#   host_count    lease-pool slot count incl. the two reserved slots — the network
+#                 address (.0) and the gateway (.1); clients are leased from .2 up (0 = 254)
+#
+# IP-side egress (adapter/macipgw; empty interface = AppleTalk-only):
+#   interface        [[interface]] NAME to bridge IP traffic onto (e.g. br-lan)
+#   host_mac         Ethernet MAC for proxy-ARP / sourced frames (blank = auto)
+#   host_ip          host's own IPv4 on the uplink (blank = auto)
+#   default_gateway  upstream router for off-subnet bridge egress (blank = auto)
+#   dhcp_relay       true = relay DHCP for client addresses instead of the
+#                    static pool
+#
+# Pick ONE of the two examples below (only one [MacIP] section is allowed).
+
+# Example A — bridge (proxy-ARP onto the existing LAN subnet).
+# Clients get addresses on 192.168.0.0/24; the gateway answers ARP for them on
+# br-lan. Off-subnet traffic uses default_gateway (or auto-detected). Set
+# dhcp_relay = true to have the LAN DHCP server assign addresses instead of
+# the static pool.
+[MacIP]
+enabled = false
+mode = "bridge"
+zone = ""
+gateway_ip = "192.168.0.50"
+network = "192.168.0.0"
+nameserver = "192.168.0.1"
+broadcast = "192.168.0.255"
+subnet_mask = "255.255.255.0"
+host_count = 0
+interface = "br-lan"
+# host_mac = ""              # blank = auto-detect from interface
+# host_ip = ""               # blank = auto-detect from interface
+default_gateway = "192.168.0.1"
+dhcp_relay = false
+
+# Example B — NAT (private client subnet, host OS NATs upstream).
+# Clients get addresses on 192.168.100.0/24; outbound traffic is NATed through
+# the host's own IP on br-lan — no host route needed on the LAN. Uncomment this
+# block and remove Example A above to use it.
+# [MacIP]
+# enabled = true
+# mode = "nat"
+# zone = "EtherTalk Network"
+# gateway_ip = "192.168.100.1"
+# network = "192.168.100.0"
+# nameserver = "8.8.8.8"
+# broadcast = "192.168.100.255"
+# subnet_mask = "255.255.255.0"
+# host_count = 0
+# interface = "br-lan"
+# # host_mac = ""
+# # host_ip = ""
+# default_gateway = "192.168.0.1"   # uplink router (informational in NAT mode)
+# dhcp_relay = false
+
+
+# --- MacIPX gateway (build tag `ipxgw`) --------------------------------------
+# The AppleTalk-to-IPX gateway — the AppleTalk-side counterpart of Novell's
+# MACIPXGW.NLM that the Classic Mac OS MacIPX client connects to. It rides the
+# AppleTalk router on DDP socket 78 (so any LocalTalk/EtherTalk segment in
+# [router].members reaches it) and publishes "IPX Gateway" NBP names so Macs
+# discover it in the MacIPX control panel. Section key is exact-case: [IPXGW].
+#   enabled      gate the gateway on/off
+#   ipx_network  the IPX network number announced to clients (0 = 0x10, the
+#                default MACIPXGW uses)
+#   bindings     "Object:Zone" NBP names to advertise (empty = one "IPX Gateway"
+#                name per zone the router knows). See spec/15-macipx-gateway.md.
+[IPXGW]
+enabled = false
+ipx_network = 0
+bindings = []
+
+
 # --- AFP server (build tag `afp`) --------------------------------------------
 # Singleton server-level settings: the advertised Chooser identity, the
 # transport bindings, and the opt-in login greeting.
