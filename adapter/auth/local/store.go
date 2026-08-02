@@ -47,8 +47,11 @@ type Store struct {
 	names map[string]string  // lower-cased → original-case display name
 }
 
-// compile-time assertion: *Store is a full auth.UserStore.
-var _ auth.UserStore = (*Store)(nil)
+// compile-time assertion: *Store is a full auth.UserStore and GuestEnabler.
+var (
+	_ auth.UserStore    = (*Store)(nil)
+	_ auth.GuestEnabler = (*Store)(nil)
+)
 
 // ErrMalformedFile is returned by Open when a non-comment line cannot be parsed.
 var ErrMalformedFile = errors.New("auth/local: malformed users file")
@@ -70,7 +73,11 @@ func Open(path string) (*Store, error) {
 // Authenticate reports whether (username, password) is a valid, enabled
 // credential. Unknown user, disabled account, or wrong password all return
 // (false, nil) — the caller cannot distinguish them (no user-enumeration oracle).
+// Guest never authenticates via password (it is a policy toggle only).
 func (s *Store) Authenticate(username, password string) (bool, error) {
+	if auth.IsGuestName(username) {
+		return false, nil
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	r, ok := s.users[strings.ToLower(username)]
@@ -80,36 +87,63 @@ func (s *Store) Authenticate(username, password string) (bool, error) {
 	return r.cred.Verify(password), nil
 }
 
-// Users returns the stored identities (no secret material), sorted by name.
+// Users returns the stored identities (no secret material). Guest is always
+// first so the management UI can enable/disable anonymous logins; remaining
+// accounts follow sorted by name.
 func (s *Store) Users() ([]auth.User, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]auth.User, 0, len(s.users))
+	out := make([]auth.User, 0, len(s.users)+1)
+	out = append(out, auth.User{Name: auth.GuestName, Disabled: s.guestDisabledLocked()})
 	for key, r := range s.users {
+		if key == guestKey {
+			continue
+		}
 		out = append(out, auth.User{Name: s.names[key], Disabled: r.disabled})
 	}
-	sortUsers(out)
+	// Sort named accounts after the Guest row (index 0 stays Guest).
+	sortUsers(out[1:])
 	return out, nil
 }
 
-// HasUsers reports whether any user records exist (including disabled ones —
-// an operator who parked accounts still opted into user administration). File
-// services consult this structurally (not via auth.UserStore) to decide their
-// advertised security posture: SMB NEGOTIATE announces share-level security
-// while the store is empty, because an NT-family redirector refuses a
-// user-level server that offers no challenge (see core/service/smb
-// securityMode and spec/errata.md).
+// GuestEnabled reports whether unauthenticated guest logins are permitted
+// (auth.GuestEnabler). Default is enabled when no Guest row has been parked.
+func (s *Store) GuestEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return !s.guestDisabledLocked()
+}
+
+func (s *Store) guestDisabledLocked() bool {
+	if r, ok := s.users[guestKey]; ok {
+		return r.disabled
+	}
+	return false
+}
+
+// HasUsers reports whether any NAMED (non-Guest) user records exist — including
+// disabled ones. Guest is a policy row, not a password account, so it does not
+// count: SMB NEGOTIATE stays share-level until a real account exists (see
+// core/service/smb securityMode and spec/errata.md).
 func (s *Store) HasUsers() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.users) > 0
+	for key := range s.users {
+		if key != guestKey {
+			return true
+		}
+	}
+	return false
 }
 
 // SetUser adds a user or resets an existing user's password (preserving the
-// disabled flag). An empty username/password is rejected.
+// disabled flag). An empty username/password is rejected. Guest is immutable.
 func (s *Store) SetUser(username, password string) error {
 	if strings.TrimSpace(username) == "" {
 		return auth.ErrEmptyUsername
+	}
+	if auth.IsGuestName(username) {
+		return auth.ErrGuestImmutable
 	}
 	if password == "" {
 		return auth.ErrEmptyPassword
@@ -132,10 +166,21 @@ func (s *Store) SetUser(username, password string) error {
 	return s.save()
 }
 
-// SetDisabled parks/unparks an account. Unknown name → auth.ErrNoSuchUser.
+// SetDisabled parks/unparks an account. For Guest this toggles anonymous login
+// permission (persisted as a Guest row). Unknown named account → auth.ErrNoSuchUser.
 func (s *Store) SetDisabled(username string, disabled bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if auth.IsGuestName(username) {
+		if r, ok := s.users[guestKey]; ok {
+			r.disabled = disabled
+		} else {
+			// Persist Guest with a never-matching credential so Authenticate stays false.
+			s.users[guestKey] = &record{cred: guestPlaceholderCred(), disabled: disabled}
+			s.names[guestKey] = auth.GuestName
+		}
+		return s.save()
+	}
 	r, ok := s.users[strings.ToLower(username)]
 	if !ok {
 		return auth.ErrNoSuchUser
@@ -144,8 +189,11 @@ func (s *Store) SetDisabled(username string, disabled bool) error {
 	return s.save()
 }
 
-// RemoveUser deletes a user. Unknown name → auth.ErrNoSuchUser.
+// RemoveUser deletes a user. Guest cannot be removed. Unknown name → auth.ErrNoSuchUser.
 func (s *Store) RemoveUser(username string) error {
+	if auth.IsGuestName(username) {
+		return auth.ErrGuestImmutable
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := strings.ToLower(username)
@@ -155,6 +203,17 @@ func (s *Store) RemoveUser(username string) error {
 	delete(s.users, key)
 	delete(s.names, key)
 	return s.save()
+}
+
+const guestKey = "guest"
+
+// guestPlaceholderCred returns a Credential that never verifies, used only so the
+// Guest policy row can ride the same on-disk format as named accounts.
+func guestPlaceholderCred() auth.Credential {
+	salt := make([]byte, auth.SaltLen)
+	// Deterministic non-secret salt; password is never accepted for Guest.
+	copy(salt, []byte("guest-placeholder!!"))
+	return auth.DeriveCredential("\x00guest-never-matches\x00", salt)
 }
 
 // load reads the file into memory. A missing file leaves an empty store. A line

@@ -102,6 +102,9 @@ default = true
 #                    "ethernet_ii" (DIX 0x8137), "802.3" (raw Novell), or "802.2"
 #                    (IEEE LLC). Blank defaults to ethernet_ii, which MacIPX speaks.
 #                    Inbound frames are accepted in every framing regardless.
+#   ipx_network      IPX: network number for this segment (also on [IPXGW]).
+#                    0 = local/unknown on the Ethernet mini-router; MacIPX treats
+#                    0 as 0x10 (MACIPXGW default). Same TOML key on both.
 #   capture          pcap file to tee this port's wire traffic to (blank = off).
 #                    Capture is a property of the port that owns the segment; it is
 #                    written with the transport's data-link type (Ethernet for
@@ -139,11 +142,17 @@ seed_zone = "TashTalk Network"
 
 # IPX — Novell IPX over Ethernet (a NetBIOS/SMB transport, not an AppleTalk
 # router member; build tag `ipx`). Binds the bridge; inherits the default when blank.
+#   ipx_frame_type  Ethernet encapsulation for OUTBOUND frames — ethernet_ii
+#                   (default, MacIPX-compatible) | 802.3 | 802.2
+#   ipx_network     IPX network number for this segment (0 = local/unknown).
+#                   Same key as [IPXGW].ipx_network — set both to the same value
+#                   when MacIPX clients should see the Ethernet IPX segment.
 [[ipx]]
 iface = "br-lan"
 enabled = false
 # ethernet_ii (default, MacIPX-compatible) | 802.3 | 802.2
 ipx_frame_type = "ethernet_ii"
+# ipx_network = 0x10
 
 # NetBEUI — NBF over 802.2 LLC (a NetBIOS/SMB transport; build tag `netbeui`).
 [[netbeui]]
@@ -321,14 +330,21 @@ read_only = false
 # meta_backend = ""
 
 
-# --- NCP volumes (Novell NetWare 3.x, build tag `ncp`) -----------------------
-# One [[ncpvolumes]] table per exported NetWare volume. The NCP file service rides
-# IPX (socket 0x0451) and advertises itself via SAP (socket 0x0452) so NETx/VLM
-# clients discover it — it needs an enabled [[ipx]] port above. Mirrors
+# --- NCP (Novell NetWare 3.x, build tag `ncp`) --------------------------------
+# The NCP file service rides IPX (socket 0x0451) and advertises itself via SAP
+# (socket 0x0452) so NETx/VLM clients discover it — it needs an enabled [[ipx]]
+# port above. Server name / description default to [identity]; InternalNetwork
+# is the NetWare internal IPX network clients learn via SAP then RIP GetLocalTarget
+# (0 = derive from the station MAC). See spec/17-ncp.md.
+[NCP]
+# server_name = ""          # empty = [identity].hostname (upper-cased)
+# description = ""          # empty = [identity].description
+# internal_network = 0      # decimal; 0 = auto-derive from MAC
+
+# One [[ncpvolumes]] table per exported NetWare volume. Mirrors
 # [[afpvolumes]]/[[smbshares]]; an NCP volume on the SAME host path as an AFP/SMB
-# share shares a mutation bus so each sees the other's changes. The advertised
-# server name comes from [identity].hostname (upper-cased to a NetWare name);
-# bindery login validates against the same user store AFP/SMB use (guest if none).
+# share shares a mutation bus so each sees the other's changes. Bindery login
+# validates against the same user store AFP/SMB use (guest if none).
 #   name           NetWare volume name (upper-case, e.g. SYS; client maps SYS:)
 #   path           host directory
 #   fs_type        filesystem backend: local_fs (default), memfs, …

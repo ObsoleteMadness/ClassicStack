@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ObsoleteMadness/ClassicStack/core/auth"
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 	"github.com/ObsoleteMadness/ClassicStack/core/encoding"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
@@ -151,8 +152,14 @@ func (s *Service) afpLogin(a *afpSession, args []byte) ([]byte, int32) {
 	}
 	switch string(uam) {
 	case "No User Authent":
-		// Guest login: no credential, no user store consulted. Admitted as guest;
-		// the session then only sees guest-open volumes.
+		// Guest login: no credential, no user store consulted. Admitted as guest
+		// when Guest is enabled; refused when the operator has disabled Guest.
+		s.mu.Lock()
+		authn := s.auth
+		s.mu.Unlock()
+		if !auth.GuestEnabled(authn) {
+			return nil, afpErrUserNotAuth
+		}
 		a.setLogin("", true)
 		return nil, afpNoErr
 	case "Cleartxt Passwrd":
@@ -175,7 +182,10 @@ func (s *Service) afpLogin(a *afpSession, args []byte) ([]byte, int32) {
 		s.mu.Unlock()
 
 		if authn == nil || username == "" {
-			// No store, or an anonymous cleartext attempt → guest.
+			// No store, or an anonymous cleartext attempt → guest (when enabled).
+			if !auth.GuestEnabled(authn) {
+				return nil, afpErrUserNotAuth
+			}
 			a.setLogin("", true)
 			return nil, afpNoErr
 		}

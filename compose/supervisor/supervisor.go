@@ -810,3 +810,73 @@ func (s *Supervisor) reconcileInterfaceRefsLocked(ctx context.Context, name stri
 // one). It reads the fs factory registry, so a UI can populate an fs-type dropdown
 // and then fetch each type's param schema via the plane's ParamsFor.
 func (s *Supervisor) ListFSTypes() []string { return fs.Types() }
+
+// ReplaceModel installs a freshly-parsed config model as the live source of truth:
+// stop every component, swap the model contents in place (the Model pointer stays
+// stable for anyone holding it), rebuild nodes that have a Rebuilder, stand up any
+// new repeated-port instances named in the model, then start everything again.
+// Used by the TOML editor Apply path so an operator can paste a full server.toml
+// and have the running stack reflect it without a process restart.
+func (s *Supervisor) ReplaceModel(ctx context.Context, m *config.Model) error {
+	if m == nil {
+		return errors.New("supervisor: nil model")
+	}
+	if err := s.StopAll(ctx); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	cp := m.Clone()
+	// Keep the same *Model pointer; swap its contents so Runtime/Plane holders stay valid.
+	s.model.Identity = cp.Identity
+	s.model.AdminAuth = cp.AdminAuth
+	s.model.Logging = cp.Logging
+	s.model.Router = cp.Router
+	s.model.Interfaces = cp.Interfaces
+	s.model.Sections = cp.Sections
+	s.model.Lists = cp.Lists
+
+	// Rebuild existing nodes from the new model.
+	for _, name := range s.order {
+		n := s.nodes[name]
+		if n == nil || n.rebuild == nil {
+			continue
+		}
+		c, err := n.rebuild(s.model)
+		if err != nil {
+			s.mu.Unlock()
+			return fmt.Errorf("rebuild %s: %w", name, err)
+		}
+		if c != nil {
+			n.c = c
+		}
+	}
+
+	// Stand up repeated-port instances present in the new model but not yet supervised
+	// (an [[ipx]] / [[ethertalk]] the operator added in the TOML editor).
+	if s.buildInst != nil {
+		for key, list := range s.model.Lists {
+			for _, sec := range list {
+				ns, ok := sec.(config.NamedSection)
+				if !ok {
+					continue
+				}
+				nodeName := ns.InstanceName()
+				if nodeName == "" {
+					nodeName = key
+				}
+				if _, exists := s.nodes[nodeName]; exists {
+					continue
+				}
+				// Only port-like keys (owner == schema key) get an instance node.
+				if err := s.addInstanceNodeLocked(ctx, key, nodeName); err != nil {
+					s.mu.Unlock()
+					return err
+				}
+			}
+		}
+	}
+	s.mu.Unlock()
+
+	return s.StartAll(ctx)
+}

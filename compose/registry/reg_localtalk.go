@@ -46,9 +46,17 @@ func registerLocalTalk(key string, openerFor segmentOpener, respondToEnq bool) {
 	// Repeated schema: several named instances per segment key — e.g. multiple
 	// TashTalk dongles, each its own serial line and segment (§M11).
 	config.Register(config.SectionSchema{
-		Key:      key,
-		New:      func() config.Section { return &port.Section{SKey: key} },
-		Repeated: true,
+		Key: key,
+		New: func() config.Section {
+			base := port.Base{SKey: key}
+			if key == localtalk.NameTashTalk {
+				return &port.TashTalkSection{Base: base}
+			}
+			return &port.LToUDPSection{Base: base}
+		},
+		Repeated:    true,
+		DisplayName: key,
+		Description: localTalkDescription(key),
 	})
 
 	RegisterPort(key, func(ctx *BuildContext) (component.Component, error) {
@@ -201,4 +209,14 @@ func tashtalkLinkOpener(ctx *BuildContext, sec *port.Section) func() (link.Frame
 	base = paceOpener(sec, defaultTashTalkPaceMs, base)
 	// TashTalk frames the serial byte stream as LLAP, so a Section.Capture writes DLT_LTALK.
 	return captureOpener(sec, pcapfile.LinkTypeLocalTalk, base)
+}
+
+func localTalkDescription(key string) string {
+	switch key {
+	case localtalk.NameLToUDP:
+		return "LocalTalk over UDP multicast (239.192.76.84:1954). Host-wide; optional bind address. Seeds an AppleTalk network and zone."
+	case localtalk.NameTashTalk:
+		return "LocalTalk over a TashTalk serial adaptor. Owns its own tty (device/baud); seeds an AppleTalk network and zone."
+	}
+	return "LocalTalk transport port."
 }

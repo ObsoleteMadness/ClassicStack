@@ -1,48 +1,35 @@
 [AFP]
 server_name = 'ClassicStack'
-zone = ''
+zone = '*'
 transports = ['ddp']
-tcp_addr = ''
 login_message = 'Welcome to ClassicStack - enjoy your stay.'
 
 [EtherDFS]
 enabled = true
-iface = ''
-mac = ''
-server_name = ''
 capture = 'etherdfs.pcap'
-capture_snaplen = 0
 
 [IPXGW]
 enabled = true
-ipx_network = 0
 bindings = ['ClassicStackIPXGW:EtherTalk Network']
 
 [MacIP]
 enabled = true
-mode = "nat"
-zone = "EtherTalk Network"
-gateway_ip = "192.168.100.1"
-network = "192.168.100.0"
-nameserver = "8.8.8.8"
-broadcast = "192.168.100.255"
-subnet_mask = "255.255.255.0"
-host_count = 0
-interface = "br-lan"
-# host_mac = ""
-# host_ip = ""
-default_gateway = "192.168.0.1"   # uplink router (informational in NAT mode)
-dhcp_relay = false
+mode = 'nat'
+zone = 'EtherTalk Network'
+gateway_ip = '192.168.100.1'
+network = '192.168.100.0'
+nameserver = '8.8.8.8'
+broadcast = '192.168.100.255'
+subnet_mask = '255.255.255.0'
+interface = 'br-lan'
+default_gateway = '192.168.0.1'
 
 [NetBIOS]
 transports = ['netbeui', 'ipx']
-scope_id = ''
-nbt_addr = ''
 
 [Netboot]
 enabled = true
 payload = 'C:\Users\pgodw\OneDrive\Documents\GitHub\NetBoot\ChainLoader.bin'
-image = ''
 block_size = 256
 disk = 'C:\Users\pgodw\OneDrive\Documents\GitHub\NetBoot\A608.dsk'
 pace_ms = 2
@@ -52,7 +39,6 @@ zone = '*'
 
 [SMB]
 transports = ['netbeui', 'ipx', 'nbt']
-tcp_addr = ''
 
 [adminauth]
 user = 'admin'
@@ -62,43 +48,22 @@ hash = 'ff05b74ea38440edef8ea1d7034f118b6fe706bce44ef37e1a9c0c1728b2a74c'
 [[afpvolumes]]
 name = 'Test Volume'
 fs_type = 'local_fs'
-fork_backend = ''
-filename_codec = ''
-metastore = ''
-meta_backend = ''
 path = 'C:\mac'
-read_only = false
-allowed_users = []
-options = []
-extmap_path = ''
 size_limit = 50000
 
 [[etherdfsdrives]]
 name = 'C'
 fs_type = 'local_fs'
-fork_backend = ''
-filename_codec = ''
-metastore = ''
-meta_backend = ''
 path = 'c:\mac\food'
-read_only = false
-allowed_users = []
-options = []
 
 [[ethertalk]]
-name = ''
 iface = 'br-lan'
 enabled = true
 mac = 'DE:AD:BE:EF:CA:FE'
 seed_network = 3
 seed_network_end = 5
 seed_zone = 'EtherTalk Network'
-device = ''
-baud = 0
-ipx_frame_type = ''
 capture = 'ethertalk.pcap'
-capture_snaplen = 0
-pace_ms = 0
 
 [identity]
 hostname = 'classicstack'
@@ -114,64 +79,30 @@ hw_address = 'DE:AD:BE:EF:CA:FE'
 device = '\Device\NPF_{B7D4E073-2185-4912-BBE8-3948C6636D02}'
 
 [[ipx]]
-name = ''
 iface = 'br-lan'
 enabled = true
-mac = ''
-seed_network = 0
-seed_network_end = 0
-seed_zone = ''
-device = ''
-baud = 0
-ipx_frame_type = ''
 capture = 'ipx.pcap'
-capture_snaplen = 0
-pace_ms = 0
 
 [logging]
-Level = 'debug'
+level = 'debug'
 
 [[ltoudp]]
-name = ''
-iface = ''
 enabled = true
-mac = ''
 seed_network = 1
 seed_network_end = 2
 seed_zone = 'LToUDP Network'
-device = ''
-baud = 0
-ipx_frame_type = ''
 capture = 'ltoudp-netboot.pcap'
-capture_snaplen = 0
 pace_ms = 30
 
 [[ncpvolumes]]
 name = 'Foo'
 fs_type = 'local_fs'
-fork_backend = ''
-filename_codec = ''
-metastore = ''
-meta_backend = ''
 path = 'c:\mac\food'
-read_only = false
-allowed_users = []
-options = []
 
 [[netbeui]]
-name = ''
 iface = 'br-lan'
 enabled = true
-mac = ''
-seed_network = 0
-seed_network_end = 0
-seed_zone = ''
-device = ''
-baud = 0
-ipx_frame_type = ''
 capture = 'netbeui.pcap'
-capture_snaplen = 0
-pace_ms = 0
 
 [router]
 default_zone = 'EtherTalk Network'
@@ -181,11 +112,4 @@ members = ['EtherTalk', 'LToUDP']
 name = 'Foo'
 description = 'Test share'
 fs_type = 'local_fs'
-fork_backend = ''
-filename_codec = ''
-metastore = ''
-meta_backend = ''
 path = 'C:\mac\food'
-read_only = false
-allowed_users = []
-options = []

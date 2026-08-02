@@ -16,13 +16,13 @@ import (
 func TestPortSectionRoundTrip(t *testing.T) {
 	config.Register(config.SectionSchema{
 		Key: "EtherTalk",
-		New: func() config.Section { return &port.Section{SKey: "EtherTalk"} },
+		New: func() config.Section { return &port.EtherTalkSection{Base: port.Base{SKey: "EtherTalk"}} },
 	})
 
 	m := config.NewModel()
-	want := &port.Section{
-		SKey: "EtherTalk", Iface: "eth0", IsEnabled: true,
-		MAC: "00:11:22:aa:bb:cc", SeedNetwork: 10, SeedNetworkEnd: 20, SeedZone: "Engineering",
+	want := &port.EtherTalkSection{
+		Base:       port.Base{SKey: "EtherTalk", Iface: "eth0", IsEnabled: true, MAC: "00:11:22:aa:bb:cc"},
+		SeedFields: port.SeedFields{SeedNetwork: 10, SeedNetworkEnd: 20, SeedZone: "Engineering"},
 	}
 	m.Set(want)
 
@@ -50,14 +50,15 @@ func TestPortSectionRoundTrip(t *testing.T) {
 func TestTashTalkSerialRoundTrip(t *testing.T) {
 	config.Register(config.SectionSchema{
 		Key:      "TashTalk",
-		New:      func() config.Section { return &port.Section{SKey: "TashTalk"} },
+		New:      func() config.Section { return &port.TashTalkSection{Base: port.Base{SKey: "TashTalk"}} },
 		Repeated: true,
 	})
 
 	m := config.NewModel()
-	want := &port.Section{
-		SKey: "TashTalk", Name: "tt-attic", IsEnabled: true,
-		Device: "/dev/ttyUSB0", Baud: 57600, SeedNetwork: 8, SeedZone: "Attic",
+	want := &port.TashTalkSection{
+		Base:         port.Base{SKey: "TashTalk", Name: "tt-attic", IsEnabled: true},
+		SerialFields: port.SerialFields{Device: "/dev/ttyUSB0", Baud: 57600},
+		SeedFields:   port.SeedFields{SeedNetwork: 8, SeedZone: "Attic"},
 	}
 	m.AddInstance(want)
 
@@ -79,20 +80,68 @@ func TestTashTalkSerialRoundTrip(t *testing.T) {
 	}
 }
 
+// TestTransportSectionOmitsIrrelevantFields locks in typed per-transport sections:
+// a NetBEUI row must not emit IPX framing / AppleTalk seed / serial keys, and an
+// EtherTalk row must not emit IPX framing or serial keys.
+func TestTransportSectionOmitsIrrelevantFields(t *testing.T) {
+	config.Register(config.SectionSchema{
+		Key:      "NetBEUI",
+		New:      func() config.Section { return &port.NetBEUISection{Base: port.Base{SKey: "NetBEUI"}} },
+		Repeated: true,
+	})
+	config.Register(config.SectionSchema{
+		Key:      "EtherTalk",
+		New:      func() config.Section { return &port.EtherTalkSection{Base: port.Base{SKey: "EtherTalk"}} },
+		Repeated: true,
+	})
+
+	m := config.NewModel()
+	m.AddInstance(&port.NetBEUISection{
+		Base:          port.Base{SKey: "NetBEUI", Iface: "br-lan", IsEnabled: true},
+		CaptureFields: port.CaptureFields{Capture: "netbeui.pcap"},
+	})
+	m.AddInstance(&port.EtherTalkSection{
+		Base:          port.Base{SKey: "EtherTalk", Iface: "br-lan", IsEnabled: true, MAC: "DE:AD:BE:EF:CA:FE"},
+		SeedFields:    port.SeedFields{SeedNetwork: 3, SeedNetworkEnd: 5, SeedZone: "EtherTalk Network"},
+		CaptureFields: port.CaptureFields{Capture: "ethertalk.pcap"},
+	})
+
+	data, err := New().Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	doc := string(data)
+	for _, key := range []string{"ipx_frame_type", "device =", "baud =", "pace_ms"} {
+		if strings.Contains(doc, key) {
+			t.Errorf("transport TOML emitted irrelevant key %q; got:\n%s", key, doc)
+		}
+	}
+	if strings.Contains(doc, "name = ''") {
+		t.Errorf("empty instance name should be omitted; got:\n%s", doc)
+	}
+	if !strings.Contains(doc, "capture = 'netbeui.pcap'") {
+		t.Errorf("NetBEUI should emit its capture path; got:\n%s", doc)
+	}
+	if !strings.Contains(doc, "seed_zone = 'EtherTalk Network'") {
+		t.Errorf("EtherTalk should emit seed_zone; got:\n%s", doc)
+	}
+}
+
 // TestIPXFrameTypeRoundTrip proves an [[ipx]] port's frame-type selection
 // (Section.IPXFrameType) survives the TOML cycle, so ipx_frame_type in server.toml
 // decodes back to the same section the IPX port factory reads.
 func TestIPXFrameTypeRoundTrip(t *testing.T) {
 	config.Register(config.SectionSchema{
 		Key:      "IPX",
-		New:      func() config.Section { return &port.Section{SKey: "IPX"} },
+		New:      func() config.Section { return &port.IPXSection{Base: port.Base{SKey: "IPX"}} },
 		Repeated: true,
 	})
 
 	m := config.NewModel()
-	want := &port.Section{
-		SKey: "IPX", Name: "ipx-lab", Iface: "br-lan", IsEnabled: true,
-		IPXFrameType: "802.3",
+	want := &port.IPXSection{
+		Base:             port.Base{SKey: "IPX", Name: "ipx-lab", Iface: "br-lan", IsEnabled: true},
+		IPXFrameFields:   port.IPXFrameFields{IPXFrameType: "802.3"},
+		IPXNetworkFields: port.IPXNetworkFields{IPXNetwork: 0x10},
 	}
 	m.AddInstance(want)
 
@@ -103,6 +152,9 @@ func TestIPXFrameTypeRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "ipx_frame_type = '802.3'") {
 		t.Errorf("marshalled TOML should carry ipx_frame_type; got:\n%s", data)
+	}
+	if !strings.Contains(string(data), "ipx_network =") {
+		t.Errorf("marshalled TOML should carry ipx_network; got:\n%s", data)
 	}
 	var got config.Model
 	if err := c.Unmarshal(data, &got); err != nil {

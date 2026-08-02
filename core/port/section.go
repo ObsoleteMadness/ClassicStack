@@ -6,112 +6,88 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 )
 
-// Section is the typed config one placeholder port carries. It satisfies
-// config.Section (§4) so the model can stage/round-trip it and the supervisor
-// can hand it back via ApplyConfig.
+// Section is the flattened runtime view of a port's config. Ports, ApplyConfig,
+// and link openers consume *Section. Codec-facing per-transport types (EtherTalkSection,
+// IPXSection, …) embed only the field groups that apply to them and project onto
+// Section via PortSectioner — so Save never emits IPX framing on a NetBEUI row.
 //
-// One Section type serves every transport port (EtherTalk, LocalTalk, IPX,
-// NetBEUI). The fields below are a superset: a given transport reads only the
-// ones that apply to it and ignores the rest (an LToUDP LocalTalk port has no
-// MAC; an IPX port has no AppleTalk seed network). This keeps a single
-// stage/round-trip/ApplyConfig path rather than one section type per transport —
-// the same "placeholder accepts anything" stance the schema already takes.
-//
-// A port owns its OWN binding, because the only INTERFACE is the uplink bridge:
-// EtherTalk/IPX/NetBEUI name a bridge via Iface (or inherit the default); a
-// TashTalk port names its serial tty via Device/Baud directly (serial is a port
-// property, not an interface); an LToUDP port rides host-wide multicast (Iface, if
-// set, is an optional bind address). Seed zone/network (below) are the AppleTalk
-// segment config the router reads for its member ports.
+// Optional fields carry omitempty so a Save of the flattened view (tests, legacy
+// model entries) also stays free of blank keys. enabled is never omitempty: a
+// missing key must not silently decode as false and disable a port.
 type Section struct {
 	// SKey is the section/SCHEMA key shared by every instance of a transport
 	// ("EtherTalk", "LToUDP", "IPX", …). It is the registry/codec key, NOT the
 	// per-instance identity — see Name.
 	SKey string `toml:"-"`
-	// Name is the per-INSTANCE identity (§M11): a transport is a repeated section,
-	// so one EtherTalk may have several named instances ("et-lab", "et-dmz"), each
-	// its own port/segment/router member. "" means the lone default instance, whose
-	// identity falls back to SKey (a singleton config still works).
-	Name string `toml:"name"`
-	// Iface is the NAME of the interface this instance binds to ("eth0", "br-lan",
-	// "ttyUSB-attic"); resolved against the interface namespace (§M11). Empty
-	// inherits the namespace's default interface (Model.DefaultInterface).
-	Iface string `toml:"iface"`
+	// Name is the per-INSTANCE identity (§M11). "" means the lone default instance.
+	Name string `toml:"name,omitempty"`
+	// Iface is the NAME of the interface this instance binds to. Empty inherits
+	// the namespace's default interface (Model.DefaultInterface).
+	Iface string `toml:"iface,omitempty"`
 	// IsEnabled mirrors the configured-enabled flag (≠ running).
 	IsEnabled bool `toml:"enabled"`
 
 	// MAC is the station hardware address used as the Ethernet source on
-	// outbound frames (EtherTalk; consumed by the framing.EtherTalk SrcMAC).
-	// "" means "use the interface's own MAC" — the device-link builder resolves
-	// it at open time. Written as the canonical colon-hex form ("00:11:22:aa:bb:cc").
-	MAC string `toml:"mac"`
+	// outbound frames. "" means "use the interface's own MAC".
+	MAC string `toml:"mac,omitempty"`
 
-	// SeedNetwork / SeedNetworkEnd bound the AppleTalk network number range this
-	// port seeds (EtherTalk/LocalTalk). A zero range means "non-seed": learn the
-	// network from a peer router rather than asserting one. SeedNetworkEnd == 0 is
-	// taken as a single-number range (== SeedNetwork) for an extended network.
-	SeedNetwork    uint16 `toml:"seed_network"`
-	SeedNetworkEnd uint16 `toml:"seed_network_end"`
-	// SeedZone is the default zone name this port seeds ("" = non-seed / inherit).
-	SeedZone string `toml:"seed_zone"`
+	// SeedNetwork / SeedNetworkEnd / SeedZone are AppleTalk seed config
+	// (EtherTalk/LocalTalk). Zero range = non-seed.
+	SeedNetwork    uint16 `toml:"seed_network,omitempty"`
+	SeedNetworkEnd uint16 `toml:"seed_network_end,omitempty"`
+	SeedZone       string `toml:"seed_zone,omitempty"`
 
-	// Device / Baud are the SERIAL binding a serial-riding port (TashTalk) opens
-	// directly. A TashTalk port owns its own tty rather than resolving one from a
-	// named serial interface: the operator picks a host serial port (e.g. "COM3",
-	// "/dev/ttyUSB0") on the port itself, and Baud is the line speed (0 = adapter
-	// default). Ignored by non-serial transports. This keeps "one interface = the
-	// uplink bridge" true — a serial line is a port property, not an interface.
-	Device string `toml:"device"`
-	Baud   int    `toml:"baud"`
+	// Device / Baud are the SERIAL binding a TashTalk port opens directly.
+	Device string `toml:"device,omitempty"`
+	Baud   int    `toml:"baud,omitempty"`
 
-	// IPXFrameType selects the Ethernet encapsulation an IPX port uses on OUTBOUND
-	// frames (Novell "frame type") when it has not learned a peer's framing. Recognised
-	// values are "ethernet_ii", "802.3" (raw / Novell-Ethernet), and "802.2" (IEEE
-	// 802.2 LLC). Empty defaults to Ethernet II, which is what a MacIPX client speaks —
-	// see the ipx port's ParseFrameType. Inbound frames are always accepted in every
-	// framing regardless of this setting, and a unicast reply is sent in the SAME frame
-	// type the request arrived in (like a real NetWare server bound to several frame
-	// types at once). Ignored by non-IPX transports.
-	IPXFrameType string `toml:"ipx_frame_type"`
-
-	// IPXFrameTypes optionally lists EVERY Ethernet encapsulation the IPX port advertises
-	// on (SAP/RIP broadcasts are emitted once per listed frame type), so clients bound to
-	// any of raw-802.3 / 802.2 / Ethernet II all discover the server — the multi-frame-type
-	// binding a real NetWare server offers. Each entry uses the ParseFrameType spellings.
-	// Empty falls back to the single IPXFrameType (or its Ethernet-II default). Unicast
-	// replies still mirror the request's frame type regardless of this list.
+	// IPXFrameType / IPXFrameTypes select Novell Ethernet encapsulation (IPX only).
+	IPXFrameType  string   `toml:"ipx_frame_type,omitempty"`
 	IPXFrameTypes []string `toml:"ipx_frame_types,omitempty"`
+	// IPXNetwork is the IPX network number for this port's segment (IPX only).
+	// 0 = local/unknown (mini-router default). Shared spelling with [IPXGW].
+	IPXNetwork uint32 `toml:"ipx_network,omitempty"`
 
-	// Capture is a pcap file path for THIS port's wire traffic ("" = no capture).
-	// Capture is a property of the port that owns the segment (like Device/SeedZone),
-	// not a central table: every frame the port's link reads or writes is tee'd to
-	// this file, written with the transport's data-link type (Ethernet for EtherTalk,
-	// LocalTalk/DLT_LTALK for LToUDP/TashTalk). CaptureSnaplen caps the bytes stored
-	// per frame (0 = full frame). Best-effort: an unopenable path never fails Start.
-	Capture        string `toml:"capture"`
-	CaptureSnaplen int    `toml:"capture_snaplen"`
+	// Capture / CaptureSnaplen tee this port's wire traffic to a pcap file.
+	Capture        string `toml:"capture,omitempty"`
+	CaptureSnaplen int    `toml:"capture_snaplen,omitempty"`
 
-	// PaceMs is the minimum inter-frame gap, in milliseconds, enforced per
-	// DESTINATION NODE on outbound frames (LocalTalk transports only: LToUDP,
-	// TashTalk). A classic-Mac LLAP receiver drops frames that arrive back-to-back
-	// with no gap; LToUDP has no link backpressure (RTS/CTS is synthesised locally
-	// and never sent, LLAP is unacknowledged), so an open-loop per-node pace is the
-	// only lever the port has to keep a fast producer (AFP bulk replies, MacIP data,
-	// netboot floods) from overrunning a slow receiver. 0 selects the transport's
-	// default (LToUDP: a light 3 ms floor; TashTalk self-paces on the serial line, so
-	// its default is 0). A negative value disables pacing entirely. Ignored by
-	// non-LocalTalk transports (EtherTalk/IPX ride real NICs with their own flow control).
-	PaceMs int `toml:"pace_ms"`
+	// PaceMs is the minimum inter-frame gap in milliseconds (LocalTalk only).
+	// 0 selects the transport default; negative disables pacing.
+	PaceMs int `toml:"pace_ms,omitempty"`
 }
 
-// Key returns the shared SCHEMA key (the registry/codec key, matched per transport
-// type — "EtherTalk"). Every instance of a transport shares it.
+// PortSectioner is the capability a typed transport section implements to project
+// onto the flattened *Section runtime view. InstanceFromModel / ApplyConfig use it
+// so the model can store EtherTalkSection / IPXSection / … while ports keep a
+// single ApplyConfig path.
+type PortSectioner interface {
+	PortSection() *Section
+}
+
+// AsSection unwraps a model section into the flattened *Section runtime view.
+// It accepts *Section directly, any PortSectioner (typed transport / EtherDFS),
+// or nil.
+func AsSection(s any) *Section {
+	if s == nil {
+		return nil
+	}
+	if ps, ok := s.(*Section); ok {
+		return ps
+	}
+	if ps, ok := s.(PortSectioner); ok {
+		return ps.PortSection()
+	}
+	return nil
+}
+
+// PortSection returns the receiver — *Section is already the runtime view.
+func (s *Section) PortSection() *Section { return s }
+
+// Key returns the shared SCHEMA key (the registry/codec key).
 func (s *Section) Key() string { return s.SKey }
 
-// InstanceName returns the per-instance identity (config.NamedSection): Name when
-// set, else the schema key so a singleton/default port keeps a stable, deterministic
-// name ("EtherTalk"). It is the name the supervisor addresses the component by and
-// the name a [Router].members list references.
+// InstanceName returns the per-instance identity (config.NamedSection).
 func (s *Section) InstanceName() string {
 	if s.Name != "" {
 		return s.Name
@@ -119,45 +95,33 @@ func (s *Section) InstanceName() string {
 	return s.SKey
 }
 
-// compile-time assertion: *Section is a NamedSection (a repeated transport instance).
-var _ config.NamedSection = (*Section)(nil)
-
-// Interface makes a port Section a config.InterfaceProvider: its Iface is a
-// per-port OVERRIDE of the shared default interface (§4/§9d). An empty Iface
-// yields an empty InterfaceSection, so Model.EffectiveInterface falls through to
-// the namespace's default interface — i.e. several ports with no iface of their
-// own all bind to the one shared default, and only a port that names its own iface
-// diverges.
+// Interface makes a port Section a config.InterfaceProvider.
 func (s *Section) Interface() config.InterfaceSection {
 	return config.InterfaceSection{Name: s.Iface}
 }
 
-// compile-time assertion: *Section is an InterfaceProvider (interface override).
-var _ config.InterfaceProvider = (*Section)(nil)
+// CapturePath implements CaptureProvider.
+func (s *Section) CapturePath() string { return s.Capture }
+
+// CaptureSnapLen implements CaptureProvider.
+func (s *Section) CaptureSnapLen() int { return s.CaptureSnaplen }
+
+// ConfiguredIPXNetwork implements IPXNetworkProvider.
+func (s *Section) ConfiguredIPXNetwork() uint32 { return s.IPXNetwork }
 
 // Clone returns a deep copy.
 func (s *Section) Clone() config.Section {
 	cp := *s
-	if s.IPXFrameTypes != nil {
-		cp.IPXFrameTypes = append([]string(nil), s.IPXFrameTypes...)
-	}
+	cp.IPXFrameTypes = cloneIPXFrameTypes(s.IPXFrameTypes)
 	return &cp
 }
 
-// Validate checks the section in isolation. It accepts a placeholder/disabled
-// section freely; for an enabled one it only rejects values that cannot be
-// turned into a live link: a malformed MAC, or a seed range whose end precedes
-// its start. Cross-field/seed-vs-router consistency is the model-level concern.
+// Validate checks the section in isolation.
 func (s *Section) Validate() error {
-	if s.MAC != "" {
-		if _, err := ParseMAC(s.MAC); err != nil {
-			return err
-		}
+	if err := validateMAC(s.MAC); err != nil {
+		return err
 	}
-	if s.SeedNetworkEnd != 0 && s.SeedNetworkEnd < s.SeedNetwork {
-		return ErrSeedRange
-	}
-	return nil
+	return validateSeed(SeedFields{SeedNetwork: s.SeedNetwork, SeedNetworkEnd: s.SeedNetworkEnd, SeedZone: s.SeedZone})
 }
 
 // ErrSeedRange reports a seed network range whose end precedes its start.
@@ -220,17 +184,23 @@ func hexNibble(c byte) (byte, bool) {
 	return 0, false
 }
 
-// compile-time assertion: *Section satisfies config.Section.
-var _ config.Section = (*Section)(nil)
+// compile-time assertions.
+var (
+	_ config.Section           = (*Section)(nil)
+	_ config.NamedSection      = (*Section)(nil)
+	_ config.InterfaceProvider = (*Section)(nil)
+	_ PortSectioner            = (*Section)(nil)
+	_ CaptureProvider          = (*Section)(nil)
+	_ IPXNetworkProvider       = (*Section)(nil)
+)
 
 // SectionFromModel resolves the SINGLETON section under key (Model.Sections),
-// falling back to a fresh default when the model has none. It is the back-compat
-// resolver for a transport with one default instance; InstanceFromModel is the
-// repeated-instance form.
+// falling back to a fresh default when the model has none. Typed transport
+// sections are projected via PortSectioner.
 func SectionFromModel(m *config.Model, key string) *Section {
 	if m != nil {
 		if s, ok := m.Get(key); ok {
-			if ps, ok := s.(*Section); ok {
+			if ps := AsSection(s); ps != nil {
 				return ps
 			}
 		}
@@ -240,14 +210,12 @@ func SectionFromModel(m *config.Model, key string) *Section {
 
 // InstanceFromModel resolves one repeated port instance (Model.Lists[key]) by its
 // instance name. An empty instance name, or no matching instance, falls through to
-// the singleton SectionFromModel — so a config that still uses a single [EtherTalk]
-// section (no instance name) keeps working, and a fresh default is returned when
-// neither is present. This is the resolver a port factory uses with
-// BuildContext.Instance.
+// the singleton SectionFromModel. Typed transport sections are projected via
+// PortSectioner.
 func InstanceFromModel(m *config.Model, key, instance string) *Section {
 	if m != nil && instance != "" {
 		if s, ok := m.Instance(key, instance); ok {
-			if ps, ok := s.(*Section); ok {
+			if ps := AsSection(s); ps != nil {
 				return ps
 			}
 		}

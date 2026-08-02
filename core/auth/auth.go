@@ -18,7 +18,10 @@
 // it simply does not import it.
 package auth
 
-import "errors"
+import (
+	"errors"
+	"strings"
+)
 
 // User is the stored view of one identity. It NEVER carries plaintext password or
 // hash material — those stay internal to a UserStore implementation. This is the
@@ -59,6 +62,12 @@ type UserStore interface {
 	RemoveUser(username string) error
 }
 
+// GuestName is the well-known unauthenticated identity. It always appears in the
+// user-administration list so operators can enable/disable guest logins; it is
+// NOT a password account (Authenticate never succeeds for it). File services that
+// support authentication consult GuestEnabled before admitting anonymous sessions.
+const GuestName = "Guest"
+
 var (
 	// ErrNoSuchUser is returned by SetDisabled/RemoveUser for an unknown name.
 	ErrNoSuchUser = errors.New("auth: no such user")
@@ -67,4 +76,35 @@ var (
 	// ErrEmptyPassword is returned by SetUser for a blank password (park an
 	// account with SetDisabled instead).
 	ErrEmptyPassword = errors.New("auth: empty password")
+	// ErrGuestImmutable is returned when SetUser/RemoveUser targets GuestName —
+	// Guest is a policy toggle (SetDisabled), not a password account.
+	ErrGuestImmutable = errors.New("auth: Guest account cannot be added, removed, or given a password")
 )
+
+// GuestEnabler is an optional Authenticator capability: report whether unauthenticated
+// (guest/anonymous) logins are currently permitted. Absent the interface, guests are
+// allowed (the historical default). The built-in local store implements it via the
+// always-present Guest row.
+type GuestEnabler interface {
+	GuestEnabled() bool
+}
+
+// GuestEnabled reports whether the authenticator currently permits guest logins.
+// A nil authenticator, or one that does not implement GuestEnabler, returns true
+// (compatibility default: guest open until an operator disables Guest). Accepts
+// any Authenticator-shaped value (each file service defines its own Authenticator
+// interface) so callers can pass their wired store without an import cycle.
+func GuestEnabled(a any) bool {
+	if a == nil {
+		return true
+	}
+	if g, ok := a.(GuestEnabler); ok {
+		return g.GuestEnabled()
+	}
+	return true
+}
+
+// IsGuestName reports whether name is the reserved Guest identity (case-insensitive).
+func IsGuestName(name string) bool {
+	return strings.EqualFold(strings.TrimSpace(name), GuestName)
+}

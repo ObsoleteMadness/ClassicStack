@@ -35,6 +35,21 @@ type Plane interface {
 	// server.toml" backup rather than the JSON shape Config() returns. Secrets are
 	// masked, exactly as Config(). ErrUnavailable when no codec is wired.
 	MarshalConfig() ([]byte, error)
+	// ValidateConfig parses codec bytes (TOML/UCI) into a fresh model and runs
+	// Model.Validate without touching the live stack — the TOML editor's "check"
+	// action. ApplyConfigBytes parses, validates, installs the model via
+	// Supervisor.ReplaceModel, and persists — the editor's "apply & save".
+	ValidateConfig(data []byte) error
+	ApplyConfigBytes(ctx context.Context, data []byte) (revision string, err error)
+	// Schemas returns the self-describing section catalogue for this build (keys,
+	// capabilities, field metadata). Adapters may enrich Fields via reflection;
+	// the plane returns whatever the schema registry carries plus optional
+	// Describe enrichment installed by SetSchemaDescriber.
+	Schemas() []config.SectionInfo
+	// SetSchemaDescriber installs an optional enricher that turns registered
+	// SectionSchema values into SectionInfo (typically adapter/config/describe).
+	// Nil keeps Schemas() returning bare registry metadata without reflected fields.
+	SetSchemaDescriber(fn func() []config.SectionInfo)
 
 	// HostInfo returns static board/build details and dynamic OS/system metrics.
 	HostInfo() (hostinfo.HostInfo, error)
@@ -170,6 +185,10 @@ type Supervisor interface {
 	SetInterface(ctx context.Context, iface config.InterfaceSection) error
 	RemoveInterface(ctx context.Context, name string) error
 	ListFSTypes() []string
+	// ReplaceModel installs a new config model as the live source of truth and
+	// reconciles the running component set (stop → swap → rebuild → start). Used by
+	// the TOML editor Apply path.
+	ReplaceModel(ctx context.Context, m *config.Model) error
 	// SetAdminAuth stamps the web-admin credential (§4-ter) into the model under the
 	// supervisor's lock. The plane calls it from SetAdmin, then persists via Save.
 	SetAdminAuth(a config.AdminAuth)
@@ -193,6 +212,7 @@ type plane struct {
 	telemetry bus.Bus
 	diag      Diagnostics
 	logger    log.Logger
+	describe  func() []config.SectionInfo
 }
 
 // New builds a Plane over a Supervisor, a config Codec/Store, and the telemetry bus.
@@ -219,6 +239,71 @@ func (p *plane) MarshalConfig() ([]byte, error) {
 		m = config.NewModel()
 	}
 	return p.codec.Marshal(m.MaskSecrets())
+}
+
+// SetSchemaDescriber installs the optional SectionInfo enricher (adapter/config/describe).
+func (p *plane) SetSchemaDescriber(fn func() []config.SectionInfo) { p.describe = fn }
+
+// Schemas returns the self-describing section catalogue. When a describer is installed
+// it is preferred; otherwise a bare list is built from the registry (no reflected fields).
+func (p *plane) Schemas() []config.SectionInfo {
+	if p.describe != nil {
+		return p.describe()
+	}
+	schemas := config.Schemas()
+	out := make([]config.SectionInfo, 0, len(schemas))
+	for _, sc := range schemas {
+		info := config.SectionInfo{
+			Key: sc.Key, Repeated: sc.Repeated,
+			DisplayName: sc.DisplayName, Description: sc.Description,
+			Capabilities: append([]string(nil), sc.Capabilities...),
+			Fields:       append([]config.FieldInfo(nil), sc.Fields...),
+		}
+		if info.DisplayName == "" {
+			info.DisplayName = sc.Key
+		}
+		out = append(out, info)
+	}
+	return out
+}
+
+// ValidateConfig parses codec bytes into a fresh model and validates without applying.
+func (p *plane) ValidateConfig(data []byte) error {
+	if p.codec == nil {
+		return ErrUnavailable
+	}
+	m := config.NewModel()
+	if err := p.codec.Unmarshal(data, m); err != nil {
+		return err
+	}
+	return m.Validate(config.ValidateOptions{HostnameConstraints: p.sup.HostnameConstraints()})
+}
+
+// ApplyConfigBytes parses, validates, replaces the live model, and persists.
+func (p *plane) ApplyConfigBytes(ctx context.Context, data []byte) (string, error) {
+	if p.codec == nil || p.store == nil {
+		return "", errPersistence
+	}
+	m := config.NewModel()
+	if err := p.codec.Unmarshal(data, m); err != nil {
+		p.logger.Log1(log.Error, "control: config apply parse failed", log.Str("err", err.Error()))
+		return "", err
+	}
+	if err := m.Validate(config.ValidateOptions{HostnameConstraints: p.sup.HostnameConstraints()}); err != nil {
+		p.logger.Log1(log.Error, "control: config apply validate failed", log.Str("err", err.Error()))
+		return "", err
+	}
+	if err := p.sup.ReplaceModel(ctx, m); err != nil {
+		p.logger.Log1(log.Error, "control: config apply replace failed", log.Str("err", err.Error()))
+		return "", err
+	}
+	revision, err := p.persist()
+	if err != nil {
+		p.logger.Log1(log.Error, "control: config apply save failed", log.Str("err", err.Error()))
+		return "", err
+	}
+	p.logger.Log1(log.Info, "control: configuration applied from editor", log.Str("revision", revision))
+	return revision, nil
 }
 
 func (p *plane) Config() (*config.Model, error) {

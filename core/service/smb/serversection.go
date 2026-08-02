@@ -43,9 +43,9 @@ type ServerSection struct {
 	SKey string `toml:"-"`
 	// Transports lists the transport tokens (netbeui/ipx/nbt/tcp) the SMB service
 	// binds. Empty = bind every transport that was built (back-compat).
-	Transports []string `toml:"transports"`
-	// TCPAddr overrides the direct-TCP (:445) listen address. Empty = DefaultDirectTCPAddr.
-	TCPAddr string `toml:"tcp_addr"`
+	Transports []string `toml:"transports,omitempty" display:"Transports" desc:"netbeui, ipx, nbt, and/or tcp. Empty = bind every transport built into this binary." example:"netbeui,ipx"`
+	// TCPAddr overrides the direct-TCP (:445) listen address. Empty = do not bind.
+	TCPAddr string `toml:"tcp_addr,omitempty" display:"TCP address" desc:"Direct-hosted SMB over TCP listen address. Empty = do not bind :445." example:":4450"`
 }
 
 // DirectTCPAddr returns the configured direct-TCP listen address, or "" when none is
@@ -106,5 +106,7 @@ func RegisterServer() {
 			}
 			return nil
 		},
+		DisplayName: "SMB server",
+		Description: "SMB/CIFS file server transport bindings (NetBEUI, IPX, NBT, direct TCP).",
 	})
 }

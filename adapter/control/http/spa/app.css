@@ -163,6 +163,8 @@ textarea { resize: vertical; min-height: 70px; }
 .err { color: var(--bad); margin: 8px 0; min-height: 0; }
 .ok-msg { color: var(--ok); margin: 8px 0; }
 .muted { color: var(--muted); }
+/* Built-in accounts (Guest) — italic signals “not a normal password account”. */
+.builtin { font-style: italic; }
 .field-hint { font-size: 12px; color: var(--muted); margin: 2px 0 0; }
 pre {
   background: var(--bg);

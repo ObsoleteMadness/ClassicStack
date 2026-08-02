@@ -33,13 +33,13 @@ func TestSupervisorUserAdmin_DelegatesToStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	users, err := s.Users()
-	if err != nil || len(users) != 1 || users[0].Name != "alice" {
-		t.Fatalf("Users() = %v err %v", users, err)
+	if err != nil || len(users) != 2 || users[0].Name != "Guest" || users[1].Name != "alice" {
+		t.Fatalf("Users() = %v err %v (want Guest, alice)", users, err)
 	}
 	if err := s.SetUserDisabled("alice", true); err != nil {
 		t.Fatal(err)
 	}
-	if users, _ := s.Users(); !users[0].Disabled {
+	if users, _ := s.Users(); !users[1].Disabled {
 		t.Fatal("SetUserDisabled did not propagate to the store")
 	}
 	// The store actually validates — confirm the supervisor wired the real thing.
@@ -49,7 +49,7 @@ func TestSupervisorUserAdmin_DelegatesToStore(t *testing.T) {
 	if err := s.RemoveUser("alice"); err != nil {
 		t.Fatal(err)
 	}
-	if users, _ := s.Users(); len(users) != 0 {
-		t.Fatalf("RemoveUser left %d users", len(users))
+	if users, _ := s.Users(); len(users) != 1 || users[0].Name != "Guest" {
+		t.Fatalf("RemoveUser left %v, want only Guest", users)
 	}
 }

@@ -430,6 +430,9 @@ func wireIPX(nb *netbios.Service, sm *smb.Service, comps map[string]component.Co
 	// it) and a RIP responder is stood up on socket 0x0453 owning that network.
 	if nc != nil {
 		internalNet := ipxrouter.DeriveInternalNetwork(r.Node())
+		if net, ok := nc.InternalNetworkBytes(); ok {
+			internalNet = net
+		}
 		r.SetInternalNetwork(internalNet)
 
 		t := nc.NewOverIPX(r)

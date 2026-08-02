@@ -50,21 +50,21 @@ type ServerSection struct {
 	// ServerName is the AppleTalk/Chooser name this server advertises in
 	// FPGetSrvrInfo / ASPGetStatus. Empty → fall back to config.Identity.Hostname,
 	// then the built-in default ("ClassicStack").
-	ServerName string `toml:"server_name"`
+	ServerName string `toml:"server_name,omitempty" display:"Server name" desc:"Chooser/NBP name. Empty = Identity.Hostname, then the built-in default." example:"File Server"`
 	// Zone is the AppleTalk zone the AFP service advertises into (NBP registration).
 	// Empty → the router's default zone.
-	Zone string `toml:"zone"`
+	Zone string `toml:"zone,omitempty" display:"Zone" desc:"AppleTalk zone for NBP registration. Empty = router's default zone." example:"EtherTalk Network" widget:"zone"`
 	// Transports lists the transport tokens (ddp/tcp) the AFP service binds. Empty =
 	// bind every transport that was built (back-compat).
-	Transports []string `toml:"transports"`
+	Transports []string `toml:"transports,omitempty" display:"Transports" desc:"ddp and/or tcp. Empty = bind every transport built into this binary." example:"ddp,tcp"`
 	// TCPAddr overrides the modern DSI/TCP (:548) listen address. Empty = do not bind
 	// DSI/TCP (no implicit :548). Inert until the DSI/TCP transport lands.
-	TCPAddr string `toml:"tcp_addr"`
+	TCPAddr string `toml:"tcp_addr,omitempty" display:"TCP address" desc:"AFP-over-TCP (DSI) listen address. Empty = do not bind :548." example:":548"`
 	// LoginMessage is the opt-in greeting served as the AFP login message
 	// (FPGetSrvrMsg type 0): clients fetch and display it when mounting a volume.
 	// Empty (the default) serves no greeting. Truncated on the wire to the AFP
 	// 199-byte limit, MacRoman-encoded.
-	LoginMessage string `toml:"login_message"`
+	LoginMessage string `toml:"login_message,omitempty" display:"Login message" desc:"Optional greeting shown when a client mounts a volume." example:"Welcome"`
 }
 
 // compile-time assertion: *ServerSection satisfies config.Section.
@@ -132,5 +132,7 @@ func RegisterServer() {
 			}
 			return nil
 		},
+		DisplayName: "AFP server",
+		Description: "Apple Filing Protocol server identity and transports (classic DDP and modern TCP/DSI).",
 	})
 }

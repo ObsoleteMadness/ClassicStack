@@ -12,15 +12,15 @@ import (
 )
 
 func init() {
-	// Register the config schema so a TOML/UCI codec can round-trip the [EtherTalk]
-	// section (iface/mac/seed) into a *port.Section. Gated by the same tag as the
-	// factory, so a build without EtherTalk neither builds nor round-trips it.
-	// Repeated schema: one [[EtherTalk]] array-of-tables, several named instances —
-	// each a distinct EtherTalk segment bound to its own interface (§M11).
+	// Register the config schema so a TOML/UCI codec can round-trip [[ethertalk]]
+	// into an EtherTalkSection (Base + seed + capture). Gated by the same tag as
+	// the factory. Repeated: several named instances, each its own segment (§M11).
 	config.Register(config.SectionSchema{
-		Key:      ethertalk.Name,
-		New:      func() config.Section { return &port.Section{SKey: ethertalk.Name} },
-		Repeated: true,
+		Key:         ethertalk.Name,
+		New:         func() config.Section { return &port.EtherTalkSection{Base: port.Base{SKey: ethertalk.Name}} },
+		Repeated:    true,
+		DisplayName: "EtherTalk",
+		Description: "DDP over raw Ethernet (libpcap/Npcap). Binds an uplink bridge; seeds an AppleTalk network range and zone.",
 	})
 
 	RegisterPort(ethertalk.Name, func(ctx *BuildContext) (component.Component, error) {

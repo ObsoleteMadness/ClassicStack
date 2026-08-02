@@ -2,6 +2,7 @@ package registry
 
 import (
 	"sync"
+	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/adapter/capture/pcapfile"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
@@ -38,22 +39,83 @@ func captureSink(path string, lt pcapfile.LinkType, snaplen uint32) *pcapfile.Si
 	return s
 }
 
-// captureOpener decorates a per-Start FrameLink opener so that, when the port SECTION
-// sets Capture, every frame the link reads/writes is tee'd to that pcap file. Capture is
-// a property of the port that owns the segment (Section.Capture), so it works for any
-// transport uniformly — including LToUDP, which opens its own multicast link and never
-// touches the NIC opener the cmd edge used to key capture on.
+// FlushCaptureSinks flushes every open capture sink's buffered records to disk without
+// closing them, so a capture survives a hard process kill with at most one flush-interval
+// of records lost. Called periodically by the background flusher and once more on a clean
+// shutdown (before CloseCaptureSinks). Best-effort: per-sink flush errors are ignored so a
+// broken capture file never blocks shutdown.
+func FlushCaptureSinks() {
+	captureSinks.mu.Lock()
+	sinks := make([]*pcapfile.Sink, 0, len(captureSinks.byKey))
+	for _, s := range captureSinks.byKey {
+		sinks = append(sinks, s)
+	}
+	captureSinks.mu.Unlock()
+	// Flush outside the map lock: a WriteFrame in flight takes the sink's own lock, and we
+	// must not hold the registry lock across a blocking file write.
+	for _, s := range sinks {
+		_ = s.Flush()
+	}
+}
+
+// CloseCaptureSinks flushes and closes every capture sink, then forgets them, so a
+// subsequent capture to the same path opens fresh. Called once on a clean shutdown after
+// the ports have stopped writing. Best-effort.
+func CloseCaptureSinks() {
+	captureSinks.mu.Lock()
+	sinks := make([]*pcapfile.Sink, 0, len(captureSinks.byKey))
+	for _, s := range captureSinks.byKey {
+		sinks = append(sinks, s)
+	}
+	captureSinks.byKey = map[string]*pcapfile.Sink{}
+	captureSinks.mu.Unlock()
+	for _, s := range sinks {
+		_ = s.Close()
+	}
+}
+
+// StartCaptureFlusher launches a background goroutine that flushes all capture sinks every
+// interval until stop is closed, so an ungraceful kill (SIGKILL / double-Ctrl-C, which skips
+// the clean-shutdown flush) loses at most one interval of buffered records rather than the
+// whole in-flight buffer. A non-positive interval disables the flusher (returns immediately).
+// The returned function stops the goroutine; it is safe to call more than once.
+func StartCaptureFlusher(interval time.Duration) (stop func()) {
+	if interval <= 0 {
+		return func() {}
+	}
+	done := make(chan struct{})
+	var once sync.Once
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				FlushCaptureSinks()
+			}
+		}
+	}()
+	return func() { once.Do(func() { close(done) }) }
+}
+
+// captureOpener decorates a per-Start FrameLink opener so that, when the section
+// implements port.CaptureProvider with a non-empty path, every frame the link
+// reads/writes is tee'd to that pcap file. Capture is a property of the port that
+// owns the segment, so it works for any transport uniformly — including LToUDP,
+// which opens its own multicast link and never touches the NIC opener.
 //
 // lt is the data-link type of THIS transport's frames: Ethernet for a NIC port
 // (EtherTalk), raw LLAP (DLT_LTALK) for LToUDP/TashTalk — so the .pcap opens with the
 // DLT Wireshark needs to dissect it. A nil base opener, an empty Capture path, or an
 // unopenable file all fall through to the base opener unchanged (capture is never fatal).
-func captureOpener(sec *port.Section, lt pcapfile.LinkType, base func() (link.FrameLink, error)) func() (link.FrameLink, error) {
-	if base == nil || sec == nil || sec.Capture == "" {
+func captureOpener(cap port.CaptureProvider, lt pcapfile.LinkType, base func() (link.FrameLink, error)) func() (link.FrameLink, error) {
+	if base == nil || cap == nil || cap.CapturePath() == "" {
 		return base
 	}
-	path := sec.Capture
-	snaplen := uint32(sec.CaptureSnaplen)
+	path := cap.CapturePath()
+	snaplen := uint32(cap.CaptureSnapLen())
 	return func() (link.FrameLink, error) {
 		fl, err := base()
 		if err != nil || fl == nil {

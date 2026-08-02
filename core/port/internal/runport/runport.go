@@ -355,8 +355,8 @@ func (p *Port) SetTrafficObserver(fn func(rxBytes, txBytes int)) {
 // and returns ErrNeedsRestart so the supervisor restarts the port (which
 // reopens the link via the factory).
 func (p *Port) ApplyConfig(section any) error {
-	sec, ok := section.(*port.Section)
-	if !ok || sec == nil {
+	sec := port.AsSection(section)
+	if sec == nil {
 		return nil // nil/typeless notify pass: absorb live
 	}
 	p.mu.Lock()

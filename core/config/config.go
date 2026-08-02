@@ -465,7 +465,7 @@ func (m *Model) SetInterface(s InterfaceSection) {
 
 // LoggingSection is the logging config (level, sinks).
 type LoggingSection struct {
-	Level string // "debug"|"info"|"warn"|"error"
+	Level string `toml:"level,omitempty"` // "debug"|"info"|"warn"|"error"
 }
 
 // RouterSection is the AppleTalk router config (default zone) and — §3d/D8 — the
@@ -480,8 +480,8 @@ type LoggingSection struct {
 // explicit-over-implicit, so first-run setup seeds Members rather than defaulting
 // to every enabled transport.
 type RouterSection struct {
-	DefaultZone string   `toml:"default_zone"`
-	Members     []string `toml:"members"` // instance names of the ports that join this router
+	DefaultZone string   `toml:"default_zone,omitempty"`
+	Members     []string `toml:"members,omitempty"` // instance names of the ports that join this router
 }
 
 // Clone returns a deep copy (Members is the only reference-typed field).
@@ -629,11 +629,20 @@ type InterfaceProvider interface {
 // Model.Lists[Key] (UCI: repeated `config <type> '<name>'` blocks; TOML: an array-of-tables),
 // and New() must return a NamedSection. A singleton schema (Repeated == false) lives in
 // Model.Sections[Key] as before.
+//
+// DisplayName / Description / Capabilities are optional management metadata a front-end
+// discovers via the schema API so new protocols light up without dedicated UI code.
+// Fields, when set, are the explicit field schema; when empty, adapters may reflect them
+// from New()'s concrete type (core itself never reflects).
 type SectionSchema struct {
-	Key      string
-	New      func() Section
-	Validate func(Section) error
-	Repeated bool
+	Key          string
+	New          func() Section
+	Validate     func(Section) error
+	Repeated     bool
+	DisplayName  string
+	Description  string
+	Capabilities []string    // CapCapture, CapIPXNetwork, … — see fieldinfo.go
+	Fields       []FieldInfo // optional explicit field list; else adapter-reflected
 }
 
 var (

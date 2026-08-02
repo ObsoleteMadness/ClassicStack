@@ -101,6 +101,22 @@ func (s *Sink) WriteFrame(tsUnixNano int64, f link.Frame) {
 	_, _ = s.bw.Write(data)
 }
 
+// Flush pushes any buffered records to the underlying file without closing it, so a
+// capture survives a hard process kill (SIGKILL / double-Ctrl-C) with at most the
+// records written since the last flush lost. Safe to call concurrently with WriteFrame;
+// a no-op on a nil or already-closed sink.
+func (s *Sink) Flush() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.f == nil {
+		return nil
+	}
+	return s.bw.Flush()
+}
+
 // Close flushes and closes the underlying file. Idempotent.
 func (s *Sink) Close() error {
 	if s == nil {

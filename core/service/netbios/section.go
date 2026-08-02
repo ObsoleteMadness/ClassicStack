@@ -38,16 +38,16 @@ type Section struct {
 	SKey string `toml:"-"`
 	// Transports lists the transport tokens (netbeui/ipx/nbt) to bind. Empty = bind
 	// every built transport (back-compat).
-	Transports []string `toml:"transports"`
+	Transports []string `toml:"transports,omitempty" display:"Transports" desc:"netbeui, ipx, and/or nbt. Empty = bind every transport built into this binary." example:"netbeui,ipx"`
 	// ScopeID is the NetBIOS scope identifier appended to names (rarely used; empty is
 	// the universal default scope).
-	ScopeID string `toml:"scope_id"`
+	ScopeID string `toml:"scope_id,omitempty" display:"Scope ID" desc:"NetBIOS scope appended to names. Empty = universal default scope."`
 	// NBTAddr overrides the NBT (:139) NetBIOS-over-TCP session-service listen address.
 	// Empty = do not bind NBT (never an implicit :139). NBT is a NetBIOS transport, so
 	// its address lives here even though the :139 session LISTENER is physically shared
 	// with SMB's direct-TCP transport (they share framing); the compose cross-wire reads
 	// this address when the nbt binding is on.
-	NBTAddr string `toml:"nbt_addr"`
+	NBTAddr string `toml:"nbt_addr,omitempty" display:"NBT address" desc:"NetBIOS-over-TCP (:139) listen address. Empty = do not bind." example:":139"`
 }
 
 // NBTListenAddr returns the configured NBT (:139) listen address, or "" when none is
@@ -105,5 +105,7 @@ func RegisterSection() {
 			}
 			return nil
 		},
+		DisplayName: "NetBIOS",
+		Description: "NetBIOS name service and transport bindings (NetBEUI, IPX, NBT). Server name comes from Identity.",
 	})
 }

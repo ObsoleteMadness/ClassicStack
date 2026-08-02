@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ObsoleteMadness/ClassicStack/core/auth"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
 )
 
@@ -126,9 +127,22 @@ func (cn *Conn) getLoginKey() ([]byte, error) {
 // the client's shuffled hash to a cleartext password, so — consistent with the
 // compatibility-server posture — we accept it as a guest-equivalent login bound to
 // the supplied user name (no credential check). The args carry the object type,
-// the response hash, and the length-prefixed object name.
+// the response hash, and the length-prefixed object name. A GUEST / empty name is
+// refused when Guest is disabled.
 func (cn *Conn) loginEncrypted(args []byte) ([]byte, error) {
 	user := parseEncryptedLoginUser(args)
+	guest := user == "" || strings.EqualFold(user, "GUEST") || auth.IsGuestName(user)
+	if guest {
+		cn.svc.mu.Lock()
+		authn := cn.svc.auth
+		cn.svc.mu.Unlock()
+		if !auth.GuestEnabled(authn) {
+			cn.svc.counters.loginsFailed.Add(1)
+			cn.svc.logging.Log(log.Info, "NCP keyed guest login denied (Guest disabled)",
+				log.Str("user", user), log.Int("conn", int64(cn.c.number)))
+			return nil, errAccessDenied
+		}
+	}
 	cn.recordLogin(user)
 	cn.svc.counters.loginsOK.Add(1)
 	cn.svc.logging.Log(log.Info, "NCP keyed login granted (guest-equivalent)",
@@ -154,17 +168,25 @@ func (cn *Conn) recordLogin(user string) {
 // grantLogin validates a cleartext credential (when an Authenticator is wired and
 // the volume is not world-open) and records the login on the connection. With no
 // Authenticator wired it grants a guest login (the compatibility default). GUEST
-// — and an unnamed login — is ALWAYS granted, even with an Authenticator wired:
-// the NetWare convention (mars_nwe's standard bindery) is a passwordless GUEST
-// account, and vintage clients attach as GUEST when no user is specified.
+// — and an unnamed login — is granted when Guest is enabled, even with an
+// Authenticator wired: the NetWare convention (mars_nwe's standard bindery) is a
+// passwordless GUEST account, and vintage clients attach as GUEST when no user is
+// specified. Disabling Guest requires a named credential.
 func (cn *Conn) grantLogin(user, pass string) ([]byte, error) {
 	cn.svc.mu.Lock()
-	auth := cn.svc.auth
+	authn := cn.svc.auth
 	cn.svc.mu.Unlock()
 
-	guest := user == "" || strings.EqualFold(user, "GUEST")
-	if auth != nil && !guest {
-		ok, err := auth.Authenticate(user, pass)
+	guest := user == "" || strings.EqualFold(user, "GUEST") || auth.IsGuestName(user)
+	if guest {
+		if !auth.GuestEnabled(authn) {
+			cn.svc.counters.loginsFailed.Add(1)
+			cn.svc.logging.Log(log.Info, "NCP guest login denied (Guest disabled)",
+				log.Str("user", user), log.Int("conn", int64(cn.c.number)))
+			return nil, errAccessDenied
+		}
+	} else if authn != nil {
+		ok, err := authn.Authenticate(user, pass)
 		if err != nil || !ok {
 			cn.svc.counters.loginsFailed.Add(1)
 			cn.svc.logging.Log(log.Info, "NCP login denied",

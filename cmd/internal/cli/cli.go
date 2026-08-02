@@ -29,6 +29,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ObsoleteMadness/ClassicStack/adapter/config/describe"
 	configtoml "github.com/ObsoleteMadness/ClassicStack/adapter/config/toml"
 	configuci "github.com/ObsoleteMadness/ClassicStack/adapter/config/uci"
 	controlhttp "github.com/ObsoleteMadness/ClassicStack/adapter/control/http"
@@ -157,6 +158,14 @@ func Run(ctx context.Context, args []string, v Version) error {
 		return fmt.Errorf("start runtime: %w", err)
 	}
 
+	// Periodically flush per-port pcap capture files so an ungraceful kill (SIGKILL /
+	// double-Ctrl-C, which skips the clean-shutdown flush below) loses at most one interval
+	// of buffered records instead of the whole in-flight buffer. The clean-shutdown path
+	// flushes + closes once more before returning.
+	stopFlusher := registry.StartCaptureFlusher(2 * time.Second)
+	defer registry.CloseCaptureSinks()
+	defer stopFlusher()
+
 	// Optional telemetry export sink: mirrors component stats into expvar for an
 	// external scrape (Prometheus / a Windows PerfMon HTTP collector). A no-op unless
 	// built with the `perfcounters` tag; it is just one more bus subscriber, so it
@@ -180,6 +189,7 @@ func Run(ctx context.Context, args []string, v Version) error {
 		// router exists; replaces the core's "unavailable" default. A no-router build
 		// passes nil, which keeps the probes reporting ErrUnavailable.
 		plane.SetDiagnostics(buildDiagnostics(rt))
+		plane.SetSchemaDescriber(describe.All)
 		httpServer = controlhttp.NewServer(plane, *httpAddr)
 		// The protocol-specific diagnostic drill-downs (NBP names, MacIP leases) are served
 		// by the diagnostics adapter (which imports the services), NOT through the neutral

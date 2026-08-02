@@ -61,6 +61,12 @@ func (s *fakeSupervisor) ListInterfaces() ([]InterfaceInfo, error) {
 	return []InterfaceInfo{{Name: "eth0", Addr: "10.0.0.1"}}, nil
 }
 func (s *fakeSupervisor) ListFSTypes() []string { return []string{"memfs"} }
+func (s *fakeSupervisor) ReplaceModel(_ context.Context, m *config.Model) error {
+	if m != nil {
+		s.model = m
+	}
+	return nil
+}
 func (s *fakeSupervisor) SetInterface(_ context.Context, iface config.InterfaceSection) error {
 	if s.model != nil {
 		s.model.SetInterface(iface)
@@ -448,6 +454,67 @@ func (s *auditSink) hasMsg(msg string) bool {
 		}
 	}
 	return false
+}
+
+type parseCodec struct {
+	unmarshalErr error
+	data         []byte
+}
+
+func (c parseCodec) Marshal(*config.Model) ([]byte, error) { return []byte("ok"), nil }
+func (c parseCodec) Unmarshal(data []byte, m *config.Model) error {
+	if c.unmarshalErr != nil {
+		return c.unmarshalErr
+	}
+	// Minimal: accept any bytes; leave m empty (Validate still succeeds).
+	_ = data
+	_ = m
+	return nil
+}
+
+func TestPlane_ValidateAndApplyConfig(t *testing.T) {
+	sup := &fakeSupervisor{model: config.NewModel()}
+	store := &fakeStore{}
+	p := New(sup, parseCodec{}, store, bus.New(4))
+
+	if err := p.ValidateConfig([]byte("x = 1")); err != nil {
+		t.Fatalf("ValidateConfig: %v", err)
+	}
+
+	rev, err := p.ApplyConfigBytes(context.Background(), []byte("x = 1"))
+	if err != nil {
+		t.Fatalf("ApplyConfigBytes: %v", err)
+	}
+	if rev != "rev-1" {
+		t.Fatalf("revision = %q", rev)
+	}
+	if sup.model == nil {
+		t.Fatal("ReplaceModel did not install a model")
+	}
+
+	bad := New(sup, parseCodec{unmarshalErr: errors.New("bad toml")}, store, bus.New(4))
+	if err := bad.ValidateConfig([]byte("nope")); err == nil {
+		t.Fatal("ValidateConfig expected parse error")
+	}
+	if _, err := bad.ApplyConfigBytes(context.Background(), []byte("nope")); err == nil {
+		t.Fatal("ApplyConfigBytes expected parse error")
+	}
+}
+
+func TestPlane_SchemasUsesDescriber(t *testing.T) {
+	sup := &fakeSupervisor{model: config.NewModel()}
+	p := New(sup, fakeCodec{}, &fakeStore{}, bus.New(4))
+	p.SetSchemaDescriber(func() []config.SectionInfo {
+		return []config.SectionInfo{{
+			Key: "Demo", DisplayName: "Demo Proto",
+			Capabilities: []string{config.CapCapture},
+			Fields:       []config.FieldInfo{{Key: "Capture", DisplayName: "Capture file", Type: "string"}},
+		}}
+	})
+	got := p.Schemas()
+	if len(got) != 1 || got[0].DisplayName != "Demo Proto" || len(got[0].Fields) != 1 {
+		t.Fatalf("Schemas() = %#v", got)
+	}
 }
 
 // TestPlane_ManagementActionsLogInfo asserts Start/Stop/Restart and configuration

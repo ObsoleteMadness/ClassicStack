@@ -12,16 +12,21 @@ func init() {
 	// configured volume as a named section. Kept here (not in an ncp-package init)
 	// so the section exists exactly when the NCP service is built.
 	ncp.RegisterVolumes()
+	// Register the NCP server-level singleton (advertised name + internal network)
+	// so the codec round-trips it and the Sharing UI can edit it.
+	ncp.RegisterServer()
 
 	Register(ncp.Name, func(ctx *BuildContext) (component.Component, error) {
 		m := ctx.Model
 		logger := ctx.Logger(ncp.Name)
 		svc := ncp.New(logger)
-		// Server identity is the shared §4-bis Identity hostname/description (the NCP
-		// SAP advertisement and Get Server Info report it), upper-cased to a NetWare
-		// name by the service.
-		svc.SetServerName(m.Identity.Hostname)
-		svc.SetDescription(m.Identity.Description)
+		// Server-level identity: the NCP section carries an optional override; empty
+		// falls back to the shared §4-bis Identity hostname/description (upper-cased
+		// to a NetWare name by the service). InternalNetwork 0 = derive from MAC.
+		srv := ncp.ServerSectionFromModel(m)
+		svc.SetServerName(srv.EffectiveServerName(m.Identity.Hostname))
+		svc.SetDescription(srv.EffectiveDescription(m.Identity.Description))
+		svc.SetInternalNetwork(srv.InternalNetwork)
 		// §10d: build each volume over the shared FS-mutation bus for its host path, so
 		// a same-host-path AFP volume / SMB share sees this volume's mutations.
 		svc.SetBusResolver(fsBus.busFor)

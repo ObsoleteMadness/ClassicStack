@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
+	"github.com/ObsoleteMadness/ClassicStack/core/port"
 )
 
 // SectionKey is the config-section / registry name for the IPX gateway (MacIPX). It
@@ -14,21 +15,18 @@ import (
 const SectionKey = Name
 
 // Section is the IPX-gateway singleton config: enable flag, the announced IPX network
-// number, and the NBP zone bindings the gateway advertises ("IPX Gateway" objects).
-// Satisfies config.Section so the model round-trips it.
+// number (shared port.IPXNetworkFields spelling with [[ipx]]), and the NBP zone
+// bindings the gateway advertises ("IPX Gateway" objects).
 type Section struct {
 	// SKey is the section key; always "IPXGW". Stored so Key() is a plain getter.
 	SKey string `toml:"-"`
 	// Enabled gates the gateway (component.Enableable). Disabled builds the service but
 	// reports Disabled; the supervisor's enable-aware start can skip it.
-	Enabled bool `toml:"enabled"`
-	// IPXNetwork is the IPX network number the gateway announces. 0 → DefaultIPXNetwork
-	// (0x10), matching NetWare's MACIPXGW default.
-	IPXNetwork uint32 `toml:"ipx_network"`
-	// Bindings are the NBP registrations the gateway publishes, each "Object:Zone" (the
-	// object name to advertise in that AppleTalk zone). Empty = the service's own
-	// default registration per known zone.
-	Bindings []string `toml:"bindings"`
+	Enabled bool `toml:"enabled" display:"Enabled" desc:"Whether the MacIPX gateway is configured on." default:"false"`
+	// IPX network number announced to MacIPX clients.
+	port.IPXNetworkFields
+	// Bindings are the NBP registrations the gateway publishes.
+	Bindings []string `toml:"bindings,omitempty" display:"NBP bindings" desc:"Object:Zone names the gateway advertises via NBP (empty = one IPX Gateway name per known zone)." example:"IPX Gateway:EtherTalk Network"`
 }
 
 // Key returns the section key.
@@ -63,8 +61,11 @@ func (s *Section) ZoneBindings() []ZoneBinding {
 	return out
 }
 
-// compile-time assertion: *Section satisfies config.Section.
-var _ config.Section = (*Section)(nil)
+// compile-time assertions.
+var (
+	_ config.Section          = (*Section)(nil)
+	_ port.IPXNetworkProvider = (*Section)(nil)
+)
 
 // SectionFromModel resolves the IPXGW section from the model, or nil when none is set.
 func SectionFromModel(m *config.Model) *Section {
@@ -91,6 +92,8 @@ func RegisterSection() {
 			}
 			return nil
 		},
+		DisplayName: "MacIPX gateway",
+		Description: "AppleTalk-to-IPX gateway (MACIPXGW counterpart). Announces an IPX network number to MacIPX clients; shares the ipx_network field with [[ipx]].",
 	})
 }
 

@@ -51,6 +51,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ObsoleteMadness/ClassicStack/core/auth"
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
@@ -563,8 +564,22 @@ func (s *Service) ReconcileVolumes(desired []VolumeSpec) error {
 }
 
 // serverInfo returns the advertised identity with defaults filled in.
+// Caller must NOT hold s.mu — it locks briefly to snapshot info/auth.
 func (s *Service) serverInfo() ServerInfo {
-	info := s.info
+	s.mu.Lock()
+	info, authn := s.info, s.auth
+	s.mu.Unlock()
+	return fillServerInfo(info, authn)
+}
+
+// serverInfoLocked is serverInfo for callers that already hold s.mu (Start /
+// registerNBPLocked). It must not take the lock again.
+func (s *Service) serverInfoLocked() ServerInfo {
+	return fillServerInfo(s.info, s.auth)
+}
+
+// fillServerInfo applies defaults and Guest-gated UAM filtering to a ServerInfo snapshot.
+func fillServerInfo(info ServerInfo, authn Authenticator) ServerInfo {
 	if info.ServerName == "" {
 		info.ServerName = "ClassicStack"
 	}
@@ -576,6 +591,17 @@ func (s *Service) serverInfo() ServerInfo {
 	}
 	if len(info.UAMs) == 0 {
 		info.UAMs = defaultUAMs
+	}
+	// Drop the guest UAM when Guest is disabled so clients negotiate cleartext
+	// (or fail) rather than silently picking No User Authent.
+	if !auth.GuestEnabled(authn) {
+		filtered := make([]string, 0, len(info.UAMs))
+		for _, u := range info.UAMs {
+			if !strings.EqualFold(u, "No User Authent") {
+				filtered = append(filtered, u)
+			}
+		}
+		info.UAMs = filtered
 	}
 	// Server messages (FPGetSrvrMsg + attention) are always implemented, so the
 	// capability bit is always advertised — without it clients ignore message
@@ -637,7 +663,7 @@ var afpServerType = []byte("AFPServer")
 // server name, zone = the configured zone or, when unset, the router's first zone (the
 // AppleTalk convention for a single-zone seed). Caller holds s.mu.
 func (s *Service) nbpTupleLocked() (obj, zone []byte) {
-	obj = []byte(s.serverInfo().ServerName)
+	obj = []byte(s.serverInfoLocked().ServerName)
 	zone = []byte(s.zone)
 	if len(zone) == 0 && s.rtr != nil {
 		if zones := s.rtr.Zones().Zones(); len(zones) > 0 {

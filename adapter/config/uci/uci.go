@@ -144,19 +144,43 @@ func (c *Codec) marshalSection(buf *bytes.Buffer, typeName, name string, sec any
 		buf.WriteString(fmt.Sprintf("config %s\n", typeName))
 	}
 
+	marshalStructFields(buf, v)
+	buf.WriteString("\n")
+	return nil
+}
+
+// marshalStructFields writes UCI options for every exported field on v, recursing
+// into anonymous embedded structs (so port.Base / CaptureFields flatten the same
+// way go-toml does). Fields tagged omitempty are skipped when zero.
+func marshalStructFields(buf *bytes.Buffer, v reflect.Value) {
 	typ := v.Type()
 	for i := 0; i < v.NumField(); i++ {
 		field := typ.Field(i)
+		fVal := v.Field(i)
 		tag := field.Tag.Get("toml")
 		if tag == "-" {
 			continue
 		}
-		key := strings.Split(tag, ",")[0]
+		// Anonymous embedded struct with no toml key of its own: promote fields.
+		if field.Anonymous && fVal.Kind() == reflect.Struct && (tag == "" || strings.Split(tag, ",")[0] == "") {
+			marshalStructFields(buf, fVal)
+			continue
+		}
+		parts := strings.Split(tag, ",")
+		key := parts[0]
 		if key == "" {
 			key = strings.ToLower(field.Name)
 		}
-
-		fVal := v.Field(i)
+		omitEmpty := false
+		for _, p := range parts[1:] {
+			if p == "omitempty" {
+				omitEmpty = true
+				break
+			}
+		}
+		if omitEmpty && fVal.IsZero() {
+			continue
+		}
 		switch fVal.Kind() {
 		case reflect.String:
 			buf.WriteString(fmt.Sprintf("\toption %s '%s'\n", key, escapeQuote(fVal.String())))
@@ -166,8 +190,10 @@ func (c *Codec) marshalSection(buf *bytes.Buffer, typeName, name string, sec any
 				valStr = "1"
 			}
 			buf.WriteString(fmt.Sprintf("\toption %s '%s'\n", key, valStr))
-		case reflect.Int, reflect.Int64:
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 			buf.WriteString(fmt.Sprintf("\toption %s '%d'\n", key, fVal.Int()))
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			buf.WriteString(fmt.Sprintf("\toption %s '%d'\n", key, fVal.Uint()))
 		case reflect.Slice:
 			if fVal.Type().Elem().Kind() == reflect.String {
 				for j := 0; j < fVal.Len(); j++ {
@@ -176,8 +202,6 @@ func (c *Codec) marshalSection(buf *bytes.Buffer, typeName, name string, sec any
 			}
 		}
 	}
-	buf.WriteString("\n")
-	return nil
 }
 
 // Unmarshal parses UCI text into the model.
@@ -272,9 +296,6 @@ func applyInstanceName(sec config.Section, blockName string) {
 	if !ok || ns.InstanceName() == blockName {
 		return
 	}
-	// Find the struct field tagged with the same value the instance name reads from
-	// and set it to the block name. We locate it by matching the current
-	// InstanceName() against the field values, falling back to a "name" tag.
 	v := reflect.ValueOf(sec)
 	if v.Kind() == reflect.Ptr {
 		v = v.Elem()
@@ -282,18 +303,33 @@ func applyInstanceName(sec config.Section, blockName string) {
 	if v.Kind() != reflect.Struct {
 		return
 	}
+	setNameField(v, blockName)
+}
+
+// setNameField finds the first string field tagged toml:"name" (including inside
+// anonymous embeds) and sets it to blockName.
+func setNameField(v reflect.Value, blockName string) bool {
 	typ := v.Type()
 	for i := 0; i < typ.NumField(); i++ {
-		tag := strings.Split(typ.Field(i).Tag.Get("toml"), ",")[0]
-		if tag != "name" {
+		field := typ.Field(i)
+		fVal := v.Field(i)
+		tag := field.Tag.Get("toml")
+		if field.Anonymous && fVal.Kind() == reflect.Struct && (tag == "" || strings.Split(tag, ",")[0] == "") {
+			if setNameField(fVal, blockName) {
+				return true
+			}
 			continue
 		}
-		f := v.Field(i)
-		if f.Kind() == reflect.String && f.CanSet() {
-			f.SetString(blockName)
+		if strings.Split(tag, ",")[0] != "name" {
+			continue
 		}
-		return
+		if fVal.Kind() == reflect.String && fVal.CanSet() {
+			fVal.SetString(blockName)
+			return true
+		}
+		return false
 	}
+	return false
 }
 
 func parseUCI(data []byte) ([]uciSection, error) {
@@ -400,12 +436,24 @@ func unmarshalStruct(sec uciSection, dest any) error {
 	if v.Kind() != reflect.Ptr || v.Elem().Kind() != reflect.Struct {
 		return fmt.Errorf("dest must be a pointer to a struct")
 	}
-	val := v.Elem()
+	return unmarshalStructFields(sec, v.Elem())
+}
+
+// unmarshalStructFields fills dest from UCI options/lists, recursing into
+// anonymous embedded structs so port.Base / CaptureFields decode like go-toml.
+func unmarshalStructFields(sec uciSection, val reflect.Value) error {
 	typ := val.Type()
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
+		fVal := val.Field(i)
 		tag := field.Tag.Get("toml")
 		if tag == "-" {
+			continue
+		}
+		if field.Anonymous && fVal.Kind() == reflect.Struct && (tag == "" || strings.Split(tag, ",")[0] == "") {
+			if err := unmarshalStructFields(sec, fVal); err != nil {
+				return err
+			}
 			continue
 		}
 		key := strings.Split(tag, ",")[0]
@@ -413,16 +461,18 @@ func unmarshalStruct(sec uciSection, dest any) error {
 			key = strings.ToLower(field.Name)
 		}
 
-		fVal := val.Field(i)
 		if optVal, ok := sec.Options[key]; ok {
 			switch fVal.Kind() {
 			case reflect.String:
 				fVal.SetString(optVal)
 			case reflect.Bool:
 				fVal.SetBool(optVal == "1" || strings.ToLower(optVal) == "true" || strings.ToLower(optVal) == "on")
-			case reflect.Int, reflect.Int64:
+			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 				num, _ := strconv.ParseInt(optVal, 10, 64)
 				fVal.SetInt(num)
+			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+				num, _ := strconv.ParseUint(optVal, 10, 64)
+				fVal.SetUint(num)
 			}
 		} else if listVals, ok := sec.Lists[key]; ok {
 			if fVal.Kind() == reflect.Slice && fVal.Type().Elem().Kind() == reflect.String {

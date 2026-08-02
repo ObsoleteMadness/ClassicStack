@@ -38,6 +38,37 @@ func newAuthService(t *testing.T) *Service {
 	return s
 }
 
+func TestAFPLogin_GuestDisabled(t *testing.T) {
+	s := newAuthService(t)
+	s.SetAuthenticator(guestGateAuth{enabled: false, user: "alice", pass: "secret"})
+
+	a := newAFPSession()
+	if _, res := s.afpLogin(a, loginBlock("AFP2.2", "No User Authent", "", "")); res != afpErrUserNotAuth {
+		t.Fatalf("No User Authent with Guest disabled = %d, want UserNotAuth", res)
+	}
+
+	anon := newAFPSession()
+	if _, res := s.afpLogin(anon, loginBlock("AFP2.2", "Cleartxt Passwrd", "", "")); res != afpErrUserNotAuth {
+		t.Fatalf("anonymous cleartext with Guest disabled = %d, want UserNotAuth", res)
+	}
+
+	ok := newAFPSession()
+	if _, res := s.afpLogin(ok, loginBlock("AFP2.2", "Cleartxt Passwrd", "alice", "secret")); res != afpNoErr {
+		t.Fatalf("named login with Guest disabled = %d, want NoErr", res)
+	}
+}
+
+// guestGateAuth is a fake Authenticator that also implements GuestEnabled.
+type guestGateAuth struct {
+	enabled    bool
+	user, pass string
+}
+
+func (g guestGateAuth) Authenticate(user, pass string) (bool, error) {
+	return user == g.user && pass == g.pass, nil
+}
+func (g guestGateAuth) GuestEnabled() bool { return g.enabled }
+
 func TestAFPLogin_GuestUAM(t *testing.T) {
 	s := newAuthService(t)
 	a := newAFPSession()

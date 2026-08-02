@@ -208,8 +208,10 @@ func TestIPXGWSectionRoundTrip(t *testing.T) {
 
 	m := config.NewModel()
 	m.Set(&ipxgw.Section{
-		SKey: ipxgw.SectionKey, Enabled: true, IPXNetwork: 0x20,
-		Bindings: []string{"IPX Gateway:Eng", "IPX Gateway:Lab"},
+		SKey:             ipxgw.SectionKey,
+		Enabled:          true,
+		IPXNetworkFields: port.IPXNetworkFields{IPXNetwork: 0x20},
+		Bindings:         []string{"IPX Gateway:Eng", "IPX Gateway:Lab"},
 	})
 
 	c := New()

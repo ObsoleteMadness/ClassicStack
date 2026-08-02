@@ -13,9 +13,11 @@ func init() {
 	// Repeated schema: several named IPX instances, each its own interface/segment;
 	// they join the IPX mini-router (not the AppleTalk router) — §M11.
 	config.Register(config.SectionSchema{
-		Key:      ipx.Name,
-		New:      func() config.Section { return &port.Section{SKey: ipx.Name} },
-		Repeated: true,
+		Key:         ipx.Name,
+		New:         func() config.Section { return &port.IPXSection{Base: port.Base{SKey: ipx.Name}} },
+		Repeated:    true,
+		DisplayName: "IPX",
+		Description: "Novell IPX over Ethernet. Binds an uplink bridge; carries NetBIOS/SMB/NCP. Frame type and IPX network number are IPX-specific.",
 	})
 
 	RegisterPort(ipx.Name, func(ctx *BuildContext) (component.Component, error) {

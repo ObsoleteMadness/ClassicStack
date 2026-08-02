@@ -72,6 +72,56 @@ func TestSink_WritesReadablePcap(t *testing.T) {
 	}
 }
 
+// TestSink_FlushMakesRecordsDurableWithoutClose proves Flush pushes buffered records to
+// disk without closing the sink — the mechanism that lets a capture survive a hard kill.
+// It writes frames, flushes, then reads the file back through a SECOND open handle while
+// the sink is still writable, and confirms both frames are present. Without Flush the
+// bufio buffer would still hold them and the reader would see an empty file.
+func TestSink_FlushMakesRecordsDurableWithoutClose(t *testing.T) {
+	var nilSink *Sink
+	if err := nilSink.Flush(); err != nil { // nil receiver: no-op, must not panic
+		t.Fatalf("nil Flush: %v", err)
+	}
+
+	path := filepath.Join(t.TempDir(), "flush.pcap")
+	sink, err := New(path, LinkTypeEthernet, 0)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	frames := []link.Frame{{0xAA, 0xBB, 0xCC, 0xDD}, {0x01, 0x02, 0x03, 0x04, 0x05, 0x06}}
+	for i, f := range frames {
+		sink.WriteFrame(int64(i+1)*1_000_000_000, f)
+	}
+	if err := sink.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	// Read back while the sink is STILL OPEN (a second handle onto the same file).
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer f.Close()
+	r, err := pcapgo.NewReader(f)
+	if err != nil {
+		t.Fatalf("pcapgo.NewReader: %v", err)
+	}
+	for i := range frames {
+		data, _, err := r.ReadPacketData()
+		if err != nil {
+			t.Fatalf("frame %d not durable after Flush: %v", i, err)
+		}
+		if string(data) != string(frames[i]) {
+			t.Fatalf("frame %d = % x, want % x", i, data, frames[i])
+		}
+	}
+	// The sink is still writable after Flush.
+	sink.WriteFrame(9_000_000_000, link.Frame{0x99})
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Close after Flush: %v", err)
+	}
+}
+
 // TestSink_NilAndEmpty exercises the no-op guards.
 func TestSink_NilAndEmpty(t *testing.T) {
 	var s *Sink

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -117,6 +118,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/remove_instance", s.handleRemoveInstance)
 	mux.HandleFunc("/extmap", s.handleExtMap)
 	mux.HandleFunc("/config_download", s.handleConfigDownload)
+	mux.HandleFunc("/config_validate", s.handleConfigValidate)
+	mux.HandleFunc("/config_apply", s.handleConfigApply)
 	mux.HandleFunc("/list_serial_ports", s.handleListSerialPorts)
 	mux.HandleFunc("/browse_path", s.handleBrowsePath)
 	mux.HandleFunc("/users", s.handleUsers)
@@ -248,25 +251,29 @@ func (s *Server) handleListFSTypes(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(res)
 }
 
-// handleSchemas reports the config sections registered in THIS build, split into
-// singleton and repeated keys. Registration is build-tag gated (a component's init()
-// calls config.Register only when its tag is present), so this is the runtime signal
-// for "which transports/services can this binary configure" — the config-builder UI
-// uses the repeated keys to offer an Add editor for a transport (IPX/NetBEUI/EtherTalk…)
-// even when the current model has zero instances of it. Mirrors handleListFSTypes:
-// a read-only "what's available in this build" surface for the front-end.
+// handleSchemas reports the self-describing config catalogue for THIS build:
+// section keys, display names, capability flags, and field metadata. Registration
+// is build-tag gated, so this is the runtime signal for "which transports/services
+// can this binary configure" — and how to render a generic form for each without
+// dedicated SPA code. Back-compat: also emits singleton/repeated key lists.
 func (s *Server) handleSchemas(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	sections := s.plane.Schemas()
 	var res struct {
-		Singleton []string `json:"singleton"`
-		Repeated  []string `json:"repeated"`
+		Singleton []string             `json:"singleton"`
+		Repeated  []string             `json:"repeated"`
+		Sections  []config.SectionInfo `json:"sections"`
 	}
 	res.Singleton = []string{}
 	res.Repeated = []string{}
-	for _, sc := range config.Schemas() {
+	res.Sections = sections
+	if res.Sections == nil {
+		res.Sections = []config.SectionInfo{}
+	}
+	for _, sc := range sections {
 		if sc.Repeated {
 			res.Repeated = append(res.Repeated, sc.Key)
 		} else {
@@ -450,6 +457,56 @@ func (s *Server) handleConfigDownload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/toml")
 	w.Header().Set("Content-Disposition", `attachment; filename="server.toml"`)
 	_, _ = w.Write(data)
+}
+
+// handleConfigValidate parses the request body as codec bytes (TOML) and validates
+// without applying — the TOML editor's "Check" action.
+func (s *Server) handleConfigValidate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.plane.ValidateConfig(data); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
+// handleConfigApply parses, validates, installs, and persists codec bytes — the
+// TOML editor's "Apply & save". On success the live model (and forms) reflect the
+// new config; the response carries the backup revision id.
+func (s *Server) handleConfigApply(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	rev, err := s.plane.ApplyConfigBytes(r.Context(), data)
+	if err != nil {
+		code := http.StatusBadRequest
+		if errors.Is(err, control.ErrUnavailable) {
+			code = statusForErr(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"revision": rev})
 }
 
 // handleListSerialPorts returns the host serial ports (the TashTalk dropdown). A

@@ -266,8 +266,8 @@ func (p *Port) SetTrafficObserver(fn func(rxBytes, txBytes int)) {
 // enabled-flag change applies live; an interface change is structural and
 // returns ErrNeedsRestart so the supervisor restarts (reopening the link).
 func (p *Port) ApplyConfig(section any) error {
-	sec, ok := section.(*port.Section)
-	if !ok || sec == nil {
+	sec := port.AsSection(section)
+	if sec == nil {
 		return nil
 	}
 	p.mu.Lock()

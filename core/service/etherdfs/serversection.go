@@ -14,31 +14,28 @@ import (
 const ServerKey = "EtherDFS"
 
 // ServerSection is EtherDFS's singleton server config: the wire binding plus the
-// advertised server name. It is a flat, codec-friendly view satisfying
-// config.Section so the model round-trips it.
+// advertised server name. It embeds port.CaptureFields (the CaptureProvider
+// capability) so wire dumps share the same TOML keys and compose path as the
+// other NIC transports, without re-declaring capture fields.
 type ServerSection struct {
 	// SKey is the section key; always "EtherDFS". Stored so Key() is a plain getter.
 	SKey string `toml:"-"`
 	// IsEnabled mirrors the configured-enabled flag (≠ running). A disabled section
 	// builds the service inert (no link), like a disabled port.
-	IsEnabled bool `toml:"enabled"`
+	IsEnabled bool `toml:"enabled" display:"Enabled" desc:"Whether EtherDFS is configured on (≠ currently running)."`
 	// Interface is the NAME of the NIC the EtherDFS service binds to ("eth0",
 	// "br-lan"); resolved against the interface namespace. Empty inherits the
 	// default Bridge interface.
-	Interface string `toml:"iface"`
+	Interface string `toml:"iface,omitempty" display:"Interface" desc:"NIC this service binds to. Empty inherits the default Bridge interface." widget:"iface"`
 	// MAC is the station hardware address used as the Ethernet source on outbound
 	// reply frames, and the address inbound frames must target (besides broadcast).
 	// "" means "use the interface's own MAC", resolved at open time.
-	MAC string `toml:"mac"`
+	MAC string `toml:"mac,omitempty" display:"Station MAC" desc:"Ethernet source/target address for EtherDFS. Empty = use the NIC's own MAC." example:"00:11:22:33:44:55"`
 	// ServerName is the name advertised in AL_INSTALLCHK replies. Empty falls back
 	// to the shared Identity.Hostname.
-	ServerName string `toml:"server_name"`
+	ServerName string `toml:"server_name,omitempty" display:"Server name" desc:"Name advertised to EtherDFS clients. Empty falls back to the host name."`
 
-	// Capture is a pcap file path for this port's wire traffic ("" = no capture),
-	// mirroring port.Section.Capture for the other NIC transports (EtherTalk/IPX/
-	// NetBEUI). CaptureSnaplen caps the bytes stored per frame (0 = full frame).
-	Capture        string `toml:"capture"`
-	CaptureSnaplen int    `toml:"capture_snaplen"`
+	port.CaptureFields
 }
 
 // Key returns the section key.
@@ -75,8 +72,12 @@ func (s *ServerSection) PortSection() *port.Section {
 	}
 }
 
-// compile-time assertion: *ServerSection satisfies config.Section.
-var _ config.Section = (*ServerSection)(nil)
+// compile-time assertions.
+var (
+	_ config.Section       = (*ServerSection)(nil)
+	_ port.PortSectioner   = (*ServerSection)(nil)
+	_ port.CaptureProvider = (*ServerSection)(nil)
+)
 
 // ServerSectionFromModel resolves the EtherDFS server section from the model,
 // falling back to a fresh disabled default when the model carries none.

@@ -78,14 +78,28 @@ const api = {
     const r = await fetch("list_fs_types");
     return r.ok ? r.json() : [];
   },
-  // schemas reports the config sections registered in THIS build ({singleton:[], repeated:[]}).
-  // Registration is build-tag gated, so the repeated keys are the transports/services this
-  // binary can configure — the config-builder shows an Add editor for each even with zero
-  // instances. A missing endpoint (older server) yields empty lists → falls back to the
-  // instances-only behaviour.
+  // schemas reports the config sections registered in THIS build. Rich form:
+  // {singleton, repeated, sections:[{key, repeated, display_name, description, capabilities, fields}]}.
   async schemas() {
     const r = await fetch("schemas");
-    return r.ok ? r.json() : { singleton: [], repeated: [] };
+    return r.ok ? r.json() : { singleton: [], repeated: [], sections: [] };
+  },
+  async configText() {
+    const r = await fetch("config_download");
+    if (!r.ok) throw new Error(`config_download: HTTP ${r.status}`);
+    return r.text();
+  },
+  async validateConfig(text) {
+    const r = await fetch("config_validate", { method: "POST", headers: { "Content-Type": "text/plain" }, body: text });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+    return body;
+  },
+  async applyConfig(text) {
+    const r = await fetch("config_apply", { method: "POST", headers: { "Content-Type": "text/plain" }, body: text });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+    return body;
   },
   async paramsFor(t) {
     const r = await fetch("params_for?fs_type=" + encodeURIComponent(t));
@@ -339,12 +353,15 @@ class CsApp extends HTMLElement {
       document.getElementById("tabs").classList.remove("hidden");
       telemetry.start();
       this.units = body || [];
+      // Self-describing section catalogue (fields/capabilities) for schema-driven forms.
+      window.__csSchemas = await api.schemas().catch(() => ({ singleton: [], repeated: [], sections: [] }));
       this.views = {
         dashboard: new CsDashboard(),
         interfaces: new CsInterfacesTab(),
         router: new CsRouterTab(),
         protocols: new CsProtocolsTab(),
         sharing: new CsSharingTab(),
+        toml: new CsTomlTab(),
         diagnostics: new CsDiagnostics(),
         users: new CsUsers(),
         logs: new CsLogs(),
@@ -866,7 +883,7 @@ async function openConfigModal(name) {
   }
   if (!section) {
     // Some services carry no singleton section — their whole config is a repeated list
-    // edited on the Configuration tab (NCP is configured entirely through its volumes).
+    // edited on the Sharing / Configuration tabs.
     body.replaceChildren(el("p", { class: "muted" }, [LIST_ONLY_CONFIG[name] ||
       "This component has no editable config section."]));
     applyBtn.disabled = true;
@@ -963,6 +980,11 @@ const FIELD_META = {
   SeedNetworkEnd: { label: "Seed network end", desc: "Last network number of the seed range. 0 = a single number (== start)." },
   SeedZone: { label: "Seed zone", desc: "Default zone name this port seeds. Empty = non-seed / inherit." },
   IPXFrameType: { label: "Frame type", desc: "IPX outbound Ethernet encapsulation: ethernet_ii (default, MacIPX) · 802.3 · 802.2. Inbound accepts all." },
+  IPXFrameTypes: { label: "Frame types (multi)", desc: "Optional list of encapsulations to advertise on (SAP/RIP once each). Empty = just Frame type above." },
+  IPXNetwork: { label: "IPX network", desc: "IPX network number (decimal). On an IPX port: this segment (0 = local/unknown). On MacIPX: announced to clients (0 = 0x10). Set both to the same value when they share a segment." },
+  Capture: { label: "Capture file", desc: "Pcap path to tee this port's wire traffic (empty = off)." },
+  CaptureSnaplen: { label: "Capture snaplen", desc: "Bytes stored per captured frame (0 = full frame)." },
+  PaceMs: { label: "Pace (ms)", desc: "Minimum inter-frame gap per destination on LocalTalk. 0 = transport default; negative disables pacing." },
   // Interface namespace
   Kind: { label: "Kind", desc: "nic · serial · bridge." },
   Addr: { label: "Address", desc: "Optional pinned address for a NIC interface." },
@@ -983,8 +1005,11 @@ const FIELD_META = {
   FSType: { label: "Filesystem type", desc: "Storage backend (local_fs, memfs, …)." },
   ReadOnly: { label: "Read-only", desc: "Export the whole share read-only." },
   Options: { label: "Options", desc: "Backend-specific key=value parameters." },
-  AllowedUsers: { label: "Allowed users", desc: "Access allow-list. Empty = guest/world." },
+  AllowedUsers: { label: "Allowed users", desc: "Access allow-list. Check Guest for world access; otherwise only the selected accounts." },
   ExtMapPath: { label: "Extension map file", desc: "Netatalk-style type/creator map for files with no stored Finder info." },
+  SizeLimitMB: { label: "Size limit (MiB)", desc: "Volume size reported to AFP clients in MiB (0 = 512 MiB classic default)." },
+  MetaBackend: { label: "Meta backend", desc: "Where derived names, CNIDs, and DOS attributes live (metastore · xattr · ads). Empty = platform default." },
+  InternalNetwork: { label: "Internal network", desc: "NetWare internal IPX network number (decimal). 0 = derive from the station MAC." },
   // MacIP / capture
   Mode: { label: "Mode", desc: "Gateway mode (bridge / nat)." },
   Enabled: { label: "Enabled", desc: "Whether this service is configured on (≠ currently running)." },
@@ -1000,13 +1025,11 @@ const FIELD_META = {
   DefaultGateway: { label: "Default gateway", desc: "Upstream router the gateway forwards to." },
   DHCPRelay: { label: "DHCP relay", desc: "Relay client DHCP to an upstream server instead of leasing locally." },
   // MacIPX (IPXGW) gateway
-  IPXNetwork: { label: "IPX network", desc: "IPX network number the gateway announces, as a decimal integer (0 = the 0x10 default MACIPXGW uses)." },
   Bindings: { label: "NBP bindings", desc: "\"Object:Zone\" names the gateway advertises via NBP (one per line; empty = one \"IPX Gateway\" name per zone the router knows)." },
   Snaplen: { label: "Snap length", desc: "Bytes captured per packet (0 = full frame)." },
   // Section titles (panel summaries) that need a friendlier label than the humanised key.
   Identity: { label: "Server identity", desc: "" },
   Logging: { label: "Logging", desc: "" },
-  Capture: { label: "Packet capture", desc: "" },
   Router: { label: "Router", desc: "" },
   NetBIOS: { label: "NetBIOS", desc: "" },
   MacIP: { label: "MacIP gateway", desc: "" },
@@ -1018,15 +1041,53 @@ const FIELD_META = {
   EtherDFS: { label: "EtherDFS server", desc: "" },
 };
 
-// fieldMeta returns the label + description for a field key, humanising unknown keys.
-function fieldMeta(key) {
+// fieldMeta returns the label + description for a field key. Prefers self-describing
+// schema metadata (GET /schemas → sections[].fields) when the catalogue is loaded,
+// then FIELD_META, then a humanised key.
+function fieldMeta(key, sectionKey) {
+  const sections = (window.__csSchemas && window.__csSchemas.sections) || [];
+  const pack = (f) => ({
+    label: f.display_name || key,
+    desc: f.description || "",
+    example: f.example || "",
+    widget: f.widget || "",
+    type: f.type || "",
+  });
+  if (sectionKey) {
+    const sec = sections.find((s) => s.key === sectionKey);
+    const f = sec && (sec.fields || []).find((x) => x.key === key);
+    if (f && (f.display_name || f.description || f.example)) return pack(f);
+  }
+  // Cross-section field lookup (shared capability fields like Capture).
+  for (const sec of sections) {
+    const f = (sec.fields || []).find((x) => x.key === key);
+    if (f && f.display_name) return pack(f);
+  }
   if (FIELD_META[key]) return FIELD_META[key];
-  // Humanise: split camelCase / snake_case into Title-cased words.
   const label = String(key)
     .replace(/_/g, " ")
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .replace(/^./, (c) => c.toUpperCase());
   return { label, desc: "" };
+}
+
+// blankFromSchema builds a blank instance from GET /schemas field metadata.
+function blankFromSchema(key) {
+  const sections = (window.__csSchemas && window.__csSchemas.sections) || [];
+  const sec = sections.find((s) => s.key === key);
+  if (!sec || !(sec.fields || []).length) return null;
+  const out = {};
+  for (const f of sec.fields) {
+    switch (f.type) {
+      case "bool": out[f.key] = f.default === "true" || f.default === "1"; break;
+      case "int": case "uint": out[f.key] = f.default ? parseInt(f.default, 0) || 0 : 0; break;
+      case "strings": out[f.key] = f.default ? String(f.default).split(",") : []; break;
+      default: out[f.key] = f.default || "";
+    }
+  }
+  if ("IsEnabled" in out) out.IsEnabled = true;
+  if ("Enabled" in out && out.Enabled === false && key !== "IPXGW" && key !== "MacIP") out.Enabled = true;
+  return out;
 }
 
 // fieldRow stacks a label, input, and optional hint into a field group.
@@ -1059,7 +1120,7 @@ function sectionForm(section, opts = {}) {
       nodes.push(...(Array.isArray(w.nodes) ? w.nodes : [w.node]));
       continue;
     }
-    const meta = fieldMeta(k);
+    const meta = fieldMeta(k, opts.sectionKey);
     const label = el("label", {}, [meta.label]);
     const hint = meta.desc ? el("p", { class: "field-hint" }, [meta.desc]) : null;
     let input;
@@ -1071,10 +1132,12 @@ function sectionForm(section, opts = {}) {
       nodes.push(el("div", { class: "field-group" }, row));
     } else if (typeof v === "number") {
       input = el("input", { type: "number", value: String(v) });
+      if (meta.example) input.placeholder = meta.example;
       nodes.push(fieldRow(label, input, hint));
     } else if (Array.isArray(v)) {
       input = el("textarea", {}, [v.join("\n")]);
       input.dataset.kind = "list";
+      if (meta.example) input.placeholder = meta.example;
       nodes.push(fieldRow(label, input, hint || el("p", { class: "field-hint" }, ["one entry per line"])));
     } else if (v !== null && typeof v === "object") {
       // Nested object (e.g. an Options map): edit as JSON.
@@ -1083,6 +1146,7 @@ function sectionForm(section, opts = {}) {
       nodes.push(fieldRow(label, input, hint));
     } else {
       input = el("input", { type: "text", value: v == null ? "" : String(v) });
+      if (meta.example) input.placeholder = meta.example;
       nodes.push(fieldRow(label, input, hint));
     }
     inputs[k] = { input, orig: v };
@@ -1113,7 +1177,57 @@ function sectionForm(section, opts = {}) {
   };
 }
 
-// ---- model-aware form widgets -------------------------------------------------------
+// ---- share field choice lists (volume / share / drive editors) ---------------
+
+// Primary fork-backend names offered in the share form. Aliases (auto/null/none)
+// resolve server-side; the dropdown sticks to the canonical operator-facing set.
+const FORK_BACKEND_CHOICES = [
+  "appledouble", "appledouble-osxzip", "appledouble-dir",
+  "nofork", "ads", "xattr", "native", "macbinary", "applesingle", "derez",
+];
+const FILENAME_CODEC_CHOICES = ["identity", "utf8", "macroman-utf8", "macroman-native"];
+const METASTORE_CHOICES = ["mem", "sqlite"];
+const META_BACKEND_CHOICES = ["metastore", "xattr", "ads"];
+const GUEST_NAME = "Guest";
+
+// shareFieldOverrides builds model-aware widgets for volume/share/drive editors:
+// enum dropdowns for fork/codec/metastore/meta, and an Allowed-users checklist
+// (including Guest). EtherDFS hides AllowedUsers — it has no login.
+function shareFieldOverrides(key, userNames) {
+  const overrides = {};
+  const meta = (k) => fieldMeta(k, key);
+  const dd = (field, choices) => (v) =>
+    dropdown(meta(field).label, choices, v || "", meta(field).desc);
+  overrides.ForkBackend = dd("ForkBackend", FORK_BACKEND_CHOICES);
+  overrides.FilenameCodec = dd("FilenameCodec", FILENAME_CODEC_CHOICES);
+  overrides.Metastore = dd("Metastore", METASTORE_CHOICES);
+  overrides.MetaBackend = dd("MetaBackend", META_BACKEND_CHOICES);
+  if (key !== "EtherDFSDrives") {
+    // Empty AllowedUsers = guest/world. Checklist: Guest checked ⇔ empty list;
+    // otherwise the selected named accounts (Guest unchecked).
+    overrides.AllowedUsers = (v) => {
+      const selected = Array.isArray(v) ? v.slice() : [];
+      const guestOn = selected.length === 0;
+      const named = (userNames || []).filter((n) => n.toLowerCase() !== GUEST_NAME.toLowerCase());
+      const choices = [
+        { value: GUEST_NAME, label: GUEST_NAME, class: "builtin" },
+        ...named,
+      ];
+      const initial = guestOn ? [GUEST_NAME] : selected.filter((n) =>
+        named.some((u) => u.toLowerCase() === String(n).toLowerCase()));
+      const w = checkboxList(meta("AllowedUsers").label, choices, initial, meta("AllowedUsers").desc);
+      return {
+        node: w.node,
+        collect: () => {
+          const picked = w.collect();
+          if (picked.includes(GUEST_NAME) || picked.length === 0) return [];
+          return picked;
+        },
+      };
+    };
+  }
+  return overrides;
+}
 
 // checkboxList renders a labelled checkbox group bound to a list value (the selected
 // subset of `choices`). collect() returns the checked tokens in `choices` order. Used
@@ -1122,18 +1236,22 @@ function sectionForm(section, opts = {}) {
 function checkboxList(label, choices, selected, hint) {
   const set = new Set(selected || []);
   const boxes = choices.map((c) => {
-    const cb = el("input", { type: "checkbox", value: c });
-    if (set.has(c)) cb.checked = true;
-    return { c, cb };
+    const value = typeof c === "string" ? c : c.value;
+    const text = typeof c === "string" ? c : (c.label || c.value);
+    const cls = typeof c === "string" ? "" : (c.class || "");
+    const cb = el("input", { type: "checkbox", value });
+    if (set.has(value)) cb.checked = true;
+    return { value, text, cls, cb };
   });
   const node = el("div", { class: "field-group" }, [
     el("label", {}, [label]),
-    ...boxes.map(({ c, cb }) => el("label", { class: "inline" }, [cb, c])),
+    ...boxes.map(({ text, cls, cb }) =>
+      el("label", { class: "inline" }, [cb, cls ? el("span", { class: cls }, [text]) : text])),
     ...(hint ? [el("p", { class: "field-hint" }, [hint])] : []),
   ]);
   return {
     node,
-    collect: () => boxes.filter((b) => b.cb.checked).map((b) => b.c),
+    collect: () => boxes.filter((b) => b.cb.checked).map((b) => b.value),
   };
 }
 
@@ -1201,7 +1319,7 @@ function zoneChoices(model) {
   const add = (z) => { if (z && String(z).trim()) zones.add(String(z).trim()); };
   add(model.Router && model.Router.DefaultZone);
   const lists = model.Lists || {};
-  for (const k of AT_PORT_KEYS) {
+  for (const k of appletalkPortKeys()) {
     for (const inst of lists[k] || []) add(inst.SeedZone || inst.seed_zone);
   }
   return [...zones];
@@ -1219,29 +1337,97 @@ function datalistField(label, choices, value, hint) {
   return { node: el("div", { class: "field-group" }, kids), collect: () => input.value };
 }
 
-// APPLETALK_TRANSPORTS are the transport schema keys whose port instances seed the
-// AppleTalk internet (zone + network range): the forms for these surface the seed
-// fields and an interface picker. IPX/NetBEUI are transports too but carry no AppleTalk
-// seed, so they only get the interface picker.
+// schemaSections returns the enriched section catalogue from GET /schemas.
+function schemaSections() {
+  return (window.__csSchemas && window.__csSchemas.sections) || [];
+}
+
+// sectionSchema looks up one section's self-describing info by key.
+function sectionSchema(key) {
+  return schemaSections().find((s) => s.key === key) || null;
+}
+
+// sectionCaps returns capability flags for a section (capture, appletalk_seed, …).
+function sectionCaps(key) {
+  const s = sectionSchema(key);
+  return (s && s.capabilities) || [];
+}
+
+// sectionHasCap reports whether a section advertises a capability.
+function sectionHasCap(key, cap) {
+  return sectionCaps(key).includes(cap);
+}
+
+// appletalkPortKeys are repeated wire-binding ports that seed AppleTalk.
+// Falls back to the historical hard-coded list when /schemas is empty.
+function appletalkPortKeys() {
+  const from = schemaSections().filter((s) => s.repeated && (s.capabilities || []).includes("appletalk_seed")).map((s) => s.key);
+  return from.length ? from : ["EtherTalk", "LToUDP", "TashTalk"];
+}
+
+// otherTransportPortKeys are repeated wire-binding ports that are NOT AppleTalk seeders
+// (IPX, NetBEUI, and any future non-AT transport).
+function otherTransportPortKeys() {
+  const from = schemaSections().filter((s) =>
+    s.repeated && (s.capabilities || []).includes("wire_binding") && !(s.capabilities || []).includes("appletalk_seed")).map((s) => s.key);
+  return from.length ? from : ["IPX", "NetBEUI"];
+}
+
+// sectionDisplayName prefers schema display_name, then FIELD_META, then the key.
+function sectionDisplayName(key) {
+  const s = sectionSchema(key);
+  if (s && s.display_name) return s.display_name;
+  return fieldMeta(key).label;
+}
+
+// APPLETALK_TRANSPORTS / NON_AT_TRANSPORTS kept as aliases for formOptionsFor;
+// prefer capability helpers for tab discovery.
 const APPLETALK_TRANSPORTS = ["EtherTalk", "LToUDP", "TashTalk"];
 const NON_AT_TRANSPORTS = ["IPX", "NetBEUI"];
 
+// PORT_TEMPLATES are the per-transport blank shapes matching the typed Go sections
+// (core/port/transport_section.go). Add forms prefer blankFromSchema when /schemas
+// is loaded; these remain as a fallback when the catalogue is absent.
+const PORT_TEMPLATES = {
+  EtherTalk: {
+    Name: "", Iface: "", IsEnabled: true, MAC: "",
+    SeedNetwork: 0, SeedNetworkEnd: 0, SeedZone: "",
+    Capture: "", CaptureSnaplen: 0,
+  },
+  LToUDP: {
+    Name: "", Iface: "", IsEnabled: true,
+    SeedNetwork: 0, SeedNetworkEnd: 0, SeedZone: "",
+    Capture: "", CaptureSnaplen: 0, PaceMs: 0,
+  },
+  TashTalk: {
+    Name: "", IsEnabled: true,
+    Device: "", Baud: 0,
+    SeedNetwork: 0, SeedNetworkEnd: 0, SeedZone: "",
+    Capture: "", CaptureSnaplen: 0, PaceMs: 0,
+  },
+  IPX: {
+    Name: "", Iface: "", IsEnabled: true, MAC: "",
+    IPXFrameType: "ethernet_ii", IPXNetwork: 0,
+    Capture: "", CaptureSnaplen: 0,
+  },
+  NetBEUI: {
+    Name: "", Iface: "", IsEnabled: true, MAC: "",
+    Capture: "", CaptureSnaplen: 0,
+  },
+};
+
 // LIST_ONLY_CONFIG maps a component whose config is a repeated list (no singleton
 // section) to the hint shown in its dashboard cog modal — pointing the operator to the
-// Configuration tab where the list editor lives. NCP has no server-level section: it
-// binds the shared IPX transport and takes its name from the Identity, so its only
-// configuration is its exported volumes.
-const LIST_ONLY_CONFIG = {
-  NCP: "NCP has no server-level settings. Its volumes are configured on the Sharing tab (NCP Volumes); its server name comes from the shared Identity.",
-};
+// Configuration tab where the list editor lives.
+const LIST_ONLY_CONFIG = {};
 
 // formOptionsFor returns the sectionForm opts (overrides + hidden fields) for a given
 // section/reconfigure key, making the generic form model-aware: Router gets a member
-// checkbox list; SMB/NetBIOS/AFP get transport-binding checkboxes; Bridge gets a member
-// multi-select with serial fields hidden; an AppleTalk transport port gets an interface
-// dropdown plus its zone/network seed fields surfaced.
+// checkbox list; SMB/NetBIOS/AFP get transport-binding checkboxes; transport ports get
+// interface/serial/frame widgets. Field presence comes from PORT_TEMPLATES / typed
+// GET /config JSON; hide rules are defensive for leftover foreign keys.
 function formOptionsFor(name, model) {
-  const opts = { overrides: {}, hide: new Set() };
+  const opts = { overrides: {}, hide: new Set(), sectionKey: name };
   // SKey is the section's schema key — server-side identity, never operator-editable.
   // Hidden fields round-trip verbatim through collect(), so hiding it everywhere is safe.
   opts.hide.add("SKey");
@@ -1273,40 +1459,46 @@ function formOptionsFor(name, model) {
     opts.overrides.Interface = (v) => dropdown("Interface — the egress NIC for IP traffic",
       interfaceChoices(model), v, "Empty inherits the default interface.");
     opts.overrides.Mode = (v) => dropdown("Mode", ["bridge", "nat"], v, "bridge = shared L2 segment; nat = translate to the host's IP.");
-  } else if (APPLETALK_TRANSPORTS.includes(name) || NON_AT_TRANSPORTS.includes(name)) {
-    // Each transport port carries its OWN binding; the widget set differs by transport:
-    //   EtherTalk / IPX / NetBEUI → an interface (bridge/uplink) dropdown + MAC.
-    //   TashTalk                  → its own serial line (Device dropdown + Baud), no iface.
+  } else if (sectionHasCap(name, "wire_binding") || APPLETALK_TRANSPORTS.includes(name) || NON_AT_TRANSPORTS.includes(name)) {
+    // Capability-driven hides: a new transport that omits CapIPXFraming never shows
+    // frame-type fields, even without a dedicated SPA branch.
+    if (!sectionHasCap(name, "ipx_framing") && name !== "IPX") {
+      opts.hide.add("IPXFrameType").add("IPXFrameTypes");
+    }
+    if (!sectionHasCap(name, "ipx_network") && name !== "IPX") {
+      opts.hide.add("IPXNetwork");
+    }
+    if (!sectionHasCap(name, "serial") && name !== "TashTalk") {
+      opts.hide.add("Device").add("Baud");
+    }
+    if (!sectionHasCap(name, "localtalk_pace") && name !== "LToUDP" && name !== "TashTalk") {
+      opts.hide.add("PaceMs");
+    }
+    if (!sectionHasCap(name, "appletalk_seed") && !APPLETALK_TRANSPORTS.includes(name)) {
+      opts.hide.add("SeedNetwork").add("SeedNetworkEnd").add("SeedZone");
+    }
+
+    // Binding widgets differ by transport:
+    //   EtherTalk / IPX / NetBEUI → interface (bridge/uplink) dropdown + optional MAC.
+    //   TashTalk                  → serial line (Device dropdown injected in openInstanceModal).
     //   LToUDP                    → host-wide multicast; Iface is an optional bind address.
-    // Frame type is IPX-only; the IPX branch below re-adds it as a dropdown.
-    if (name !== "IPX") opts.hide.add("IPXFrameType");
-    if (name === "TashTalk") {
-      // Serial line lives on the port: the Device dropdown is injected by openInstanceModal
-      // (it needs the async serial-port list); here we just hide the fields that do not
-      // apply — the interface picker, the MAC, and Baud is a plain number field.
+    if (sectionHasCap(name, "serial") || name === "TashTalk") {
       opts.hide.add("Iface").add("MAC");
     } else if (name === "LToUDP") {
-      // LToUDP rides UDP multicast on the host; Iface is an optional bind ADDRESS, not a
-      // namespace interface. Serial/MAC do not apply.
       opts.overrides.Iface = (v) => textField("Bind address (optional)", v,
         "Local IPv4 address to bind/join the multicast group on. Empty = every multicast-capable interface.");
-      opts.hide.add("MAC").add("Device").add("Baud");
+      opts.hide.add("MAC");
     } else {
-      // EtherTalk / IPX / NetBEUI bind ONE namespace interface (the bridge/uplink), or
-      // inherit the default when empty — a single-select dropdown. Serial fields hidden.
       opts.overrides.Iface = (v) => dropdown("Interface — the uplink this port binds to",
         interfaceChoices(model), v, "Empty inherits the default interface.");
-      opts.hide.add("Device").add("Baud");
-      if (name === "IPX") {
-        // IPX picks its OUTBOUND Ethernet encapsulation (Novell frame type); blank
-        // defaults to Ethernet II, which MacIPX speaks. Inbound accepts all framings.
+      if (sectionHasCap(name, "ipx_framing") || name === "IPX") {
         opts.overrides.IPXFrameType = (v) => dropdown("Frame type — outbound Ethernet encapsulation",
           ["ethernet_ii", "802.3", "802.2"], v || "ethernet_ii",
           "ethernet_ii (DIX 0x8137, MacIPX-compatible) · 802.3 (raw Novell) · 802.2 (IEEE LLC).");
       }
-      if (NON_AT_TRANSPORTS.includes(name)) {
-        // IPX / NetBEUI carry no AppleTalk seed; hide the AppleTalk-only fields.
-        opts.hide.add("SeedNetwork").add("SeedNetworkEnd").add("SeedZone").add("MAC");
+      if (!sectionHasCap(name, "appletalk_seed") && (sectionHasCap(name, "wire_binding") || NON_AT_TRANSPORTS.includes(name))) {
+        // IPX / NetBEUI stamp the interface MAC when their own is empty.
+        opts.hide.add("MAC");
       }
     }
   }
@@ -1336,6 +1528,9 @@ const SERVER_DEFAULTS = {
   // carries the NIC binding (Interface/MAC/IsEnabled) plus the advertised name and
   // its own pcap capture path (same shape as a transport port's Capture/CaptureSnaplen).
   EtherDFS: { IsEnabled: false, Interface: "", MAC: "", ServerName: "", Capture: "", CaptureSnaplen: 0 },
+  // NCP (NetWare 3.x): server name / description (empty → Identity) and the internal
+  // IPX network used for SAP + GetLocalTarget discovery (0 = derive from MAC).
+  NCP: { ServerName: "", Description: "", InternalNetwork: 0 },
   // MacIP (IP-over-AppleTalk) gateway: synthesised with its full field shape so it is
   // configurable on a fresh install. Mirrors macip.Section (toml keys → Go field names).
   MacIP: {
@@ -1373,7 +1568,8 @@ class CsConfigBase extends HTMLElement {
       // Schemas tell us which sections this BUILD can configure (build-tag gated), so a
       // config-builder editor is offered for every registered transport/service even
       // when the model has zero instances of it (e.g. IPX/NetBEUI before any is added).
-      this.schemas = await api.schemas().catch(() => ({ singleton: [], repeated: [] }));
+      this.schemas = await api.schemas().catch(() => ({ singleton: [], repeated: [], sections: [] }));
+      window.__csSchemas = this.schemas;
     } catch (e) {
       this.replaceChildren(el("div", { class: "panel err" }, [e.message]));
       return;
@@ -1441,7 +1637,7 @@ class CsConfigBase extends HTMLElement {
       } catch (e) { sstat.textContent = e.message; }
     });
     return el("details", open ? { class: "panel", open: "" } : { class: "panel" }, [
-      el("summary", {}, [fieldMeta(name).label]),
+      el("summary", {}, [sectionDisplayName(name)]),
       editor.node,
       el("div", { class: "row" }, [apply]),
       sstat,
@@ -1486,18 +1682,26 @@ class CsConfigBase extends HTMLElement {
 }
 
 // AppleTalk transport schema keys (repeated ports) and the non-AppleTalk transports,
-// used to route port editors to the Router vs Protocols tabs.
+// used to route port editors to the Router vs Protocols tabs. Prefer capability-driven
+// helpers (appletalkPortKeys / otherTransportPortKeys) which discover new protocols
+// from GET /schemas; these constants remain as documented defaults / list-column hints.
 const AT_PORT_KEYS = ["EtherTalk", "LToUDP", "TashTalk"];
 const PROTO_PORT_KEYS = ["IPX", "NetBEUI"];
 
+// Singletons claimed by other tabs — Protocols shows the rest (plus Netboot, …).
+const GENERAL_SINGLETONS = ["Identity", "Logging", "AdminAuth"];
+const SHARING_SINGLETONS = ["AFP", "SMB", "NCP", "EtherDFS"];
+const ROUTER_SINGLETONS = ["Router"];
+
 // --- Interfaces tab: raw links (NIC/pcap, TashTalk serial, LToUDP) + the bridge, plus
-// the general server settings (Identity / Logging / Capture / web-admin) that belong to
-// no single protocol group. --------------------------------------------------------
+// the general server settings (Identity / Logging / web-admin) that belong to
+// no single protocol group. Per-port wire dumps live on each transport's Capture field,
+// not a central Capture section. --------------------------------------------------------
 class CsInterfacesTab extends CsConfigBase {
   title = "Interfaces";
   renderBody() {
     const out = [];
-    out.push(el("p", { class: "field-hint" }, ["The uplink bridge(s) — a host NIC via pcap/tap/raw. This is the only interface: EtherTalk / IPX / NetBEUI ports bind a bridge by name (a port that names none inherits the one flagged Default). TashTalk (serial) and LToUDP (multicast) own their binding on the port itself, not here."]));
+    out.push(el("p", { class: "field-hint" }, ["The uplink bridge(s) — a host NIC via pcap/tap/raw. This is the only interface: EtherTalk / IPX / NetBEUI ports bind a bridge by name (a port that names none inherits the one flagged Default). TashTalk (serial) and LToUDP (multicast) own their binding on the port itself, not here. Packet capture is configured per port (Capture file on each transport)."]));
     // The interface-namespace editor (NIC / serial / bridge entries; one flagged the
     // default). A bridge is just a kind=bridge entry here — there is no separate
     // singleton bridge panel any more.
@@ -1505,7 +1709,7 @@ class CsInterfacesTab extends CsConfigBase {
     // General server settings that fit no protocol group. (The web-admin account is NOT
     // here — its salt/hash are derived server-side via first-run setup, not a text edit.)
     out.push(el("h3", { class: "group-head" }, ["General"]));
-    for (const k of ["Identity", "Logging", "Capture"]) {
+    for (const k of ["Identity", "Logging"]) {
       const p = this.singletonPanel(k);
       if (p) out.push(p);
     }
@@ -1525,7 +1729,7 @@ class CsRouterTab extends CsConfigBase {
     if (router) out.push(router);
     out.push(el("h3", { class: "group-head" }, ["AppleTalk transports"]));
     let anyPort = false;
-    for (const k of AT_PORT_KEYS) {
+    for (const k of appletalkPortKeys()) {
       const p = this.portEditor(k);
       if (p) { out.push(p); anyPort = true; }
     }
@@ -1540,20 +1744,26 @@ class CsProtocolsTab extends CsConfigBase {
   title = "Protocols";
   renderBody() {
     const out = [];
-    out.push(el("p", { class: "field-hint" }, ["Non-AppleTalk protocols: IPX and NetBEUI links, the NetBIOS name service (which carries SMB), and the MacIP (IP-over-AppleTalk) gateway."]));
-    // NetBIOS + MacIP singletons.
-    for (const k of ["NetBIOS", "MacIP", "IPXGW"]) {
+    out.push(el("p", { class: "field-hint" }, ["Non-AppleTalk protocols and gateways. New singleton sections registered in this build appear here automatically; dedicated widgets (zone/iface dropdowns) still apply where coded."]));
+    // Known protocol singletons first, then any other singleton not claimed by
+    // General / Router / Sharing tabs (e.g. Netboot) — schema-driven discovery.
+    const preferred = ["NetBIOS", "MacIP", "IPXGW", "Netboot"];
+    const claimed = new Set([...GENERAL_SINGLETONS, ...SHARING_SINGLETONS, ...ROUTER_SINGLETONS, ...preferred]);
+    const extras = schemaSections()
+      .filter((s) => !s.repeated && !claimed.has(s.key))
+      .map((s) => s.key);
+    for (const k of [...preferred, ...extras]) {
       const p = this.singletonPanel(k);
       if (p) out.push(p);
     }
-    // IPX / NetBEUI transport ports.
+    // IPX / NetBEUI (and any future non-AT wire-binding ports).
     out.push(el("h3", { class: "group-head" }, ["IPX / NetBEUI links"]));
     let anyPort = false;
-    for (const k of PROTO_PORT_KEYS) {
+    for (const k of otherTransportPortKeys()) {
       const p = this.portEditor(k);
       if (p) { out.push(p); anyPort = true; }
     }
-    if (!anyPort) out.push(el("div", { class: "panel muted" }, ["No IPX / NetBEUI transports built."]));
+    if (!anyPort) out.push(el("div", { class: "panel muted" }, ["No IPX/NetBEUI transports built."]));
     return out;
   }
 }
@@ -1604,6 +1814,51 @@ class CsSharingTab extends CsConfigBase {
   }
 }
 
+// --- Config file tab: raw TOML editor with validate + apply. Apply replaces the
+// live model and persists; reload other tabs to refresh structured forms. --------
+class CsTomlTab extends HTMLElement {
+  connectedCallback() { this.activate(); }
+  async activate() {
+    this.replaceChildren(el("p", { class: "muted" }, ["loading…"]));
+    let text = "";
+    try { text = await api.configText(); }
+    catch (e) { this.replaceChildren(el("div", { class: "err" }, [e.message])); return; }
+    const ta = el("textarea", { class: "toml-editor", spellcheck: "false", style: "width:100%;min-height:420px;font-family:ui-monospace,monospace;font-size:12px" }, [text]);
+    const status = el("div", { class: "muted" });
+    const check = button("Validate", "", async () => {
+      status.textContent = "checking…"; status.className = "muted";
+      try {
+        await api.validateConfig(ta.value);
+        status.textContent = "Valid."; status.className = "ok";
+      } catch (e) {
+        status.textContent = e.message; status.className = "err";
+      }
+    });
+    const apply = button("Apply & save", "primary", async () => {
+      if (!confirm("Replace the live configuration with this TOML and save to disk?")) return;
+      status.textContent = "applying…"; status.className = "muted";
+      try {
+        const res = await api.applyConfig(ta.value);
+        status.textContent = "Applied" + (res.revision ? " · " + res.revision : "") + ". Reload other tabs to see form fields.";
+        status.className = "ok";
+        try { ta.value = await api.configText(); } catch (_) {}
+      } catch (e) {
+        status.textContent = e.message; status.className = "err";
+      }
+    });
+    const reload = button("Reload from server", "", async () => {
+      try { ta.value = await api.configText(); status.textContent = "Reloaded."; status.className = "muted"; }
+      catch (e) { status.textContent = e.message; status.className = "err"; }
+    });
+    this.replaceChildren(
+      el("p", { class: "field-hint" }, ["Edit the on-disk config (TOML) directly. Validate checks parse + Model.Validate without applying. Apply & save installs the config live (restarts components) and writes server.toml. Structured forms on other tabs read the same model — switch away and back to a tab after Apply to refresh them. Comments are not preserved on save."]),
+      ta,
+      el("div", { class: "row", style: "margin-top:10px" }, [check, apply, reload]),
+      status,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // <cs-instance-editor> — the AFP-volume / SMB-share table editor: a row per
 // instance with Edit (opens the section form modal) and Delete, plus an Add
@@ -1630,17 +1885,28 @@ class CsInstanceEditor extends HTMLElement {
       : this.key === "SMBShares" ? "SMB Shares"
       : this.key === "EtherDFSDrives" ? "EtherDFS Drives"
       : this.key === "NCPVolumes" ? "NCP Volumes" : this.key;
-    // A transport-port list shows a binding/seed summary; a volume/share list shows path/fs/mode.
-    const isPort = AT_PORT_KEYS.includes(this.key) || PROTO_PORT_KEYS.includes(this.key);
-    const cols = isPort ? ["Name", "Binding", "Seed", "State", ""] : ["Name", "Path", "FS", "Mode", ""];
+    // A transport-port list shows a binding/segment summary; a volume/share list shows path/fs/mode.
+    const isPort = sectionHasCap(this.key, "wire_binding")
+      || AT_PORT_KEYS.includes(this.key) || PROTO_PORT_KEYS.includes(this.key);
+    const isAT = sectionHasCap(this.key, "appletalk_seed") || AT_PORT_KEYS.includes(this.key);
+    const cols = isPort
+      ? ["Name", "Binding", isAT ? "Seed" : (this.key === "IPX" ? "Network" : "Capture"), "State", ""]
+      : ["Name", "Path", "FS", "Mode", ""];
     const rows = this.list.map((inst) => {
       const name = instName(inst);
       let colB, colC, colD;
       if (isPort) {
         colB = inst.Device || inst.Iface || "(default uplink)";
-        const s0 = inst.SeedNetwork || 0, s1 = inst.SeedNetworkEnd || 0;
-        const net = s0 ? (s1 && s1 !== s0 ? `${s0}–${s1}` : String(s0)) : "non-seed";
-        colC = [net, inst.SeedZone].filter(Boolean).join(" · ");
+        if (isAT) {
+          const s0 = inst.SeedNetwork || 0, s1 = inst.SeedNetworkEnd || 0;
+          const net = s0 ? (s1 && s1 !== s0 ? `${s0}–${s1}` : String(s0)) : "non-seed";
+          colC = [net, inst.SeedZone].filter(Boolean).join(" · ");
+        } else if (this.key === "IPX") {
+          const net = inst.IPXNetwork ? ("0x" + Number(inst.IPXNetwork).toString(16)) : "local";
+          colC = [net, inst.IPXFrameType || "ethernet_ii"].filter(Boolean).join(" · ");
+        } else {
+          colC = inst.Capture || "—";
+        }
         colD = inst.IsEnabled === false ? "disabled" : "enabled";
       } else {
         colB = inst.Path || inst.path || "";
@@ -1671,11 +1937,32 @@ class CsInstanceEditor extends HTMLElement {
       ]),
     ]));
   }
-  // blankInstance seeds a new instance from an existing one's shape (so the form has the
-  // right fields, keyed by the Go FIELD names the JSON uses — VName/FSType/Path, not the
-  // toml names), with empty values. Falls back to the known volume/share field set when
-  // the list is empty.
+  // blankInstance seeds a new instance. Prefers self-describing GET /schemas fields
+  // so a new protocol lights up without a dedicated SPA template; falls back to
+  // PORT_TEMPLATES, then volume/share defaults.
   blankInstance() {
+    const fromSchema = blankFromSchema(this.key);
+    if (fromSchema) {
+      if (this.list.length) {
+        for (const [k, v] of Object.entries(this.list[0])) {
+          if (k === "SKey" || !(k in fromSchema)) continue;
+          fromSchema[k] = typeof v === "boolean" ? false : Array.isArray(v) ? [] : typeof v === "number" ? 0 : "";
+        }
+      }
+      if ("IsEnabled" in fromSchema) fromSchema.IsEnabled = true;
+      return fromSchema;
+    }
+    if (PORT_TEMPLATES[this.key]) {
+      const out = { ...PORT_TEMPLATES[this.key] };
+      if (this.list.length) {
+        for (const [k, v] of Object.entries(this.list[0])) {
+          if (k === "SKey" || !(k in out)) continue;
+          out[k] = typeof v === "boolean" ? false : Array.isArray(v) ? [] : typeof v === "number" ? 0 : "";
+        }
+      }
+      out.IsEnabled = true;
+      return out;
+    }
     if (this.list.length) {
       const tmpl = this.list[0], out = {};
       for (const [k, v] of Object.entries(tmpl)) {
@@ -1683,23 +1970,14 @@ class CsInstanceEditor extends HTMLElement {
       }
       return out;
     }
-    // A transport PORT has a fixed field shape (mirrors core/port Section's JSON keys),
-    // distinct from the volume/share shape below. Name empty → the server defaults it to
-    // the transport type (EtherTalk / LToUDP / TashTalk); formOptionsFor hides the fields
-    // that do not apply to the chosen transport.
-    if (AT_PORT_KEYS.includes(this.key) || PROTO_PORT_KEYS.includes(this.key)) {
-      return {
-        Name: "", Iface: "", IsEnabled: true, MAC: "",
-        SeedNetwork: 0, SeedNetworkEnd: 0, SeedZone: "", Device: "", Baud: 0,
-        IPXFrameType: "",
-      };
-    }
     const nameKey = this.key === "SMBShares" ? "SName" : this.key === "EtherDFSDrives" ? "DName" : "VName";
-    const base = { [nameKey]: "", FSType: "local_fs", Path: "", ReadOnly: false, Options: [] };
+    const base = {
+      [nameKey]: "", FSType: "local_fs", Path: "", ReadOnly: false, Options: [],
+      ForkBackend: "", FilenameCodec: "", Metastore: "", MetaBackend: "",
+    };
+    if (this.key !== "EtherDFSDrives") base.AllowedUsers = [];
     if (this.key === "SMBShares") base.Description = "";
     if (this.key === "AFPVolumes") base.ExtMapPath = "";
-    // EtherDFS drives default to the "short" name engine so DOS sees 8.3 names.
-    if (this.key === "EtherDFSDrives") base.NameEngine = "short";
     return base;
   }
 }
@@ -1743,22 +2021,47 @@ async function openInstanceModal(key, owner, inst, onChange, model) {
 
   const fsTypes = await api.fsTypes().catch(() => []);
   // A transport port carries model-aware widgets; TashTalk additionally needs the host
-  // serial-port list for its Device dropdown. Volume/share instances pass neither.
-  const isPort = AT_PORT_KEYS.includes(key) || PROTO_PORT_KEYS.includes(key);
+  // serial-port list for its Device dropdown. Volume/share instances get share-field
+  // dropdowns + (except EtherDFS) an Allowed-users checklist.
+  const isPort = sectionHasCap(key, "wire_binding")
+    || AT_PORT_KEYS.includes(key) || PROTO_PORT_KEYS.includes(key);
   const opts = isPort && model ? formOptionsFor(key, model) : { overrides: {}, hide: new Set() };
+  const isShare = key === "AFPVolumes" || key === "SMBShares" || key === "NCPVolumes" || key === "EtherDFSDrives";
+  let section = inst;
+  if (isShare) {
+    // Omitted omitempty fields (empty AllowedUsers, unset backends) still need widgets.
+    section = {
+      ForkBackend: "", FilenameCodec: "", Metastore: "", MetaBackend: "",
+      ...(key !== "EtherDFSDrives" ? { AllowedUsers: [] } : {}),
+      ...inst,
+    };
+    let userNames = [];
+    if (key !== "EtherDFSDrives") {
+      try {
+        const res = await api.users();
+        userNames = (res.list || []).map((u) => u.Name).filter(Boolean);
+      } catch (_) { /* no user store — Guest-only checklist */ }
+      if (!userNames.some((n) => n.toLowerCase() === GUEST_NAME.toLowerCase())) {
+        userNames = [GUEST_NAME, ...userNames];
+      }
+    } else {
+      opts.hide.add("AllowedUsers");
+    }
+    Object.assign(opts.overrides, shareFieldOverrides(key, userNames));
+  }
   if (key === "EtherDFSDrives") {
     // An EtherDFS drive is addressed by its DOS drive letter — the name IS the letter
     // (A–Z), so offer the alphabet rather than free text. Clients map a local letter
     // onto this remote one.
-    opts.overrides.DName = (v) => dropdown(fieldMeta("DName").label,
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split(""), v, fieldMeta("DName").desc);
+    opts.overrides.DName = (v) => dropdown(fieldMeta("DName", key).label,
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split(""), v, fieldMeta("DName", key).desc);
   }
   if (key === "TashTalk") {
     opts.serialDevice = true;
     opts.serialPorts = (await api.serialPorts().catch(() => []))
       .map((p) => (typeof p === "string" ? p : p.Name || p.Device || "")).filter(Boolean);
   }
-  const form = instanceForm(inst, fsTypes, opts);
+  const form = instanceForm(section, fsTypes, opts);
   body.replaceChildren(form.node);
 
   saveBtn.addEventListener("click", async () => {
@@ -2174,15 +2477,37 @@ class CsUsers extends HTMLElement {
       ]));
       return;
     }
-    const rows = this.list.map((u) => el("tr", {}, [
-      el("td", {}, [u.Name]),
-      el("td", {}, [u.Disabled ? el("span", { class: "muted" }, ["disabled"]) : "active"]),
-      el("td", {}, [el("div", { class: "row" }, [
+    // Guest is always present (policy toggle for anonymous logins). Named accounts
+    // follow. Guest is a built-in — italic name, Enable/Disable only (no password/remove).
+    const guestNameCell = () => el("em", {
+      class: "builtin",
+      title: "Built-in account — anonymous access; password cannot be set",
+    }, [GUEST_NAME]);
+    const rows = this.list.map((u) => {
+      const isGuest = String(u.Name).toLowerCase() === GUEST_NAME.toLowerCase();
+      const actions = [
         button(u.Disabled ? "Enable" : "Disable", "", () => this.toggle(u)),
-        button("Reset password", "", () => this.setPassword(u.Name)),
-        button("Remove", "danger", () => this.remove(u.Name)),
-      ])]),
-    ]));
+      ];
+      if (!isGuest) {
+        actions.push(button("Reset password", "", () => this.setPassword(u.Name)));
+        actions.push(button("Remove", "danger", () => this.remove(u.Name)));
+      }
+      return el("tr", {}, [
+        el("td", {}, [isGuest ? guestNameCell() : u.Name]),
+        el("td", {}, [u.Disabled ? el("span", { class: "muted" }, ["disabled"]) : "active"]),
+        el("td", {}, [el("div", { class: "row" }, actions)]),
+      ]);
+    });
+    // Ensure Guest shows even if the store hasn't persisted a Guest row yet.
+    if (!this.list.some((u) => String(u.Name).toLowerCase() === GUEST_NAME.toLowerCase())) {
+      rows.unshift(el("tr", {}, [
+        el("td", {}, [guestNameCell()]),
+        el("td", {}, ["active"]),
+        el("td", {}, [el("div", { class: "row" }, [
+          button("Disable", "", () => this.toggle({ Name: GUEST_NAME, Disabled: false })),
+        ])]),
+      ]));
+    }
     const table = el("table", {}, [
       el("thead", {}, [el("tr", {}, [th("User"), th("State"), th("Actions")])]),
       el("tbody", {}, rows.length ? rows : [el("tr", {}, [el("td", { class: "muted", colspan: "3" }, ["No users."])])]),
@@ -2193,15 +2518,24 @@ class CsUsers extends HTMLElement {
     const addStat = el("div", { class: "err" });
     const add = button("Add user", "primary", async () => {
       addStat.textContent = ""; addStat.className = "err";
+      const name = nameIn.value.trim();
+      if (name.toLowerCase() === GUEST_NAME.toLowerCase()) {
+        addStat.textContent = "Guest is a built-in account — enable or disable it in the list above.";
+        return;
+      }
       try {
-        await api.setUser(nameIn.value.trim(), passIn.value);
+        await api.setUser(name, passIn.value);
         nameIn.value = ""; passIn.value = "";
         await this.refresh();
       } catch (e) { addStat.textContent = e.message; }
     });
 
     this.replaceChildren(
-      el("div", { class: "panel" }, [el("h2", {}, ["Users"]), table]),
+      el("div", { class: "panel" }, [
+        el("h2", {}, ["Users"]),
+        el("p", { class: "field-hint" }, ["Guest controls anonymous logins for AFP, SMB, and NCP. When Guest is disabled, clients must present credentials. EtherDFS has no login."]),
+        table,
+      ]),
       el("div", { class: "panel" }, [
         el("h2", {}, ["Add / reset user"]),
         el("div", { class: "row" }, [nameIn, passIn, add]),
@@ -2214,12 +2548,20 @@ class CsUsers extends HTMLElement {
     catch (e) { alert(e.message); }
   }
   async setPassword(name) {
+    if (String(name).toLowerCase() === GUEST_NAME.toLowerCase()) {
+      alert("Guest is a built-in account — its password cannot be set.");
+      return;
+    }
     const pw = prompt(`New password for ${name}:`);
     if (pw == null) return;
     try { await api.setUser(name, pw); await this.refresh(); }
     catch (e) { alert(e.message); }
   }
   async remove(name) {
+    if (String(name).toLowerCase() === GUEST_NAME.toLowerCase()) {
+      alert("Guest is a built-in account and cannot be removed.");
+      return;
+    }
     if (!confirm(`Remove user ${name}?`)) return;
     try { await api.removeUser(name); await this.refresh(); }
     catch (e) { alert(e.message); }
@@ -2334,6 +2676,7 @@ customElements.define("cs-interfaces-tab", CsInterfacesTab);
 customElements.define("cs-router-tab", CsRouterTab);
 customElements.define("cs-protocols-tab", CsProtocolsTab);
 customElements.define("cs-sharing-tab", CsSharingTab);
+customElements.define("cs-toml-tab", CsTomlTab);
 customElements.define("cs-instance-editor", CsInstanceEditor);
 customElements.define("cs-interfaces", CsInterfaces);
 customElements.define("cs-extmap", CsExtMap);

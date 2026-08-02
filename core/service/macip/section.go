@@ -29,22 +29,22 @@ type Section struct {
 	SKey string `toml:"-"`
 	// Enabled gates the gateway. A disabled section builds no service (the registry
 	// returns nil), matching the other optional services.
-	Enabled bool `toml:"enabled"`
+	Enabled bool `toml:"enabled" display:"Enabled" desc:"Whether the MacIP gateway is configured on." default:"false"`
 	// Mode selects bridge (proxy-ARP onto an existing subnet) or nat (hand out a
 	// private subnet). Empty defaults to bridge.
-	Mode string `toml:"mode"`
+	Mode string `toml:"mode,omitempty" display:"Mode" desc:"bridge = proxy-ARP onto an existing subnet; nat = hand out a private subnet." example:"bridge" default:"bridge" widget:"mode"`
 	// Zone is the AppleTalk zone the IPGATEWAY NBP name registers in. Empty = the
 	// router's first zone (resolved at Start).
-	Zone string `toml:"zone"`
+	Zone string `toml:"zone,omitempty" display:"Zone" desc:"AppleTalk zone the IPGATEWAY NBP name registers in. Empty = router's first zone." example:"EtherTalk Network" widget:"zone"`
 	// GatewayIP / Network / Nameserver / Broadcast / SubnetMask are the IP-side
 	// parameters advertised to MacIP clients, as dotted-quad strings.
-	GatewayIP  string `toml:"gateway_ip"`
-	Network    string `toml:"network"`
-	Nameserver string `toml:"nameserver"`
-	Broadcast  string `toml:"broadcast"`
-	SubnetMask string `toml:"subnet_mask"`
+	GatewayIP  string `toml:"gateway_ip,omitempty" display:"Gateway IP" desc:"IP address advertised to MacIP clients as their gateway." example:"192.168.1.1"`
+	Network    string `toml:"network,omitempty" display:"Network" desc:"Subnet network base advertised to clients." example:"192.168.1.0"`
+	Nameserver string `toml:"nameserver,omitempty" display:"Nameserver" desc:"DNS server advertised to MacIP clients." example:"192.168.1.1"`
+	Broadcast  string `toml:"broadcast,omitempty" display:"Broadcast" desc:"Subnet broadcast address." example:"192.168.1.255"`
+	SubnetMask string `toml:"subnet_mask,omitempty" display:"Subnet mask" desc:"IPv4 subnet mask advertised to clients." example:"255.255.255.0"`
 	// HostCount is the lease-pool size (incl. the reserved gateway slot). 0 → 254.
-	HostCount int `toml:"host_count"`
+	HostCount int `toml:"host_count,omitempty" display:"Host count" desc:"Lease-pool size including the reserved gateway slot (0 = 254)." default:"0" example:"254"`
 
 	// ── IP-side egress (adapter) parameters ───────────────────────────────────
 	// These describe the physical-network side of the gateway. They are read at the
@@ -56,19 +56,19 @@ type Section struct {
 	// gateway bridges IP traffic onto. The Interface() method resolves it through the
 	// namespace to the real pcap device at the compose edge. Empty disables IP egress
 	// → AppleTalk-only mode. The toml key stays "interface" for config compatibility.
-	Iface string `toml:"interface"`
+	Iface string `toml:"interface,omitempty" display:"Interface" desc:"Named interface for IP egress. Empty = AppleTalk-only (no IP bridge)." example:"br-lan" widget:"iface"`
 	// HostMAC is the IP-side Ethernet MAC the gateway sources frames from and answers
 	// proxy-ARP with (colon/dash hex). Empty → auto-detected from Interface.
-	HostMAC string `toml:"host_mac"`
+	HostMAC string `toml:"host_mac,omitempty" display:"Host MAC" desc:"IP-side Ethernet MAC (proxy-ARP source). Empty = auto-detect." example:"DE:AD:BE:EF:00:01"`
 	// HostIP is the host's own IPv4 on the IP-side network (used for ARP probe
 	// sender-IP and local identity). Empty → auto-detected from Interface.
-	HostIP string `toml:"host_ip"`
+	HostIP string `toml:"host_ip,omitempty" display:"Host IP" desc:"Host IPv4 on the IP-side network. Empty = auto-detect." example:"192.168.1.10"`
 	// DefaultGateway is the IP-side upstream router used for off-subnet egress in
 	// bridge mode. Empty → auto-detected (default route).
-	DefaultGateway string `toml:"default_gateway"`
+	DefaultGateway string `toml:"default_gateway,omitempty" display:"Default gateway" desc:"Upstream IPv4 router for off-subnet egress (bridge mode). Empty = auto-detect." example:"192.168.1.1"`
 	// DHCPRelay makes the gateway obtain client addresses by relaying DHCP onto the
 	// IP-side network (fabricating a per-Mac MAC) instead of the static pool.
-	DHCPRelay bool `toml:"dhcp_relay"`
+	DHCPRelay bool `toml:"dhcp_relay,omitempty" display:"DHCP relay" desc:"Relay DHCP onto the IP-side network instead of the static lease pool." default:"false"`
 }
 
 // Key returns the section key.
@@ -201,6 +201,8 @@ func RegisterSection() {
 			}
 			return nil
 		},
+		DisplayName: "MacIP gateway",
+		Description: "IP-over-AppleTalk gateway (MacTCP / MacIP clients). Bridge or NAT onto a host interface; optional DHCP relay.",
 	})
 }
 

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ObsoleteMadness/ClassicStack/core/auth"
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 
 	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/smb"
@@ -360,7 +361,8 @@ func (s *Service) handleSessionSetup(sess *smbSession, h protocol.Header, req []
 	identity := ""
 	// Only authenticate when the client actually presented a credential: a named
 	// account WITH a non-empty cleartext password. An empty password is the
-	// credential-less guest path ([smb6.0] 289), never a failed authentication.
+	// credential-less guest path ([smb6.0] 289), never a failed authentication —
+	// unless the operator has disabled Guest, in which case credentials are required.
 	// And only when the store actually HAS named users: with an empty store the
 	// server advertised SHARE-level security, no account can possibly match, and
 	// clients that volunteer their logged-on identity anyway (OS/2 LAN Manager
@@ -377,6 +379,10 @@ func (s *Service) handleSessionSetup(sess *smbSession, h protocol.Header, req []
 		}
 		identity = user
 		action = 0x0000 // non-guest logon
+	} else if !auth.GuestEnabled(authn) {
+		// Guest disabled: refuse the credential-less / hashed-as-guest path so
+		// clients must present a valid cleartext password for a named account.
+		return errResponse(h, toWireStatus(h.Flags2, statusLogonFailure))
 	}
 
 	sess.mu.Lock()

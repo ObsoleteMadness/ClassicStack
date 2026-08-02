@@ -13,9 +13,11 @@ func init() {
 	// Repeated schema: several named NetBEUI instances, each its own interface; they
 	// feed the NetBEUI mini-router (not the AppleTalk router) — §M11.
 	config.Register(config.SectionSchema{
-		Key:      netbeui.Name,
-		New:      func() config.Section { return &port.Section{SKey: netbeui.Name} },
-		Repeated: true,
+		Key:         netbeui.Name,
+		New:         func() config.Section { return &port.NetBEUISection{Base: port.Base{SKey: netbeui.Name}} },
+		Repeated:    true,
+		DisplayName: "NetBEUI",
+		Description: "NBF over 802.2 LLC on Ethernet. Binds an uplink bridge; a NetBIOS/SMB transport (no AppleTalk seed, no IPX framing).",
 	})
 
 	RegisterPort(netbeui.Name, func(ctx *BuildContext) (component.Component, error) {

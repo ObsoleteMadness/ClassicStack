@@ -69,7 +69,11 @@ type Service struct {
 	vols    []*Volume
 	server  string // NetWare server name (the §4-bis identity hostname); upper-cased
 	desc    string // server description (the §4-bis identity description); optional
-	auth    Authenticator
+	// internalNet is the configured NetWare internal IPX network (0 = derive at
+	// compose time from the station MAC). Wired into the IPX mini-router when NCP
+	// attaches; changing it needs a transport rebuild (ApplyConfig → ErrNeedsRestart).
+	internalNet uint32
+	auth        Authenticator
 
 	conns *connTable
 
@@ -122,6 +126,37 @@ func (s *Service) SetDescription(desc string) {
 	s.mu.Lock()
 	s.desc = desc
 	s.mu.Unlock()
+}
+
+// SetInternalNetwork records the configured NetWare internal IPX network number
+// (0 = derive from the station MAC at compose time). The IPX transport cross-wire
+// consults ConfiguredInternalNetwork when attaching NCP.
+func (s *Service) SetInternalNetwork(network uint32) {
+	s.mu.Lock()
+	s.internalNet = network
+	s.mu.Unlock()
+}
+
+// ConfiguredInternalNetwork returns the operator-configured internal network
+// (0 = auto-derive). Used by compose when wiring the IPX mini-router for NCP.
+func (s *Service) ConfiguredInternalNetwork() uint32 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.internalNet
+}
+
+// InternalNetworkBytes returns the configured internal network as a 4-byte
+// big-endian IPX network, or ok=false when InternalNetwork is 0 (caller should
+// derive from the station MAC).
+func (s *Service) InternalNetworkBytes() (net [4]byte, ok bool) {
+	n := s.ConfiguredInternalNetwork()
+	if n == 0 {
+		return net, false
+	}
+	// Hand-rolled big-endian: core/ bans encoding/binary (pulls in reflect) — see the
+	// archtest §1 rule and core/protocol/ddp.
+	net[0], net[1], net[2], net[3] = byte(n>>24), byte(n>>16), byte(n>>8), byte(n)
+	return net, true
 }
 
 // serverName returns the configured server name, defaulting to OMNITALK.
@@ -285,11 +320,23 @@ func (s *Service) busForSpec(spec fs.ShareSpec) bus.Bus {
 	return resolve(spec)
 }
 
-// ApplyConfig hot-applies a changed volume set (§11b): the NCP "config" is the set
-// of repeated volume sections, so the passed section payload is ignored —
-// ApplyConfig re-resolves the whole desired set from the model and reconciles it
-// against the live volumes. When no resolver is wired it returns ErrNeedsRestart.
-func (s *Service) ApplyConfig(_ any) error {
+// ApplyConfig hot-applies config changes (§11b). A *ServerSection payload updates
+// the advertised name/description and asks for a restart so the IPX transport
+// cross-wire can re-bind the internal network. A nil / other payload (volume
+// cascade notify) re-resolves the volume set from the model. When no resolver is
+// wired it returns ErrNeedsRestart.
+func (s *Service) ApplyConfig(section any) error {
+	if ss, ok := section.(*ServerSection); ok && ss != nil {
+		if n := strings.TrimSpace(ss.ServerName); n != "" {
+			s.SetServerName(n)
+		}
+		s.SetDescription(ss.Description)
+		s.SetInternalNetwork(ss.InternalNetwork)
+		// Internal network is owned by the IPX mini-router (wired at compose time);
+		// changing it — or any server-level setting that should rebuild SAP — needs
+		// a full restart of the transport cross-wire.
+		return component.ErrNeedsRestart
+	}
 	s.mu.Lock()
 	resolve := s.resolver
 	s.mu.Unlock()

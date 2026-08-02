@@ -31,12 +31,6 @@ ClassicStack is an AppleTalk router and classic LAN services stack that bridges 
 ## Releases
 Grab the latest release from Github Releases [releases](https://github.com/ObsoleteMadness/ClassicStack/releases/latest).
 
-## I don't like AI! What else is out there
-Fair, there's good reasons not to. If you're after user-land AFP support, I recommend checking out TailTalk from @FeralFirmware. 
-There's Netatalk which has great support for legacy Mac Clients, and Samba for Windows clients (at least over TCP/IP). For Netware, mars_nws is an option. 
-
-Of course, nothing stops you running up native servers in snow or 86box. 
-
 ## Screenshots
 
 ![WebUI](./img/webui.png)
@@ -482,14 +476,13 @@ Warning: this project is pragmatic and evolving. Validate behavior in your envir
 
 ClassicStack stands on a lot of prior open-source work. Several subsystems are clean
 re-implementations over our storage/transport seams rather than code ports, but they owe
-a clear debt to the originals, and the `derez` fork backend is a direct Go port. With
-thanks to:
+a clear debt to the originals.
 
-
+- - **tashrouter** — the original inspiration for the AppleTalk routing core by **Tashtari**.
+  https://github.com/lampmerchant/tashrouter, released under GPL-3.0. 
 - **macresources / rdump (DeRez) format** by **Elliot Nunn** — the resource-fork text
   format and reference implementation behind our `derez` fork backend, ported to Go.
   https://github.com/elliotnunn/macresources
-
 - **mars_nwe** (the MARtin Stover NetWare Emulator), © 1993,1995 Martin Stover, Marburg,
   Germany — the canonical open-source NetWare/NCP reference that inspired our NCP service
   (alongside Linux ncpfs by Volker Lendecke et al).
@@ -510,22 +503,17 @@ thanks to:
   `IPADDRESS`/`IPGATEWAY` NBP naming, source-IP ARP snooping, and the 586-byte MacIP
   MTU. An independent Go reimplementation over our egress seam; macipgw is GPLv2+
   (compatible with our GPLv3).
+- **go-winfsp** by Bill Zissimopoulos. 
+- **EtherDFS** by **Mateusz Viste**, Copyright © 2017-2023 Mateusz Viste — the EtherType
+  0xEDF5 DOS file-system protocol our EtherDFS service re-implements.
 
 ## License
 This work is released under the terms of the GPL-3.0. 
 
-It uses coded which has been used / translated by an LLM:
-- **tashrouter** — the original inspiration for the AppleTalk routing core by Tashtari.
-  https://github.com/lampmerchant/tashrouter, released under GPL-3.0. 
+Some components are based on works licensed differently, see NOTICE for details. 
+Those components should be considered derivite works and can be used under their 
+original license. Remember, though I'm not a lawyer and this is not legal advise. 
 
-
-
-MIT Licensed components
- * Derez - derez support is based on [Macresources](https://github.com/elliotnunn/macresources) by Elliot Nunn, which is released under terms of MIT.
- * Netboot - Netboot support is based on [Netboot](https://github.com/elliotnunn/NetBoot/) by Elliot Nunn, under the terms of the MIT.
- - **EtherDFS** by **Mateusz Viste**, Copyright © 2017-2023 Mateusz Viste — the EtherType
-  0xEDF5 DOS file-system protocol our EtherDFS service re-implements.
-  https://github.com/mateuszviste
 
 ## Additional docs
 

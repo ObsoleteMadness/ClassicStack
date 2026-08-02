@@ -20,43 +20,43 @@ type Section struct {
 	// SKey is the section key; always "Netboot". Stored so Key() is a plain getter.
 	SKey string `toml:"-"`
 	// Enabled gates the service (component.Enableable).
-	Enabled bool `toml:"enabled"`
+	Enabled bool `toml:"enabled" display:"Enabled" desc:"Whether netboot is configured on." default:"false"`
 	// Payload is the host path of the ABP boot payload — executable 68k code
 	// the ROM downloads and runs: ChainLoader.bin for the streaming-disk path,
 	// a BootWrapper/romdrv-style RAM-disk driver stub, or a fully pre-built
 	// payload. The Snefru self-authentication trailer is appended at load
 	// unless the file already carries a valid one.
-	Payload string `toml:"payload"`
+	Payload string `toml:"payload,omitempty" display:"Payload" desc:"Host path of the ABP boot payload (ChainLoader.bin, BootWrapper, …)." example:"ChainLoader.bin"`
 	// Image is an optional disk image appended to Payload at load (the RAM-disk
 	// contents a BootWrapper-style stub serves): the server concatenates
 	// payload+image verbatim and appends the Snefru trailer — the dynamic
 	// equivalent of the NetBoot repo's `cat BootWrapper.bin disk.dsk` +
 	// snefru_hash.py build. Not used by ChainLoader payloads (see Disk).
-	Image string `toml:"image"`
+	Image string `toml:"image,omitempty" display:"Image" desc:"Optional RAM-disk image concatenated onto Payload (BootWrapper path)." example:"disk.dsk"`
 	// BlockSize is the ABP block size the payload is served with. 0 → 512
 	// (disksector); ChainLoader payloads use 256 (ATBOOT_BLOCK_SIZE). Must be
 	// a multiple of 64 for the Snefru trailer.
-	BlockSize int `toml:"block_size"`
+	BlockSize int `toml:"block_size,omitempty" display:"Block size" desc:"ABP block size in bytes (0 = 512; ChainLoader uses 256)." default:"0" example:"256"`
 	// Disk is the host path of the writable HFS disk image streamed over the
 	// ChainBoot EBP protocol (the System volume the client boots into).
 	// Empty disables EBP. Opened read-write; single concurrent client.
-	Disk string `toml:"disk"`
+	Disk string `toml:"disk,omitempty" display:"Disk image" desc:"Writable HFS image streamed over ChainBoot EBP. Empty disables EBP." example:"System.img"`
 	// PaceMs is the inter-packet delay of the ABP block flood in milliseconds.
 	// 0 → 2 ms (LToUDP has no link backpressure).
-	PaceMs int `toml:"pace_ms"`
+	PaceMs int `toml:"pace_ms,omitempty" display:"ABP pace (ms)" desc:"Inter-packet delay for the ABP block flood (0 = 2 ms)." default:"0" example:"2"`
 	// ChainPaceMs is the inter-packet delay of ChainBoot EBP read-reply bursts
 	// in milliseconds. 0 → 10 ms. The client's interrupt-level listener must
 	// catch EVERY block of a chunk in one burst (its progress bitmap resets on
 	// retry), so this is deliberately slower than pace_ms; real LocalTalk
 	// delivers a 530-byte frame no faster than every ~18 ms (230.4 kbit/s) —
 	// raise towards that if chunk reads keep retrying.
-	ChainPaceMs int `toml:"chain_pace_ms"`
+	ChainPaceMs int `toml:"chain_pace_ms,omitempty" display:"ChainBoot pace (ms)" desc:"Inter-packet delay for ChainBoot EBP bursts (0 = 10 ms)." default:"0" example:"10"`
 	// Name is the NBP object name registered for display; matching is
 	// any-object (clients look up their PRAM serverNum in hex), so this is
 	// cosmetic. "" → "0000".
-	Name string `toml:"name"`
+	Name string `toml:"name,omitempty" display:"NBP name" desc:"Cosmetic BootServer NBP object name. Empty = 0000." example:"0000"`
 	// Zone is the NBP zone the BootServer name is registered in. "" → "*".
-	Zone string `toml:"zone"`
+	Zone string `toml:"zone,omitempty" display:"Zone" desc:"NBP zone for the BootServer name. Empty = *." example:"*" widget:"zone"`
 }
 
 // Key returns the section key.
@@ -134,5 +134,7 @@ func RegisterSection() {
 			}
 			return nil
 		},
+		DisplayName: "Netboot",
+		Description: "AppleTalk Boot Protocol (ABP) + ChainBoot EBP disk streaming for classic Mac netboot clients.",
 	})
 }

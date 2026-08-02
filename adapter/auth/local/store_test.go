@@ -81,6 +81,56 @@ func TestStoreCRUDAndAuth(t *testing.T) {
 	}
 }
 
+func TestStoreGuest(t *testing.T) {
+	s, path := tempStore(t)
+
+	users, err := s.Users()
+	if err != nil || len(users) != 1 || users[0].Name != auth.GuestName || users[0].Disabled {
+		t.Fatalf("Users() = %v, want enabled Guest only", users)
+	}
+	if !s.GuestEnabled() {
+		t.Fatal("GuestEnabled = false on fresh store")
+	}
+	if s.HasUsers() {
+		t.Fatal("HasUsers must ignore Guest")
+	}
+	if err := s.SetUser(auth.GuestName, "pw"); err != auth.ErrGuestImmutable {
+		t.Fatalf("SetUser(Guest) = %v, want ErrGuestImmutable", err)
+	}
+	if err := s.RemoveUser(auth.GuestName); err != auth.ErrGuestImmutable {
+		t.Fatalf("RemoveUser(Guest) = %v, want ErrGuestImmutable", err)
+	}
+	if mustAuth(t, s, auth.GuestName, "pw") {
+		t.Fatal("Guest must never authenticate via password")
+	}
+
+	if err := s.SetDisabled(auth.GuestName, true); err != nil {
+		t.Fatal(err)
+	}
+	if s.GuestEnabled() {
+		t.Fatal("GuestEnabled after disable")
+	}
+	users, _ = s.Users()
+	if !users[0].Disabled {
+		t.Fatal("Guest row not marked disabled")
+	}
+
+	// Persist + reload.
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s2.GuestEnabled() {
+		t.Fatal("Guest disabled state did not survive reload")
+	}
+	if err := s2.SetDisabled(auth.GuestName, false); err != nil {
+		t.Fatal(err)
+	}
+	if !s2.GuestEnabled() {
+		t.Fatal("Guest re-enable failed")
+	}
+}
+
 func TestStoreErrors(t *testing.T) {
 	s, _ := tempStore(t)
 	if err := s.SetUser("", "pw"); err != auth.ErrEmptyUsername {
@@ -124,15 +174,15 @@ func TestStorePersistenceReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(users) != 2 {
-		t.Fatalf("reloaded %d users, want 2", len(users))
+	if len(users) != 3 {
+		t.Fatalf("reloaded %d users, want 3 (Guest + alice + BOB)", len(users))
 	}
-	// Sorted (alice, BOB) and original-case display preserved.
-	if users[0].Name != "alice" || users[1].Name != "BOB" {
-		t.Fatalf("users = %+v, want [alice BOB] sorted with original case", users)
+	// Guest first, then named accounts sorted (alice, BOB) with original-case preserved.
+	if users[0].Name != auth.GuestName || users[1].Name != "alice" || users[2].Name != "BOB" {
+		t.Fatalf("users = %+v, want [Guest alice BOB]", users)
 	}
-	if !users[1].Disabled {
-		t.Fatal("BOB should be disabled after reload")
+	if !users[2].Disabled {
+		t.Fatal("bob disabled flag lost on reload")
 	}
 }
 
