@@ -69,22 +69,9 @@ register at startup:    NBP_register(name = ipv4_string(GatewayIP),
 unregister at shutdown: NBP_unregister(same name/type/zone)
 ```
 
-In addition to its own `IPGATEWAY` name, the gateway registers an **`IPADDRESS`**
-NBP name (object = the leased IP in dotted-decimal, socket 72) for every client
-lease — matching what a MacIP host registers for its own address (draft §3.2.2.4)
-and what a gateway registers for the addresses in its range (§3.2.4.3):
-
-```
-on lease created (assign / DHCP-relay / snooped static Mac):
-    NBP_register(name = ipv4_string(leasedIP), type = "IPADDRESS", zone, socket = 72)
-on lease expiry:
-    NBP_unregister(same name/type/zone)
-```
-
-This makes each lease visible to NBP ARP (so another host cannot register the same
-IP in the zone) and lets a **restarted** gateway rediscover prior assignments via
-the reregistration search (§3a). See [core/service/macip](../core/service/macip)
-`registerLeaseName` / `unregisterLeaseName`.
+> The reference `macipgw` additionally answers NBP lookups for type `IPADDRESS`
+> to discover individual client mappings. ClassicStack does not need this:
+> client → IP mappings are learned directly from the ATP assignment exchange.
 
 ---
 
@@ -97,32 +84,18 @@ gateway is the *responder*.
 ### 3.1 ATP framing
 
 Only the single-packet transaction form is used. The DDP payload of an ATP
-datagram begins with the **8-byte ATP header** (control, bitmap/seq, a 16-bit
-transaction id, and **4 ATP user bytes**); the MacIP control struct rides in the
-ATP *data* that follows it — it is **not** the ATP user bytes:
+datagram begins with a 4-byte ATP header, followed by an 8-byte ATP *user-bytes*
+field which here carries the MacIP control struct:
 
 ```
 DDP.Data layout (DDP type 3):
   +0  ATP control byte    (1)   function in top 2 bits: TReq=0x40, TResp=0x80; EOM=0x10
   +1  ATP bitmap / seq    (1)
   +2  ATP transaction id  (2)   big-endian; echoed in the response
-  +4  ATP user bytes      (4)   see below; echoed in the response
-  +8  ATP data ...              ← MacIP control struct starts here
+  +4  ATP user bytes ...        ← MacIP control struct starts here
 ```
 
-> **ATP user bytes (observed; issue #17).** The MacIP-02 draft says the ATP user
-> bytes are "unused… random data", but real gateways put markers there and clients
-> tolerate them, so we round-trip them: **Apple IP Gateway** carries a *version*
-> number in the first two user bytes (which `macipgw` copied), and the **Shiva
-> Fastpath 5 / K-STAR** software puts `0x08` in the *last* user byte. ClassicStack
-> echoes the request's 4 user bytes into the response and, if the request left the
-> version field (first two bytes) zero, stamps the MacIP version there. This
-> matches the ATP model every other core service uses (`atp.HeaderSize == 8`; e.g.
-> ZIP reads its function code from the user bytes at `Data[4:8]`). *Our own bug is
-> not errata: the pre-fix refactor mistakenly treated the ATP header as 4 bytes and
-> read the MacIP struct at `Data[4]`, which broke real clients.*
-
-The MacIP control struct (8 bytes minimum), carried in the ATP data at `Data[8]`, is:
+The MacIP control struct (the ATP user-bytes, 8 bytes minimum) is:
 
 ```c
 struct macip_req_control {        // big-endian on the wire
@@ -149,14 +122,12 @@ struct macip_req_data {           // optional; follows the control struct
 
 ```
 on ATP datagram (DDP type 3) on socket 72:
-    if len(DDP.Data) < 8 + 8: drop           # need 8-byte ATP header + 8-byte control struct
-    hdr = atp.Decode(DDP.Data)               # control, bitmap, tid, 4 user bytes
-    if hdr.FuncCode() != TReq: drop           # only requests are processed here
-    tid       = hdr.TransID                    # echoed in the response
-    userBytes = hdr.UserData                   # echoed in the response (§3.1)
-    macReq    = DDP.Data[8:]                    # MacIP control struct (ATP data)
-    function  = be32(macReq[4:8])              # control struct mipr_function
-    requested = (len(macReq) >= 12) ? IPv4(macReq[8:12]) : 0.0.0.0
+    if len(DDP.Data) < 4 + 8: drop          # need ATP header + control struct
+    if (DDP.Data[0] & 0xC0) != TReq: drop    # only requests are processed here
+    tid       = be16(DDP.Data[2:4])
+    userData  = DDP.Data[4:]
+    function  = be32(userData[4:8])          # control struct mipr_function
+    requested = (len(userData) >= 12) ? IPv4(userData[8:12]) : 0.0.0.0
 
     atNet, atNode = source of the datagram   # see §3.5 for net-0 normalisation
     if not valid_unicast(atNet, atNode): drop
@@ -167,78 +138,52 @@ on ATP datagram (DDP type 3) on socket 72:
 ```
 switch function:
   case MACIP_SERVER (3):           # "are you still there?" / re-bind probe
-      refresh the lease for (atNet,atNode) if one exists   # a liveness signal (§4.2)
-      reply TResp: function=MACIP_SERVER, first IP address = 0.0.0.0
+      if an existing lease for (atNet,atNode) exists:
+          reply TResp with that leased IP
+          return
+      # else fall through and treat like an assign
 
   case MACIP_ASSIGN (1):           # "give me an IP"
-      ip, ok = assign_address(requested, atNet, atNode)    # §4
-      if ok:  reply TResp: function=MACIP_ASSIGN, first IP address = ip
-      else:   reply TResp: function=MACIP_ERROR, first IP = 0, error = "No Address Available."
-
-  default:                         # unrecognised function code
-      reply TResp: function=MACIP_ERROR, first IP = 0, error = "Unknown Operation."
+      ip, ok = assign_address(requested, atNet, atNode)   # §4
+      reply TResp with ip (0.0.0.0 + function=fail if pool exhausted)
 ```
 
-**The only wire difference between an ASSIGN response and a SERVER/ERROR response
-is the first IP address:** ASSIGN carries the assigned value there; SERVER and
-ERROR leave it `0.0.0.0` (issue #17, observed of Shiva Fastpath 5 / K-STAR and
-Apple IP Gateway). All three carry the *full* config data block (§3.4) — the
-nameserver and broadcast are the only fields the client actually uses; the rest can
-be anything, and Apple IP Gateway sets the 5th address to the subnet mask.
+A request whose function is neither 1 nor 3 is answered with a failure response
+(version 1, function = 0) by the reference gateway; ClassicStack simply does not
+recognise it.
 
 ### 3.4 Response packet (ATP TResp, DDP type 3)
 
-The response reuses socket 72 and DDP type 3, reverses the DDP source/dest, echoes
-the transaction id and the ATP user bytes (§3.1), and carries the MacIP control
-struct (version = 1, `function`) followed by the **full config data block with
-space for all eight IP addresses** — the same length in every reply type. This
-mirrors `macipgw` after njroadfan's "send back a complete config packet" fix
-(`sizeof(struct macip_req) - 21` = 41 bytes of MacIP data on success):
+The response reuses socket 72 and DDP type 3, reverses the DDP source/dest, and
+echoes the transaction id. The ATP user-bytes carry the same control struct
+(version = 1, function = `MACIP_ASSIGN`), followed by the full **config data**
+block. ClassicStack emits a fixed 28-byte data block (`configDataLen`):
 
 ```
-TResp DDP.Data layout (8-byte ATP header + 41-byte MacIP data = 49 bytes on success):
+TResp DDP.Data layout (32 bytes total):
   +0  ATP control byte = TResp(0x80) | EOM(0x10)
   +1  ATP seq          = 0
-  +2  ATP tid          = echoed request tid                 (be16)
-  +4  ATP user bytes   = echoed; version stamped if 0        (4)   ← §3.1
-  +8  mipr_version     = 1                                   (be16)
-  +10 _pad1            = 0                                   (2 bytes)
-  +12 mipr_function    = MACIP_ASSIGN(1)/SERVER(3)/ERROR(-1) (be32)
-  +16 assigned IP      (4)   # the value for ASSIGN; 0.0.0.0 for SERVER and ERROR
-  +20 nameserver       (4)   # the client actually uses this
-  +24 broadcast        (4)   # …and this
-  +28 _pad2            (4)   # 4th address (unused by the client)
-  +32 subnet mask      (4)   # 5th address (Apple IP Gateway convention)
-  +36 _pad3/_pad4/_pad5 (12) # 6th–8th addresses (unused)
-  +48 error[]          (≤22) # first byte NUL on success; NUL-terminated string on ERROR
+  +2  ATP tid          = echoed request tid (be16)
+  +4  mipr_version     = 1                 (be16)
+  +6  _pad1            = 0                 (2 bytes)
+  +8  mipr_function    = MACIP_ASSIGN(1)   (be32)    # 0 on failure
+  +12 assigned IP      (4)                            # 0.0.0.0 if assignment failed
+  +16 nameserver       (4)
+  +20 broadcast        (4)
+  +24 _pad2            (4)
+  +28 subnet mask      (4)
 ```
 
-On an **ERROR** response the NUL-terminated error string is written into the
-`error[]` field and the packet is lengthened by `len(str)` beyond the 41-byte base
-(so `MACIP_ERROR` replies run longer than success/SERVER replies).
-
-> **Draft vs. reference.** The MacIP-02 draft (§3.8.8) draws the data field as
-> Assigned IP + Name Server + Broadcast + File Server + 16 bytes of "Other" (a
-> 32-byte / eight-address block) followed by a 128-byte error field, giving a
-> nominal 64-byte data length. ClassicStack follows the `macipgw` reference
-> struct instead — the same eight-address block but a compact 22-byte `error[]`
-> field (`sizeof(struct macip_req) - 21 = 41` bytes of MacIP data on success) —
-> because that is what real Netatalk/`macipgw`-interoperating clients expect. The
-> eight-address block and the "first IP only in ASSIGN" rule are identical either
-> way; only the error-field capacity differs. Any config field
-the assignment did not override (nameserver / broadcast / subnet mask) falls back to
-the gateway's configured defaults before being written. All IPv4 values are in
-network byte order.
+Any field the assignment did not override (nameserver / broadcast / subnet mask)
+falls back to the gateway's configured defaults before being written. All IPv4
+values are in network byte order.
 
 ```
-build_TResp(reqHdr, fn, cfg):
+build_TResp(tid, cfg):
     ns   = cfg.nameserver or DEFAULT_nameserver
     bc   = cfg.broadcast  or DEFAULT_broadcast
     mask = cfg.subnet     or DEFAULT_subnet
-    emit ATP header (TResp|EOM, tid=reqHdr.tid, user bytes per §3.1)
-    emit macip_req: version=1, function=fn, full 32-byte data block
-    if fn == MACIP_ASSIGN: first IP = cfg.ip   # SERVER/ERROR leave it 0.0.0.0
-    if fn == MACIP_ERROR:  append NUL-terminated error string into error[]
+    emit bytes per the table above with cfg.ip, ns, bc, mask
     router.Reply(received, ddpType=3, data=...)   # Reply reverses src/dst
 ```
 
@@ -258,119 +203,56 @@ valid_unicast := atNet != 0 and atNode != 0 and atNode != 0xFF
 
 ---
 
-## 3a. Startup reregistration (draft §3.2.4.4 / §3.7)
-
-The gateway is responsible for handing out **unique** IP addresses. If it restarts
-or crashes while clients hold leases, it must not reassign those addresses to other
-hosts. On startup — before it begins assigning — it therefore searches NBP for the
-addresses already registered by live MacIP hosts (and by any peer gateway) and
-seeds its pool with the ones in its range:
-
-```
-on gateway start (once NBP is available):
-    ents = NBP_lookup(object="=", type="IPADDRESS", zone=configured-zone)   # a BrRq; collect LkUp-Rply over a window
-    for ent in ents:
-        ip = parse_dotted(ent.object)          # the NBP object name IS the IP (§2)
-        if ip is not parseable: continue
-        if ip == GatewayIP: continue            # our own IPGATEWAY identity, not a client lease
-        if ip is inside the assignable pool range and currently free:
-            claim ip for ent.(network,node)     # pool.assign(ip, atNet, atNode)
-            NBP_register(ip, "IPADDRESS", zone, 72)   # re-publish it under our name
-```
-
-Because it needs an NBP **requester** (broadcast a BrRq, collect replies over a
-fixed window — NBP has no "no more" signal), this rides the core NBP service's
-`Lookup()`; the MacIP gateway runs the search on its own goroutine so `Start`
-does not block for the collection window. A discovered address outside the pool
-range, or the gateway's own IP, is ignored; an address already leased to the same
-endpoint is a no-op.
-
-> **What answers the search.** On a live network the `=:IPADDRESS@*` lookup is
-> answered by the **MacIP hosts themselves** (each registers `<ip>:IPADDRESS@zone`
-> per §3.2.2.4) and by any peer gateway that registers its range (§3.2.4.3) — and,
-> after this change, by our own gateway for the leases it re-publishes. Note the
-> draft (§3.7) says a *synthetic* NBP-proxy-ARP responder MUST NOT answer wildcard
-> `IPADDRESS` lookups (it would flood the whole range); that restriction is on the
-> proxy responder, not on answering with the concrete, individually-registered
-> names, which is what the core NBP responder does.
-
-> **Node-address stability (draft §3.2.4.4).** The draft also asks that the gateway
-> keep the **same AppleTalk node** across restarts, since hosts cache it. In
-> ClassicStack the AppleTalk node is owned by the LLAP/AARP node-claim of the
-> underlying port, not by MacIP; node-address persistence is a transport concern
-> tracked there, not in this service.
-
----
-
 ## 4. Address assignment & the lease pool
 
-The gateway owns the **Dynamic Range** (draft §3.2.3 / §3.8.2): a contiguous pool
-of IPv4 addresses on its IP-side subnet it can ASSIGN to clients. Slot 0 is the
-gateway's own IP and is never handed out; slots 1..N are client leases. Each entry
-mirrors the draft's table row — `{ IP address; timer; flags; AppleTalk address }`:
+The gateway owns a contiguous pool of IPv4 addresses on its IP-side subnet. Slot
+0 is the gateway's own IP and is never handed out; slots 1..N are client leases.
 
 ```
 pool.base   = Network base address (uint32)
 pool[0]     = gateway IP (reserved, ASSIGN_FIXED)
-pool[1..N]  = client slots; each = { used, atNet, atNode, lastSeen, freedAt, missed }
+pool[1..N]  = client slots; each = { used, atNet, atNode, lastSeen }
 IP(slot i)  = pool.base + i
 ```
 
 ### 4.1 Static assignment algorithm
 
-Assignment follows draft §3.8.2: reuse the same IP for the same AppleTalk address
-if possible; otherwise pick the **oldest unused** entry; and **resolve the chosen
-address via NBP ARP** before handing it out, so a live host already using it is not
-double-assigned.
-
 ```
 assign_address(requested, atNet, atNode):
-    # 1. Reuse: same AppleTalk endpoint already has a lease → return it (refresh timer). No probe.
+    # 1. Reuse: same AppleTalk endpoint already has a lease → return it (refresh lastSeen)
     for i in 1..N:
         if pool[i].used and pool[i].atNet==atNet and pool[i].atNode==atNode:
-            pool[i].lastSeen = now; return IP(i), ok         # reuse — the client already owns it
+            pool[i].lastSeen = now; return IP(i), ok
 
-    loop (bounded retries):
-        # 2. Honour a specific in-range free requested IP, else…
-        # 3. …allocate the OLDEST-freed free slot (draft: "locate the oldest unused table entry";
-        #    a never-used slot sorts oldest). Skip slots a prior probe flagged in-use (conflicts).
-        cand = pick_requested_or_oldest_free()
-        if none: return 0.0.0.0, FAIL                        # Dynamic Range exhausted → MACIP_ERROR
+    # 2. Honour a specific requested IP if it is in range and free
+    if requested != 0.0.0.0:
+        idx = requested - pool.base
+        if 1 <= idx < N and not pool[idx].used:
+            pool[idx] = {used, atNet, atNode, now}; return requested, ok
 
-        # 4. NBP-ARP probe (draft §3.8.2 "registered and resolved using NBP ARP"):
-        #    look up "<cand>:IPADDRESS@zone". A reply from a node OTHER than the requester means
-        #    a live host holds it → record a conflict, free the tentative slot, and retry.
-        if nbp_lookup(cand, IPADDRESS, zone) answered by some node != (atNet,atNode):
-            note_conflict(cand); continue
-        register(cand, IPADDRESS, zone, 72); return cand, ok  # publish + hand out
+    # 3. Otherwise allocate the next free slot
+    for i in 1..N:
+        if not pool[i].used:
+            pool[i] = {used, atNet, atNode, now}; return IP(i), ok
+
+    return 0.0.0.0, FAIL          # pool exhausted → failure TResp
 ```
 
 Assignment is **deterministic and sticky**: a given Mac keeps the same IP across
-re-binds as long as its lease survives, and the oldest-unused pick maximises the
-chance a returning Mac finds its previous address still free. The NBP-ARP probe
-blocks briefly, so the gateway runs each assignment on its own goroutine (like the
-DHCP path) rather than on the datagram read loop.
+re-binds as long as its lease has not expired.
 
-### 4.2 Lease lifetime — active NBP ARP Confirm (draft §3.8.2)
+### 4.2 Lease lifetime
 
-Once a lease is handed out, the gateway keeps it alive by the draft's **Confirm
-Period** echo rather than by passive aging alone:
+- Every inbound **IP data** packet (§5) from a Mac refreshes its lease's
+  `lastSeen`.
+- A periodic sweep (every 30 s here) evicts any lease unseen for longer than the
+  idle timeout (5 minutes), returning its slot to the pool.
+- A `MACIP_SERVER` (function 3) request also reuses/refreshes the existing lease.
 
-- Every **Confirm Period** (60 s) the gateway sends an **NBP ARP Confirm** — an NBP
-  lookup of the lease's `<ip>:IPADDRESS@zone`. A reply **from the lease's own
-  AppleTalk node** restarts its timer and clears its miss counter.
-- After **5** consecutive Confirm Periods with no reply (~300 s), the entry is
-  reclaimed and its `IPADDRESS` name withdrawn — the slot becomes the oldest-freed
-  candidate for the next assignment.
-- Inbound **IP data** (§5) and a `MACIP_SERVER` probe are *also* liveness signals:
-  each refreshes the timer and clears the miss counter, so a chatty client is never
-  reclaimed by a lost Confirm.
-
-> The active NBP-ARP model needs the NBP service wired (to probe). Without it the
-> gateway falls back to **passive last-seen aging**: a 30 s sweep evicts any lease
-> unseen for 5 minutes. External/DHCP-relayed leases always age passively. The
-> reference `macipgw` uses ICMP-echo probing instead of NBP ARP; all three
-> reclaim a vanished client on roughly the same horizon.
+> The reference `macipgw` instead validates leases with periodic ICMP echo probes
+> (30 s timeout, ~10 retries before release). ClassicStack uses passive
+> last-seen aging, which avoids generating probe traffic. Either is conformant;
+> the choice only affects how quickly a vanished client's address is reclaimed.
 
 ### 4.3 Pool sizing
 
@@ -503,11 +385,8 @@ IP for it still routes to the right Mac.
 - One socket (72) serves both roles; the DDP type byte (3 vs 22) is the
   demultiplexer. Drop other DDP types on socket 72.
 - The config response is an ATP TResp with `EOM` set, sequence 0, the echoed
-  transaction id and ATP user bytes, and the full 33-byte config data block (space
-  for all eight IP addresses + a leading NUL error byte, 41 bytes of MacIP data on
-  success); unset config fields fall back to the gateway defaults. SERVER and ERROR
-  responses zero the first IP address; ERROR responses append a NUL-terminated
-  string. See issue #17.
+  transaction id, and the 28-byte config data block; unset config fields fall
+  back to the gateway defaults.
 - Leases are keyed by AppleTalk (network, node); normalise a net-0 source to the
   receiving port's network before keying.
 - Intra-pool traffic (one leased Mac to another) is delivered directly over
@@ -516,14 +395,6 @@ IP for it still routes to the right Mac.
   an `IPEgress` seam, and DHCP-relay assignment through an optional
   `AddressAssigner` capability on that seam. An AppleTalk-only build (no egress)
   still answers discovery and assignment — data simply has nowhere to go.
-- Each lease is published as an `IPADDRESS@zone` NBP name on socket 72 and withdrawn
-  on expiry (§2); on startup the gateway runs the reregistration search (§3a) via the
-  core NBP service's `Lookup()` requester to reclaim addresses live hosts still hold.
-- The core NBP responder/requester decodes only single-tuple NBP packets, so the
-  reregistration search sees one address per responder (our own responders and MacIP
-  hosts emit single-tuple replies). A foreign gateway that packs several `IPADDRESS`
-  tuples into one LkUp-Rply would be under-read — an existing whole-service limitation,
-  not specific to reregistration.
 
 ## 8. References
 
@@ -531,15 +402,7 @@ IP for it still routes to the right Mac.
 - ATP: [10-asp.md](10-asp.md) (ASP rides ATP; same ATP framing) and DDP type 3.
 - NBP: [02-nbp.md](02-nbp.md).
 - DDP fields & well-known sockets/types: [00-overview.md](00-overview.md).
-- Protocol draft: *A Standard for the Transmission of Internet Packets over
-  AppleTalk Networks* — `draft-ietf-appleip-MacIP-02` (see
-  [draft-ietf-appleip-MacIP-02.txt](draft-ietf-appleip-MacIP-02.txt) in this
-  folder), §3.8 for the address-assignment (MacIPGP) packet format.
 - Reference C implementation: Stefan Bethke's `macipgw`
-  (https://github.com/jasonking3/macipgw), including njroadfan's Netatalk fix
-  "macipgw: Send back a complete config packet"
-  (https://github.com/Netatalk/netatalk/commit/77c587e1523aef1179d5c9b34752754eb3665914),
-  which corrected the config reply to always carry space for eight IP addresses.
-  Thanks to **njroadfan** for the wire-format observations behind issue #17.
+  (https://github.com/jasonking3/macipgw).
 - ClassicStack: [core/service/macip](../core/service/macip) (AppleTalk + pool),
   [adapter/macipgw](../adapter/macipgw) (IP-side egress).

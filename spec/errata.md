@@ -372,23 +372,6 @@ We had initially implemented `filterEAs` to omit not-found names entirely (diagn
 
 **Where:** `core/service/zip/responding.go` (`handleGetZoneList`); client guard in `tools/end-to-end/macos/src/afp/atalk.c` (`AtalkGetZones`).
 
-## MacIP gateway
-
-### ATP config user bytes carry vendor markers, and every reply carries space for eight IP addresses — observation-based (issue #17)
-
-**Spec (`draft-ietf-appleip-MacIP-02` §3.8):** the ATP User Bytes of a MacIPGP transaction are "unused in MacIP-1 and contain random data"; the response's data field is described as a block of IP addresses followed by an optional error message.
-
-**Observed (Shiva Fastpath 5 running K-STAR, and Apple's IP Gateway software; reported by njroadfan, and reflected in Netatalk's `macipgw` after commit 77c587e "Send back a complete config packet"):**
-- The ATP user bytes are *not* random in practice: **Apple IP Gateway** writes a *version* number into the first two user bytes (which `macipgw` copies), and **Shiva K-STAR** writes `0x08` into the *last* user byte. Clients tolerate whatever is echoed back.
-- Every reply type — `ASSIGN`, `SERVER`, and `ERROR` — carries the **full config data block with space for all eight IP addresses** (not a truncated block); `ERROR` replies simply append the NUL-terminated error string after it.
-- The **only** wire difference between an `ASSIGN` and a `SERVER`/`ERROR` reply is the first IP address: `ASSIGN` carries the assigned value; `SERVER` and `ERROR` leave it `0.0.0.0`. The client only consumes the nameserver and broadcast fields; Apple IP Gateway sets the 5th address to the subnet mask.
-
-**What we do:** decode/emit the ATP header with the core `atp` codec (8-byte header incl. 4 user bytes); echo the request's user bytes into the reply and default the version field when the request left it zero; always emit the 41-byte MacIP data block (`sizeof(struct macip_req) - 21`), zeroing the first IP for `SERVER`/`ERROR` and appending the error string for `ERROR`.
-
-> **Our own bug is not errata:** the pre-fix refactor treated the ATP header as 4 bytes and read the MacIP struct at `Data[4]` instead of `Data[8]`, which mis-parsed real clients. That regression is corrected here, separately from the observations above.
-
-**Where:** `core/service/macip/macip.go` (`handleATPConfig`, `newConfigReply`, `sendATPConfigResp`, `sendATPConfigError`). Spec: [14-macip-gateway.md](14-macip-gateway.md) §3. Thanks to **njroadfan**.
-
 ## AFP
 
 ### Catalog date epoch (Inside Macintosh: Networking, "AFP date and time")
