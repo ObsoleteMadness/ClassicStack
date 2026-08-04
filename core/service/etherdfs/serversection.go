@@ -26,14 +26,14 @@ type ServerSection struct {
 	// Interface is the NAME of the NIC the EtherDFS service binds to ("eth0",
 	// "br-lan"); resolved against the interface namespace. Empty inherits the
 	// default Bridge interface.
-	Interface string `toml:"iface,omitempty" display:"Interface" desc:"NIC this service binds to. Empty inherits the default Bridge interface." widget:"iface"`
+	Interface string `toml:"iface,omitempty" display:"Interface" desc:"NIC this service binds to. Empty inherits the default Bridge interface." widget:"iface" example:"br-lan"`
 	// MAC is the station hardware address used as the Ethernet source on outbound
 	// reply frames, and the address inbound frames must target (besides broadcast).
 	// "" means "use the interface's own MAC", resolved at open time.
 	MAC string `toml:"mac,omitempty" display:"Station MAC" desc:"Ethernet source/target address for EtherDFS. Empty = use the NIC's own MAC." example:"00:11:22:33:44:55"`
 	// ServerName is the name advertised in AL_INSTALLCHK replies. Empty falls back
 	// to the shared Identity.Hostname.
-	ServerName string `toml:"server_name,omitempty" display:"Server name" desc:"Name advertised to EtherDFS clients. Empty falls back to the host name."`
+	ServerName string `toml:"server_name,omitempty" display:"Server name" desc:"Name advertised to EtherDFS clients. Empty falls back to the host name." example:"CLASSICSTACK"`
 
 	port.CaptureFields
 }

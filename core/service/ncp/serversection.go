@@ -26,7 +26,7 @@ type ServerSection struct {
 	ServerName string `toml:"server_name,omitempty" display:"Server name" desc:"NetWare server name (upper-cased on the wire). Empty = Identity.Hostname, then OMNITALK." example:"FILESERVER"`
 	// Description is an optional free-text remark reported to clients. Empty →
 	// Identity.Description.
-	Description string `toml:"description,omitempty" display:"Description" desc:"Optional server description. Empty = Identity.Description."`
+	Description string `toml:"description,omitempty" display:"Description" desc:"Optional server description. Empty = Identity.Description." example:"ClassicStack NetWare server"`
 	// InternalNetwork is the NetWare internal IPX network number (decimal). Clients
 	// learn this via SAP and then RIP GetLocalTarget before opening NCP. 0 = derive
 	// from the station MAC (auto). Same spirit as mars_nwe AUTO mode.

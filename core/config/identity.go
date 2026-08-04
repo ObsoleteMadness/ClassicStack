@@ -31,16 +31,16 @@ type Identity struct {
 	// the browser announces it. Empty → a consumer derives a default (SMB/browser fall
 	// back to "CLASSICSTACK"). The NetBIOS ≤15-byte/upper-case rule is a CONSUMER
 	// constraint (ValidateForNetBIOS), not intrinsic to the field.
-	Hostname string `toml:"hostname,omitempty"`
+	Hostname string `toml:"hostname,omitempty" display:"Hostname" desc:"Server name advertised by SMB, claimed by NetBIOS, and announced by the browser. Empty = CLASSICSTACK. With NetBIOS enabled it must be ≤15 bytes." example:"CLASSICSTACK"`
 	// Workgroup is the SMB NEGOTIATE domain and the browser DomainAnnounce group.
 	// Default WORKGROUP. NetBIOS-flavoured but, like Hostname, used by SMB without
 	// NetBIOS.
-	Workgroup string `toml:"workgroup,omitempty"`
+	Workgroup string `toml:"workgroup,omitempty" display:"Workgroup" desc:"SMB NEGOTIATE domain and browser workgroup the server joins. Empty = WORKGROUP." example:"WORKGROUP"`
 	// Description is the human server comment: SMB's server remark (the comment in a
 	// NetServerEnum2 SERVER_INFO_1 record / the browser self-announcement comment), as
 	// shown in a Windows browse list next to the server name. Optional; empty = no
 	// comment. Not NetBIOS-constrained (it is a free-text comment, not a name).
-	Description string `toml:"description,omitempty"`
+	Description string `toml:"description,omitempty" display:"Description" desc:"Free-text server comment shown next to the server in a Windows browse list. Empty = no comment." example:"ClassicStack file server"`
 }
 
 // ErrHostnameInvalid is returned by Identity.Validate when the hostname carries a

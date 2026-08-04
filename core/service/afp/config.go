@@ -26,25 +26,25 @@ const VolumesKey = "AFPVolumes"
 type VolumeSection struct {
 	// VName is the volume's display name and the per-instance section name. Always
 	// set; the codec writes it as the named-section instance key.
-	VName string `toml:"name" display:"Volume name" desc:"Display name shown to AFP clients."`
+	VName string `toml:"name" display:"Volume name" desc:"Display name shown to AFP clients." example:"Macintosh HD"`
 	// FSType selects the FileSystem factory ("local_fs", "memfs", …). Empty leaves
 	// share.Build to apply its default.
-	FSType string `toml:"fs_type,omitempty" display:"Filesystem type" desc:"Storage backend (local_fs, memfs, …)." widget:"fs_type"`
+	FSType string `toml:"fs_type,omitempty" display:"Filesystem type" desc:"Storage backend (local_fs, memfs, …)." widget:"fs_type" example:"local_fs"`
 	// ForkBackend selects the fork engine ("appledouble"|"ads"|"xattr"|"native"|"auto").
-	ForkBackend string `toml:"fork_backend,omitempty" display:"Fork backend" desc:"How resource forks / Finder info are stored (appledouble · ads · xattr · native · auto)." widget:"fork_backend"`
+	ForkBackend string `toml:"fork_backend,omitempty" display:"Fork backend" desc:"How resource forks / Finder info are stored (appledouble · ads · xattr · native · auto)." widget:"fork_backend" example:"appledouble"`
 	// FilenameCodec selects the wire↔store name codec ("macroman-utf8"|…).
-	FilenameCodec string `toml:"filename_codec,omitempty" display:"Filename codec" desc:"Wire↔store filename translation. Empty = default." widget:"filename_codec"`
+	FilenameCodec string `toml:"filename_codec,omitempty" display:"Filename codec" desc:"Wire↔store filename translation. Empty = default." widget:"filename_codec" example:"macroman-utf8"`
 	// Metastore selects the CNID/shortname store kind ("mem" default, "sqlite" tagged).
-	Metastore string `toml:"metastore,omitempty" display:"Metastore" desc:"Where IDs/short-name mappings persist (mem default; sqlite for a durable store)." widget:"metastore"`
+	Metastore string `toml:"metastore,omitempty" display:"Metastore" desc:"Where IDs/short-name mappings persist (mem default; sqlite for a durable store)." widget:"metastore" example:"sqlite"`
 	// MetaBackend selects the share's MetaEngine (derived names, CNIDs, DOS
 	// attributes/dates): "metastore"|"xattr"|"ads" (empty = per-platform default).
 	// AFP does not serve DOS attributes itself, but a same-host-path SMB/EtherDFS
 	// share does, so the volume config carries it for consistency. See
 	// fs.ShareSpec.MetaBackend.
-	MetaBackend string `toml:"meta_backend,omitempty" display:"Meta backend" desc:"Where derived names, CNIDs, and DOS attributes live (metastore · xattr · ads). Empty = platform default." widget:"meta_backend"`
+	MetaBackend string `toml:"meta_backend,omitempty" display:"Meta backend" desc:"Where derived names, CNIDs, and DOS attributes live (metastore · xattr · ads). Empty = platform default." widget:"meta_backend" example:"metastore"`
 	// Path is the backend location (the host directory for local_fs, the image file
 	// for hfs-image, …). Maps to the typed fs.ShareSpec.Path.
-	Path string `toml:"path,omitempty" display:"Path" desc:"Host directory backing this share."`
+	Path string `toml:"path,omitempty" display:"Path" desc:"Host directory backing this share." example:"/srv/mac/hd"`
 	// ReadOnly makes the whole volume read-only (share-wide, not per-user).
 	ReadOnly bool `toml:"read_only,omitempty" display:"Read-only" desc:"Export the whole share read-only."`
 	// AllowedUsers is the access allow-list (empty = guest/world). Not secret;
@@ -57,14 +57,14 @@ type VolumeSection struct {
 	// metadata. Empty = no defaulting (a file without stored Finder info reads as 32
 	// zero bytes). The file is read at the cmd/compose edge (core does no file I/O for
 	// config) and parsed via afp.ParseExtensionMap.
-	ExtMapPath string `toml:"extmap_path,omitempty" display:"Extension map file" desc:"Netatalk-style type/creator map for files with no stored Finder info."`
+	ExtMapPath string `toml:"extmap_path,omitempty" display:"Extension map file" desc:"Netatalk-style type/creator map for files with no stored Finder info." example:"/etc/classicstack/extmap.conf"`
 	// SizeLimitMB is the volume size REPORTED to AFP clients, in MiB (netatalk's
 	// volsizelimit). 0 = the classic-friendly 512 MiB default. Classic clients
 	// derive their HFS allocation-block size from the reported size with 16-bit
 	// block math, so this sets the Finder's per-file "size on disk" granularity
 	// (512 MiB → 8 KiB blocks; the 2 GiB wire cap → 32 KiB). Presentation only —
 	// it does not limit what the host stores.
-	SizeLimitMB int64 `toml:"size_limit,omitempty" display:"Size limit (MiB)" desc:"Volume size reported to AFP clients in MiB (0 = 512 MiB classic default). Presentation only."`
+	SizeLimitMB int64 `toml:"size_limit,omitempty" display:"Size limit (MiB)" desc:"Volume size reported to AFP clients in MiB (0 = 512 MiB classic default). Presentation only." example:"512"`
 }
 
 // compile-time assertions: *VolumeSection is a NamedSection and a SecretMasker.

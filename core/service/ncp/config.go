@@ -31,21 +31,21 @@ type VolumeSection struct {
 	// set; the codec writes it as the named-section instance key. NetWare volume
 	// names are matched case-insensitively and conventionally upper-cased (SYS,
 	// VOL1) — the trailing colon clients use (SYS:) is not part of the name.
-	VName string `toml:"name" display:"Volume name" desc:"NetWare volume name (SYS, VOL1, …)."`
+	VName string `toml:"name" display:"Volume name" desc:"NetWare volume name (SYS, VOL1, …)." example:"SYS"`
 	// FSType selects the FileSystem factory ("local_fs", "memfs", …).
-	FSType string `toml:"fs_type,omitempty" display:"Filesystem type" desc:"Storage backend (local_fs, memfs, …)." widget:"fs_type"`
+	FSType string `toml:"fs_type,omitempty" display:"Filesystem type" desc:"Storage backend (local_fs, memfs, …)." widget:"fs_type" example:"local_fs"`
 	// ForkBackend selects the fork engine ("appledouble"|"ads"|"xattr"|"native"|"auto").
-	ForkBackend string `toml:"fork_backend,omitempty" display:"Fork backend" desc:"How resource forks / Finder info are stored (appledouble · ads · xattr · native · auto)." widget:"fork_backend"`
+	ForkBackend string `toml:"fork_backend,omitempty" display:"Fork backend" desc:"How resource forks / Finder info are stored (appledouble · ads · xattr · native · auto)." widget:"fork_backend" example:"appledouble"`
 	// FilenameCodec selects the wire↔store name codec.
-	FilenameCodec string `toml:"filename_codec,omitempty" display:"Filename codec" desc:"Wire↔store filename translation. Empty = default." widget:"filename_codec"`
+	FilenameCodec string `toml:"filename_codec,omitempty" display:"Filename codec" desc:"Wire↔store filename translation. Empty = default." widget:"filename_codec" example:"cp437-utf8"`
 	// Metastore selects the CNID/shortname store kind ("mem" default).
-	Metastore string `toml:"metastore,omitempty" display:"Metastore" desc:"Where IDs/short-name mappings persist (mem default; sqlite for a durable store)." widget:"metastore"`
+	Metastore string `toml:"metastore,omitempty" display:"Metastore" desc:"Where IDs/short-name mappings persist (mem default; sqlite for a durable store)." widget:"metastore" example:"sqlite"`
 	// MetaBackend selects the share's MetaEngine (derived names, CNIDs, DOS
 	// attributes/dates): "metastore"|"xattr"|"ads" (empty = per-platform default).
 	// See fs.ShareSpec.MetaBackend.
-	MetaBackend string `toml:"meta_backend,omitempty" display:"Meta backend" desc:"Where derived names, CNIDs, and DOS attributes live (metastore · xattr · ads). Empty = platform default." widget:"meta_backend"`
+	MetaBackend string `toml:"meta_backend,omitempty" display:"Meta backend" desc:"Where derived names, CNIDs, and DOS attributes live (metastore · xattr · ads). Empty = platform default." widget:"meta_backend" example:"metastore"`
 	// Path is the backend location (host directory for local_fs, …).
-	Path string `toml:"path,omitempty" display:"Path" desc:"Host directory backing this volume."`
+	Path string `toml:"path,omitempty" display:"Path" desc:"Host directory backing this volume." example:"/srv/netware/sys"`
 	// ReadOnly makes the whole volume read-only (volume-wide, not per-user).
 	ReadOnly bool `toml:"read_only,omitempty" display:"Read-only" desc:"Export the whole volume read-only."`
 	// AllowedUsers is the access allow-list (empty = guest/world). Not secret.
