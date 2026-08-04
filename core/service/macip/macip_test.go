@@ -165,6 +165,84 @@ func TestPoolAssignReuseAndRange(t *testing.T) {
 	}
 }
 
+// TestPoolAllocatesOldestFreedSlot: once every slot has been used, a new assignment reuses
+// the slot freed LONGEST ago (draft §3.8.2 "oldest unused entry"), not the lowest index.
+// (A never-used slot carries the zero freedAt, which is older still, so this rule is
+// observable once the pool has no never-used slack — the realistic reuse case.)
+func TestPoolAllocatesOldestFreedSlot(t *testing.T) {
+	q := newIPPool(IPv4{10, 0, 0, 0}, 5) // slots: 0 net, 1 gw, 2/3/4 assignable
+	x2, _, _ := q.assign(IPv4{}, 10, 2)  // .2
+	x3, _, _ := q.assign(IPv4{}, 10, 3)  // .3
+	x4, _, _ := q.assign(IPv4{}, 10, 4)  // .4
+	if x2 != (IPv4{10, 0, 0, 2}) || x3 != (IPv4{10, 0, 0, 3}) || x4 != (IPv4{10, 0, 0, 4}) {
+		t.Fatalf("initial leases = %v %v %v", x2, x3, x4)
+	}
+	// Free .4 first (oldest freedAt), then .3.
+	q.release(x4, 10, 4)
+	time.Sleep(2 * time.Millisecond)
+	q.release(x3, 10, 3)
+
+	// A new endpoint must reuse .4 (freed longest ago), not the lower-indexed .3.
+	got, fresh, ok := q.assign(IPv4{}, 20, 20)
+	if !ok || !fresh {
+		t.Fatalf("reassign failed: ok=%v fresh=%v", ok, fresh)
+	}
+	if got != x4 {
+		t.Errorf("reassigned = %v, want the oldest-freed %v (.4)", got, x4)
+	}
+}
+
+// TestPoolSkipsConflictedAddress: an address a probe marked as in-use (noteConflict) is not
+// handed out until its conflict record ages out; noteConflict also frees the tentative slot.
+func TestPoolSkipsConflictedAddress(t *testing.T) {
+	p := newIPPool(IPv4{10, 0, 0, 0}, 5) // assignable .2 .3 .4
+	// Claim .2 tentatively then mark it conflicted (as the pre-assign probe would).
+	ip, _, _ := p.assign(IPv4{}, 10, 2)
+	if ip != (IPv4{10, 0, 0, 2}) {
+		t.Fatalf("first assign = %v, want .2", ip)
+	}
+	p.noteConflict(ip) // .2 is really held by someone else
+	// Next assignment must skip .2 and take .3.
+	ip2, _, ok := p.assign(IPv4{}, 10, 2)
+	if !ok || ip2 == ip {
+		t.Fatalf("assign after conflict = %v ok=%v, want a non-.2 address", ip2, ok)
+	}
+	// An explicit request for the conflicted .2 is refused too (falls through).
+	ip3, _, ok := p.assign(IPv4{10, 0, 0, 2}, 30, 30)
+	if !ok || ip3 == (IPv4{10, 0, 0, 2}) {
+		t.Fatalf("requesting conflicted .2 yielded %v ok=%v; must be refused", ip3, ok)
+	}
+}
+
+// TestPoolConfirmMissEvictsAfterLimit: a lease is reclaimed only after confirmMissLimit
+// consecutive missed confirms; a hit (or data traffic) in between resets the counter.
+func TestPoolConfirmMissEvictsAfterLimit(t *testing.T) {
+	p := newIPPool(IPv4{10, 0, 0, 0}, 10)
+	ip, _, _ := p.assign(IPv4{}, 10, 5)
+
+	// Four misses (limit 5) — not yet evicted.
+	for i := range 4 {
+		if p.confirmMiss(ip, 10, 5, 5) {
+			t.Fatalf("evicted after %d misses, want survive until 5", i+1)
+		}
+	}
+	// A hit resets the counter.
+	p.confirmHit(ip, 10, 5)
+	// Now it takes another full 5 misses.
+	for i := range 4 {
+		if p.confirmMiss(ip, 10, 5, 5) {
+			t.Fatalf("evicted after reset+%d misses, want survive", i+1)
+		}
+	}
+	if !p.confirmMiss(ip, 10, 5, 5) {
+		t.Fatal("5th miss after reset should evict")
+	}
+	// The slot is now free again.
+	if _, _, ok := p.lookupByIP(ip); ok {
+		t.Errorf("lease %v still present after eviction", ip)
+	}
+}
+
 // TestPoolNeverLeasesGatewayOrNetworkAddr is the regression for the observed bug where
 // a Mac was leased 192.168.100.1 — the exact address the gateway advertises as its own
 // IPGATEWAY identity. The pool must reserve both the network address (base) and the
@@ -278,6 +356,29 @@ func TestLearnSourceRepointsEndpoint(t *testing.T) {
 	}
 }
 
+// atpReq builds a MacIP ATP TReq DDP payload as a REAL MacTCP client sends it: the 8-byte
+// ATP header (ctrl, bitmap, tid, 4 user bytes) followed by the MacIP control in the ATP
+// DATA, which is mipr_function(4) FIRST (wire-verified — version/pad ride the ATP user
+// bytes, not the data), then mipr_ipaddr(4). The ATP user bytes default to zero unless
+// overridden via user.
+func atpReq(tid uint16, function byte, user ...byte) []byte {
+	var u [4]byte
+	copy(u[:], user)
+	return []byte{
+		atpFuncTReq, 0x00, byte(tid >> 8), byte(tid), // ATP: ctrl, bitmap, tid
+		u[0], u[1], u[2], u[3], // ATP user bytes (version/pad live here)
+		0x00, 0x00, 0x00, function, // mipr_function (be32) — first 4 bytes of ATP data
+		0x00, 0x00, 0x00, 0x00, // mipr_ipaddr = 0.0.0.0 ("any")
+	}
+}
+
+// respFN reads the 32-bit MacIP function code from a config reply: mipr_function is the
+// first 4 bytes of the ATP data (respFuncOff).
+func respFN(data []byte) uint32 {
+	o := respFuncOff
+	return uint32(data[o])<<24 | uint32(data[o+1])<<16 | uint32(data[o+2])<<8 | uint32(data[o+3])
+}
+
 // TestATPConfigAssign: an ATP TReq (func=assign) gets a TResp carrying an assigned IP.
 func TestATPConfigAssign(t *testing.T) {
 	fr := newFakeRouter()
@@ -287,11 +388,12 @@ func TestATPConfigAssign(t *testing.T) {
 	}
 	defer svc.Stop(context.Background())
 
-	// ATP TReq: ctrl(TReq) bitmap tid(2) + userdata(version2 pad2 function4).
-	data := []byte{atpFuncTReq, 0x00, 0x12, 0x34, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, macIPFuncAssign}
+	// ATP TReq carrying arbitrary bytes in the ATP user field (a real MacTCP client sends
+	// junk there — observed 0x001addfc). The reply must NOT echo them: it always stamps
+	// version=1 / pad=0, which is where MacTCP reads the protocol version back.
 	svc.Inbound(ddp.Datagram{
 		SrcNetwork: 10, SrcNode: 5, SrcSocket: Socket,
-		DestSocket: Socket, DDPType: ddpTypeATP, Data: data,
+		DestSocket: Socket, DDPType: ddpTypeATP, Data: atpReq(0x1234, macIPFuncAssign, 0x00, 0x1a, 0xdd, 0xfc),
 	}, nil)
 
 	got := fr.waitReplies(1)
@@ -305,18 +407,22 @@ func TestATPConfigAssign(t *testing.T) {
 	if r.data[0] != (atpFuncTResp|atpEOM) || r.data[2] != 0x12 || r.data[3] != 0x34 {
 		t.Errorf("TResp header wrong: %x", r.data[:4])
 	}
-	// Assigned IP at resp[12:16] should be the first assignable pool address (.2): .0 is
+	// The reply's ATP user bytes MUST be version(2)=1 + pad(2)=0, regardless of the request's
+	// junk — MacTCP reads the version from [4:6] and refuses the config on a mismatch.
+	if r.data[4] != 0x00 || r.data[5] != macIPVersion || r.data[6] != 0x00 || r.data[7] != 0x00 {
+		t.Errorf("ATP user bytes = %x, want 00 %02x 00 00 (version+pad)", r.data[4:8], macIPVersion)
+	}
+	// Assigned IP at respIPOff should be the first assignable pool address (.2): .0 is
 	// the network address and .1 is the gateway, both reserved.
-	if got := r.data[12:16]; got[0] != 192 || got[1] != 168 || got[2] != 100 || got[3] != 2 {
+	if got := r.data[respIPOff : respIPOff+4]; got[0] != 192 || got[1] != 168 || got[2] != 100 || got[3] != 2 {
 		t.Errorf("assigned IP = %v, want 192.168.100.2", got)
 	}
-	// The reply must be byte-length-compatible with macipgw: 4-byte ATP header +
-	// 41-byte MacIP user-data (control 8 + 32 data fields + 1 NUL error byte).
-	if len(r.data) != 4+configUserLen {
-		t.Errorf("reply length = %d, want %d (macipgw success len)", len(r.data), 4+configUserLen)
+	// The reply must be byte-length-compatible with macipgw: 8-byte ATP header +
+	// 41-byte MacIP data (control 8 + 32 data fields + 1 NUL error byte).
+	if len(r.data) != atpHeaderLen+configUserLen {
+		t.Errorf("reply length = %d, want %d (macipgw success len)", len(r.data), atpHeaderLen+configUserLen)
 	}
-	// Function field at resp[8:12] is MACIP_ASSIGN (1), big-endian.
-	if fn := uint32(r.data[8])<<24 | uint32(r.data[9])<<16 | uint32(r.data[10])<<8 | uint32(r.data[11]); fn != macIPFuncAssign {
+	if fn := respFN(r.data); fn != macIPFuncAssign {
 		t.Errorf("reply function = %d, want MACIP_ASSIGN", fn)
 	}
 }
@@ -330,10 +436,9 @@ func TestATPConfigUnknownFunction(t *testing.T) {
 	defer svc.Stop(context.Background())
 
 	// function = 99 (unknown).
-	data := []byte{atpFuncTReq, 0x00, 0x12, 0x34, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 99}
 	svc.Inbound(ddp.Datagram{
 		SrcNetwork: 10, SrcNode: 5, SrcSocket: Socket,
-		DestSocket: Socket, DDPType: ddpTypeATP, Data: data,
+		DestSocket: Socket, DDPType: ddpTypeATP, Data: atpReq(0x1234, 99),
 	}, nil)
 
 	got := fr.waitReplies(1)
@@ -342,16 +447,18 @@ func TestATPConfigUnknownFunction(t *testing.T) {
 	}
 	r := got[0]
 	// Function field must be MACIP_ERROR (0xFFFFFFFF).
-	fn := uint32(r.data[8])<<24 | uint32(r.data[9])<<16 | uint32(r.data[10])<<8 | uint32(r.data[11])
-	if fn != 0xFFFFFFFF {
+	if fn := respFN(r.data); fn != 0xFFFFFFFF {
 		t.Errorf("reply function = %#x, want 0xFFFFFFFF (MACIP_ERROR)", fn)
 	}
-	// Error string begins at resp offset 4 + 8 + 32 = 44.
-	errStart := 4 + configCtrlLen + configFieldsLen
-	if len(r.data) < errStart+len(errNoOp) {
+	// An error reply still carries the full config block with a zeroed first IP address
+	// (issue #17); the error string is appended after it.
+	if ip := r.data[respIPOff : respIPOff+4]; ip[0]|ip[1]|ip[2]|ip[3] != 0 {
+		t.Errorf("error reply first IP = %v, want all zeros", ip)
+	}
+	if len(r.data) < respErrOff+len(errNoOp) {
 		t.Fatalf("reply too short (%d) to carry error string", len(r.data))
 	}
-	if got := string(r.data[errStart : errStart+len(errNoOp)]); got != errNoOp {
+	if got := string(r.data[respErrOff : respErrOff+len(errNoOp)]); got != errNoOp {
 		t.Errorf("error string = %q, want %q", got, errNoOp)
 	}
 }
@@ -367,27 +474,23 @@ func TestATPConfigPoolExhausted(t *testing.T) {
 	defer svc.Stop(context.Background())
 
 	// First endpoint takes the only slot.
-	data1 := []byte{atpFuncTReq, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, macIPFuncAssign}
-	svc.Inbound(ddp.Datagram{SrcNetwork: 10, SrcNode: 5, SrcSocket: Socket, DestSocket: Socket, DDPType: ddpTypeATP, Data: data1}, nil)
+	svc.Inbound(ddp.Datagram{SrcNetwork: 10, SrcNode: 5, SrcSocket: Socket, DestSocket: Socket, DDPType: ddpTypeATP, Data: atpReq(0x0001, macIPFuncAssign)}, nil)
 	first := fr.waitReplies(1)
 	if len(first) != 1 {
 		t.Fatalf("first assign: got %d replies", len(first))
 	}
 
 	// Second endpoint finds the pool exhausted → MACIP_ERROR / errNoIP.
-	data2 := []byte{atpFuncTReq, 0x00, 0x00, 0x02, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, macIPFuncAssign}
-	svc.Inbound(ddp.Datagram{SrcNetwork: 10, SrcNode: 6, SrcSocket: Socket, DestSocket: Socket, DDPType: ddpTypeATP, Data: data2}, nil)
+	svc.Inbound(ddp.Datagram{SrcNetwork: 10, SrcNode: 6, SrcSocket: Socket, DestSocket: Socket, DDPType: ddpTypeATP, Data: atpReq(0x0002, macIPFuncAssign)}, nil)
 	all := fr.waitReplies(2)
 	if len(all) != 2 {
 		t.Fatalf("got %d replies, want 2", len(all))
 	}
 	r := all[1]
-	fn := uint32(r.data[8])<<24 | uint32(r.data[9])<<16 | uint32(r.data[10])<<8 | uint32(r.data[11])
-	if fn != 0xFFFFFFFF {
+	if fn := respFN(r.data); fn != 0xFFFFFFFF {
 		t.Errorf("exhausted reply function = %#x, want MACIP_ERROR", fn)
 	}
-	errStart := 4 + configCtrlLen + configFieldsLen
-	if got := string(r.data[errStart : errStart+len(errNoIP)]); got != errNoIP {
+	if got := string(r.data[respErrOff : respErrOff+len(errNoIP)]); got != errNoIP {
 		t.Errorf("error string = %q, want %q", got, errNoIP)
 	}
 }
@@ -433,10 +536,9 @@ func TestInboundIPRoutedToClient(t *testing.T) {
 	defer svc.Stop(context.Background())
 
 	// Lease the first host (.2) to AT 10.5 by issuing an assign request.
-	data := []byte{atpFuncTReq, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, macIPFuncAssign}
 	svc.Inbound(ddp.Datagram{
 		SrcNetwork: 10, SrcNode: 5, SrcSocket: Socket,
-		DestSocket: Socket, DDPType: ddpTypeATP, Data: data,
+		DestSocket: Socket, DDPType: ddpTypeATP, Data: atpReq(0x0001, macIPFuncAssign),
 	}, nil)
 	_ = fr.waitReplies(1)
 
@@ -472,10 +574,9 @@ func TestATPConfigAssignViaEgress(t *testing.T) {
 	}
 	defer svc.Stop(context.Background())
 
-	data := []byte{atpFuncTReq, 0x00, 0xAB, 0xCD, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, macIPFuncAssign}
 	svc.Inbound(ddp.Datagram{
 		SrcNetwork: 10, SrcNode: 5, SrcSocket: Socket,
-		DestSocket: Socket, DDPType: ddpTypeATP, Data: data,
+		DestSocket: Socket, DDPType: ddpTypeATP, Data: atpReq(0xABCD, macIPFuncAssign),
 	}, nil)
 
 	got := fr.waitReplies(1)
@@ -487,10 +588,10 @@ func TestATPConfigAssignViaEgress(t *testing.T) {
 		t.Errorf("TResp tid wrong: %x", r.data[:4])
 	}
 	// The egress-assigned IP and nameserver must be reflected, not the static defaults.
-	if ip := r.data[12:16]; ip[0] != 10 || ip[1] != 0 || ip[2] != 0 || ip[3] != 77 {
+	if ip := r.data[respIPOff : respIPOff+4]; ip[0] != 10 || ip[1] != 0 || ip[2] != 0 || ip[3] != 77 {
 		t.Errorf("assigned IP = %v, want 10.0.0.77 (from egress)", ip)
 	}
-	if ns := r.data[16:20]; ns[0] != 10 || ns[1] != 0 || ns[2] != 0 || ns[3] != 1 {
+	if ns := r.data[respNSOff : respNSOff+4]; ns[0] != 10 || ns[1] != 0 || ns[2] != 0 || ns[3] != 1 {
 		t.Errorf("nameserver = %v, want 10.0.0.1 (from egress)", ns)
 	}
 	// The external lease must be recorded so OwnsIP / inbound routing find it.
@@ -534,10 +635,9 @@ func TestATPConfigNATFallsBackToStaticPool(t *testing.T) {
 	}
 	defer svc.Stop(context.Background())
 
-	data := []byte{atpFuncTReq, 0x00, 0xAB, 0xCD, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, macIPFuncAssign}
 	svc.Inbound(ddp.Datagram{
 		SrcNetwork: 10, SrcNode: 5, SrcSocket: Socket,
-		DestSocket: Socket, DDPType: ddpTypeATP, Data: data,
+		DestSocket: Socket, DDPType: ddpTypeATP, Data: atpReq(0xABCD, macIPFuncAssign),
 	}, nil)
 
 	got := fr.waitReplies(1)
@@ -548,7 +648,7 @@ func TestATPConfigNATFallsBackToStaticPool(t *testing.T) {
 		t.Errorf("AssignIP was called %d times; core must not delegate to an inactive assigner", eg.calls)
 	}
 	// The reply must carry a real static-pool address (network base 192.168.100.0 + 1).
-	if ip := got[0].data[12:16]; ip[0] != 192 || ip[1] != 168 || ip[2] != 100 {
+	if ip := got[0].data[respIPOff : respIPOff+4]; ip[0] != 192 || ip[1] != 168 || ip[2] != 100 {
 		t.Errorf("assigned IP = %v, want a 192.168.100.x static-pool address", ip)
 	}
 }
@@ -575,10 +675,9 @@ func TestDHCPRouterAdoptedAsGateway(t *testing.T) {
 		t.Fatalf("startup IPGATEWAY name = %q, want 192.168.100.1", got)
 	}
 
-	data := []byte{atpFuncTReq, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, macIPFuncAssign}
 	svc.Inbound(ddp.Datagram{
 		SrcNetwork: 10, SrcNode: 5, SrcSocket: Socket,
-		DestSocket: Socket, DDPType: ddpTypeATP, Data: data,
+		DestSocket: Socket, DDPType: ddpTypeATP, Data: atpReq(0x0001, macIPFuncAssign),
 	}, nil)
 	if got := fr.waitReplies(1); len(got) != 1 {
 		t.Fatalf("got %d replies, want 1", len(got))
@@ -644,4 +743,310 @@ func gatewayNBPName(names *nbp.Service) string {
 		return ""
 	}
 	return found
+}
+
+// rrPort is a minimal RoutedPort for the NBP integration tests: it records broadcasts (so
+// the test can read the BrRq's NBP id) and unicasts (so it can read a routed TResp) and
+// swallows the rest.
+type rrPort struct {
+	mu    sync.Mutex
+	bcst  []ddp.Datagram
+	ucast []ddp.Datagram
+}
+
+func (p *rrPort) Name() string                       { return "rr" }
+func (p *rrPort) Start(context.Context) error        { return nil }
+func (p *rrPort) Stop(context.Context) error         { return nil }
+func (p *rrPort) Network() uint16                    { return 10 }
+func (p *rrPort) Node() uint8                        { return 0x80 }
+func (p *rrPort) NetworkMin() uint16                 { return 10 }
+func (p *rrPort) NetworkMax() uint16                 { return 10 }
+func (p *rrPort) Multicast(_ []byte, _ ddp.Datagram) {}
+func (p *rrPort) Unicast(network uint16, node uint8, d ddp.Datagram) {
+	d.DestNetwork = network
+	d.DestNode = node
+	p.mu.Lock()
+	p.ucast = append(p.ucast, d)
+	p.mu.Unlock()
+}
+func (p *rrPort) Broadcast(d ddp.Datagram) {
+	p.mu.Lock()
+	p.bcst = append(p.bcst, d)
+	p.mu.Unlock()
+}
+
+// waitTResp returns the assigned IP from the first MacIP ATP TResp routed to the given node,
+// or the zero IP if none arrives in time. It reads the config reply's first IP field.
+func (p *rrPort) waitTRespIP(node uint8) IPv4 {
+	for range 800 {
+		p.mu.Lock()
+		uc := append([]ddp.Datagram(nil), p.ucast...)
+		p.mu.Unlock()
+		for _, d := range uc {
+			if d.DDPType == ddpTypeATP && d.DestNode == node && len(d.Data) >= respIPOff+4 {
+				var ip IPv4
+				copy(ip[:], d.Data[respIPOff:respIPOff+4])
+				return ip
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return IPv4{}
+}
+func (p *rrPort) waitBroadcast(n int) []ddp.Datagram {
+	for range 3000 {
+		p.mu.Lock()
+		got := len(p.bcst)
+		p.mu.Unlock()
+		if got >= n {
+			break
+		}
+		runtime.Gosched()
+		time.Sleep(time.Millisecond)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]ddp.Datagram(nil), p.bcst...)
+}
+
+// rrLkUpRply builds a single-tuple IPADDRESS LkUp-Rply carrying the given NBP id, from a
+// host at net 10, the given node, on socket 72.
+func rrLkUpRply(nbpID byte, node byte, ip string) []byte {
+	out := []byte{(3 << 4) | 1, nbpID, 0, 10, node, Socket, 0} // 3 = CtrlLkUpRply; network 10
+	out = append(out, byte(len(ip)))
+	out = append(out, ip...)
+	out = append(out, byte(len(nbpTypeIPAddress)))
+	out = append(out, nbpTypeIPAddress...)
+	out = append(out, byte(len("MyZone")))
+	out = append(out, "MyZone"...)
+	return out
+}
+
+// TestReregistrationSeedsPool: on startup the gateway searches "=:IPADDRESS@*" and seeds
+// its pool with any discovered in-range address so it is not reassigned (spec §3.7). A
+// discovered out-of-range address is ignored; the gateway's own IP is skipped.
+func TestReregistrationSeedsPool(t *testing.T) {
+	r := router.New(nil)
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatalf("router Start: %v", err)
+	}
+	p := &rrPort{}
+	if err := r.Attach(p); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	names := nbp.New(r, nil)
+	if err := names.Start(context.Background()); err != nil {
+		t.Fatalf("nbp Start: %v", err)
+	}
+	defer names.Stop(context.Background())
+
+	svc := New(r, names, nil, testConfig(), nil)
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Stop(context.Background())
+
+	// The reregistration goroutine broadcasts the =:IPADDRESS@* BrRq; capture its NBP id.
+	var id byte
+	got := p.waitBroadcast(1)
+	for _, d := range got {
+		if len(d.Data) >= 2 && d.Data[0]>>4 == 1 { // CtrlBrRq
+			id = d.Data[1]
+		}
+	}
+	if len(got) == 0 {
+		t.Fatal("reregistration did not broadcast a BrRq")
+	}
+
+	// A live host holds 192.168.100.50 (in range) at node 9; another answers with an
+	// out-of-range address; a third answers with the gateway's own IP.
+	names.Inbound(ddp.Datagram{
+		DestNetwork: 10, SrcNetwork: 10, DestNode: 0x80, SrcNode: 9,
+		DestSocket: Socket, SrcSocket: Socket, DDPType: nbp.DDPType,
+		Data: rrLkUpRply(id, 9, "192.168.100.50"),
+	}, p)
+	names.Inbound(ddp.Datagram{
+		DestNetwork: 10, SrcNetwork: 10, DestNode: 0x80, SrcNode: 11,
+		DestSocket: Socket, SrcSocket: Socket, DDPType: nbp.DDPType,
+		Data: rrLkUpRply(id, 11, "10.9.9.9"), // out of the 192.168.100.0 pool
+	}, p)
+	names.Inbound(ddp.Datagram{
+		DestNetwork: 10, SrcNetwork: 10, DestNode: 0x80, SrcNode: 12,
+		DestSocket: Socket, SrcSocket: Socket, DDPType: nbp.DDPType,
+		Data: rrLkUpRply(id, 12, "192.168.100.1"), // the gateway's own IP
+	}, p)
+
+	// Wait for reregistration to finish seeding (the Lookup window is ~2s).
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		if svc.OwnsIP(IPv4{192, 168, 100, 50}) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// The in-range discovered address is now leased to node 9 and never handed out.
+	if !svc.OwnsIP(IPv4{192, 168, 100, 50}) {
+		t.Fatalf("192.168.100.50 not seeded from reregistration")
+	}
+	if n, node, ok := svc.pool.lookupByIP(IPv4{192, 168, 100, 50}); !ok || n != 10 || node != 9 {
+		t.Errorf("seeded lease = %d.%d ok=%v, want 10.9", n, node, ok)
+	}
+	// The out-of-range and gateway addresses must NOT have been seeded into the static pool.
+	if svc.OwnsIP(IPv4{10, 9, 9, 9}) {
+		t.Errorf("out-of-range 10.9.9.9 was seeded; must be ignored")
+	}
+	// The gateway records the discovered lease so it won't reassign the address, but it must
+	// NOT (re)register an IPADDRESS NBP name for it — that name belongs to the HOST that
+	// answered the search (draft §3.2.2.4); shadowing it breaks the host on its next reboot.
+	if got := ipAddressNBPNames(names); got["192.168.100.50"] {
+		t.Errorf("gateway registered 192.168.100.50:IPADDRESS (shadows the host): %v", got)
+	}
+}
+
+// TestPreAssignProbeSkipsLiveDuplicate: when a live host already holds the first candidate
+// address (answers its IPADDRESS NBP lookup), the gateway skips it and assigns another
+// (draft §3.8.2: assigned addresses are resolved via NBP ARP first).
+func TestPreAssignProbeSkipsLiveDuplicate(t *testing.T) {
+	r := router.New(nil)
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatalf("router Start: %v", err)
+	}
+	p := &rrPort{}
+	if err := r.Attach(p); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	names := nbp.New(r, nil)
+	if err := names.Start(context.Background()); err != nil {
+		t.Fatalf("nbp Start: %v", err)
+	}
+	defer names.Stop(context.Background())
+
+	// A "live host" holds 192.168.100.2 (the first candidate the gateway would hand out). We
+	// simulate it by watching the port for the gateway's IPADDRESS probe BrRq and injecting a
+	// LkUp-Rply for .2 from node 99 (≠ the requesting client) — a genuine conflict — using the
+	// probe's own NBP id so it reaches the waiting Lookup. The real router does not loop a
+	// reply back to the originating node's services, so replies must be injected via Inbound.
+	stopResp := make(chan struct{})
+	defer close(stopResp)
+	go func() {
+		seen := 0
+		for {
+			select {
+			case <-stopResp:
+				return
+			default:
+			}
+			p.mu.Lock()
+			bc := append([]ddp.Datagram(nil), p.bcst...)
+			p.mu.Unlock()
+			for ; seen < len(bc); seen++ {
+				d := bc[seen]
+				if len(d.Data) < 8 || d.Data[0]>>4 != 1 { // not a BrRq
+					continue
+				}
+				// object begins at Data[8] with a length prefix at Data[7].
+				objLen := int(d.Data[7])
+				if len(d.Data) < 8+objLen || string(d.Data[8:8+objLen]) != "192.168.100.2" {
+					continue
+				}
+				names.Inbound(ddp.Datagram{
+					DestNetwork: 10, SrcNetwork: 10, DestNode: 0x80, SrcNode: 99,
+					DestSocket: Socket, SrcSocket: Socket, DDPType: nbp.DDPType,
+					Data: rrLkUpRply(d.Data[1], 99, "192.168.100.2"),
+				}, p)
+			}
+			time.Sleep(200 * time.Microsecond)
+		}
+	}()
+
+	svc := New(r, names, nil, testConfig(), nil)
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Stop(context.Background())
+
+	// New client 10.7 asks for any address. The first candidate .2 is held by node 99, so
+	// the gateway must probe, skip it, and hand out .3.
+	svc.Inbound(ddp.Datagram{
+		SrcNetwork: 10, SrcNode: 7, SrcSocket: Socket,
+		DestSocket: Socket, DDPType: ddpTypeATP, Data: atpReq(0x0001, macIPFuncAssign),
+	}, p)
+
+	// Read the assigned IP from the ATP TResp routed back to node 7. It must NOT be the
+	// live-duplicate .2 (which the probe rejects) and must be a real, owned pool address.
+	assigned := p.waitTRespIP(7)
+	if assigned.IsZero() {
+		t.Fatal("client 10.7 never received a TResp")
+	}
+	if assigned == (IPv4{192, 168, 100, 2}) {
+		t.Fatalf("gateway assigned the live-duplicate .2; expected it to skip to another address")
+	}
+	if !svc.OwnsIP(assigned) {
+		t.Errorf("assigned %v not owned", assigned)
+	}
+}
+
+// ipAddressNBPNames returns the set of IPADDRESS object names currently registered.
+func ipAddressNBPNames(names *nbp.Service) map[string]bool {
+	out := map[string]bool{}
+	for _, reg := range names.Names() {
+		if string(reg.Type) == nbpTypeIPAddress {
+			out[string(reg.Object)] = true
+		}
+	}
+	return out
+}
+
+// TestParseDottedIPv4 covers the NBP-object → IPv4 parse used by reregistration.
+func TestParseDottedIPv4(t *testing.T) {
+	ok := []struct {
+		in   string
+		want IPv4
+	}{
+		{"0.0.0.0", IPv4{0, 0, 0, 0}},
+		{"192.168.1.2", IPv4{192, 168, 1, 2}},
+		{"255.255.255.255", IPv4{255, 255, 255, 255}},
+		{"10.0.0.77", IPv4{10, 0, 0, 77}},
+	}
+	for _, c := range ok {
+		got, gotOK := parseDottedIPv4([]byte(c.in))
+		if !gotOK || got != c.want {
+			t.Errorf("parseDottedIPv4(%q) = %v ok=%v, want %v true", c.in, got, gotOK, c.want)
+		}
+	}
+	bad := []string{"", "1.2.3", "1.2.3.4.5", "256.0.0.1", "1..2.3", "1.2.3.", ".1.2.3", "a.b.c.d", "1.2.3.4 ", "-1.2.3.4"}
+	for _, in := range bad {
+		if got, gotOK := parseDottedIPv4([]byte(in)); gotOK {
+			t.Errorf("parseDottedIPv4(%q) = %v true, want !ok", in, got)
+		}
+	}
+}
+
+// TestLeaseRegistersIPADDRESSName: a static assignment publishes an IPADDRESS NBP name for
+// the leased address (spec §3.2.4.3), and it is withdrawn when the lease expires.
+// TestGatewayDoesNotRegisterClientIPADDRESS asserts the gateway does NOT stand up an
+// IPADDRESS NBP name for a leased client address. Per draft §3.2.2.4 the HOST registers its
+// own "<ip>:IPADDRESS"; a gateway registration shadows it, so after a Mac reboots and
+// re-leases the same address its own NBP name-conflict check hits our stale name, MacTCP
+// aborts, and the client loops ASSIGN→SERVER forever (wire-confirmed in ltoudp-netboot.pcap).
+func TestGatewayDoesNotRegisterClientIPADDRESS(t *testing.T) {
+	fr := newFakeRouter()
+	names := nbp.New(fr, nil)
+	svc := New(fr, names, nil, testConfig(), nil)
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Stop(context.Background())
+
+	svc.Inbound(ddp.Datagram{
+		SrcNetwork: 10, SrcNode: 5, SrcSocket: Socket,
+		DestSocket: Socket, DDPType: ddpTypeATP, Data: atpReq(0x0001, macIPFuncAssign),
+	}, nil)
+	_ = fr.waitReplies(1)
+
+	// The gateway must not have registered the client's address (the client owns that name).
+	if got := ipAddressNBPNames(names); got["192.168.100.2"] {
+		t.Errorf("gateway registered 192.168.100.2:IPADDRESS (shadows the client, breaks reboot): %v", got)
+	}
 }

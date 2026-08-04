@@ -29,6 +29,7 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
+	"github.com/ObsoleteMadness/ClassicStack/core/protocol/atp"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/ddp"
 	"github.com/ObsoleteMadness/ClassicStack/core/router"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/nbp"
@@ -53,35 +54,60 @@ const (
 	// macIPVersion is the protocol version sent in TResp (matches macipgw).
 	macIPVersion = 1
 
+	// nbpTypeIPGateway is the NBP type the gateway registers its own IP under (§3.2.4.2).
+	nbpTypeIPGateway = "IPGATEWAY"
+	// nbpTypeIPAddress is the NBP type a MacIP host (and the gateway, for addresses in its
+	// range) registers a leased IP under, in dotted-decimal (§3.2.2.4 / §3.2.4.3). The
+	// reregistration search (§3.7) looks these up as "=:IPADDRESS@*".
+	nbpTypeIPAddress = "IPADDRESS"
+
 	// ATP control byte values.
 	atpFuncTReq  = 0x40
 	atpFuncTResp = 0x80
 	atpEOM       = 0x10
 
-	// macIPCtrlLen is the minimum MacIP user-data size: version(2)+pad(2)+function(4).
-	macIPCtrlLen = 8
+	// atpHeaderLen is the fixed ATP header on the wire (Inside AppleTalk Ch. 9): control(1)
+	// + bitmap/seq(1) + transaction-id(2) + 4 ATP user bytes = 8 bytes. The MacIP control
+	// struct is carried in the ATP *data* that follows this header — NOT in the user bytes
+	// (which macipgw's atp library keeps separate). This matches every other ATP service in
+	// core (e.g. ZIP GetZoneList reads its function code from the user bytes at Data[4:8]).
+	atpHeaderLen = 8
 
-	// The config-reply user-data mirrors the original macipgw struct macip_req exactly
-	// (macip.c) so any MacTCP client that reads its layout by fixed offset is satisfied:
+	// macIPCtrlLen is the minimum MacIP control in the ATP DATA: mipr_function(4). (version/
+	// pad ride the ATP user bytes, not the data — see handleATPConfig.)
+	macIPCtrlLen = 4
+
+	// The config reply mirrors the original macipgw struct macip_req (macip.c, after
+	// njroadfan's "send back a complete config packet" fix). macipgw's struct is:
 	//
 	//   control  version(2) pad(2) function(4)                             = 8 bytes
 	//   data     ipaddr(4) nameserver(4) broadcast(4) pad2(4) subnet(4)
 	//            pad3(4) pad4(4) pad5(4)                                    = 32 bytes
 	//   error    char[22]                                                  = 22 bytes
 	//
-	// On success macipgw sends sizeof(struct macip_req) - 21 = 62 - 21 = 41 bytes of
-	// MacIP user-data: control(8) + the full 32-byte data block + 1 leading NUL of the
-	// error field. On failure it appends the NUL-terminated error string. We match those
-	// lengths byte-for-byte. (These lengths are the MacIP user-data only; the 4-byte ATP
-	// TResp header — ctrl/seq/tid — is prepended separately, so the wire buffer is
-	// 4 + configUserLen bytes.)
-	configCtrlLen   = 8                                   // version+pad+function
+	// On the wire the control struct STRADDLES the ATP header/data boundary: version(2)+
+	// pad(2) ride the ATP USER bytes (the last 4 of the 8-byte ATP header, echoed by the
+	// header), and only function(4) sits at the start of the ATP DATA (wire-verified against
+	// a real MacTCP client — see handleATPConfig and errata; a prior reading that put the
+	// whole control struct in the data shifted every address +4 and no client could parse
+	// the config). So the ATP-DATA the reply carries is function(4) + the 32-byte address
+	// block + the leading NUL of error[] = 37 bytes; the 8-byte ATP TResp header is prepended
+	// separately, so the wire buffer is atpHeaderLen + configUserLen. macipgw's success length
+	// "sizeof(macip_req) - 21 = 41" counts the 4 user bytes too (37 + 4 = 41). On failure the
+	// NUL-terminated error string is appended.
+	configFuncLen   = 4                                   // mipr_function, at the start of the ATP data
 	configFieldsLen = 32                                  // ip/ns/bcast/pad2/subnet/pad3/pad4/pad5
-	configUserLen   = configCtrlLen + configFieldsLen + 1 // 41: +1 NUL error byte
+	configUserLen   = configFuncLen + configFieldsLen + 1 // 37 ATP-data bytes: function(4)+addresses(32)+NUL
 	configErrLen    = 22                                  // error[] capacity in struct macip_req_data
 
-	// expiryInterval is how often stale static leases are evicted.
+	// expiryInterval is how often stale external/DHCP leases are evicted (passive aging).
 	expiryInterval = 30 * time.Second
+
+	// confirmPeriod is the NBP-ARP Confirm echo interval for active static leases (§3.8.2:
+	// "every Confirm Period, 60 seconds if not configurable"). confirmMissLimit is how many
+	// consecutive periods a lease may miss before it is reclaimed (§3.8.2: 5 periods → ~300s).
+	confirmPeriod    = 60 * time.Second
+	confirmMissLimit = 5
 )
 
 // MacIP error strings, byte-for-byte from the original macipgw (macip.c error_noip/
@@ -366,24 +392,44 @@ func (s *Service) Start(ctx context.Context) error {
 		}
 	}
 	if s.nbp != nil {
-		s.nbp.RegisterName(ipv4String(s.cfg.GatewayIP), []byte("IPGATEWAY"), s.cfg.Zone, Socket)
+		s.nbp.RegisterName(ipv4String(s.cfg.GatewayIP), []byte(nbpTypeIPGateway), s.cfg.Zone, Socket)
 	}
 
 	go s.inboundLoop(ctx, stop)
 	go s.expiryLoop(stop)
 
+	// Reregistration search (§3.7 / draft §3.2.4.4): after a restart or crash the gateway
+	// may otherwise reassign an address still held by a live MacIP host. Look up the already
+	// -registered IPADDRESS names in the zone and seed the pool with any that fall in our
+	// range, so those addresses are not handed out again. NBP has a fixed collection window,
+	// so run it off the Start path. The Confirm loop (§3.8.2) then keeps those and all other
+	// static leases alive by periodic NBP-ARP echo. Both need NBP wired to probe.
+	if s.nbp != nil {
+		s.wg.Add(2)
+		go s.reregister(stop)
+		go s.confirmLoop(stop)
+	}
+
 	s.mu.Lock()
 	gw := s.cfg.GatewayIP
 	zone := s.cfg.Zone
 	network := s.cfg.Network
+	nameserver := s.cfg.Nameserver
+	broadcast := s.cfg.Broadcast
+	subnet := s.cfg.SubnetMask
 	hostCount := s.cfg.HostCount
+	nat := s.cfg.NATEnabled
 	hasEgress := s.egress != nil
 	s.mu.Unlock()
 	s.logger.Log(log.Info, "macip: started",
 		log.Str("gateway", string(ipv4String(gw))),
 		log.Str("network", string(ipv4String(network))),
+		log.Str("subnet_mask", string(ipv4String(subnet))),
+		log.Str("nameserver", string(ipv4String(nameserver))),
+		log.Str("broadcast", string(ipv4String(broadcast))),
 		log.Int("host_count", int64(hostCount)),
 		log.Str("zone", string(zone)),
+		log.Bool("nat", nat),
 		log.Bool("egress", hasEgress))
 	return nil
 }
@@ -402,7 +448,7 @@ func (s *Service) Stop(ctx context.Context) error {
 	s.mu.Unlock()
 
 	if s.nbp != nil {
-		s.nbp.UnregisterName(ipv4String(s.cfg.GatewayIP), []byte("IPGATEWAY"), zone)
+		s.nbp.UnregisterName(ipv4String(s.cfg.GatewayIP), []byte(nbpTypeIPGateway), zone)
 	}
 	s.wg.Wait()
 	s.logger.Log0(log.Info, "macip: stopped")
@@ -491,9 +537,74 @@ func (s *Service) expiryLoop(stop chan struct{}) {
 		case <-stop:
 			return
 		case <-t.C:
-			s.pool.expire()
+			for _, ip := range s.pool.expire() {
+				s.unregisterLeaseName(ip) // withdraw the IPADDRESS NBP name for the evicted lease
+			}
 		}
 	}
+}
+
+// confirmLoop is the active NBP-ARP Confirm echo (§3.8.2): every confirmPeriod it probes
+// each static lease's "<ip>:IPADDRESS@zone". A reply from the lease's own node refreshes it;
+// a miss increments its counter, and after confirmMissLimit consecutive misses the lease is
+// reclaimed and its IPADDRESS name withdrawn. Only runs when NBP is wired (it needs to
+// probe); external/DHCP leases keep ageing passively via expiryLoop. Inbound IP data also
+// counts as a liveness signal (updateSeen resets the miss count), so a chatty client is
+// never probed to death.
+func (s *Service) confirmLoop(stop chan struct{}) {
+	defer s.wg.Done()
+	t := time.NewTicker(confirmPeriod)
+	defer t.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-t.C:
+			for _, lease := range s.pool.staticLeases() {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				// The lease's own node answering "<ip>:IPADDRESS" means it is alive. We reuse
+				// ipHeldByOther by asking whether ANYONE holds it and whether that responder is
+				// the lease owner: a reply from the owner is a hit, no reply (or only a foreign
+				// reply) is a miss for this owner.
+				if s.ipConfirmedBy(lease.ip, lease.atNetwork, lease.atNode) {
+					s.pool.confirmHit(lease.ip, lease.atNetwork, lease.atNode)
+					continue
+				}
+				if s.pool.confirmMiss(lease.ip, lease.atNetwork, lease.atNode, confirmMissLimit) {
+					s.unregisterLeaseName(lease.ip)
+					s.logger.Log(log.Info, "macip: lease reclaimed after missed NBP-ARP confirms",
+						log.Str("ip", string(ipv4String(lease.ip))),
+						log.Int("at_network", int64(lease.atNetwork)),
+						log.Int("at_node", int64(lease.atNode)))
+				}
+			}
+		}
+	}
+}
+
+// ipConfirmedBy runs an NBP-ARP Confirm probe for a lease and reports whether its owning
+// node (atNet,atNode) answered — i.e. the client is still alive at that address. A reply
+// from a DIFFERENT node is not a confirmation of THIS lease (it is a conflict the assign
+// probe handles); no reply at all is likewise unconfirmed. No NBP ⇒ cannot probe ⇒ reports
+// true (do not reclaim on a probe we cannot perform). Blocks up to probeWindow.
+func (s *Service) ipConfirmedBy(ip IPv4, atNet uint16, atNode uint8) bool {
+	s.mu.Lock()
+	names := s.nbp
+	zone := append([]byte(nil), s.cfg.Zone...)
+	s.mu.Unlock()
+	if names == nil {
+		return true
+	}
+	for _, e := range names.LookupTimeout(ipv4String(ip), []byte(nbpTypeIPAddress), zone, probeWindow) {
+		if e.Network == atNet && e.Node == atNode {
+			return true
+		}
+	}
+	return false
 }
 
 // handleATPConfig processes an ATP TReq on socket 72: an IP address request.
@@ -502,37 +613,49 @@ func (s *Service) handleATPConfig(d ddp.Datagram, rx router.RoutedPort) {
 	if !validATEndpoint(atNet, atNode) {
 		return
 	}
-	// ATP frame: ctrl(1) bitmap(1) tid(2) + MacIP control struct.
-	if len(d.Data) < 4+macIPCtrlLen {
+	// Decode the ATP header (control, bitmap, tid, 4 user bytes) via the core ATP codec.
+	// The MacIP control rides in the ATP *data* that follows the 8-byte header. Wire-verified
+	// against a real MacTCP client (see errata): mipr_function is the FIRST 4 bytes of the ATP
+	// data (macReq[0:4]) — mipr_version / _mipr_pad1 are carried in the ATP USER bytes (the
+	// last 4 of the 8-byte header), NOT re-emitted at the head of the data. An earlier reading
+	// that placed function at macReq[4:8] (assuming version(2)+pad(2) prefixed the data)
+	// mis-parsed every request as an unknown function (e.g. 0x00010000) so no client could
+	// ever get a config. The user bytes are round-tripped into the reply (Apple IP Gateway
+	// stamps a version there, Shiva K-STAR a 0x08 in the last byte — issue #17).
+	hdr, err := atp.Decode(d.Data)
+	if err != nil || hdr.FuncCode() != atp.FuncTReq {
 		return
 	}
-	if d.Data[0]&0xC0 != atpFuncTReq {
+	macReq := d.Data[atp.HeaderSize:]
+	if len(macReq) < macIPCtrlLen {
 		return
 	}
-	tid := uint16(d.Data[2])<<8 | uint16(d.Data[3])
-	userData := d.Data[4:]
-	// mipr_function is at user_bytes[4:8].
-	function := uint32(userData[4])<<24 | uint32(userData[5])<<16 | uint32(userData[6])<<8 | uint32(userData[7])
+	// mipr_function is the first 4 bytes of the ATP data.
+	function := uint32(macReq[0])<<24 | uint32(macReq[1])<<16 | uint32(macReq[2])<<8 | uint32(macReq[3])
 
+	// mipr_ipaddr (the optionally requested IP) follows the function.
 	var requestedIP IPv4
-	if len(userData) >= 12 {
-		copy(requestedIP[:], userData[8:12])
+	if len(macReq) >= 8 {
+		copy(requestedIP[:], macReq[4:8])
 	}
 
 	// Only MACIP_ASSIGN and MACIP_SERVER are defined; anything else gets a MACIP_ERROR
 	// reply carrying "Unknown Operation." — matching macipgw's switch default arm.
 	if function != macIPFuncAssign && function != macIPFuncServer {
 		s.logger.Log1(log.Info, "macip: unknown config function", log.Int("function", int64(function)))
-		s.sendATPConfigError(d, rx, tid, errNoOp)
+		s.sendATPConfigError(d, rx, hdr, errNoOp)
 		return
 	}
 
-	// Server-check (func=3) reuses an existing lease where one exists.
+	// Server-check (func=3): the reply is a MACIP_SERVER response whose first IP address is
+	// all zeros — the ONLY wire difference from an ASSIGN response (issue #17, confirmed
+	// against Shiva Fastpath 5 / K-STAR and Apple IP Gateway, and macipgw after njroadfan's
+	// fix, which sets function=MACIP_SERVER and never touches mipr_ipaddr). It still refreshes
+	// the client's lease if one exists so passive aging does not reclaim a live address.
 	if function == macIPFuncServer {
-		if ip, ok := s.pool.lookupIPByAT(atNet, atNode); ok {
-			s.sendATPConfigResp(d, rx, tid, AssignedConfig{IP: ip})
-			return
-		}
+		s.pool.updateSeen(atNet, atNode) // the probe proves the client is alive; refresh its lease
+		s.sendATPConfigResp(d, rx, hdr, macIPFuncServer, AssignedConfig{})
+		return
 	}
 
 	// When the egress sources addresses from the IP network (DHCP relay), delegate
@@ -547,23 +670,77 @@ func (s *Service) handleATPConfig(d ddp.Datagram, rx router.RoutedPort) {
 		s.wg.Add(1)
 		stop := s.stop
 		s.mu.Unlock()
-		go s.assignViaEgress(as, d, rx, tid, requestedIP, atNet, atNode, stop)
+		go s.assignViaEgress(as, d, rx, hdr, requestedIP, atNet, atNode, stop)
 		return
 	}
 
-	assignedIP, fresh, ok := s.pool.assign(requestedIP, atNet, atNode)
-	if !ok {
-		// Pool exhausted: reply MACIP_ERROR with "No Address Available." rather than a
-		// bogus 0.0.0.0 assignment, matching macipgw's lease_ip()-failed path.
-		s.logger.Log(log.Warn, "macip: address pool exhausted, no lease available")
-		s.sendATPConfigError(d, rx, tid, errNoIP)
+	// Static-pool assignment. A fresh allocation is NBP-ARP-probed before it is handed out
+	// (§3.8.2: assigned addresses must be registered and resolved via NBP ARP), which blocks
+	// for a probe window — so run it off the inbound loop, like the DHCP path.
+	s.mu.Lock()
+	if !s.running {
+		s.mu.Unlock()
 		return
 	}
-	s.bump(&s.assigns)
-	if fresh {
+	s.wg.Add(1)
+	stop := s.stop
+	s.mu.Unlock()
+	go s.assignStatic(d, rx, hdr, requestedIP, atNet, atNode, stop)
+}
+
+// maxAssignProbes bounds how many probe-and-retry rounds a single assign will attempt
+// before giving up (each round is a duplicate the NBP probe rejected). Prevents an
+// unbounded loop when many pool addresses are occupied by un-snooped live hosts.
+const maxAssignProbes = 8
+
+// assignStatic performs a static-pool assignment with a pre-assign NBP-ARP duplicate probe
+// (§3.8.2). It reuses an existing lease immediately (no probe — the client already owns it);
+// for a fresh candidate it probes "<ip>:IPADDRESS@zone" and, if a live host other than the
+// requester answers, records the conflict and retries with a different address. Replies
+// MACIP_ERROR/"No Address Available." if the pool is exhausted or every candidate collided.
+// Aborts silently if the service stops first.
+func (s *Service) assignStatic(d ddp.Datagram, rx router.RoutedPort, hdr atp.Header, requestedIP IPv4, atNet uint16, atNode uint8, stop chan struct{}) {
+	defer s.wg.Done()
+
+	for range maxAssignProbes {
+		assignedIP, fresh, ok := s.pool.assign(requestedIP, atNet, atNode)
+		if !ok {
+			s.logger.Log(log.Warn, "macip: address pool exhausted, no lease available")
+			s.sendATPConfigError(d, rx, hdr, errNoIP)
+			return
+		}
+		// A reused lease is already the client's — no probe needed.
+		if !fresh {
+			s.bump(&s.assigns)
+			s.sendATPConfigResp(d, rx, hdr, macIPFuncAssign, AssignedConfig{IP: assignedIP})
+			return
+		}
+		// Fresh candidate: verify no live host already holds it (unless we are stopping).
+		select {
+		case <-stop:
+			s.pool.release(assignedIP, atNet, atNode)
+			return
+		default:
+		}
+		if s.ipHeldByOther(assignedIP, atNet, atNode) {
+			// Duplicate on the wire: mark it taken (frees the tentative slot) and retry with
+			// a different address. Do NOT reuse the caller's requestedIP on retry — it just
+			// collided — so subsequent rounds allocate a fresh slot.
+			s.pool.noteConflict(assignedIP)
+			s.logger.Log1(log.Info, "macip: candidate address in use on the wire, trying another",
+				log.Str("ip", string(ipv4String(assignedIP))))
+			requestedIP = IPv4{}
+			continue
+		}
+		s.bump(&s.assigns)
 		s.logAllocated(assignedIP, atNet, atNode)
+		s.registerLeaseName(assignedIP) // publish IPADDRESS@zone so the lease is visible to NBP ARP
+		s.sendATPConfigResp(d, rx, hdr, macIPFuncAssign, AssignedConfig{IP: assignedIP})
+		return
 	}
-	s.sendATPConfigResp(d, rx, tid, AssignedConfig{IP: assignedIP})
+	// Too many collisions in a row — treat as no address available.
+	s.logger.Log(log.Warn, "macip: no free address survived NBP-ARP probing")
+	s.sendATPConfigError(d, rx, hdr, errNoIP)
 }
 
 // assigner returns the egress as an AddressAssigner when it implements the optional
@@ -585,7 +762,7 @@ func (s *Service) assigner() AddressAssigner {
 // assignViaEgress runs an egress-driven (DHCP) assignment and replies when it
 // resolves. Aborts silently if the service stops first or the egress fails (the Mac
 // retries). The resolved lease is recorded so inbound IP for it routes back here.
-func (s *Service) assignViaEgress(as AddressAssigner, d ddp.Datagram, rx router.RoutedPort, tid uint16, requested IPv4, atNet uint16, atNode uint8, stop chan struct{}) {
+func (s *Service) assignViaEgress(as AddressAssigner, d ddp.Datagram, rx router.RoutedPort, hdr atp.Header, requested IPv4, atNet uint16, atNode uint8, stop chan struct{}) {
 	defer s.wg.Done()
 	type result struct {
 		cfg AssignedConfig
@@ -606,13 +783,137 @@ func (s *Service) assignViaEgress(as AddressAssigner, d ddp.Datagram, rx router.
 		s.pool.RegisterExternal(r.cfg.IP, atNet, atNode)
 		s.bump(&s.assigns)
 		s.logAllocated(r.cfg.IP, atNet, atNode)
+		s.registerLeaseName(r.cfg.IP) // publish IPADDRESS@zone for the DHCP-relayed lease
 		// In DHCP-relay mode the lease is on the real LAN subnet; adopt the DHCP-supplied
 		// router as the advertised IPGATEWAY identity so MacTCP is given a gateway on its
 		// own subnet (see AssignedConfig.Router). Done once, when we first learn a router.
 		s.adoptGatewayIP(r.cfg.Router)
-		s.sendATPConfigResp(d, rx, tid, r.cfg)
+		s.sendATPConfigResp(d, rx, hdr, macIPFuncAssign, r.cfg)
 	}
 }
+
+// probeWindow bounds the pre-assign / Confirm NBP-ARP lookups. A live host on the segment
+// answers NBP within a few hundred ms; keeping this short bounds how long an assign or the
+// Confirm loop blocks. It is deliberately shorter than the discovery window.
+const probeWindow = 500 * time.Millisecond
+
+// ipHeldByOther runs an NBP-ARP probe (§3.8.2 "registered and resolved using NBP ARP"): it
+// looks up "<ip>:IPADDRESS@zone" and reports true if a live host OTHER than (atNet,atNode)
+// answers — i.e. the address is already in use and must not be assigned to this requester.
+// A reply from the requester's own node (it still holds a prior registration) is not a
+// conflict. With no NBP service wired it cannot probe, so it reports false (best-effort;
+// falls back to the pool's own bookkeeping). Blocks up to probeWindow — call off the
+// inbound loop.
+func (s *Service) ipHeldByOther(ip IPv4, atNet uint16, atNode uint8) bool {
+	s.mu.Lock()
+	names := s.nbp
+	zone := append([]byte(nil), s.cfg.Zone...)
+	s.mu.Unlock()
+	if names == nil {
+		return false
+	}
+	for _, e := range names.LookupTimeout(ipv4String(ip), []byte(nbpTypeIPAddress), zone, probeWindow) {
+		// A responder at a different AppleTalk node holds this IP → genuine conflict.
+		if e.Network != atNet || e.Node != atNode {
+			return true
+		}
+	}
+	return false
+}
+
+// reregister performs the startup reregistration search (§3.7). It issues an NBP lookup
+// for "=:IPADDRESS@*", and for each responder whose object name parses to an IP inside our
+// pool range, claims that address for the responder's AppleTalk endpoint so a later assign
+// never hands it out again. Runs on its own goroutine (the NBP lookup blocks for a
+// collection window); aborts if the service stops first.
+func (s *Service) reregister(stop chan struct{}) {
+	defer s.wg.Done()
+
+	s.mu.Lock()
+	names := s.nbp
+	zone := append([]byte(nil), s.cfg.Zone...)
+	s.mu.Unlock()
+	if names == nil {
+		return
+	}
+
+	// Run the (blocking) lookup on a helper goroutine so we can abort promptly on Stop.
+	type reg struct {
+		ip     IPv4
+		atNet  uint16
+		atNode uint8
+	}
+	done := make(chan []reg, 1)
+	go func() {
+		ents := names.Lookup([]byte{'='}, []byte(nbpTypeIPAddress), zone)
+		var regs []reg
+		for _, e := range ents {
+			ip, ok := parseDottedIPv4(e.Object)
+			if !ok {
+				continue
+			}
+			regs = append(regs, reg{ip: ip, atNet: e.Network, atNode: e.Node})
+		}
+		done <- regs
+	}()
+
+	var regs []reg
+	select {
+	case <-stop:
+		return
+	case regs = <-done:
+	}
+
+	seeded := 0
+	for _, r := range regs {
+		if !validATEndpoint(r.atNet, r.atNode) {
+			continue
+		}
+		// Skip our own gateway IP (advertised as IPGATEWAY, not a client lease).
+		s.mu.Lock()
+		isGateway := r.ip == s.cfg.GatewayIP
+		s.mu.Unlock()
+		if isGateway {
+			continue
+		}
+		// Only seed addresses inside our assignable pool range; assign() claims the exact
+		// slot to the responder's endpoint (a no-op if it is already leased to it).
+		if _, fresh, ok := s.pool.assign(r.ip, r.atNet, r.atNode); ok && fresh {
+			s.registerLeaseName(r.ip)
+			seeded++
+			s.logger.Log(log.Info, "macip: reregistered prior lease from NBP",
+				log.Str("ip", string(ipv4String(r.ip))),
+				log.Int("at_network", int64(r.atNet)),
+				log.Int("at_node", int64(r.atNode)))
+		}
+	}
+	if seeded > 0 {
+		s.logger.Log1(log.Info, "macip: reregistration seeded prior leases", log.Int("count", int64(seeded)))
+	}
+}
+
+// registerLeaseName is intentionally a NO-OP: the gateway must NOT register an IPADDRESS
+// NBP name for a client's leased address.
+//
+// Per the MacIP draft §3.2.2.4 the MacIP HOST registers "<ip>:IPADDRESS@*" for its OWN
+// address — that registration is the client's, not the gateway's. When the gateway ALSO
+// stood up a standing "<ip>:IPADDRESS" name, it shadowed the client: after a Mac reboots
+// and re-leases the same address, the Mac's own NBP name-registration conflict check (a
+// LkUp for "<ip>:IPADDRESS" before it registers) got answered by OUR stale name, so the
+// Mac saw its address as already-in-use, aborted MacTCP init, and looped ASSIGN→SERVER→
+// ASSIGN forever (wire-confirmed in ltoudp-netboot.pcap: two "192.168.100.2:IPADDRESS"
+// entries — the Mac's and ours). It also violated §3.8's "NBP Proxy ARP MUST NOT respond
+// to wildcard IPADDRESS lookups", since a real registered name answers "=:IPADDRESS@*".
+//
+// The gateway's legitimate NBP-ARP roles do NOT need this registration: the Confirm loop
+// (§3.8.2) and the startup reregistration search (§3.7) both PROBE for the HOSTS' own
+// registrations, and NBP Proxy ARP answers only SPECIFIC delivery lookups. Kept as a
+// no-op (rather than deleting the call sites) so the lease lifecycle reads intact.
+func (s *Service) registerLeaseName(ip IPv4) { _ = ip }
+
+// unregisterLeaseName is the no-op counterpart to registerLeaseName (the gateway never
+// registered a client IPADDRESS name, so there is nothing to withdraw). See registerLeaseName.
+func (s *Service) unregisterLeaseName(ip IPv4) { _ = ip }
 
 // logAllocated emits the Info audit line for a freshly assigned MacIP address.
 func (s *Service) logAllocated(ip IPv4, atNet uint16, atNode uint8) {
@@ -646,21 +947,42 @@ func (s *Service) adoptGatewayIP(router IPv4) {
 		// Swap the NBP registration to the new identity so a Chooser/NBP lookup returns the
 		// on-subnet gateway. Unregister the old name only if it was ever registered (non-zero).
 		if !old.IsZero() {
-			names.UnregisterName(ipv4String(old), []byte("IPGATEWAY"), zone)
+			names.UnregisterName(ipv4String(old), []byte(nbpTypeIPGateway), zone)
 		}
-		names.RegisterName(ipv4String(router), []byte("IPGATEWAY"), zone, Socket)
+		names.RegisterName(ipv4String(router), []byte(nbpTypeIPGateway), zone, Socket)
 	}
 	s.logger.Log1(log.Info, "macip: adopted DHCP-supplied gateway as advertised IPGATEWAY",
 		log.Str("gateway", string(ipv4String(router))))
 }
 
-// sendATPConfigResp builds and sends an ATP TResp with the IP configuration. Zero-valued
-// fields in cfg fall back to the service Config defaults. The reply layout and length
-// mirror the original macipgw struct macip_req (see configUserLen): an 8-byte control
-// (version/pad/function) followed by a 33-byte data block (ip/nameserver/broadcast/
-// pad2/subnet/pad3/pad4/pad5 = 32 bytes, then the first NUL of the error field) — the
-// exact "sizeof(macip_req) - 21 = 41" success length macipgw emits.
-func (s *Service) sendATPConfigResp(d ddp.Datagram, rx router.RoutedPort, tid uint16, cfg AssignedConfig) {
+// Config-reply byte offsets, past the 8-byte ATP header (atpHeaderLen). The full config
+// data block — space for all EIGHT IP addresses — is emitted in EVERY reply type
+// (ASSIGN/SERVER/ERROR); only the first IP and (for errors) the appended string differ.
+// Confirmed against Shiva Fastpath 5 / K-STAR and Apple IP Gateway (issue #17) and macipgw
+// after njroadfan's "send back a complete config packet" fix.
+// The MacIP control in the ATP DATA is just mipr_function(4) — mipr_version/_pad ride the
+// ATP USER bytes (echoed by the header), NOT the data (wire-verified; see handleATPConfig
+// and errata). So the reply data is function(4) then the eight-address block, matching what
+// a real MacTCP client parses. (A prior layout prefixed version(2)+pad(2) here, shifting
+// every address +4 on the wire, so the client read a garbage config and refused to come up.)
+const (
+	respFuncOff   = atpHeaderLen                                  // +8  mipr_function
+	respIPOff     = respFuncOff + 4                               // +12 assigned IP (0.0.0.0 for SERVER/ERROR)
+	respNSOff     = respIPOff + 4                                 // +16 nameserver
+	respBcastOff  = respIPOff + 8                                 // +20 broadcast
+	respSubnetOff = respIPOff + 16                                // +28 subnet mask (the 5th address; Apple IP Gateway convention)
+	respErrOff    = respFuncOff + configFuncLen + configFieldsLen // error[] field, past function(4)+addresses
+)
+
+// sendATPConfigResp builds and sends an ATP TResp with the IP configuration. fn is the
+// MacIP function code (MACIP_ASSIGN or MACIP_SERVER); for MACIP_SERVER the first IP address
+// is left zero (only ASSIGN carries a value there — issue #17). Zero-valued fields in cfg
+// fall back to the service Config defaults. The reply layout and length mirror macipgw's
+// struct macip_req (see configUserLen): the 8-byte ATP header, an 8-byte control
+// (version/pad/function), then a 33-byte data block (ip/nameserver/broadcast/pad2/subnet/
+// pad3/pad4/pad5 = 32 bytes + the first NUL of the error field) — the exact
+// "sizeof(macip_req) - 21 = 41" success length.
+func (s *Service) sendATPConfigResp(d ddp.Datagram, rx router.RoutedPort, req atp.Header, fn int32, cfg AssignedConfig) {
 	ns := cfg.Nameserver
 	if ns.IsZero() {
 		ns = s.cfg.Nameserver
@@ -673,55 +995,73 @@ func (s *Service) sendATPConfigResp(d ddp.Datagram, rx router.RoutedPort, tid ui
 	if mask.IsZero() {
 		mask = s.cfg.SubnetMask
 	}
-	resp := s.newConfigReply(tid, macIPFuncAssign)
-	copy(resp[12:16], cfg.IP[:])
-	copy(resp[16:20], ns[:])
-	copy(resp[20:24], bc[:])
-	// resp[24:28] = pad2; resp[28:32] = subnet; resp[32:44] = pad3/4/5; resp[44] = NUL.
-	copy(resp[28:32], mask[:])
+	resp := s.newConfigReply(req, fn)
+	if fn == macIPFuncAssign {
+		copy(resp[respIPOff:respIPOff+4], cfg.IP[:]) // SERVER leaves the first IP zeroed
+	}
+	copy(resp[respNSOff:respNSOff+4], ns[:])
+	copy(resp[respBcastOff:respBcastOff+4], bc[:])
+	copy(resp[respSubnetOff:respSubnetOff+4], mask[:])
+	s.logger.Log(log.Info, "macip: config reply",
+		log.Str("ip", string(ipv4String(cfg.IP))),
+		log.Str("nameserver", string(ipv4String(ns))),
+		log.Str("subnet_mask", string(ipv4String(mask))))
 	s.rtr.Reply(d, rx, ddpTypeATP, resp)
 }
 
 // sendATPConfigError sends a MACIP_ERROR reply carrying msg in the error field, matching
 // macipgw's failure path (config_input: MACIP_ERROR + error_noip/error_noop, with len
-// extended by the NUL-terminated string). The nameserver/broadcast/subnet fields are
-// still populated (macipgw always sets them before the switch), only the function code
-// and appended error string differ.
-func (s *Service) sendATPConfigError(d ddp.Datagram, rx router.RoutedPort, tid uint16, msg string) {
+// extended by the NUL-terminated string). The full config block is still present and the
+// first IP address is zero (like SERVER); only the function code and the appended error
+// string differ. The nameserver/broadcast/subnet fields are still populated (macipgw always
+// sets them before the switch).
+func (s *Service) sendATPConfigError(d ddp.Datagram, rx router.RoutedPort, req atp.Header, msg string) {
 	if len(msg) >= configErrLen {
 		msg = msg[:configErrLen-1] // never overrun the 22-byte error[] field
 	}
-	resp := s.newConfigReply(tid, macIPFuncError)
-	copy(resp[16:20], s.cfg.Nameserver[:])
-	copy(resp[20:24], s.cfg.Broadcast[:])
-	copy(resp[28:32], s.cfg.SubnetMask[:])
-	// Error string starts at the error field (data offset 32 → resp offset 44). macipgw
-	// copies sizeof(str) bytes (including the terminating NUL) and lengthens the reply
-	// by sizeof(str)-1 beyond the 41-byte base, i.e. len(msg) extra bytes.
-	errStart := 4 + configCtrlLen + 32 // ATP hdr(4) + control(8) + 32-byte data block
+	resp := s.newConfigReply(req, macIPFuncError)
+	copy(resp[respNSOff:respNSOff+4], s.cfg.Nameserver[:])
+	copy(resp[respBcastOff:respBcastOff+4], s.cfg.Broadcast[:])
+	copy(resp[respSubnetOff:respSubnetOff+4], s.cfg.SubnetMask[:])
+	// The error string starts at the error[] field. macipgw copies sizeof(str) bytes
+	// (including the terminating NUL) and lengthens the reply by sizeof(str)-1 beyond the
+	// 41-byte base, i.e. len(msg) extra bytes.
 	resp = append(resp, make([]byte, len(msg)+1)...)
-	copy(resp[errStart:], msg)
+	copy(resp[respErrOff:], msg)
 	s.rtr.Reply(d, rx, ddpTypeATP, resp)
 }
 
-// newConfigReply allocates a base config reply: 4-byte ATP TResp header (EOM, seq 0,
-// tid) + 8-byte control (version, pad, 32-bit function) + the 33-byte success data
-// block, all zeroed except the header/version/function. fn is the MacIP function code
-// written big-endian (macIPFuncError = -1 → 0xFFFFFFFF, matching htonl(MACIP_ERROR)).
-func (s *Service) newConfigReply(tid uint16, fn int32) []byte {
-	resp := make([]byte, 4+configUserLen)
-	resp[0] = atpFuncTResp | atpEOM
-	resp[1] = 0 // seq 0
-	resp[2] = byte(tid >> 8)
-	resp[3] = byte(tid)
-	resp[4] = byte(macIPVersion >> 8)
-	resp[5] = byte(macIPVersion)
-	// resp[6:8] = pad
+// newConfigReply allocates a base config reply: the 8-byte ATP TResp header (EOM, seq 0,
+// tid, user bytes) + the 37-byte MacIP data block (function(4) + the 32-byte address block +
+// the leading NUL of error[]), all zeroed except the header and function. fn is the MacIP
+// function code written big-endian (macIPFuncError = -1 → 0xFFFFFFFF, matching
+// htonl(MACIP_ERROR)).
+//
+// mipr_version / _mipr_pad1 are NOT written into the data — they ride the ATP USER bytes.
+// The reply ALWAYS carries version = macIPVersion (1) in the top two user bytes and 0 in the
+// pad, exactly as macipgw sets macip_req.version on every reply and the pre-refactor gateway
+// did. This is NOT an echo of the request's user bytes: a real MacTCP client sends arbitrary
+// bytes there (observed e.g. 0x001addfc) and READS the version back from the reply — echoing
+// its junk (0x001a) instead of stamping 1 made MacTCP reject the config as a version mismatch
+// and refuse to bring up its stack. function is the FIRST 4 bytes of the ATP data
+// (respFuncOff), matching where the client sends it in the request.
+func (s *Service) newConfigReply(req atp.Header, fn int32) []byte {
+	// version(2) in the high half, pad(2) = 0 in the low half.
+	userData := uint32(macIPVersion) << 16
+	respHdr := atp.Header{
+		Control:  atp.TRESP | atp.EOM,
+		Bitmap:   0, // sequence 0
+		TransID:  req.TransID,
+		UserData: userData,
+	}
+	resp := respHdr.Encode(make([]byte, 0, atpHeaderLen+configUserLen))
+	resp = append(resp, make([]byte, configUserLen)...)
+	// MacIP control in the ATP data is just mipr_function(4) at respFuncOff.
 	u := uint32(fn)
-	resp[8] = byte(u >> 24)
-	resp[9] = byte(u >> 16)
-	resp[10] = byte(u >> 8)
-	resp[11] = byte(u)
+	resp[respFuncOff] = byte(u >> 24)
+	resp[respFuncOff+1] = byte(u >> 16)
+	resp[respFuncOff+2] = byte(u >> 8)
+	resp[respFuncOff+3] = byte(u)
 	return resp
 }
 
@@ -743,6 +1083,7 @@ func (s *Service) handleMacIPData(d ddp.Datagram) {
 			log.Str("ip", string(ipv4String(srcIP))),
 			log.Int("at_network", int64(d.SrcNetwork)),
 			log.Int("at_node", int64(d.SrcNode)))
+		s.registerLeaseName(srcIP) // a snooped static-Mac address is a lease too — publish it
 	}
 
 	// Learn what this Mac advertises about its own receive capacity (window/ACK) from
@@ -869,6 +1210,42 @@ func (s *Service) bump(c *uint64) {
 	s.statMu.Lock()
 	*c++
 	s.statMu.Unlock()
+}
+
+// parseDottedIPv4 parses a dotted-decimal IPv4 (the NBP object form ipv4String emits, e.g.
+// "192.168.1.2") back into an IPv4. It is the inverse of ipv4String and stays reflection-
+// free (no net/strconv). Returns ok=false on any malformed input: wrong octet count, an
+// empty or >255 octet, a leading '+'/'-', or a non-digit byte.
+func parseDottedIPv4(b []byte) (IPv4, bool) {
+	var out IPv4
+	octet := 0 // current octet index (0..3)
+	val := -1  // accumulated value for the current octet; -1 = no digit yet
+	for _, c := range b {
+		switch {
+		case c >= '0' && c <= '9':
+			if val < 0 {
+				val = 0
+			}
+			val = val*10 + int(c-'0')
+			if val > 255 {
+				return IPv4{}, false
+			}
+		case c == '.':
+			if val < 0 || octet >= 3 {
+				return IPv4{}, false // empty octet or too many dots
+			}
+			out[octet] = byte(val)
+			octet++
+			val = -1
+		default:
+			return IPv4{}, false // non-digit, non-dot
+		}
+	}
+	if octet != 3 || val < 0 {
+		return IPv4{}, false // need exactly four octets, last one non-empty
+	}
+	out[3] = byte(val)
+	return out, true
 }
 
 // ipv4String renders an IPv4 as a dotted-decimal byte slice (for NBP object name).
