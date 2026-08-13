@@ -11,6 +11,8 @@ capture = 'etherdfs.pcap'
 [IPXGW]
 enabled = true
 bindings = ['ClassicStackIPXGW:EtherTalk Network']
+ipx_frame_type = "ethernet_ii"
+ipx_network = 0x03
 
 [MacIP]
 enabled = true
@@ -24,12 +26,22 @@ subnet_mask = '255.255.255.0'
 interface = 'br-lan'
 default_gateway = '192.168.0.1'
 
+# TashTalk — a PIC-based RS422 LocalTalk-to-serial adaptor. The port owns its own
+# serial line: set device/baud here (no serial interface).
+[[tashtalk]]
+enabled = true
+device = "COM7"
+baud = 1000000
+seed_network = 2
+seed_zone = "TashTalk Network"
+capture = 'tashtalk.pcap'
+
 [NetBIOS]
 transports = ['netbeui', 'ipx']
 
 [Netboot]
 enabled = true
-payload = 'C:\Users\pgodw\OneDrive\Documents\GitHub\NetBoot\ChainLoader.bin'
+payload = 'C:\Users\pgodw\OneDrive\Documents\GitHub\NetBoot\ChainLoader.diag.bin'
 block_size = 256
 disk = 'C:\Users\pgodw\OneDrive\Documents\GitHub\NetBoot\A608.dsk'
 pace_ms = 2
@@ -89,7 +101,7 @@ level = 'debug'
 [[ltoudp]]
 enabled = true
 seed_network = 1
-seed_network_end = 2
+seed_network_end = 1
 seed_zone = 'LToUDP Network'
 capture = 'ltoudp-netboot.pcap'
 pace_ms = 30
@@ -106,7 +118,7 @@ capture = 'netbeui.pcap'
 
 [router]
 default_zone = 'EtherTalk Network'
-members = ['EtherTalk', 'LToUDP']
+members = ['EtherTalk', 'LToUDP', 'TashTalk']
 
 [[smbshares]]
 name = 'Foo'

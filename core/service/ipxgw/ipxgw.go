@@ -392,8 +392,21 @@ func (s *Service) handleEncapsulatedIPX(d ddp.Datagram, rest []byte) {
 	}
 	// Do NOT stamp SrcNet — the client knows its own IPX network and the router
 	// leaves a non-zero SrcNet alone.
+	//
+	// Deliver to the router's LOCAL handlers first (Inbound), so a datagram
+	// addressed to us or broadcast reaches an in-process responder — above all the
+	// RIP responder on socket 0x0453. Right after the register handshake the Mac
+	// broadcasts a RIP Request ("what IPX network am I on?") and will stay on IPX
+	// net 0 until it is answered; the RIP responder we own answers it with the
+	// gateway's configured ipx_network. Inbound needs no IPX port, so this works in
+	// log-only (no-wire) deployments such as an LToUDP-only netboot.
+	ipxRouter.Inbound(dg)
+	// Then hand it to the wire for real IPX peers. With no IPX port attached Send
+	// returns "no ports"; that is expected in a MacIPX-only deployment, so it is a
+	// debug note, not a warning.
 	if err := ipxRouter.Send(dg); err != nil {
-		s.warn("forward to IPX router failed", log.Str("err", err.Error()))
+		s.logger.Log1(log.Debug, "ipxgw: no IPX wire egress (local delivery only)",
+			log.Str("err", err.Error()))
 	}
 }
 
@@ -425,6 +438,24 @@ func (s *Service) recordClient(d ddp.Datagram, ipxNode [6]byte) clientEntry {
 	}
 	ipxRouter := s.ipxRouter
 	s.mu.Unlock()
+
+	// Log the assignment once per new client (rule #12: session-establishment
+	// events are logged). The IPX network we announce is s.cfg.IPXNetwork — note
+	// this is *not* carried in the register reply; the client learns it from a RIP
+	// reply (spec/15). ipx_router=log-only means no path exists to relay that RIP
+	// reply, so the client stays on IPX net 0 regardless of the configured network.
+	if !known {
+		ipxWired := "log-only"
+		if ipxRouter != nil {
+			ipxWired = "wired"
+		}
+		s.logger.Log(log.Info, "ipxgw: assigned IPX node",
+			log.Str("ipx_node", formatIPXNode(ipxNode)),
+			log.Str("ipx_network", formatIPXNetwork(s.cfg.IPXNetwork)),
+			log.Int("ddp_net", int64(d.SrcNetwork)),
+			log.Int("ddp_node", int64(d.SrcNode)),
+			log.Str("ipx_router", ipxWired))
+	}
 
 	// Claim the IPX node so inbound replies for it land in HandleNodeDatagram.
 	if !known && ipxRouter != nil {

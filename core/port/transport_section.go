@@ -171,7 +171,7 @@ type TashTalkSection struct {
 func (s *TashTalkSection) PortSection() *Section {
 	return &Section{
 		SKey: s.SKey, Name: s.Name, Iface: s.Iface, IsEnabled: s.IsEnabled, MAC: s.MAC,
-		Device: s.Device, Baud: s.Baud,
+		Device: s.Device, Baud: s.Baud, NoFlowControl: s.NoFlowControl,
 		SeedNetwork: s.SeedNetwork, SeedNetworkEnd: s.SeedNetworkEnd, SeedZone: s.SeedZone,
 		Capture: s.Capture, CaptureSnaplen: s.CaptureSnaplen,
 		PaceMs: s.PaceMs,

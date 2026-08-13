@@ -73,9 +73,9 @@ func serialLinkOpener(ctx *BuildContext, iface config.InterfaceSection, framer S
 	}
 	open := ctx.Serial
 	device := iface.Device
-	baud := uint(iface.Baud)
+	params := SerialParams{Baud: uint(iface.Baud), NoFlowControl: iface.NoFlowControl}
 	return func() (link.FrameLink, error) {
-		s, err := open(device, baud)
+		s, err := open(device, params)
 		if err != nil {
 			return nil, err
 		}

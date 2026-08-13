@@ -567,6 +567,9 @@ type InterfaceSection struct {
 	// Serial-kind parameters.
 	Device string `toml:"device,omitempty"` // serial: OS device path ("COM3", "/dev/ttyUSB0")
 	Baud   int    `toml:"baud,omitempty"`   // serial: line speed (0 → adapter default)
+	// NoFlowControl disables RTS/CTS, which is ON by default (TashTalk needs it to
+	// throttle the host link; see adapter/serial.DefaultRTSCTS).
+	NoFlowControl bool `toml:"no_flow_control,omitempty"`
 }
 
 // NIC link-backend identifiers (InterfaceSection.Backend, kind=nic). pcap is the only

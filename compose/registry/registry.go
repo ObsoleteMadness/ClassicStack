@@ -50,12 +50,22 @@ func BuildUserStore(m *config.Model) (auth.UserStore, error) {
 // of their own traffic entirely). An empty bpf captures everything (userland demux only).
 type LinkOpener func(iface, bpf string) (link.FrameLink, error)
 
-// SerialOpener opens a serial device (by path + baud) and returns the raw byte
-// stream — NOT a FrameLink. The transport framer (tashtalk today) wraps the stream
-// into a FrameLink. It is the §3b/D7 "shared serial opener" injected at the cmd edge
-// (adapter/serial) so this registry imports no serial library. nil → serial-kind
-// ports come up inert. baud 0 means "the opener's default".
-type SerialOpener func(device string, baud uint) (io.ReadWriteCloser, error)
+// SerialParams are the line settings a SerialOpener applies. Baud 0 means "the
+// opener's default". NoFlowControl disables RTS/CTS, which is otherwise ON — the
+// TashTalk adapter must be able to throttle the 1 Mbit/s host link while it clocks a
+// frame onto LocalTalk at 230.4 kbaud, or its receive buffer overruns and frames are
+// dropped (the reference implementation, tashrouter, opens with rtscts=True too).
+type SerialParams struct {
+	Baud          uint
+	NoFlowControl bool
+}
+
+// SerialOpener opens a serial device (by path + line settings) and returns the raw
+// byte stream — NOT a FrameLink. The transport framer (tashtalk today) wraps the
+// stream into a FrameLink. It is the §3b/D7 "shared serial opener" injected at the
+// cmd edge (adapter/serial) so this registry imports no serial library. nil →
+// serial-kind ports come up inert.
+type SerialOpener func(device string, params SerialParams) (io.ReadWriteCloser, error)
 
 // SerialFramer wraps an open serial byte stream into a core/link.FrameLink for one
 // serial transport (tashtalk.NewStream). A factory whose interface kind is serial

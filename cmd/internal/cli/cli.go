@@ -257,11 +257,16 @@ var pcapOpener registry.LinkOpener = func(iface, bpf string) (link.FrameLink, er
 }
 
 // serialOpener is the runtime's SerialOpener: open a serial byte stream for a
-// kind="serial" interface (device path + baud) via adapter/serial. The TashTalk
-// factory pairs it with the tashtalk framer (the kind→opener dispatch, M11.c/D7).
-// baud 0 means the adapter default. Called per Start.
-var serialOpener registry.SerialOpener = func(device string, baud uint) (io.ReadWriteCloser, error) {
-	return adapterserial.Open(adapterserial.Config{Device: device, Baud: baud})
+// kind="serial" interface (device path + line settings) via adapter/serial. The
+// TashTalk factory pairs it with the tashtalk framer (the kind→opener dispatch,
+// M11.c/D7). Baud 0 means the adapter default; RTS/CTS is on unless the interface
+// opts out (adapter/serial.DefaultRTSCTS). Called per Start.
+var serialOpener registry.SerialOpener = func(device string, params registry.SerialParams) (io.ReadWriteCloser, error) {
+	return adapterserial.Open(adapterserial.Config{
+		Device:        device,
+		Baud:          params.Baud,
+		NoFlowControl: params.NoFlowControl,
+	})
 }
 
 // interfaceEnumerator lists the host NICs for the control plane's ListInterfaces (the

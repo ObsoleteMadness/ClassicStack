@@ -202,20 +202,38 @@ func (r *Router) AddPort(p Port) {
 // Send fills SrcNet/SrcNode on d (when zero) and writes it through the first attached port. On
 // Ethernet the IPX node is the MAC, so the destination MAC is d.DstNode (broadcast node →
 // broadcast MAC). Source fields already set are respected (forwarding).
+//
+// Loopback: a datagram addressed to a node claimed by a local handler (e.g. a MacIPX
+// gateway's assigned client node) is delivered to that handler in-process, not put on the
+// wire — on a real segment such a peer is reachable without the datagram leaving the host.
+// This is what lets an in-process responder reply to a MacIPX client that has no native IPX
+// wire: the RIP responder Sends its answer to the client's assigned node, and the gateway
+// (which claimed that node) tunnels it back over DDP. A locally-claimed destination is
+// therefore not an error even with no port attached.
 func (r *Router) Send(d *protocol.Datagram) error {
 	r.mu.RLock()
-	if len(r.ports) == 0 {
-		r.mu.RUnlock()
-		return errors.New("ipx: no ports attached")
-	}
-	port := r.ports[0]
 	if isZero4(d.SrcNet) {
 		d.SrcNet = r.network
 	}
 	if isZero6(d.SrcNode) {
 		d.SrcNode = r.node
 	}
+	nodeHandler, local := r.nodes[d.DstNode]
+	var port Port
+	if len(r.ports) > 0 {
+		port = r.ports[0]
+	}
 	r.mu.RUnlock()
+
+	if local {
+		// Deliver in-process. A locally-claimed node is not on the wire, so we do not
+		// also egress (unicast to that node would only be duplicated).
+		nodeHandler.HandleNodeDatagram(d)
+		return nil
+	}
+	if port == nil {
+		return errors.New("ipx: no ports attached")
+	}
 	return port.Send(d.DstNode, d)
 }
 

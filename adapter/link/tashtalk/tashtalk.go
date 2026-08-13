@@ -10,11 +10,21 @@ import (
 
 // TashTalk host↔device wire constants (spec/08 §"Wire Protocol").
 const (
-	startMarker = 0x01 // outbound frame start marker (and inbound IDLE→IN_FRAME trigger)
+	// startMarker prefixes HOST→DEVICE frames only. The device does NOT send it, so
+	// the inbound state machine must never wait for it (see feed).
+	startMarker = 0x01
 	escapePfx   = 0x00 // inbound escape prefix; the next byte is the escape code
 	escDataNull = 0xFF // escape code: a data byte 0x00
 	escEndFrame = 0xFD // escape code: end of frame
-	resetCmd    = 0x02 // port reset (host→device), used in the init sequence
+	// setNodeAddrCmd (host→device) introduces a 33-byte command: the opcode plus a
+	// 32-byte (256-bit) bitmap of the node addresses the hardware should RECEIVE.
+	// It is not a standalone reset byte — sending it without the 32-byte payload
+	// leaves the device eating the next 32 wire bytes as bitmap data.
+	setNodeAddrCmd = 0x02
+	// nodeAddrCmdLen is the full command length: 1 opcode + 32 bitmap bytes.
+	nodeAddrCmdLen = 33
+	// maxNodeAddr is the highest assignable LLAP node address (255 is broadcast).
+	maxNodeAddr = 254
 
 	// fcsLen is the 2-byte CRC (FCS) trailer the device appends to inbound frames
 	// and the host appends to outbound frames.
@@ -36,7 +46,6 @@ type frameLink struct {
 	// serial read can split or coalesce frames). Owned by the Read goroutine.
 	rdBuf   []byte
 	pending [][]byte // fully-decoded LLAP frames awaiting return from Read
-	inFrame bool     // IDLE (false) vs IN_FRAME (true): set by the 0x01 start marker
 	escaped bool     // an escape prefix (0x00) was seen; next byte is the escape code
 
 	// mu guards closed against a concurrent Close; writeMu serialises writers (the
@@ -110,11 +119,21 @@ func (l *frameLink) Read() (link.Frame, error) {
 	}
 }
 
-// feed runs the inbound escape state machine (spec/08 §"Inbound Frame Format")
-// over the just-read bytes, appending any completed LLAP frames (FCS verified +
-// stripped) to l.pending. The IDLE/IN_FRAME/ESCAPED state lives on the frameLink
-// so a frame — or even a lone escape prefix — split across serial reads still
-// reassembles. Malformed or short frames are silently discarded.
+// feed runs the inbound escape state machine over the just-read bytes, appending any
+// completed LLAP frames (FCS verified + stripped) to l.pending. The ESCAPED state
+// lives on the frameLink so a frame — or even a lone escape prefix — split across
+// serial reads still reassembles. Malformed or short frames are silently discarded.
+//
+// Frames are delimited by the 0x00 0xFD END-of-frame escape, NOT by a start marker:
+// the 0x01 start marker is HOST→DEVICE ONLY. The device does not prefix its frames
+// with it, so bytes are accumulated unconditionally from the first byte received.
+//
+// REGRESSION (2026-08): a refactor added an IDLE state that waited for a 0x01 before
+// accumulating. Against real hardware the port then transmitted normally and received
+// NOTHING — the state machine sat in IDLE forever discarding every inbound byte,
+// because the device never sends 0x01. Pre-refactor code (and spec/08's note that the
+// start marker is not validated inbound) accumulates unconditionally. Do not
+// "tighten" this by enforcing a start marker.
 func (l *frameLink) feed(data []byte) {
 	for _, b := range data {
 		switch {
@@ -125,16 +144,8 @@ func (l *frameLink) feed(data []byte) {
 				l.rdBuf = append(l.rdBuf, 0x00) // escaped data null
 			case escEndFrame:
 				l.completeFrame()
-				l.inFrame = false
 			default:
-				l.rdBuf = l.rdBuf[:0] // protocol error: discard, back to IDLE
-				l.inFrame = false
-			}
-		case !l.inFrame:
-			// IDLE: only a start marker enters a frame; any other byte is ignored.
-			if b == startMarker {
-				l.inFrame = true
-				l.rdBuf = l.rdBuf[:0]
+				l.rdBuf = l.rdBuf[:0] // protocol error: discard accumulated frame
 			}
 		case b == escapePfx:
 			l.escaped = true // next byte is the escape code (may be in the next read)
@@ -165,6 +176,18 @@ func (l *frameLink) completeFrame() {
 // 2-byte FCS. It does not retain frame past the call. Per spec/08 the outbound
 // direction is NOT escape-encoded; the firmware accepts raw bytes after 0x01.
 func (l *frameLink) Write(frame link.Frame) error {
+	b1, b2 := fcsBytes(frame)
+	packet := make([]byte, 0, 1+len(frame)+fcsLen)
+	packet = append(packet, startMarker)
+	packet = append(packet, frame...)
+	packet = append(packet, b1, b2)
+	return l.writeRaw(packet)
+}
+
+// writeRaw writes already-framed bytes to the serial stream under the write lock,
+// mapping post-Close use to link.ErrClosed. Shared by Write (LLAP frames) and
+// SetNodeAddress (device commands), which must not interleave mid-write.
+func (l *frameLink) writeRaw(packet []byte) error {
 	l.mu.RLock()
 	if l.closed {
 		l.mu.RUnlock()
@@ -172,12 +195,6 @@ func (l *frameLink) Write(frame link.Frame) error {
 	}
 	s := l.s
 	l.mu.RUnlock()
-
-	b1, b2 := fcsBytes(frame)
-	packet := make([]byte, 0, 1+len(frame)+fcsLen)
-	packet = append(packet, startMarker)
-	packet = append(packet, frame...)
-	packet = append(packet, b1, b2)
 
 	l.writeMu.Lock()
 	defer l.writeMu.Unlock()
@@ -197,12 +214,57 @@ func (l *frameLink) Close() error {
 	return l.s.Close()
 }
 
-// buildInitSequence is the reset/init bytes sent after opening: 1024 nulls to
-// flush partial device state, then a 0x02 reset (spec/08 §"Initialization
-// Sequence").
+// buildInitSequence is the reset/init bytes sent after opening: 1024 nulls to flush
+// partial device state, then a COMPLETE set-node-address command with an empty
+// bitmap (0x02 + 32 zero bytes), then 0x03 0x00.
+//
+// 0x02 is NOT a bare reset byte: it is a 33-byte command whose 32-byte payload is a
+// 256-bit bitmap of the node addresses the hardware should receive. Sending 0x02
+// alone (as this did before) leaves the device consuming the NEXT 32 bytes on the
+// wire as bitmap data, desynchronising the command stream. Observed against real
+// hardware: the port transmits fine but receives NOTHING, because the receive
+// bitmap is never validly set. See SetNodeAddress, which arms the real filter once
+// LLAP claims a node.
 func buildInitSequence() []byte {
-	buf := make([]byte, 1024, 1024+1)
-	return append(buf, resetCmd)
+	buf := make([]byte, 0, 1024+nodeAddrCmdLen+2)
+	buf = append(buf, make([]byte, 1024)...)           // flush partial device state
+	buf = append(buf, make([]byte, nodeAddrCmdLen)...) // 0x02 + 32-byte empty bitmap
+	buf[1024] = setNodeAddrCmd
+	return append(buf, 0x03, 0x00)
+}
+
+// SetNodeAddress arms the TashTalk hardware receive filter for node, so the device
+// forwards frames addressed to us (plus broadcasts) up the serial link. It is called
+// when the LLAP node-claim succeeds.
+//
+// THIS IS REQUIRED FOR ANY INBOUND TRAFFIC AT ALL. TashTalk filters in hardware
+// against a 256-bit node bitmap that starts empty, so until this lands every inbound
+// frame is dropped by the device and the host sees a silent line while its own
+// transmits go out normally.
+//
+// node 0 clears the filter (an empty bitmap). Otherwise bit `node` is set: byte
+// node/8 of the bitmap, bit node%8. A node outside 1..254 is rejected.
+func (l *frameLink) SetNodeAddress(node uint8) error {
+	cmd, err := buildSetNodeAddressCmd(node)
+	if err != nil {
+		return err
+	}
+	return l.writeRaw(cmd)
+}
+
+// buildSetNodeAddressCmd builds the 33-byte set-node-address command (0x02 + a
+// 32-byte node bitmap) for node. Mirrors main's buildSetNodeAddressCmd.
+func buildSetNodeAddressCmd(node uint8) ([]byte, error) {
+	cmd := make([]byte, nodeAddrCmdLen)
+	cmd[0] = setNodeAddrCmd
+	if node == 0 {
+		return cmd, nil // empty bitmap: receive nothing
+	}
+	if node > maxNodeAddr {
+		return nil, errors.New("tashtalk: node address not between 1 and 254")
+	}
+	cmd[1+node/8] = 1 << (node % 8)
+	return cmd, nil
 }
 
 // fcsMatches reports whether the trailing FCS bytes match the frame body's CRC.

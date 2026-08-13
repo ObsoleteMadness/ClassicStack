@@ -37,9 +37,11 @@ type Section struct {
 	SeedNetworkEnd uint16 `toml:"seed_network_end,omitempty"`
 	SeedZone       string `toml:"seed_zone,omitempty"`
 
-	// Device / Baud are the SERIAL binding a TashTalk port opens directly.
-	Device string `toml:"device,omitempty"`
-	Baud   int    `toml:"baud,omitempty"`
+	// Device / Baud / NoFlowControl are the SERIAL binding a TashTalk port opens
+	// directly. RTS/CTS is on unless NoFlowControl (see adapter/serial.DefaultRTSCTS).
+	Device        string `toml:"device,omitempty"`
+	Baud          int    `toml:"baud,omitempty"`
+	NoFlowControl bool   `toml:"no_flow_control,omitempty"`
 
 	// IPXFrameType / IPXFrameTypes select Novell Ethernet encapsulation (IPX only).
 	IPXFrameType  string   `toml:"ipx_frame_type,omitempty"`

@@ -62,6 +62,12 @@ func (p *paceLink) Write(f Frame) error {
 	return p.FrameLink.Write(f)
 }
 
+// SetNodeAddress forwards the hardware node-filter capability to the wrapped link
+// (see NodeAddressSetter): the embedded interface would otherwise hide the method.
+func (p *paceLink) SetNodeAddress(node uint8) error {
+	return setNodeAddressOn(p.FrameLink, node)
+}
+
 // destNode returns the LLAP destination node of a frame (its first byte), or the
 // broadcast node for a frame too short to carry an LLAP header — so a malformed
 // runt is paced against the broadcast bucket rather than colliding with node 0.

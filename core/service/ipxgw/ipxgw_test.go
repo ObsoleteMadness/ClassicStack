@@ -11,8 +11,10 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/ddp"
 	protoipx "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/macipx"
+	ripproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/rip"
 	"github.com/ObsoleteMadness/ClassicStack/core/router"
 	routeripx "github.com/ObsoleteMadness/ClassicStack/core/router/ipx"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/rip"
 )
 
 // fakeServiceRouter records Reply/Route calls and serves empty tables.
@@ -240,5 +242,127 @@ func TestInboundIPXTunneledToClient(t *testing.T) {
 	op, _, err := macipx.DecodeFrame(out.Data)
 	if err != nil || op != macipx.OpcodeData {
 		t.Errorf("tunneled frame opcode = 0x%02x (err %v), want OpcodeData", byte(op), err)
+	}
+}
+
+// TestRIPReplyConveysConfiguredNetwork reproduces the LToUDP-netboot scenario
+// (captures/ltoudp-netboot.pcap): a MacIPX gateway with a configured ipx_network
+// but NO native IPX port. Right after the register handshake the Mac broadcasts a
+// RIP Request ("what network am I on?"). With a RIP responder owning the gateway's
+// network wired onto the same mini-router, the gateway tunnels the request into the
+// router's local dispatch, the responder answers, and the answer is tunnelled back
+// to the Mac over DDP advertising the configured network — so ipx_network actually
+// reaches the client. Regression guard: before the fix nothing answered the RIP
+// request and the Mac stayed on IPX net 0.
+func TestRIPReplyConveysConfiguredNetwork(t *testing.T) {
+	const configuredNet uint32 = 0x03
+	netBytes := [4]byte{0x00, 0x00, 0x00, 0x03}
+
+	fr := newFakeRouter()
+	// Mini-router with NO port (log-only / LToUDP-only deployment). Compose sets the
+	// router's wire network from the gateway's ipx_network, so RIP replies carry it
+	// as their IPX SrcNet (not the default 0) — mirror that here.
+	ipxr := routeripx.NewRouter(nil)
+	ipxr.SetIdentity(netBytes, [6]byte{})
+
+	// RIP responder owning the gateway's network, on socket 0x0453 — exactly how
+	// compose/runtime wires it when the gateway is present.
+	responder := rip.New(ipxr)
+	responder.SetNetworks(netBytes)
+	if err := ipxr.RegisterSocket(ripproto.Socket, responder); err != nil {
+		t.Fatalf("register RIP socket: %v", err)
+	}
+
+	svc := NewWithConfig(fr, nil, nil, Config{IPXNetwork: configuredNet}, nil)
+	svc.SetIPXRouter(ipxr) // claims client nodes; registers broadcast handler
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Stop(context.Background())
+
+	// 1) Register handshake so the gateway claims the Mac's assigned node.
+	clientAT := struct {
+		net  uint16
+		node uint8
+	}{net: 1, node: 1}
+	req := [6]byte{0x00, 0x02, 0x00, 0x00, 0x00, 0x01}
+	svc.Inbound(ddp.Datagram{
+		SrcNetwork: clientAT.net, SrcNode: clientAT.node, SrcSocket: macipx.Socket,
+		DestSocket: macipx.Socket, DDPType: macipx.DDPProtocol,
+		Data: append([]byte{byte(macipx.OpcodeRegisterReq)}, req[:]...),
+	}, nil)
+	_ = fr.waitReplies(1) // the 0x23 register reply (node only, no network — per spec)
+
+	// 2) The Mac broadcasts a RIP Request to net 0 (as in the capture): src node is
+	//    its assigned node, dst is broadcast on socket 0x0453, asking about net 0.
+	clientNode := macipx.AssignedNodeForDDP(clientAT.net, clientAT.node)
+	// The real Mac (capture frame 31) asks with the wildcard network
+	// (0xFFFFFFFF) — "tell me every route you know" — not net 0.
+	ripReq := (&ripproto.Packet{
+		Operation: ripproto.OpRequest,
+		Entries:   []ripproto.Entry{{Network: ripproto.NetworkWildcard, Hops: 0xFFFF, Ticks: 0xFFFF}},
+	}).Marshal(nil)
+	ripDG := &protoipx.Datagram{
+		Type:    ripproto.IPXType,
+		DstNet:  [4]byte{},
+		DstNode: routeripx.BroadcastNode,
+		DstSock: ripproto.Socket,
+		SrcNet:  [4]byte{},
+		SrcNode: clientNode,
+		SrcSock: [2]byte{0x40, 0x00},
+		Payload: ripReq,
+	}
+	ripBytes, err := ripDG.Encode(nil)
+	if err != nil {
+		t.Fatalf("encode RIP request: %v", err)
+	}
+	svc.Inbound(ddp.Datagram{
+		SrcNetwork: clientAT.net, SrcNode: clientAT.node, SrcSocket: macipx.Socket,
+		DestSocket: macipx.Socket, DDPType: macipx.DDPProtocol,
+		Data: macipx.EncodeData(ripBytes),
+	}, nil)
+
+	// 3) Expect a DDP route back to the Mac carrying an encapsulated RIP Response
+	//    that advertises the configured network. (waitRoutes(1): the tunnelled reply.)
+	routes := fr.waitRoutes(1)
+	if len(routes) == 0 {
+		t.Fatal("no RIP reply tunnelled back to the Mac (client would stay on IPX net 0)")
+	}
+	out := routes[len(routes)-1]
+	if out.DestNetwork != uint16(clientAT.net) || out.DestNode != clientAT.node {
+		t.Errorf("RIP reply DDP dst = %d.%d, want %d.%d", out.DestNetwork, out.DestNode, clientAT.net, clientAT.node)
+	}
+	op, payload, err := macipx.DecodeFrame(out.Data)
+	if err != nil || op != macipx.OpcodeData {
+		t.Fatalf("reply frame opcode = 0x%02x (err %v), want OpcodeData", byte(op), err)
+	}
+	replyDG, err := protoipx.Decode(payload)
+	if err != nil {
+		t.Fatalf("decode tunnelled IPX: %v", err)
+	}
+	if replyDG.SrcSock != ripproto.Socket {
+		t.Errorf("reply src socket = %x, want RIP 0453", replyDG.SrcSock)
+	}
+	// The IPX header SrcNet must carry the configured network, not 0 — a MacIPX
+	// client that reads it as its network would otherwise stay on net 0 ("network
+	// appears as 0x0"). Guards the router-identity wiring.
+	if replyDG.SrcNet != netBytes {
+		t.Errorf("reply IPX SrcNet = %v, want %v", replyDG.SrcNet, netBytes)
+	}
+	pkt, err := ripproto.Unmarshal(replyDG.Payload)
+	if err != nil {
+		t.Fatalf("unmarshal RIP reply: %v", err)
+	}
+	if pkt.Operation != ripproto.OpResponse {
+		t.Errorf("RIP op = %#04x, want Response", pkt.Operation)
+	}
+	found := false
+	for _, e := range pkt.Entries {
+		if e.Network == netBytes {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("RIP reply did not advertise configured network %v; entries=%+v", netBytes, pkt.Entries)
 	}
 }

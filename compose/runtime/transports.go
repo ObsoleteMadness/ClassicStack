@@ -349,8 +349,20 @@ func wireIPX(nb *netbios.Service, sm *smb.Service, comps map[string]component.Co
 			}
 		}
 	}
-	if node != ([6]byte{}) {
-		r.SetIdentity(r.Network(), node)
+	// Router wire network. On main this came from [IPX] ipx-internal-network via
+	// SetIdentity; here the MacIPX gateway's announced ipx_network is the natural
+	// source (it IS the segment the gateway presents to Mac clients). Without this
+	// the router keeps DefaultNetwork (0), so RIP replies to a MacIPX client carry
+	// SrcNet 0 and the Mac never adopts the real network — the "network appears as
+	// 0x0" symptom. NCP's internal network is a distinct address space (set via
+	// SetInternalNetwork below), so it does not feed the wire network.
+	network := r.Network()
+	if gw != nil {
+		n := gw.IPXNetwork()
+		network = [4]byte{byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)}
+	}
+	if network != r.Network() || node != ([6]byte{}) {
+		r.SetIdentity(network, node)
 	}
 
 	// One SHARED SAP advertiser (socket 0x0452) serves every IPX-discoverable service:
@@ -428,6 +440,14 @@ func wireIPX(nb *netbios.Service, sm *smb.Service, comps map[string]component.Co
 	// until it is answered, taking the answer's source MAC as the frame address. So the
 	// mini-router is given the internal identity (it must accept datagrams addressed to
 	// it) and a RIP responder is stood up on socket 0x0453 owning that network.
+	// ownedNets accumulates the IPX networks this server answers RIP route queries
+	// for. Both NCP (its NetWare internal network) and the MacIPX gateway (its
+	// announced ipx_network) contribute; a single RIP responder owns the union,
+	// since the mini-router allows only one handler on socket 0x0453.
+	var (
+		ownedNets [][4]byte
+		ncpXport  *ncp.OverIPX // captured so the shared RIP responder can be handed to it below
+	)
 	if nc != nil {
 		internalNet := ipxrouter.DeriveInternalNetwork(r.Node())
 		if net, ok := nc.InternalNetworkBytes(); ok {
@@ -443,11 +463,32 @@ func wireIPX(nb *netbios.Service, sm *smb.Service, comps map[string]component.Co
 		sapReg(e)
 		t.SetSAP(sapAdv)
 
-		responder := rip.New(r)
-		responder.SetNetworks(internalNet)
-		_ = r.RegisterSocket(ripproto.Socket, responder)
-		responder.Start()
-		t.SetRIP(responder)
+		ownedNets = append(ownedNets, internalNet)
+		ncpXport = t
+	}
+	// The MacIPX gateway announces an ipx_network to its Mac clients, but that
+	// number never rides the register reply (spec/15): right after the handshake
+	// the Mac broadcasts a RIP Request and stays on IPX net 0 until answered. So the
+	// gateway's network joins the RIP responder's owned set — this is what makes
+	// [IPXGW] ipx_network actually reach the client (the gateway tunnels the Mac's
+	// RIP Request into r.Inbound, the responder answers with this network).
+	if gw != nil {
+		n := gw.IPXNetwork()
+		ownedNets = append(ownedNets, [4]byte{byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)})
+	}
+	// One shared RIP responder on socket 0x0453 owning every served network. Stood
+	// up whenever ANY owner exists (NCP or the gateway) — previously it was gated on
+	// NCP alone, so a MacIPX-only deployment had no RIP answerer and the Mac never
+	// learned its network. SetNetworks drops zero entries, so a gateway left at the
+	// 0-means-default network still contributes its resolved default via IPXNetwork().
+	if len(ownedNets) > 0 {
+		ripResponder := rip.New(r)
+		ripResponder.SetNetworks(ownedNets...)
+		_ = r.RegisterSocket(ripproto.Socket, ripResponder)
+		ripResponder.Start()
+		if ncpXport != nil {
+			ncpXport.SetRIP(ripResponder) // NCP holds it for its shutdown route-withdraw broadcast
+		}
 	}
 	// Start the shared advertiser and register it on the SAP socket once any service
 	// registered an entry. (The NB-IPX entry may register later, from the async claim

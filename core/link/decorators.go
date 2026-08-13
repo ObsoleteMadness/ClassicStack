@@ -22,6 +22,12 @@ type filterLink struct {
 	pass FilterFunc
 }
 
+// SetNodeAddress forwards the hardware node-filter capability to the wrapped link
+// (see NodeAddressSetter): the embedded interface would otherwise hide the method.
+func (f *filterLink) SetNodeAddress(node uint8) error {
+	return setNodeAddressOn(f.FrameLink, node)
+}
+
 // Read loops, discarding frames the predicate rejects, until one passes, the
 // inner link returns ErrTimeout (surfaced so the caller can re-poll), or any
 // other error occurs. A nil predicate passes everything (handled in Filter).
@@ -66,6 +72,12 @@ type dedupLink struct {
 
 	mu     sync.Mutex
 	recent map[uint64]time.Time
+}
+
+// SetNodeAddress forwards the hardware node-filter capability to the wrapped link
+// (see NodeAddressSetter): the embedded interface would otherwise hide the method.
+func (d *dedupLink) SetNodeAddress(node uint8) error {
+	return setNodeAddressOn(d.FrameLink, node)
 }
 
 func (d *dedupLink) Read() (Frame, error) {

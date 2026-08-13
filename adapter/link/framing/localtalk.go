@@ -406,6 +406,12 @@ func (d *ltDatagramLink) probeBurst() bool {
 			}
 			return true
 		}
+		// Arm the hardware receive filter for the CANDIDATE before probing it. A
+		// transport that filters inbound frames in hardware (TashTalk) would otherwise
+		// be deaf for the whole burst and could never hear the defending ACK that
+		// signals a collision — it would "win" every candidate by deafness. Cheap and
+		// idempotent: the engine reuses one candidate for a whole burst.
+		d.armNodeFilter(enq.Dst)
 		d.logControl("LLAP tx", enq)
 		_ = d.fl.Write(llap.EncodeControl(enq))
 
@@ -418,15 +424,47 @@ func (d *ltDatagramLink) probeBurst() bool {
 }
 
 // publishClaim records the claimed node into the LiveAddr (so the framer stamps it
-// as the LLAP source) and notifies compose via OnClaimed (so the port's SetAddress
-// runs). LocalTalk is non-extended, so the network range passed is SeedNetwork for
-// both min and max (0 until a router teaches it via RTMP).
+// as the LLAP source), arms any hardware receive filter on the link, and notifies
+// compose via OnClaimed (so the port's SetAddress runs). LocalTalk is non-extended,
+// so the network range passed is SeedNetwork for both min and max (0 until a router
+// teaches it via RTMP).
 func (d *ltDatagramLink) publishClaim(node uint8) {
 	if d.live != nil {
 		d.live.Set(NewStaticAddr(d.seedNetwork, node))
 	}
+	d.armNodeFilter(node)
 	if d.onClaimed != nil {
 		d.onClaimed(d.seedNetwork, node, d.seedNetwork, d.seedNetwork)
+	}
+}
+
+// armNodeFilter arms the transport's HARDWARE receive filter for the claimed node,
+// when the link has one (link.NodeAddressSetter). This is what makes TashTalk
+// receive at all: its device drops every frame not matching a 256-bit node bitmap
+// that starts EMPTY, so an unarmed port transmits normally and receives nothing.
+//
+// Called BEFORE OnClaimed so no inbound frame is dropped in the window between the
+// port going live and the filter being set. link.ErrUnsupported means the transport
+// has no hardware filter (LToUDP, virtual) and is not an error.
+func (d *ltDatagramLink) armNodeFilter(node uint8) {
+	s, ok := d.fl.(link.NodeAddressSetter)
+	if !ok {
+		return
+	}
+	err := s.SetNodeAddress(node)
+	switch {
+	case err == nil:
+		if d.logger != nil {
+			d.logger.Log1(log.Debug, "localtalk: armed hardware node filter",
+				log.Int("node", int64(node)))
+		}
+	case errors.Is(err, link.ErrUnsupported):
+		// No hardware filter beneath the decorators: nothing to arm.
+	default:
+		if d.logger != nil {
+			d.logger.Log1(log.Error, "localtalk: cannot arm hardware node filter",
+				log.Str("err", err.Error()))
+		}
 	}
 }
 

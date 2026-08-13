@@ -78,13 +78,18 @@ func newTestLink(s io.ReadWriteCloser) *frameLink {
 	return &frameLink{s: s, rdBuf: make([]byte, 0, 64)}
 }
 
-// encodeInbound builds a device→host wire frame for an LLAP payload: 0x01 start,
-// then the payload + FCS with 0x00 escaped as 0x00 0xFF, then the 0x00 0xFD end
-// marker. This is the inverse of the adapter's Read path.
+// encodeInbound builds a device→host wire frame for an LLAP payload: the payload +
+// FCS with 0x00 escaped as 0x00 0xFF, then the 0x00 0xFD end marker. This is the
+// inverse of the adapter's Read path.
+//
+// NOTE: NO 0x01 start marker. That marker is HOST→DEVICE ONLY — real TashTalk
+// hardware does not prefix its frames with it. This fixture used to prepend one,
+// which is why the suite stayed green while the adapter waited forever for a start
+// marker that never arrives and received nothing on real hardware.
 func encodeInbound(llap []byte) []byte {
 	b1, b2 := fcsBytes(llap)
 	body := append(append([]byte{}, llap...), b1, b2)
-	out := []byte{startMarker}
+	out := []byte{}
 	for _, b := range body {
 		if b == 0x00 {
 			out = append(out, escapePfx, escDataNull)
@@ -227,18 +232,106 @@ func TestClosedTerminal(t *testing.T) {
 	}
 }
 
-// TestBuildInitSequence pins the reset/init bytes: 1024 nulls + 0x02.
+// TestBuildInitSequence pins the FULL init sequence: 1024 nulls, then a COMPLETE
+// 33-byte set-node-address command (0x02 + 32-byte empty bitmap), then 0x03 0x00.
+// Regression: this used to emit 0x02 alone, leaving the device consuming the next
+// 32 wire bytes as bitmap data — the port transmitted but received nothing.
 func TestBuildInitSequence(t *testing.T) {
 	got := buildInitSequence()
-	if len(got) != 1025 {
-		t.Fatalf("init len = %d, want 1025", len(got))
-	}
-	if got[1024] != resetCmd {
-		t.Fatalf("init last byte = 0x%02X, want reset 0x%02X", got[1024], resetCmd)
+	want := 1024 + nodeAddrCmdLen + 2
+	if len(got) != want {
+		t.Fatalf("init len = %d, want %d", len(got), want)
 	}
 	for i, b := range got[:1024] {
 		if b != 0x00 {
 			t.Fatalf("init byte %d = 0x%02X, want 0x00", i, b)
+		}
+	}
+	if got[1024] != setNodeAddrCmd {
+		t.Fatalf("init[1024] = 0x%02X, want set-node-address 0x%02X", got[1024], setNodeAddrCmd)
+	}
+	// The 32-byte bitmap must be present and empty (receive nothing until claimed).
+	for i, b := range got[1025 : 1024+nodeAddrCmdLen] {
+		if b != 0x00 {
+			t.Fatalf("init bitmap byte %d = 0x%02X, want 0x00", i, b)
+		}
+	}
+	if tail := got[1024+nodeAddrCmdLen:]; tail[0] != 0x03 || tail[1] != 0x00 {
+		t.Fatalf("init tail = % X, want 03 00", tail)
+	}
+}
+
+// TestBuildSetNodeAddressCmd pins the hardware receive-filter command. Without it
+// TashTalk drops every inbound frame in hardware, which is why the port could
+// transmit RTMP happily while receiving absolutely nothing.
+func TestBuildSetNodeAddressCmd(t *testing.T) {
+	// The default LocalTalk node 0xFE (254) → bit 254: byte 254/8=31, bit 254%8=6.
+	cmd, err := buildSetNodeAddressCmd(0xFE)
+	if err != nil {
+		t.Fatalf("buildSetNodeAddressCmd(0xFE): %v", err)
+	}
+	if len(cmd) != nodeAddrCmdLen {
+		t.Fatalf("cmd len = %d, want %d", len(cmd), nodeAddrCmdLen)
+	}
+	if cmd[0] != setNodeAddrCmd {
+		t.Fatalf("cmd[0] = 0x%02X, want 0x%02X", cmd[0], setNodeAddrCmd)
+	}
+	if cmd[1+31] != 1<<6 {
+		t.Fatalf("bitmap byte 31 = 0x%02X, want 0x%02X (bit for node 254)", cmd[1+31], 1<<6)
+	}
+	for i, b := range cmd[1:] {
+		if i != 31 && b != 0x00 {
+			t.Fatalf("bitmap byte %d = 0x%02X, want 0x00 (only node 254 set)", i, b)
+		}
+	}
+
+	// node 0 clears the filter: a valid command with an all-zero bitmap.
+	zero, err := buildSetNodeAddressCmd(0)
+	if err != nil {
+		t.Fatalf("buildSetNodeAddressCmd(0): %v", err)
+	}
+	for i, b := range zero[1:] {
+		if b != 0x00 {
+			t.Fatalf("cleared bitmap byte %d = 0x%02X, want 0x00", i, b)
+		}
+	}
+
+	// 255 is broadcast, not assignable.
+	if _, err := buildSetNodeAddressCmd(255); err == nil {
+		t.Fatal("buildSetNodeAddressCmd(255) = nil error, want rejection")
+	}
+}
+
+// TestSetNodeAddressWritesCommand proves SetNodeAddress reaches the serial stream,
+// so the claim hook actually arms the hardware filter.
+func TestSetNodeAddressWritesCommand(t *testing.T) {
+	s := newFakeSerial()
+	fl, err := NewStream(s)
+	if err != nil {
+		t.Fatalf("NewStream: %v", err)
+	}
+	na, ok := fl.(interface{ SetNodeAddress(uint8) error })
+	if !ok {
+		t.Fatal("frameLink does not expose SetNodeAddress")
+	}
+	s.mu.Lock()
+	initLen := s.tx.Len()
+	s.mu.Unlock()
+
+	if err := na.SetNodeAddress(0xFE); err != nil {
+		t.Fatalf("SetNodeAddress: %v", err)
+	}
+
+	s.mu.Lock()
+	got := append([]byte(nil), s.tx.Bytes()[initLen:]...)
+	s.mu.Unlock()
+	want, _ := buildSetNodeAddressCmd(0xFE)
+	if len(got) != len(want) {
+		t.Fatalf("wrote %d bytes, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("byte %d = 0x%02X, want 0x%02X", i, got[i], want[i])
 		}
 	}
 }

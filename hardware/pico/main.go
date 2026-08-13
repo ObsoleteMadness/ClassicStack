@@ -122,7 +122,7 @@ func main() {
 	}
 
 	// Custom SerialOpener for TashTalk UART (UART0 at 1MBaud with CTS)
-	serialOpener := func(device string, baud uint) (io.ReadWriteCloser, error) {
+	serialOpener := func(device string, params registry.SerialParams) (io.ReadWriteCloser, error) {
 		println("Opening UART0 for TashTalk at 1MBaud...")
 		uart := machine.UART0
 		err := uart.Configure(machine.UARTConfig{
@@ -133,12 +133,15 @@ func main() {
 		if err != nil {
 			return nil, err
 		}
+		if params.NoFlowControl {
+			return uart, nil
+		}
 
-		// Configure CTS input pin
+		// Configure CTS input pin and gate writes on it: TinyGo's UART exposes no
+		// hardware RTS/CTS, so ctsWriter polls the pin in software (see cts.go).
 		ctsPin := machine.Pin(UART_CTS)
 		ctsPin.Configure(machine.PinConfig{Mode: machine.PinInput})
-
-		return uart, nil
+		return newCTSWriter(uart, ctsPin), nil
 	}
 
 	// Bus log sink: fans component + control-plane Info+ records onto the telemetry

@@ -201,7 +201,13 @@ func tashtalkLinkOpener(ctx *BuildContext, sec *port.Section) func() (link.Frame
 	if device == "" {
 		device = sec.Iface
 	}
-	iface := config.InterfaceSection{Kind: config.IfaceKindSerial, Device: device, Baud: sec.Baud}
+	iface := config.InterfaceSection{
+		Kind: config.IfaceKindSerial, Device: device, Baud: sec.Baud,
+		// RTS/CTS stays ON unless the port opts out: TashTalk clocks each frame onto
+		// LocalTalk at 230.4 kbaud while the host feeds it at 1 Mbit/s, so without flow
+		// control the adapter's buffer overruns and frames vanish (failed FCS).
+		NoFlowControl: sec.NoFlowControl,
+	}
 	base := serialLinkOpener(ctx, iface, tashtalkFrame)
 	// TashTalk self-paces on the 1 Mbit/s serial line (each frame takes real wire
 	// time to clock out), so its default pace is 0 — but an operator can still set

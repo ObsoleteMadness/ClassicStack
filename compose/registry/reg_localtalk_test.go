@@ -59,7 +59,7 @@ func anyOpener() LinkOpener {
 // to open and yields a nop stream (so the TashTalk framer succeeds). The recorded
 // device is read back via the returned pointer.
 func serialOpenerRecording(dev *atomic.Value) SerialOpener {
-	return func(device string, _ uint) (io.ReadWriteCloser, error) {
+	return func(device string, _ SerialParams) (io.ReadWriteCloser, error) {
 		dev.Store(device)
 		return nopStream{}, nil
 	}
@@ -159,9 +159,11 @@ func TestTashTalkFactory_ReadsDeviceAndBaudFromPort(t *testing.T) {
 	// The port carries its own device/baud — no serial interface in the namespace.
 	m.AddInstance(&port.Section{SKey: localtalk.NameTashTalk, Name: "tt-attic", Device: "/dev/ttyUSB0", Baud: 57600, IsEnabled: true})
 
-	serial := func(device string, baud uint) (io.ReadWriteCloser, error) {
+	var noFlow atomic.Bool
+	serial := func(device string, params SerialParams) (io.ReadWriteCloser, error) {
 		openedDev.Store(device)
-		openedBaud.Store(uint64(baud))
+		openedBaud.Store(uint64(params.Baud))
+		noFlow.Store(params.NoFlowControl)
 		return nopStream{}, nil
 	}
 	c, ok, err := Build(localtalk.NameTashTalk, &BuildContext{Model: m, Instance: "tt-attic", Serial: serial})
@@ -178,6 +180,42 @@ func TestTashTalkFactory_ReadsDeviceAndBaudFromPort(t *testing.T) {
 	}
 	if got := openedBaud.Load(); got != 57600 {
 		t.Fatalf("opened baud %d, want 57600 (from the port section)", got)
+	}
+	// RTS/CTS is ON by default (the section left no_flow_control unset): TashTalk must
+	// be able to throttle the host link or its buffer overruns and frames are lost.
+	if noFlow.Load() {
+		t.Fatal("opened with NoFlowControl=true; RTS/CTS must default to ON for TashTalk")
+	}
+}
+
+// TestTashTalkFactory_NoFlowControlOptOut proves the escape hatch reaches the opener:
+// a port with no_flow_control=true (an adapter whose CTS line is not wired) opens
+// with flow control disabled instead of stalling on a permanently de-asserted CTS.
+func TestTashTalkFactory_NoFlowControlOptOut(t *testing.T) {
+	swapTashtalkFrame(t, func(io.ReadWriteCloser) (link.FrameLink, error) { return &idleFrameLink{}, nil })
+
+	m := config.NewModel()
+	m.AddInstance(&port.Section{
+		SKey: localtalk.NameTashTalk, Name: "tt-nocts", Device: "/dev/ttyUSB1",
+		NoFlowControl: true, IsEnabled: true,
+	})
+
+	var noFlow atomic.Bool
+	serial := func(_ string, params SerialParams) (io.ReadWriteCloser, error) {
+		noFlow.Store(params.NoFlowControl)
+		return nopStream{}, nil
+	}
+	c, ok, err := Build(localtalk.NameTashTalk, &BuildContext{Model: m, Instance: "tt-nocts", Serial: serial})
+	if err != nil || !ok || c == nil {
+		t.Fatalf("Build(TashTalk/tt-nocts) = (%v, %v, %v)", c, ok, err)
+	}
+	ctx := context.Background()
+	if err := c.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer c.Stop(ctx)
+	if !noFlow.Load() {
+		t.Fatal("opened with NoFlowControl=false; the port's no_flow_control opt-out did not reach the opener")
 	}
 }
 

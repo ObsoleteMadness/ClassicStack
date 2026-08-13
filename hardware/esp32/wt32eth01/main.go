@@ -106,7 +106,7 @@ func main() {
 	}
 
 	// Custom SerialOpener for TashTalk UART (Secondary UART at 1MBaud with CTS)
-	serialOpener := func(device string, baud uint) (io.ReadWriteCloser, error) {
+	serialOpener := func(device string, params registry.SerialParams) (io.ReadWriteCloser, error) {
 		println("Opening UART for TashTalk at 1MBaud...")
 		uart := machine.UART1
 		err := uart.Configure(machine.UARTConfig{
@@ -117,13 +117,15 @@ func main() {
 		if err != nil {
 			return nil, err
 		}
+		if params.NoFlowControl {
+			return uart, nil
+		}
 
-		// Configure CTS input pin
+		// Configure CTS input pin and gate writes on it: this UART has no hardware
+		// RTS/CTS, so ctsWriter polls the pin in software (see hardware/cts.go).
 		ctsPin := machine.Pin(UART_CTS)
 		ctsPin.Configure(machine.PinConfig{Mode: machine.PinInput})
-
-		// Wrap UART with custom flow-control if necessary, or return standard UART
-		return uart, nil
+		return newCTSWriter(uart, ctsPin), nil
 	}
 
 	// Bus log sink: fans component + control-plane Info+ records onto the telemetry

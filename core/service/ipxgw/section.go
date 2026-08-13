@@ -105,3 +105,17 @@ func formatIPXNetwork(n uint32) string {
 	}
 	return "0x" + strconv.FormatUint(uint64(n), 16)
 }
+
+// formatIPXNode renders a 6-byte IPX node as colon-separated hex (e.g.
+// "7a:00:00:00:01:01"), matching the notation used in spec/15 and captures.
+func formatIPXNode(n [6]byte) string {
+	const hex = "0123456789abcdef"
+	b := make([]byte, 0, 17)
+	for i, v := range n {
+		if i > 0 {
+			b = append(b, ':')
+		}
+		b = append(b, hex[v>>4], hex[v&0x0F])
+	}
+	return string(b)
+}
