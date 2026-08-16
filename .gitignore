@@ -56,3 +56,6 @@ users.db
 
 server.toml.[0-9]*
 
+
+# Python bytecode cache (tools/hfs helpers)
+__pycache__/

@@ -117,62 +117,6 @@ kDDPChecksumFlag    equ     $1D
 kDDPListener        equ     $1E             ; socket listener / WDS pointer
 kMPPRefNum          equ     -10             ; .MPP driver refnum (unit 9)
 
-; ---- Disk driver control/status csCodes (Interfaces/AIncludes/SonyEqu.a) --
-kDriveIconCC        equ     21              ; iconCC:    'get icon' control code
-kMediaIconCC        equ     22              ; iconLogCC: 'get logical icon' code
-kDriveInfoCC        equ     23              ; infoCC:    'get drive info' code
-kFmtLstCode         equ     6               ; fmtLstCode: returns a list of disk formats
-kDrvStsCode         equ     8               ; drvStsCode: status call code for drive status
-
-; ---- Address translation (Interfaces/AIncludes/Traps.a) ------------------
-; _StripAddress masks the Memory Manager flag bits out of the top byte of a
-; pointer, per Apple's own usage (OS/DeviceMgr.a:372: address in D0, trap,
-; result back in D0). It is a no-op on a clean 32-bit address.
-kStripAddressTrap   equ     $A055
-kMMU32Bit           equ     $0CB2           ; low mem: 0 = 24-bit, else 32-bit
-
-; ---- DrvSts / DrvSts2 (Interfaces/CIncludes/Disks.h) ----------------------
-; The drvStsCode reply, written at csParam. Offsets are from csParam ($1C):
-;   +0  track       word    current track
-;   +2  writeProt   byte    bit 7 = 1 if locked
-;   +3  diskInPlace byte    8 = nonejectable disk in drive
-;   +4  installed   byte    1 = drive installed
-;   +5  sides       byte    0 = 1-sided
-;   +6  qLink       long    next drive queue entry
-;   +10 qType       word    1 = long (dQDrvSz2 valid)
-;   +12 dQDrive     word    drive number
-;   +14 dQRefNum    word    driver refnum
-;   +16 dQFSID      word    file system id (0 = native)
-;   +18 driveSize   word    size in 512-byte blocks, LOW word
-;   +20 driveS1     word    size in 512-byte blocks, HIGH word
-; We previously filled only +0..+5, leaving driveSize/driveS1 and the queue
-; mirror as stale caller data. romdrv returns the lot; so do we now.
-kDrvStsWriteProt    equ     $FF             ; locked (romdrv uses all-ones)
-kDrvStsDiskInPlace  equ     8               ; nonejectable disk in drive
-kDrvStsInstalled    equ     1               ; drive is installed
-kDrvStsSides        equ     0               ; 1-sided
-kDrvStsQTypeLong    equ     1               ; long drive-size format
-
-; ---- Return Drive Info longword (Drivers/EDisk/EDiskDriver.a InitTable) ---
-; The infoCC reply is ONE longword written to csParam. Apple's RAM disk builds
-; it from named bits; ours differs only where the medium genuinely differs.
-;
-;   bit 15  volatile   0 = survives a restart. A RAM disk sets this; our blocks
-;                          live on the server, so we do not.
-;   bit 11  primary    0 = not the primary drive of its type.
-;   bit 10  fixed      1 = fixed (non-removable) media.
-;   bit  9  SCSI       0 = not SCSI. Deliberate: this driver is a network block
-;                          device, closer to a very large floppy, and must never
-;                          present itself to the SCSI Manager.
-;   bit  8  internal   0 = external — the disk is across the network.
-;   low byte           drive type. Apple assigns 16/17/18 to RAM/ROM/SLIM
-;                          EDisks; nothing in the System dispatches on the value
-;                          (only EDisk tests its own), so we take the next free
-;                          number rather than impersonate one of theirs.
-kDriveTypeNetwork   equ     19              ; network block device (ours)
-kDriveInfoFixed     equ     1<<10
-kDriveInfo          equ     kDriveInfoFixed+kDriveTypeNetwork
-
 ; ---- EBP wire constants (spec/19-netboot.md Part B) ----------------------
 kBootSocket         equ     10              ; BOOTSOCKET, DDP type BOOTDDPTYPE
 kBootDDPType        equ     10
@@ -949,25 +893,20 @@ gProgress   dc.l    0               ; per-chunk received-block bitmap
 gHdr        dc.l    0               ; even-aligned landing pad for the reply header
 
 ; Forensic tallies for the DRIVER phase, four packed bytes:
-;   [Prime _Read][last REJECTED Status csCode][Prime other trap][last REJECTED Control csCode]
-; byte1 and byte3 formerly counted _Write / SendWrite entries; both measured
-; ALWAYS ZERO across 338 Prime calls (the System never writes), so they are
-; reused here to carry the rejected csCodes out -- the imageNum field is only
-; four bytes and every other field of the 16-byte request is load-bearing.
+;   [Prime _Read][Prime _Write][Prime other trap][SendWrite entries]
 ; Shipped out in each READ request's imageNum field (the server logs it as
 ; diag=); reads are the only thing that reaches the wire once the System is
 ; up, so a write-side fault has to be smuggled out on a read.
 ;
 ; This is the driver-phase twin of gListenerHits, which is boot-scratch and
 ; therefore stops being reachable once DrvrBase is relocated -- which is why
-; every diag= in the getSysVol/mountSysVol phase reads 0x00000000.
+; every diag= in the getSysVol/mountSysVol phase has read 0x00000000.
 ;
 ; Counters are never reset: read the DELTA between consecutive requests. All
 ; bumps go through an address register because PC-relative addressing is
 ; read-only on the 68000 (see BootSockListener for the full account of how
 ; that silently broke the first instrument).
 gDrvrDiag   dc.l    0
-
 ; Volume size in 512-byte blocks. EBP has no "how big is the disk?" query, so
 ; the SERVER stamps this field before serving: it scans the payload for the
 ; 8-byte cookie 'CSDSKSZ\0' and overwrites the long that follows. The cookie
@@ -1041,15 +980,14 @@ DrvrPrime
             lea     gDrvrDiag,A2
             cmp.b   #2,7(A0)                ; ioTrap == _Read?
             beq.s   .diagRead
-            addq.b  #1,2(A2)                ; byte2: anything that is not _Read
-            bra.s   .diagDone               ;   (a _Write here would be news)
+            cmp.b   #3,7(A0)                ; ioTrap == _Write?
+            beq.s   .diagWrite
+            addq.b  #1,2(A2)                ; byte2: neither _Read nor _Write
+            bra.s   .diagDone
 .diagRead   addq.b  #1,(A2)                 ; byte0: _Read
-; Forensic: byte1 now carries the CURRENT addressing mode rather than a
-; rejected Status csCode (which has measured 0 since fmtLst/drvSts are both
-; answered). 0 = 24-bit, nonzero = 32-bit. If this flips partway through a
-; boot, the System changed MMU mode underneath the driver.
-.diagDone   move.b  kMMU32Bit,1(A2)
-            move.l  (SP)+,A2
+            bra.s   .diagDone
+.diagWrite  addq.b  #1,1(A2)                ; byte1: _Write
+.diagDone   move.l  (SP)+,A2
 
             cmp.b   #2,7(A0)                ; ioTrap == _Read?
             bne     DrvrSendWrite
@@ -1173,6 +1111,14 @@ DrvrReSendWrite
 DrvrSendWrite
 ; Entered from Prime, the socket listener or the Time Manager. A0 = PB.
 ; D1 = block index within the chunk.
+; Forensic: byte3 counts entries here. If Prime's _Write tally (byte1) climbs
+; but this does not, the branch itself is at fault; if both climb and no cmd
+; $82 appears on the wire, the fault is between here and _Control.
+            move.l  A2,-(SP)
+            lea     gDrvrDiag,A2
+            addq.b  #1,3(A2)
+            move.l  (SP)+,A2
+
             move.l  $28(A0),D1
             lsr.l   #5,D1
             lsr.l   #4,D1
@@ -1358,17 +1304,7 @@ DrvrDidReceiveRead
             asl.l   #8,D3
             add.l   D3,D3                   ; = byte offset within the buffer
 
-; [ChainDisk] Strip ioBuffer before ReadRest writes 512 bytes through it.
-; romdrv does this on every Prime read (romdrv 0.9.6 romdrv.c:242/245); we
-; previously used the pointer raw. In 24-bit mode the top byte holds Memory
-; Manager flags, so the unstripped address need not land where we intend.
-; D0/D1/D2 are live here (D2 = block index, D1 unused until below), so D0 is
-; saved around the trap exactly as Apple's Device Manager does it.
-            move.l  D0,-(SP)
-            move.l  $20(A3),D0              ; ioBuffer
-            dc.w    kStripAddressTrap       ; _StripAddress: D0 = stripped
-            move.l  D0,A3
-            move.l  (SP)+,D0
+            move.l  $20(A3),A3              ; ioBuffer
             add.l   D3,A3
             move.l  #kBytesPerBlock,D3
             jsr     2(A4)                   ; ReadRest
@@ -1444,28 +1380,11 @@ DrvrTrashPacket
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 DrvrControl
-; Forensic: record the csCodes we REJECT (see gDrvrDiag byte3).
-            cmp.w   #kDriveIconCC,$1A(A0)
+            cmp.w   #21,$1A(A0)             ; kDriveIcon
             beq.s   .icon
-            cmp.w   #kMediaIconCC,$1A(A0)
+            cmp.w   #22,$1A(A0)             ; kMediaIcon
             beq.s   .icon
-            cmp.w   #kDriveInfoCC,$1A(A0)
-            beq.s   .driveInfo
-; Rejected: stash the low byte of the csCode in gDrvrDiag byte3 before
-; returning controlErr, so it rides out on the next read request.
-            move.l  A2,-(SP)
-            lea     gDrvrDiag,A2
-            move.b  $1A+1(A0),3(A2)
-            move.l  (SP)+,A2
             move.w  #-17,$10(A0)            ; controlErr
-            bra     DrvrFinish
-
-; infoCC -- Return Drive Info. Apple's EDisk answers with
-; "move.l DriveInfo(a3),(a4)", i.e. one longword straight into csParam ($1C).
-; Previously this fell through to controlErr, which the System took without
-; complaining but which left it with no description of the drive.
-.driveInfo  move.l  #kDriveInfo,$1C(A0)     ; csParam = the drive info longword
-            clr.w   $10(A0)                 ; ioResult = noErr
             bra     DrvrFinish
 .icon       lea     DrvrIcon,A2
             move.l  A2,$1C(A0)
@@ -1475,17 +1394,10 @@ DrvrControl
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 DrvrStatus
-; Forensic: record the csCodes we REJECT (see gDrvrDiag byte1). statusErr from
-; here is a prime suspect for the startup freeze.
-            cmp.w   #kFmtLstCode,$1A(A0)
+            cmp.w   #6,$1A(A0)              ; fmtLstCode
             beq.s   .fmtLst
-            cmp.w   #kDrvStsCode,$1A(A0)
+            cmp.w   #8,$1A(A0)              ; drvStsCode
             beq.s   .drvSts
-; Rejected: stash the low byte of the csCode in gDrvrDiag byte1.
-            move.l  A2,-(SP)
-            lea     gDrvrDiag,A2
-            move.b  $1A+1(A0),1(A2)
-            move.l  (SP)+,A2
             move.w  #-18,$10(A0)            ; statusErr
             bra     DrvrFinish
 
@@ -1499,50 +1411,9 @@ DrvrStatus
             move.w  #0,$10(A0)
             bra     DrvrFinish
 
-; drvStsCode -- return the full DrvSts2. A1 is the DCE on entry to every
-; driver routine, and dCtlRefNum ($18) gives the refnum without touching the
-; boot-scratch copies. The drive number and size come from the DQE, whose
-; address the DCE does not carry -- so we walk the drive queue for the entry
-; whose dQRefNum is ours, exactly as the Start Manager does when it hunts for
-; a boot device (OS/StartMgr/StartSearch.a NextDQEntry).
-.drvSts     move.l  A2,-(SP)
-            move.l  A3,-(SP)
-
-            lea     $1C(A0),A2              ; A2 = csParam, the reply buffer
-            move.w  #0,(A2)                 ; +0  track
-            move.b  #kDrvStsWriteProt,2(A2) ; +2  writeProt: locked
-            move.b  #kDrvStsDiskInPlace,3(A2) ; +3 diskInPlace: nonejectable
-            move.b  #kDrvStsInstalled,4(A2) ; +4  installed
-            move.b  #kDrvStsSides,5(A2)     ; +5  sides: 1-sided
-            clr.l   6(A2)                   ; +6  qLink (we are not relinking)
-            move.w  #kDrvStsQTypeLong,10(A2) ; +10 qType: long size format
-            move.w  #myDRefNum,14(A2)       ; +14 dQRefNum
-
-; Find our drive queue entry: scan DrvQHdr for dQRefNum == ours.
-            move.w  #0,12(A2)               ; +12 dQDrive, 0 until found
-            move.w  #0,16(A2)               ; +16 dQFSID = native fs
-            lea     $308,A3                 ; DrvQHdr
-            move.l  2(A3),A3                ; qHead
-.stsScan    move.l  A3,D0
-            beq.s   .stsSized               ; end of queue: leave dQDrive 0
-            cmp.w   #myDRefNum,8(A3)        ; dQRefNum == ours?
-            bne.s   .stsNext
-            move.w  6(A3),12(A2)            ; +12 dQDrive = the real number
-            bra.s   .stsSized
-.stsNext    move.l  0(A3),A3                ; qLink
-            bra.s   .stsScan
-
-; driveSize / driveS1 are the block count split low word first -- the same
-; split the DQE uses for dQDrvSz / dQDrvSz2, and the reason a 250 MB volume
-; needs the long format at all.
-.stsSized   move.l  gDiskBlocks,D0
-            move.w  D0,18(A2)               ; +18 driveSize: LOW word
-            swap    D0
-            move.w  D0,20(A2)               ; +20 driveS1:   HIGH word
-
-            move.l  (SP)+,A3
-            move.l  (SP)+,A2
-            move.w  #0,$10(A0)              ; ioResult = noErr
+.drvSts     move.w  #0,$1C(A0)              ; track number
+            move.l  #$80080000,$1C+2(A0)    ; same flags as the DQE
+            move.w  #0,$10(A0)
             bra     DrvrFinish
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

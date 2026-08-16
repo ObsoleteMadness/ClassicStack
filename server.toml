@@ -41,9 +41,9 @@ transports = ['netbeui', 'ipx']
 
 [Netboot]
 enabled = true
-payload = 'C:\Users\pgodw\OneDrive\Documents\GitHub\NetBoot\ChainLoader.diag.bin'
+payload = './netboot/ChainDisk.bin'
 block_size = 256
-disk = 'C:\Users\pgodw\OneDrive\Documents\GitHub\NetBoot\A608.dsk'
+disk = 'C:\Users\pgodw\OneDrive\Documents\Vmac\Disk1 - Copy.dsk'
 pace_ms = 2
 chain_pace_ms = 10
 name = '0000'

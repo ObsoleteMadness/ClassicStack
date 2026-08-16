@@ -124,13 +124,6 @@ kDriveInfoCC        equ     23              ; infoCC:    'get drive info' code
 kFmtLstCode         equ     6               ; fmtLstCode: returns a list of disk formats
 kDrvStsCode         equ     8               ; drvStsCode: status call code for drive status
 
-; ---- Address translation (Interfaces/AIncludes/Traps.a) ------------------
-; _StripAddress masks the Memory Manager flag bits out of the top byte of a
-; pointer, per Apple's own usage (OS/DeviceMgr.a:372: address in D0, trap,
-; result back in D0). It is a no-op on a clean 32-bit address.
-kStripAddressTrap   equ     $A055
-kMMU32Bit           equ     $0CB2           ; low mem: 0 = 24-bit, else 32-bit
-
 ; ---- DrvSts / DrvSts2 (Interfaces/CIncludes/Disks.h) ----------------------
 ; The drvStsCode reply, written at csParam. Offsets are from csParam ($1C):
 ;   +0  track       word    current track
@@ -1044,12 +1037,7 @@ DrvrPrime
             addq.b  #1,2(A2)                ; byte2: anything that is not _Read
             bra.s   .diagDone               ;   (a _Write here would be news)
 .diagRead   addq.b  #1,(A2)                 ; byte0: _Read
-; Forensic: byte1 now carries the CURRENT addressing mode rather than a
-; rejected Status csCode (which has measured 0 since fmtLst/drvSts are both
-; answered). 0 = 24-bit, nonzero = 32-bit. If this flips partway through a
-; boot, the System changed MMU mode underneath the driver.
-.diagDone   move.b  kMMU32Bit,1(A2)
-            move.l  (SP)+,A2
+.diagDone   move.l  (SP)+,A2
 
             cmp.b   #2,7(A0)                ; ioTrap == _Read?
             bne     DrvrSendWrite
@@ -1358,17 +1346,7 @@ DrvrDidReceiveRead
             asl.l   #8,D3
             add.l   D3,D3                   ; = byte offset within the buffer
 
-; [ChainDisk] Strip ioBuffer before ReadRest writes 512 bytes through it.
-; romdrv does this on every Prime read (romdrv 0.9.6 romdrv.c:242/245); we
-; previously used the pointer raw. In 24-bit mode the top byte holds Memory
-; Manager flags, so the unstripped address need not land where we intend.
-; D0/D1/D2 are live here (D2 = block index, D1 unused until below), so D0 is
-; saved around the trap exactly as Apple's Device Manager does it.
-            move.l  D0,-(SP)
-            move.l  $20(A3),D0              ; ioBuffer
-            dc.w    kStripAddressTrap       ; _StripAddress: D0 = stripped
-            move.l  D0,A3
-            move.l  (SP)+,D0
+            move.l  $20(A3),A3              ; ioBuffer
             add.l   D3,A3
             move.l  #kBytesPerBlock,D3
             jsr     2(A4)                   ; ReadRest
