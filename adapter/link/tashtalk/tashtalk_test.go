@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 )
 
 // fakeSerial is an in-memory io.ReadWriteCloser standing in for the serial port:
@@ -334,4 +336,89 @@ func TestSetNodeAddressWritesCommand(t *testing.T) {
 			t.Fatalf("byte %d = 0x%02X, want 0x%02X", i, got[i], want[i])
 		}
 	}
+}
+
+// shortSerial writes only the first `limit` bytes of any packet and reports that
+// count with a nil error — the documented device-overrun mode (spec/08: the host
+// feeds at 1 Mbit/s while the device clocks LocalTalk at 230.4 kbaud, so its buffer
+// overruns mid-frame). A truncated LLAP frame fails FCS at the receiver and simply
+// DISAPPEARS, so before this was detected the loss was invisible on both sides.
+type shortSerial struct {
+	limit int
+	tx    bytes.Buffer
+}
+
+func (s *shortSerial) Read(p []byte) (int, error) { return 0, io.EOF }
+func (s *shortSerial) Write(p []byte) (int, error) {
+	n := len(p)
+	if n > s.limit {
+		n = s.limit
+	}
+	s.tx.Write(p[:n])
+	return n, nil
+}
+func (s *shortSerial) Close() error { return nil }
+
+// TestShortInitWriteIsRejected pins that a truncated init leaves the device in an
+// indeterminate state and must fail construction rather than run on. The 0x02
+// set-node-address command is 33 bytes; a partial one desynchronises the firmware's
+// command stream, which then eats subsequent LLAP bytes as bitmap data.
+func TestShortInitWriteIsRejected(t *testing.T) {
+	s := &shortSerial{limit: 10} // init is >1024 bytes; only 10 land
+	if _, err := NewStreamLogged(s, nil); err == nil {
+		t.Fatal("NewStreamLogged with a short init write = nil error, want rejection")
+	}
+}
+
+// TestShortFrameWriteIsReported pins that a short write of a DATA frame surfaces.
+// It must not be silently discarded: this is the exact path by which a frame the
+// server believes it sent never reaches the wire.
+func TestShortFrameWriteIsReported(t *testing.T) {
+	// Let the full init through, then truncate everything after it.
+	init := len(buildInitSequence())
+	s := &shortSerial{limit: init}
+	fl, err := NewStreamLogged(s, nil)
+	if err != nil {
+		t.Fatalf("NewStreamLogged: %v", err)
+	}
+	s.limit = 3 // any subsequent frame is truncated to 3 bytes
+
+	rec := &recordLogger{}
+	fl.(*frameLink).logger = rec
+
+	if err := fl.Write([]byte{0x01, 0xFE, 0x01, 0x00, 0x00}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if !rec.sawShortWrite() {
+		t.Fatal("a short frame write produced no error record; truncated frames would vanish silently")
+	}
+}
+
+// recordLogger captures emitted records so a test can assert an error was actually
+// reported rather than swallowed.
+type recordLogger struct {
+	mu   sync.Mutex
+	msgs []string
+}
+
+func (r *recordLogger) With(...log.Field) log.Logger { return r }
+func (r *recordLogger) Enabled(log.Level) bool       { return true }
+func (r *recordLogger) Log(_ log.Level, msg string, _ ...log.Field) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.msgs = append(r.msgs, msg)
+}
+func (r *recordLogger) Log0(l log.Level, msg string)                 { r.Log(l, msg) }
+func (r *recordLogger) Log1(l log.Level, msg string, _ log.Field)    { r.Log(l, msg) }
+func (r *recordLogger) Log2(l log.Level, msg string, _, _ log.Field) { r.Log(l, msg) }
+
+func (r *recordLogger) sawShortWrite() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, m := range r.msgs {
+		if strings.Contains(m, "SHORT serial write") {
+			return true
+		}
+	}
+	return false
 }

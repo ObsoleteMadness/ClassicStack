@@ -10,11 +10,58 @@ https://web.archive.org/web/20210923014929/https://mac68k.info/forums/thread.jsp
 Code used [with permission](https://github.com/elliotnunn/NetBoot/issues/2), under the terms of the MIT License. 
 
 
+## Payloads
+
+| file | style | notes |
+|---|---|---|
+| `BootWrapper.a` | RAM disk | Elliot's; the whole HFS image is downloaded into RAM and served from there. Size-limited by ABP (¼ of machine RAM, 4088 blocks). |
+| `ChainLoader.a` | streaming, ROM takeover | Elliot's, plus the fix batch below. Boots e2e on the Macintosh Classic. Takes control by scanning the stack for the ROM's `_Read` return address — an assumption that does not hold on all ROMs (verified false on the LC 475). |
+| `ChainDisk.a` | streaming, contract-conformant | Ours. Same EBP driver as ChainLoader, but it implements the boot-image entry contract Apple's `.ATBOOT` defines (`getBootBlocks`/`getSysVol`/`mountSysVol`) instead of taking over the ROM, so nothing in it depends on ROM layout. See `spec/19-netboot.md` Part C. |
+
+`ChainDisk` also exposes a `CSDSKSZ\0`-cookied volume-size field that the
+server stamps at load time (EBP has no size query), before the Snefru trailer
+is computed.
+
 ## Building
 You'll need vasmm68 and Python with machfs, etc.
 
+```
+bin/vasmm68k_mot.exe -Fbin -m68000 -o ChainDisk.bin ChainDisk.a
+```
+
+The server appends the Snefru self-authentication trailer itself, so the raw
+`.bin` is what you point `payload` at in `server.toml`.
+
 
 ## Changes
+
+### ChainDisk: netboot now completes (2026-08)
+
+`getBootBlocks` never completed on real hardware: every chain read spun its
+full 3-second deadline and retried five times, after which the ROM gave up and
+fell back to the next boot device (flashing question mark).
+
+The cause was a flag clobber in `SyncChainRead`'s poll loop — `tst.l D0` set
+the result flags, then `move.l (SP)+,D0` restoring the deadline overwrote them,
+so the "all blocks arrived" branch was unreachable dead code and the loop
+always timed out. `move.l` is not flag-transparent on the 68000. The deadline
+now lives in D6 so `tst.l` feeds `beq` directly.
+
+Two further defects were fixed on paths that had never yet executed:
+`closeSkt` was coded as **249**, which is `loadNBP` (Apple's equates in
+`Interfaces/AIncludes/AppleTalk.a`: `closeSkt` is **247**), so `getSysVol`'s
+socket handover could never have worked; and `OpenNetwork` reused a parameter
+block `_Open` had already written into, without re-clearing it or setting
+`ioRefNum`.
+
+The forensic byte-counters in `BootSockListener` (shipped out via `imageNum`,
+logged by the server as `diag=`) are retained deliberately — they are what
+found this, and `DrvrSockListener` has the same structure but far less
+exposure. See `spec/19-netboot.md` "ChainDisk debugging notes" for the full
+account, including why the first version of that instrument was itself broken
+(PC-relative addressing is read-only on the 68000).
+
+### Driver-correctness batch
 
 A batch of driver-correctness fixes for the network block-driver, mostly targeting hangs/crashes/data corruption accurate emulation (Snow) that didn't show up under lenient emulation (Mini vMac).
 

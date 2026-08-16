@@ -4,6 +4,7 @@ package registry
 
 import (
 	"bytes"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"testing"
@@ -31,7 +32,7 @@ func TestLoadPayloadAssemblesStubPlusImage(t *testing.T) {
 	got := loadPayload(
 		writeTemp(t, "stub.bin", stub),
 		writeTemp(t, "disk.dsk", img),
-		abp.DiskSector, log.New("test"))
+		abp.DiskSector, 0, log.New("test"))
 	if got == nil {
 		t.Fatal("loadPayload returned nil")
 	}
@@ -53,7 +54,7 @@ func TestLoadPayloadPreTrailered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := loadPayload(writeTemp(t, "payload", pre), "", abp.DiskSector, log.New("test"))
+	got := loadPayload(writeTemp(t, "payload", pre), "", abp.DiskSector, 0, log.New("test"))
 	if !bytes.Equal(got, pre) {
 		t.Fatal("pre-trailered payload was modified")
 	}
@@ -63,7 +64,7 @@ func TestLoadPayloadPreTrailered(t *testing.T) {
 // trailered at load.
 func TestLoadPayloadTrailersRaw(t *testing.T) {
 	raw := []byte("raw 68k payload bytes")
-	got := loadPayload(writeTemp(t, "payload", raw), "", abp.DiskSector, log.New("test"))
+	got := loadPayload(writeTemp(t, "payload", raw), "", abp.DiskSector, 0, log.New("test"))
 	if got == nil {
 		t.Fatal("loadPayload returned nil")
 	}
@@ -79,17 +80,55 @@ func TestLoadPayloadRejectsOversize(t *testing.T) {
 	got := loadPayload(
 		writeTemp(t, "stub.bin", make([]byte, 1024)),
 		writeTemp(t, "disk.dsk", img),
-		abp.DiskSector, log.New("test"))
+		abp.DiskSector, 0, log.New("test"))
 	if got != nil {
 		t.Fatalf("oversize payload accepted (%d bytes)", len(got))
 	}
 }
 
+// TestLoadPayloadStampsDiskSize: a streaming payload (ChainDisk.a) carries the
+// 'CSDSKSZ\0' cookie because ChainBoot EBP has no size query — the server is
+// the only party that knows how big the image is. The long following the
+// cookie must come back as the block count, and the stamp must happen BEFORE
+// trailering so the Snefru hash covers the stamped bytes.
+func TestLoadPayloadStampsDiskSize(t *testing.T) {
+	stub := append([]byte("prologue"), diskSizeCookie...)
+	stub = append(stub, 0, 0, 0, 0) // the size field
+	stub = append(stub, []byte("epilogue")...)
+	const blocks = 4096
+
+	got := loadPayload(writeTemp(t, "payload", stub), "", abp.DiskSector, blocks, log.New("test"))
+	if got == nil {
+		t.Fatal("loadPayload returned nil")
+	}
+	off := bytes.Index(got, diskSizeCookie) + len(diskSizeCookie)
+	if n := binary.BigEndian.Uint32(got[off : off+4]); n != blocks {
+		t.Fatalf("disk size not stamped: got %d, want %d", n, blocks)
+	}
+	if !snefru.HasValidTrailer(got) {
+		t.Fatal("stamped payload's trailer does not cover the stamp")
+	}
+}
+
+// TestLoadPayloadWithoutCookieUntouched: non-streaming payloads (BootWrapper
+// RAM disks, ChainLoader) have no cookie and must pass through unmodified even
+// when a disk image is configured.
+func TestLoadPayloadWithoutCookieUntouched(t *testing.T) {
+	raw := bytes.Repeat([]byte{0x4E}, 512)
+	got := loadPayload(writeTemp(t, "payload", raw), "", abp.DiskSector, 4096, log.New("test"))
+	if got == nil {
+		t.Fatal("loadPayload returned nil")
+	}
+	if !bytes.Equal(got[:len(raw)], raw) {
+		t.Fatal("payload without a size cookie was modified")
+	}
+}
+
 func TestLoadPayloadMissingFiles(t *testing.T) {
-	if loadPayload(filepath.Join(t.TempDir(), "nope.bin"), "", abp.DiskSector, log.New("test")) != nil {
+	if loadPayload(filepath.Join(t.TempDir(), "nope.bin"), "", abp.DiskSector, 0, log.New("test")) != nil {
 		t.Fatal("missing payload accepted")
 	}
-	if loadPayload(writeTemp(t, "stub.bin", make([]byte, 64)), filepath.Join(t.TempDir(), "nope.dsk"), abp.DiskSector, log.New("test")) != nil {
+	if loadPayload(writeTemp(t, "stub.bin", make([]byte, 64)), filepath.Join(t.TempDir(), "nope.dsk"), abp.DiskSector, 0, log.New("test")) != nil {
 		t.Fatal("missing image accepted")
 	}
 }

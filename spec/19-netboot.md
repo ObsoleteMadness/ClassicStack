@@ -413,6 +413,304 @@ wins.
   last block) and must be at least 2 blocks long (1-block payloads crash the
   client).
 
+## Part C — the boot-image entry contract (Apple), and ChainDisk
+
+Everything above concerns the wire. This section is the *client-side* contract
+that a served payload must satisfy, which is what decides how portable a
+payload is across ROMs.
+
+### The contract
+
+`ATBoot.c` (`get_the_image`, `DOATCONTROL`) enters the downloaded image as a C
+function — `ATBootEqu.h` declares the type:
+
+```c
+typedef short (*j_code)(short command, DGlobals *g, int **var1, int **var2);
+```
+
+`NetBoot.c`'s `DOREAD` drives exactly three calls, in order:
+
+| csCode | when | the payload's job |
+|---|---|---|
+| `getBootBlocks` 1 | during the ROM's `_Read` of blocks 0–1 | supply 1 KB of boot blocks |
+| `getSysVol` 2 | immediately after, same `_Read` | install a driver + DQE; return the DQE in `var2` |
+| `mountSysVol` 3 | after `_InitFS`, via the `ToExtFS` hook | `_MountVol`; return VCB in `var1`, DQE in `var2` |
+
+The third call is the important one: **`.netBOOT` installs the `ToExtFS` hook
+itself** (`DOREAD`, right after `getSysVol` succeeds) and calls the payload
+back through `.ATBOOT`. A payload therefore does not need to hook anything to
+gain control after the file system comes up — it is called.
+
+Return 0 for success; `DOREAD` maps a positive result to `noDriveErr` (fatal)
+and a negative one to `offLinErr` (the ROM retries).
+
+`DGlobals` (`ATBootEqu.h`) is the second argument, and the payload's only
+channel to what `.ATBOOT` learned:
+
+```
++0   netBootRefNum(2)  +2 error(2)  +4 netimageBuffer(4)
++8   netImageSignature[4](16)
++24  netServerAddr     AddrBlock — the ABP server we downloaded from
++28  ur                BootPktRply (18 bytes, then userRecord)
++46  ur.userRec        serverName[33] serverZone[33] serverVol[32] ...
++184 ur.userRec.bootBlocks[138]
+```
+
+`getBootBlocks` writes its boot blocks into `+184`, because `ATBoot.c` copies
+`ur.userRec.bootBlocks` into the caller's buffer **after** the payload returns.
+
+### How the ROM finds a boot protocol driver (and what that means for links)
+
+`NetBoot.c`'s `FINDNOPENDRIVER` picks the boot protocol driver two different
+ways, on the PRAM `protocol` byte:
+
+- **`DrSwATalk` (1) — built in, no Slot Manager.** `.ATBOOT` is opened by name
+  through hand-written glue (`DoATBootOpen`, `ATBootUtils.a`). The changelog is
+  explicit that this was made to bypass slots: *"Inline open for pc-relative
+  atboot driver, open atboot if pram = 0 (default protocol)"*. This is the path
+  every payload here uses.
+- **anything else — Slot Manager.** `find_BPTentry` does `SNextTypeSRsrc` for
+  `spCategory = CatBoot (40)`, `spCType = TypRemote (1)`,
+  `spDrvrSW = <PRAM protocol>`, then `SReadDrvrName` + `OpenSlot` — i.e. the
+  driver comes off a NuBus card's declaration ROM, not the Mac ROM. Guarded on
+  `_SlotManager` being implemented at all, else `dProtocolNotFound`.
+
+**Ethernet.** ABP is DDP, so it rides whatever link `.MPP` is bound to —
+LocalTalk or EtherTalk (via a card's `.ENET` + ELAP). Netbooting over Ethernet
+is therefore just AppleTalk netbooting on a machine whose AppleTalk happens to
+be Ethernet; nothing in ABP, ChainBoot, or any payload here is LocalTalk-
+specific. The bootstrapping requirement is that AppleTalk is already up on that
+interface by boot-image time — a Start Manager / declaration ROM concern, which
+is exactly why the built-in path just opens `.MPP` by name.
+
+`BOOT_IP 0x02` is declared in `NetBoot.h` beside `BOOT_ATALK 0x01`, but no IP
+boot driver exists in the Apple source tree; the slot path is the extension
+mechanism such a driver would have arrived through.
+
+**The slot path is a defined-but-unpopulated extension point (verified).**
+Searching the whole SuperMario drop, `CatBoot` (40) appears in exactly two
+files — `OS/NetBoot/NetBoot.c` and `NetBoot.h` — both on the *consumer* side
+(`find_BPTentry` looking one up). Nothing in the tree ever **declares** a
+`CatBoot`/`TypRemote` sRsrc, so Apple shipped no slot-based boot protocol
+driver; one would have had to come from a third-party card's declaration ROM.
+
+This holds even though built-in Apple Ethernet ROM code is present and
+substantial: `DeclData/DeclNet/` has full MACE (`Mace.a`, `MaceEnet.a`,
+`MaceEqu.a`, `PDMMaceEnet`, plus per-machine `'ecfg'` hardware config in
+`MACEecfg.r`) and SONIC (`Sonic.a`, `SonicEnet.a`, `SonicEqu.a`) drivers, with
+shared `802Equ.a` / `ENETEqu.a` / `SNMPLAP.a`. They are registered as pseudo-slot
+resources in `DeclData/DeclData.r`:
+
+```
+resource 'styp' (1625, "_NetSonic")   {CatNetwork, TypEthernet, DrSwApple, DrHwSonic};
+resource 'styp' (1630, "_NetMace")    {CatNetwork, TypEthernet, DrSwApple, DrHwMace};
+resource 'styp' (1633, "_NetPDMMace") {CatNetwork, TypEthernet, DrSwApple, DrHwMace};
+```
+
+— every one `CatNetwork (4)` / `TypEthernet`, i.e. ordinary "here is an Ethernet
+interface" declarations for `.ENET` to bind, never a boot declaration. So
+netbooting over built-in Ethernet works, but strictly as AppleTalk-over-
+EtherTalk down the `DrSwATalk` built-in path: the Ethernet ROM brings up
+`.ENET` so `.MPP`/ELAP can sit on it, and ABP rides that DDP like any other
+link. There is no Ethernet-native boot protocol in the ROM.
+
+### Two payload styles
+
+| | `ChainLoader.a` | `ChainDisk.a` |
+|---|---|---|
+| takes control by | scanning the stack for the ROM's `_Read` return address, rewriting it, `_DrvrRemove`ing `.netBOOT` + `.ATBOOT`, re-executing the `_Read` trap | implementing the three csCodes and returning normally |
+| assumes | a `_Read` return address is on the stack; ROM within `ROMBase..ROMBase+$4000`; `$A002` immediately precedes it | nothing about the ROM |
+| unit number | steals `.netBOOT`'s | its own (52) |
+| known good on | Macintosh Classic (e2e, snow + Mini vMac) | — |
+| portability | the stack scan is **verified false on the LC 475**: none of the 15 `_Read` call sites leaves a return address on the stack | ROM-independent by construction |
+
+`ChainDisk.a` is structured after Elliot Nunn's `BootWrapper.a` (the RAM-disk
+payload, which is contract-conformant) with `ChainLoader.a`'s EBP driver as its
+`DrvrPrime` body, carrying over every fix listed in Part B. Both payloads speak
+the identical EBP wire protocol, so the server serves either unchanged.
+
+The one ROM-adjacent thing `ChainDisk` retains is `BootWrapper`'s
+`fixDriveNumBug`: `.netBOOT`'s `ToExtFS` hook tests for drive number **4**
+specifically, so on a machine with more than two existing drives the hook never
+calls `mountSysVol`. The workaround is a one-shot `_MountVol` patch that
+installs a `ToExtFS` head patch testing the *actual* drive number. That is a
+data-driven scan for a documented low-memory global, not a return-address
+guess, and it is proven on Classic and Mini vMac.
+
+### Volume size: the `CSDSKSZ` stamp
+
+EBP has no "how big is the disk?" query, but the client must report a drive
+size to the Device Manager (`dQDrvSz`, and `Status` `fmtLstCode`) before it has
+read anything. `ChainLoader` leaves this zero. `ChainDisk` instead exposes a
+patch point — the 8-byte cookie `CSDSKSZ\0` followed by a big-endian u32 of the
+volume size in 512-byte blocks — and the **server stamps it at load**
+(`stampDiskSize`, `compose/registry/reg_netboot.go`), because the server is the
+only party that knows the image size. The stamp happens **before** the Snefru
+trailer is computed, so the hash covers the stamped bytes. Payloads without the
+cookie (BootWrapper, ChainLoader) pass through untouched.
+
+## ChainDisk debugging notes (2026-08)
+
+These are **our own bugs**, not spec errata — recorded because each one wasted
+real time and each has a reusable lesson for 68k payload work.
+
+### The one that broke netboot: a flag clobber in the poll loop
+
+`SyncChainRead` polled for its blocks like this:
+
+```
+.spin   move.l  D0,-(SP)            ; stash the deadline
+        bsr     AllBlocksIn         ; D0 = 0 once every block has landed
+        tst.l   D0                  ; set Z from the result...
+        move.l  (SP)+,D0            ; ...then CLOBBER it restoring D0
+        beq.s   .done
+```
+
+`move.l` is **not flag-transparent** on the 68000 — it sets N and Z from the
+value moved. So `beq` tested "is the deadline zero?", and the deadline is
+`Ticks+180`, never zero. `.done` was unreachable: every chain read spun its
+full 3 s and retried five times regardless of what had already arrived, then
+returned a negative result, which `NetBoot.c` maps to `offLinErr` and the ROM
+abandons netboot for the next device (flashing question mark).
+
+The tell was in every capture from the first: chain-read requests exactly
+~3.03 s apart, five of them, while the server's replies arrived ~15 ms after
+each request and were LLAP-acked. Only a move to an **address** register leaves
+the flags alone.
+
+### Diagnosing it: the `imageNum` forensic channel
+
+EBP has no diagnostic channel, but `imageNum` is unused when serving a single
+image, so the client packs four byte counters into it and the server logs the
+long as `diag=` (`netboot.go`, `handleChainRead`):
+
+```
+[entries][ReadPacket-fail][filter-reject][ReadRest-fail]
+```
+
+That single number falsified four successive wire-level theories in one boot
+each. It showed `entries` climbing +2 per burst with all failure bytes zero —
+i.e. both replies were being received, filtered, and read correctly, and the
+progress bitmap was being filled the whole time — which isolated the fault to
+the reader. **Measure before theorising**: the wire looked identical whether
+the client was deaf or merely unable to notice it had heard.
+
+### PC-relative addressing is read-only (this broke the instrument itself)
+
+The first version of that counter was `addq.l #1,gListenerHits`. There is no
+PC-relative *destination* mode on the 68000, so vasm silently emitted an
+**absolute-long** write to the link-time offset (`$510`). The payload runs from
+a heap block at an arbitrary address, so this scribbled on low memory and left
+the counter permanently zero — producing two rounds of `diag=0` readings that
+looked like hard evidence and were noise.
+
+Every global in a relocatable 68k payload must be reached PC-relative; writes
+must `lea` the address into a register first. Check the listing (`-L`) for
+`...B9`/`...F9` opcodes, which indicate absolute addressing.
+
+### Two real defects found on paths that had never executed
+
+- **`closeSkt` was coded as 249, which is `loadNBP`.** Apple's equates
+  (`Interfaces/AIncludes/AppleTalk.a`) are `writeDDP 246`, `closeSkt 247`,
+  `openSkt 248`, `loadNBP 249`. `getSysVol`'s socket handover therefore never
+  closed socket 10, so its `openSkt` for the driver listener would have failed
+  with `ddpSktErr`, leaving the installed driver permanently deaf. Not the
+  cause of the boot failure — it is downstream of `getBootBlocks` — but it
+  would have been the *next* failure.
+- **`OpenNetwork` reused a dirty parameter block**, calling `ClearBlock` once
+  before `_Open` and then issuing `openSkt` on the block `_Open` had written
+  into, without re-clearing or setting `ioRefNum`. Every other `_Control` site
+  in the payload re-clears and sets `ioRefNum` explicitly.
+
+### Also confirmed while chasing this
+
+`.ATBOOT` **closes socket 10 before calling the boot image**: `get_image`
+(`GetServer.c`) opens it with `DDPOpenSocket`, and its `err_exit` path runs
+`DDPCloseSocket(thesocket)` before returning to `get_the_image`, which only
+then calls the image at `getBootBlocks`. So the payload owns socket 10 outright
+and there is no contention with Apple's own listener — a theory that cost two
+rebuild cycles to disprove.
+
+### Where the boot stops now: after the SCSI Manager gibbly loads (2026-08)
+
+With the read path fixed, netboot gets all the way into system startup and then
+stops dead: the Mac takes delivery of a block, LLAP-acks it, and never issues
+another request. No retry, no timeout, and the driver's own 1-second resend
+timer never fires either — the machine has stopped executing, it has not given
+up on the network.
+
+The stop is exactly reproducible and lands on a **resource boundary**, which is
+what localised it. Reconstructing the wire stream and mapping the final sectors
+back through the HFS catalog (`tools/hfs/whatsat.py`) gives:
+
+| request | sectors | resource |
+|---|---|---|
+| seq=371 | 34051 | last sector of `gcko` id=43 |
+| seq=372-375 | 34052-34132 | `citt` id=43, all 41664 bytes, 100% complete |
+
+Both resources live in the resource fork of
+`System Folder:System 7.5 Update` (type `gbly`, creator `MACS`) — a **Gibbly**,
+loaded and executed by the ROM startup very early.
+
+`citt` id=43 is **SCSI Manager 4.3**. Its strings identify it beyond doubt:
+`APPLE   PDM (PDM,CF,CS) 04.3{wolfware} & {gecko}`, `NCR 53c96`,
+`HAL SCSIHALunusedVector`, and the machine HALs `Quadra` / `Cyclone` / `TNT`.
+`gcko` ("gecko", the sibling codename) is the matching File Manager patch table
+— it patches `_Read`, `_Write`, `_GetVolInfo`, `_Create`, `_GetFileInfo`,
+`_FlushVol` and `_FSDispatch`. Notably `citt` patches **no** Device Manager
+traps, so it does not hijack our driver's entry points.
+
+So the last thing we successfully deliver is the SCSI Manager, complete and
+byte-perfect, and the machine stops somewhere after starting to use it. What
+runs next is not yet pinned down.
+
+**A dead end, recorded so it is not chased again.** `INITSCSIBOOT`
+(`OS/SCSIMgr4pt3/BootItt.c`, called from `OS/StartMgr/StartInit.a:1862`)
+contains a `DebugStr("\pInitSCSIBoot:BusInquiry failed getting numBuses")`
+on a failed `SCSIBusInquiry`, which looks like an obvious diskless-client trap.
+It is almost certainly *not* our stop:
+
+- The `DebugStr` is not followed by a return or bail-out — execution falls
+  straight through to `numBuses = scPB.scsiHiBusID + 1` and carries on.
+- `INITSCSIBOOT` only allocates a `BootInfo` and loads third-party SIMs. It
+  does not look for a boot device.
+- It runs at `StartInit.a:1862`, immediately before `BRA BootMe` (line 1875).
+  Our volume is mounted and being read long before this point.
+
+**Our driver should not care about any of this.** The Start Manager selects a
+startup device by walking `DrvQHdr` and reading `dqRefNum` / `dqDrive` off each
+drive queue entry (`OS/StartMgr/StartSearch.a`, `NextDQEntry` / `SelectDevice`)
+— there is nothing SCSI-specific in that path. A netboot disk is a block device
+like any other: essentially a very large floppy, which is the same shape Basilisk
+II and Mini vMac present. Our DQE conforms: `qType = 1` with the block count
+split `dQDrvSz` (`$C`, low word) / `dQDrvSz2` (`$E`, high word) per Apple's
+`SysEqu.a:663-664`, and `dQFSID = 0` for the native file system. The fix, when
+found, belongs in how we behave as a block device — not in emulating a SCSI bus.
+
+**What this is not.** Three hypotheses were killed by measurement, and are
+worth recording so they are not re-run:
+
+- *Not a data-corruption bug.* All 1986 blocks served were compared
+  byte-for-byte against the source image (`tools/hfs/verifychain.py`): **zero
+  mismatches**, including every block of the terminal region. Every request
+  also received exactly the blocks it asked for — no short reads anywhere.
+- *Not a write failure.* Instrumenting `DrvrPrime` by trap type showed
+  `_Write` reaching the driver **zero** times in 338 Prime calls. The System
+  never asks us to write, so the absence of EBP cmd 130 on the wire is correct
+  behaviour, not a fault in `DrvrSendWrite`.
+- *Not a dirty volume.* Reproduced identically on a freshly-copied image with
+  `drAtrb` bit 8 (`unmounted cleanly`) set.
+
+The `gDrvrDiag` counter added for the second of these is retained; see
+"Diagnosing it" above for how the packed bytes are read.
+
+Next avenue: `DrvrStatus` answers only `fmtLstCode` (6) and `drvStsCode` (8)
+and returns `statusErr` (-18) for everything else, and `DrvrControl` is
+similarly narrow. A System that asks a newly-patched File Manager to query the
+boot drive may well issue a csCode we reject. Instrumenting *which* csCode
+arrives — the same `gDrvrDiag` trick, tallying Control/Status csCodes — is the
+cheapest next measurement.
+
 ## Errata / observations
 
 - **`packetBlockNo` is 0-based.** The `ATBootEqu.h` struct comment says

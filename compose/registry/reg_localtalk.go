@@ -3,6 +3,7 @@
 package registry
 
 import (
+	"io"
 	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/adapter/capture/pcapfile"
@@ -12,6 +13,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/port"
 	"github.com/ObsoleteMadness/ClassicStack/core/port/localtalk"
 )
@@ -161,7 +163,19 @@ var ltoudpOpen = func(iface string) (link.FrameLink, error) {
 // tashtalkFrame wraps an open serial byte stream in the TashTalk FrameLink. It is the
 // SerialFramer the serial-opener dispatch pairs with the injected serial opener; a
 // var so tests can stand in a fake framer. Production points it at tashtalk.NewStream.
-var tashtalkFrame SerialFramer = tashtalk.NewStream
+// It takes the port's logger so the framer can narrate the serial write/read path;
+// tests substitute it with a stand-in that ignores the logger.
+var tashtalkFrame = func(s io.ReadWriteCloser, logger log.Logger) (link.FrameLink, error) {
+	return tashtalk.NewStreamLogged(s, logger)
+}
+
+// tashtalkFramerFor adapts the logger-aware tashtalkFrame to the shared
+// SerialFramer signature (which carries no logger) by binding logger in a closure.
+func tashtalkFramerFor(logger log.Logger) SerialFramer {
+	return func(s io.ReadWriteCloser) (link.FrameLink, error) {
+		return tashtalkFrame(s, logger)
+	}
+}
 
 // ltoudpLinkOpener is the LToUDP segment's transport opener: a LToUDP segment is NOT
 // NIC-bound and NOT serial — it rides its own multicast transport, so it ignores the
@@ -208,7 +222,10 @@ func tashtalkLinkOpener(ctx *BuildContext, sec *port.Section) func() (link.Frame
 		// control the adapter's buffer overruns and frames vanish (failed FCS).
 		NoFlowControl: sec.NoFlowControl,
 	}
-	base := serialLinkOpener(ctx, iface, tashtalkFrame)
+	// Bind the port's logger into the framer so the serial write/read path is
+	// traceable (tx/rx frame narration + short-write and FCS-discard errors). The
+	// shared SerialFramer signature carries no logger, so it rides in this closure.
+	base := serialLinkOpener(ctx, iface, tashtalkFramerFor(ctx.Logger(sec.InstanceName())))
 	// TashTalk self-paces on the 1 Mbit/s serial line (each frame takes real wire
 	// time to clock out), so its default pace is 0 — but an operator can still set
 	// pace_ms to add a floor. Applied beneath capture like LToUDP.

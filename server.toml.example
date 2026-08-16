@@ -404,9 +404,14 @@ read_only = false
 #               (read-only) HFS disk image; the server concatenates and hashes
 #               them at load. Or point payload at a fully pre-built file and
 #               omit image. Size limit ~2 MB and ≤ ¼ of client RAM.
-#   ChainBoot — payload = ChainLoader.bin (block_size 256), disk = a full-size
-#               HFS image streamed read/WRITE over Elliot Nunn's extension; no
-#               size limit, one booted client at a time.
+#   ChainBoot — payload = ChainDisk.bin or ChainLoader.bin (block_size 256),
+#               disk = a full-size HFS image streamed read/WRITE over Elliot
+#               Nunn's extension; no size limit, one booted client at a time.
+#               ChainDisk is the portable payload: it implements the boot-image
+#               entry contract Apple's .ATBOOT defines rather than taking over
+#               the ROM, so it does not depend on ROM layout (ChainLoader's
+#               stack scan is Classic-specific). The server stamps ChainDisk's
+#               volume-size field from disk= at load. See spec/19 Part C.
 # [Netboot]
 # enabled = true
 # payload = "/srv/netboot/BootWrapper.bin"  # boot payload or driver stub (ABP)

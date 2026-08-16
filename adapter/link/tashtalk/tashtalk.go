@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 )
 
 // TashTalk host↔device wire constants (spec/08 §"Wire Protocol").
@@ -16,6 +17,22 @@ const (
 	escapePfx   = 0x00 // inbound escape prefix; the next byte is the escape code
 	escDataNull = 0xFF // escape code: a data byte 0x00
 	escEndFrame = 0xFD // escape code: end of frame
+	// escFramingErr / escFrameAbort are ERROR terminators the firmware sends in
+	// place of escEndFrame. Both mean the frame that was accumulating is rubbish
+	// and must be dropped — which the default branch already does — but they are
+	// distinguished here so the reason is LOGGED rather than silently swallowed.
+	//
+	// escFramingErr (0x00 0xFE): six consecutive '1' bits that are not a flag byte,
+	// i.e. line-level corruption on the LocalTalk side.
+	// escFrameAbort (0x00 0xFA): a sender began a frame and stopped without a
+	// closing flag — the signature of a transmitter that gave up mid-frame.
+	escFramingErr = 0xFE
+	escFrameAbort = 0xFA
+	// escCRCFail (0x00 0xFC) needs firmware >= 2.1.0 AND the CRC-checking feature
+	// bit; we do not enable it, so it should never arrive. Named so that if it ever
+	// does, it is reported instead of resetting the frame as a generic protocol
+	// error.
+	escCRCFail = 0xFC
 	// setNodeAddrCmd (host→device) introduces a 33-byte command: the opcode plus a
 	// 32-byte (256-bit) bitmap of the node addresses the hardware should RECEIVE.
 	// It is not a standalone reset byte — sending it without the 32-byte payload
@@ -42,6 +59,10 @@ const (
 type frameLink struct {
 	s io.ReadWriteCloser
 
+	// logger narrates the serial write path; nil → silent (NewStream leaves it nil,
+	// NewStreamLogged sets it). Guarded once in logf, not at each call site.
+	logger log.Logger
+
 	// inbound buffers the byte→frame state machine across Read calls (a single
 	// serial read can split or coalesce frames). Owned by the Read goroutine.
 	rdBuf   []byte
@@ -66,14 +87,39 @@ var _ link.FrameLink = (*frameLink)(nil)
 // A nil stream is rejected. On an init-write error the stream is closed and the
 // error returned.
 func NewStream(s io.ReadWriteCloser) (link.FrameLink, error) {
+	return NewStreamLogged(s, nil)
+}
+
+// NewStreamLogged is NewStream with a logger installed, so the serial write path is
+// traceable. A nil logger is silent, making this the single implementation.
+//
+// The logging exists to answer one question the .pcap cannot: the capture sink sits
+// ABOVE this framer, so a captured frame proves only that the HOST produced it, not
+// that it survived the serial handoff to the device. Comparing "tashtalk: tx frame"
+// records against the capture separates "we never wrote it" from "we wrote it and it
+// vanished" — and a SHORT serial write (the documented overrun mode: truncated frame
+// → failed FCS → silently gone) is now an explicit error rather than a discarded
+// byte count.
+func NewStreamLogged(s io.ReadWriteCloser, logger log.Logger) (link.FrameLink, error) {
 	if s == nil {
 		return nil, errors.New("tashtalk: nil serial stream")
 	}
-	fl := &frameLink{s: s, rdBuf: make([]byte, 0, 1024)}
-	if _, err := s.Write(buildInitSequence()); err != nil {
+	fl := &frameLink{s: s, rdBuf: make([]byte, 0, 1024), logger: logger}
+	init := buildInitSequence()
+	n, err := s.Write(init)
+	if err != nil {
 		_ = s.Close()
 		return nil, errors.New("tashtalk: init write failed: " + err.Error())
 	}
+	// A short init write desynchronises the device's command stream: the 0x02
+	// set-node-address command is 33 bytes, so a truncated init leaves the firmware
+	// consuming subsequent LLAP bytes as bitmap data. Fail loudly rather than
+	// running on against a device in an unknown state.
+	if n != len(init) {
+		_ = s.Close()
+		return nil, errors.New("tashtalk: short init write — device state indeterminate")
+	}
+	fl.logf(log.Debug, "tashtalk: device initialised", log.Int("init_bytes", int64(n)))
 	return fl, nil
 }
 
@@ -144,7 +190,30 @@ func (l *frameLink) feed(data []byte) {
 				l.rdBuf = append(l.rdBuf, 0x00) // escaped data null
 			case escEndFrame:
 				l.completeFrame()
+			case escFramingErr:
+				// Line-level corruption on the LocalTalk side. Previously indistinguishable
+				// from any other protocol error; now named, because a run of these is direct
+				// evidence of a bad line/adaptor rather than a logic bug upstream.
+				l.logf(log.Debug, "tashtalk: framing error from device — frame discarded",
+					log.Int("bytes", int64(len(l.rdBuf))))
+				l.rdBuf = l.rdBuf[:0]
+			case escFrameAbort:
+				// A transmitter began a frame and stopped without a closing flag. On a
+				// segment where our own writes are suspect, this is the signal that a SEND
+				// died mid-frame rather than never starting.
+				l.logf(log.Debug, "tashtalk: frame aborted by sender — frame discarded",
+					log.Int("bytes", int64(len(l.rdBuf))))
+				l.rdBuf = l.rdBuf[:0]
+			case escCRCFail:
+				// Only reachable if the CRC-checking feature bit is set, which we never
+				// set — so this arriving means the device is configured differently than
+				// we believe (stale firmware state from a previous run, say).
+				l.logf(log.Warn, "tashtalk: device reported CRC failure — CRC checking was never enabled",
+					log.Int("bytes", int64(len(l.rdBuf))))
+				l.rdBuf = l.rdBuf[:0]
 			default:
+				l.logf(log.Debug, "tashtalk: unknown escape code — frame discarded",
+					log.Int("code", int64(b)), log.Int("bytes", int64(len(l.rdBuf))))
 				l.rdBuf = l.rdBuf[:0] // protocol error: discard accumulated frame
 			}
 		case b == escapePfx:
@@ -161,15 +230,40 @@ func (l *frameLink) completeFrame() {
 	frame := l.rdBuf
 	l.rdBuf = make([]byte, 0, 1024)
 	if len(frame) < minLLAPFrame+fcsLen {
-		return // too short to hold an LLAP header + FCS
+		// Not necessarily noise: a TRUNCATED frame arrives here too, which is the
+		// documented signature of a device-side buffer overrun.
+		if len(frame) > 0 {
+			l.logf(log.Debug, "tashtalk: inbound frame too short — discarded",
+				log.Int("bytes", int64(len(frame))))
+		}
+		return
 	}
 	body := frame[:len(frame)-fcsLen]
 	if !fcsMatches(body, frame[len(frame)-fcsLen], frame[len(frame)-1]) {
-		return // FCS mismatch: corrupt frame, discard
+		// An FCS mismatch is how a frame corrupted or truncated in transit
+		// DISAPPEARS. Never silent: this is the failure spec/08 warns about when
+		// serial flow control is off.
+		dst, src, typ := llapHeaderOf(body)
+		l.logf(log.Debug, "tashtalk: inbound FCS mismatch — frame discarded",
+			log.Int("dst", int64(dst)), log.Int("src", int64(src)),
+			log.Int("llap_type", int64(typ)), log.Int("bytes", int64(len(frame))))
+		return
 	}
 	out := make([]byte, len(body))
 	copy(out, body)
 	l.pending = append(l.pending, out)
+
+	// batch reports how many frames this one serial read has now yielded. A single
+	// read routinely carries several frames, and every frame in a batch lands in the
+	// .pcap with an IDENTICAL timestamp — so a run of same-microsecond frames in a
+	// capture is a host read-batching artifact, NOT that many separate wire events.
+	// (Observed: nine byte-identical CTS frames at one timestamp read as a storm.)
+	dst, src, typ := llapHeaderOf(out)
+	l.logf(log.Trace, "tashtalk: rx frame",
+		log.Int("dst", int64(dst)), log.Int("src", int64(src)),
+		log.Int("llap_type", int64(typ)),
+		log.Int("llap_len", int64(len(out))),
+		log.Int("batch", int64(len(l.pending))))
 }
 
 // Write frames a clean LLAP frame for the device: 0x01 start marker + frame +
@@ -181,13 +275,27 @@ func (l *frameLink) Write(frame link.Frame) error {
 	packet = append(packet, startMarker)
 	packet = append(packet, frame...)
 	packet = append(packet, b1, b2)
-	return l.writeRaw(packet)
+
+	// Trace the LLAP header BEFORE the write so a frame the wire never carries
+	// still leaves a host-side record. The capture sink sits ABOVE this framer,
+	// so a .pcap shows what the host intended to send, not what survived the
+	// serial handoff — comparing this trace against the pcap is what separates
+	// "we never wrote it" from "we wrote it and the device dropped it".
+	dst, src, typ := llapHeaderOf(frame)
+	l.logf(log.Trace, "tashtalk: tx frame",
+		log.Int("dst", int64(dst)), log.Int("src", int64(src)),
+		log.Int("llap_type", int64(typ)),
+		log.Int("llap_len", int64(len(frame))),
+		log.Int("wire_len", int64(len(packet))))
+
+	return l.writeRaw(packet, "frame")
 }
 
 // writeRaw writes already-framed bytes to the serial stream under the write lock,
 // mapping post-Close use to link.ErrClosed. Shared by Write (LLAP frames) and
-// SetNodeAddress (device commands), which must not interleave mid-write.
-func (l *frameLink) writeRaw(packet []byte) error {
+// SetNodeAddress (device commands), which must not interleave mid-write. kind
+// names the caller for the log record.
+func (l *frameLink) writeRaw(packet []byte, kind string) error {
 	l.mu.RLock()
 	if l.closed {
 		l.mu.RUnlock()
@@ -198,8 +306,48 @@ func (l *frameLink) writeRaw(packet []byte) error {
 
 	l.writeMu.Lock()
 	defer l.writeMu.Unlock()
-	_, err := s.Write(packet)
+	n, err := s.Write(packet)
+
+	// A SHORT WRITE is the failure this logging exists to catch. spec/08 §"Hardware
+	// flow control": the host feeds the device at 1 Mbit/s while it clocks LocalTalk
+	// at 230.4 kbaud, so without serial RTS/CTS the device's buffer overruns
+	// mid-frame — and a truncated LLAP frame simply fails FCS and DISAPPEARS, with
+	// no error anywhere. The byte count was previously discarded, making that
+	// silent. io.Writer permits n < len(p) only with a non-nil error, but a serial
+	// driver that under-delivers without erroring is exactly the bug we are hunting.
+	switch {
+	case err != nil:
+		l.logf(log.Error, "tashtalk: serial write failed",
+			log.Str("kind", kind), log.Int("want", int64(len(packet))),
+			log.Int("wrote", int64(n)), log.Str("err", err.Error()))
+	case n != len(packet):
+		l.logf(log.Error, "tashtalk: SHORT serial write — frame truncated on the wire",
+			log.Str("kind", kind), log.Int("want", int64(len(packet))),
+			log.Int("wrote", int64(n)))
+	default:
+		l.logf(log.Trace, "tashtalk: serial write",
+			log.Str("kind", kind), log.Int("bytes", int64(n)))
+	}
 	return err
+}
+
+// logf emits one record when a logger is installed and the level is wanted. The
+// single nil/Enabled guard lives here so the write path stays uncluttered.
+func (l *frameLink) logf(lvl log.Level, msg string, fields ...log.Field) {
+	if l.logger == nil || !l.logger.Enabled(lvl) {
+		return
+	}
+	l.logger.Log(lvl, msg, fields...)
+}
+
+// llapHeaderOf returns the 3-byte LLAP header fields, or zeroes for a frame too
+// short to have one (logged rather than dropped silently — a sub-header frame
+// reaching the device is itself a bug worth seeing).
+func llapHeaderOf(frame []byte) (dst, src, typ uint8) {
+	if len(frame) < 3 {
+		return 0, 0, 0
+	}
+	return frame[0], frame[1], frame[2]
 }
 
 // Close shuts the serial port; a blocked Read unblocks with an error → ErrClosed.
@@ -249,7 +397,12 @@ func (l *frameLink) SetNodeAddress(node uint8) error {
 	if err != nil {
 		return err
 	}
-	return l.writeRaw(cmd)
+	// The bitmap gates more than reception: per the TashTalk protocol doc it also
+	// decides "on which node IDs' behalf the firmware will respond to ENQ and RTS
+	// frames". An unarmed (or wrongly armed) filter means the device never answers
+	// a directed RTS with a CTS, so peers cannot send to us at all.
+	l.logf(log.Debug, "tashtalk: arming hardware node filter", log.Int("node", int64(node)))
+	return l.writeRaw(cmd, "set-node-address")
 }
 
 // buildSetNodeAddressCmd builds the 33-byte set-node-address command (0x02 + a

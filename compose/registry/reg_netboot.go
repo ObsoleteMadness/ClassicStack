@@ -8,6 +8,8 @@
 package registry
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"time"
@@ -46,11 +48,17 @@ func init() {
 			cfg.ChainPace = time.Duration(sec.ChainPaceMs) * time.Millisecond
 			cfg.NBPObject = sec.Name
 			cfg.Zone = sec.Zone
-			if sec.Enabled && sec.Payload != "" {
-				cfg.Payload = loadPayload(sec.Payload, sec.Image, cfg.BlockSize, logger)
-			}
 			if sec.Enabled && sec.Disk != "" {
 				cfg.Disk = openBootDisk(sec.Disk, logger)
+			}
+			if sec.Enabled && sec.Payload != "" {
+				// The disk is opened first so its size can be stamped into a
+				// streaming payload (see stampDiskSize).
+				var diskBlocks uint32
+				if cfg.Disk != nil {
+					diskBlocks = uint32(cfg.Disk.Size() / abp.ChainBlockSize)
+				}
+				cfg.Payload = loadPayload(sec.Payload, sec.Image, cfg.BlockSize, diskBlocks, logger)
 			}
 		}
 
@@ -67,7 +75,7 @@ func init() {
 // repo's `cat BootWrapper.bin disk.dsk` + snefru_hash.py build. Without one,
 // a payload already ending in a valid trailer is served untouched, anything
 // else is padded and trailered. Returns nil (inert service) on failure.
-func loadPayload(path, imagePath string, blockSize int, logger log.Logger) []byte {
+func loadPayload(path, imagePath string, blockSize int, diskBlocks uint32, logger log.Logger) []byte {
 	// path/imagePath are operator-configured netboot payload/image locations
 	// (server.toml / UI), i.e. trusted input, not attacker-controlled.
 	data, err := os.ReadFile(path) // #nosec G304 -- operator-configured netboot payload path
@@ -75,6 +83,8 @@ func loadPayload(path, imagePath string, blockSize int, logger log.Logger) []byt
 		logger.Log1(log.Error, "netboot: cannot read payload", log.Str("err", err.Error()))
 		return nil
 	}
+	// Stamp before trailering: the Snefru hash must cover the final bytes.
+	stampDiskSize(data, diskBlocks, logger)
 	switch {
 	case imagePath != "":
 		img, err := os.ReadFile(imagePath) // #nosec G304 -- operator-configured netboot image path
@@ -112,6 +122,39 @@ func loadPayload(path, imagePath string, blockSize int, logger log.Logger) []byt
 		return nil
 	}
 	return data
+}
+
+// diskSizeCookie marks the patch point a streaming payload (ChainDisk.a)
+// exposes for its volume size: the 4 bytes following the cookie are the size
+// in 512-byte blocks, big-endian. ChainBoot EBP has no size query — the client
+// has to report a drive size to the Device Manager before it has read anything
+// — so the server, which is the only party that knows the image size, stamps
+// it in. Payloads without the cookie (BootWrapper RAM disks, ChainLoader) are
+// untouched.
+var diskSizeCookie = []byte("CSDSKSZ\x00")
+
+// stampDiskSize patches the payload's volume size in place. A missing cookie
+// is normal (non-streaming payload) and silent; a cookie with no room for the
+// size, or a zero size, is worth a line in the log because the client will
+// then report a zero-length drive.
+func stampDiskSize(payload []byte, blocks uint32, logger log.Logger) {
+	i := bytes.Index(payload, diskSizeCookie)
+	if i < 0 {
+		return // not a size-stamped payload
+	}
+	off := i + len(diskSizeCookie)
+	if off+4 > len(payload) {
+		logger.Log1(log.Error, "netboot: payload disk-size cookie is truncated",
+			log.Int("offset", int64(i)))
+		return
+	}
+	if blocks == 0 {
+		logger.Log0(log.Warn, "netboot: streaming payload wants a disk size but no disk image is configured")
+		return
+	}
+	binary.BigEndian.PutUint32(payload[off:off+4], blocks)
+	logger.Log2(log.Info, "netboot: stamped disk size into payload",
+		log.Int("offset", int64(off)), log.Int("blocks", int64(blocks)))
 }
 
 // bootDisk adapts an *os.File to the netboot.Disk seam with the size captured

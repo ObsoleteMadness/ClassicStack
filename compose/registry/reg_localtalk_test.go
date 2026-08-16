@@ -10,6 +10,7 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/port"
 	"github.com/ObsoleteMadness/ClassicStack/core/port/localtalk"
 )
@@ -23,14 +24,19 @@ func swapLtoudpOpen(t *testing.T, fn func(iface string) (link.FrameLink, error))
 	t.Cleanup(func() { ltoudpOpen = prev })
 }
 
-// swapTashtalkFrame replaces the TashTalk SerialFramer (the byte-stream→FrameLink
+// swapTashtalkFrame replaces the TashTalk framer (the byte-stream→FrameLink
 // wrapper) for the duration of a test, restoring it on cleanup. The device-open
 // itself is the injected ctx.Serial (see serialOpener), so a test drives the serial
 // path through both seams: ctx.Serial yields a fake stream; this frames it.
+//
+// Tests supply a plain SerialFramer; the port's logger (which the real framer uses
+// to narrate the serial path) is irrelevant to them and is dropped here.
 func swapTashtalkFrame(t *testing.T, fn SerialFramer) {
 	t.Helper()
 	prev := tashtalkFrame
-	tashtalkFrame = fn
+	tashtalkFrame = func(s io.ReadWriteCloser, _ log.Logger) (link.FrameLink, error) {
+		return fn(s)
+	}
 	t.Cleanup(func() { tashtalkFrame = prev })
 }
 
