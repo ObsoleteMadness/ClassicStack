@@ -25,6 +25,10 @@ fi
 
 mkdir -p "$(dirname "$output")"
 
+if [[ -n "$tags" ]]; then
+  make spa
+fi
+
 ldflags="-s -w -X main.BuildVersion=${build_version} -X main.BuildCommit=${build_commit} -X main.BuildDate=${build_date}"
 
 if [[ -n "$tags" ]]; then

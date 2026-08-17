@@ -231,6 +231,20 @@ func (s *Service) volumeIndex(vol *Volume) int {
 
 // --- share.Manager: dynamic add/update/remove on a running server ---
 
+// VolumeByName returns the bound volume with the given name, if any. Used by the
+// operator Finder (adapter/control/finder) to open a live ForkFS without rebuilding
+// the share. Names are matched case-insensitively like NetWare.
+func (s *Service) VolumeByName(name string) (*Volume, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, v := range s.vols {
+		if strings.EqualFold(v.Name(), name) {
+			return v, true
+		}
+	}
+	return nil, false
+}
+
 // Shares lists the bound volumes for diagnostics/management.
 func (s *Service) Shares() []share.Info {
 	s.mu.Lock()

@@ -6,14 +6,19 @@ import (
 	"embed"
 	"io/fs"
 	"net/http"
+	"strings"
 )
 
-// assets embeds the SPA static files (index.html, app.js, app.css). The directory
-// is a sibling package path, embedded only under the webui||all tag so a headless /
-// API-only build (or TinyGo) carries no HTML payload — the §8 build-tag gate, the
-// new-ring analogue of the legacy service/webui embed.
+// assets embeds the Vite-built SPA (index.html plus hashed JS/CSS under assets/,
+// and Finder icons/). The directory is a sibling package path, embedded only under
+// the webui||all tag so a headless / API-only build (or TinyGo) carries no HTML
+// payload — the §8 build-tag gate.
 //
-//go:embed spa/index.html spa/app.js spa/app.css
+// Run `make spa` to compile adapter/control/http/ui into this directory. A stub
+// index.html is committed so `go build -tags webui` works without Node; CI and
+// `make build` (TAGS=all) produce the real bundle.
+//
+//go:embed spa
 var assets embed.FS
 
 // mountSPA registers the embedded SPA on the mux: index.html at "/" and the assets
@@ -32,7 +37,7 @@ func (s *Server) mountSPA(mux *http.ServeMux) {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Serve index.html's bytes directly for "/" — NOT by rewriting the path into
 		// the file server, which would 301-redirect "/" → "/index.html" (its canonical-
-		// index behaviour). Named assets (/app.js, /app.css) go to the file server.
+		// index behaviour). Hashed Vite assets (/assets/…) go to the file server.
 		if r.URL.Path == "/" {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			_, _ = w.Write(index)
@@ -46,9 +51,8 @@ func (s *Server) mountSPA(mux *http.ServeMux) {
 // auth gate lets through unauthenticated so the page can load and present the setup
 // or login flow (the assets carry no secrets; all data is behind the gated API).
 func spaStaticPath(p string) bool {
-	switch p {
-	case "/", "/index.html", "/app.js", "/app.css":
+	if p == "/" || p == "/index.html" {
 		return true
 	}
-	return false
+	return strings.HasPrefix(p, "/assets/") || strings.HasPrefix(p, "/icons/")
 }

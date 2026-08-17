@@ -83,6 +83,10 @@ if ($parent) {
 $ldflags = "-s -w -X main.BuildVersion=$buildVersion -X main.BuildCommit=$buildCommit -X main.BuildDate=$buildDate"
 
 if ($tags) {
+    bash scripts/ci/spa.sh
+}
+
+if ($tags) {
     go build -trimpath -tags $tags -ldflags $ldflags -o $output ./cmd/classicstack
 } else {
     go build -trimpath -ldflags $ldflags -o $output ./cmd/classicstack

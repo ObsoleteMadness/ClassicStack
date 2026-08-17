@@ -29,6 +29,8 @@ package etherdfs
 
 import (
 	"context"
+	"sort"
+	"strings"
 	"sync"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
@@ -233,6 +235,30 @@ func (s *Service) ReconcileDrives(specs []DriveSpec) error {
 	s.drives = built
 	s.mu.Unlock()
 	return nil
+}
+
+// BoundDrives returns a snapshot of the configured EtherDFS drives (operator Finder).
+func (s *Service) BoundDrives() []*Drive {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*Drive, 0, len(s.drives))
+	for _, d := range s.drives {
+		out = append(out, d)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name() < out[j].Name() })
+	return out
+}
+
+// DriveByName returns the bound drive with the given letter/name, if any.
+func (s *Service) DriveByName(name string) (*Drive, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, d := range s.drives {
+		if strings.EqualFold(d.Name(), name) {
+			return d, true
+		}
+	}
+	return nil, false
 }
 
 // drive returns the drive bound to a drive number, if any.

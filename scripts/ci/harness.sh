@@ -9,6 +9,9 @@ set -euo pipefail
 echo "=== build-default: go build ./... ==="
 go build ./...
 
+echo "=== spa: Vite UI for webui embed ==="
+make spa
+
 echo "=== build-tags-all: go build -tags all ./... ==="
 go build -tags all ./...
 

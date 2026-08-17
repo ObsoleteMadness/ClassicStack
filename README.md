@@ -287,9 +287,11 @@ AFP volumes are configured as [AFP.Volumes.<name>] sections.
 ## Web UI
 
 A management web UI is available in builds that include `-tags webui` (which
-`-tags all` does). It serves a dashboard showing per-service status, bindings,
-and live (SSE-streamed) statistics, plus a configuration editor, read-only
-diagnostics (zone/network enumeration), and a live **log viewer**.
+`-tags all` does). Compile it with `make spa` (Node 20 + ClassicStack-web).
+The SPA is **Finder-first**: browse this instance’s live volumes and LAN
+servers over `/finder` (Go speaks AFP/SMB/NCP/EtherDFS; the browser does not).
+Essential admin tabs cover **status** (start/stop/restart), **sharing**
+(volumes/shares), **users**, and a live **log viewer**.
 
 [WebUI]:
 
@@ -303,19 +305,12 @@ diagnostics (zone/network enumeration), and a live **log viewer**.
 Equivalent flags: `-webui-enabled`, `-webui-bind`, `-webui-tls`,
 `-webui-cert-pem`, `-webui-key-pem`.
 
-From the dashboard you can **start, stop, and restart** the standalone services
-(IPX, NetBEUI, NetBIOS, SMB) live; stops are dependency-aware (stopping NetBIOS
-also stops SMB). The configuration editor can edit scalar settings, **add /
-update / remove AFP volumes and SMB shares**, and toggle **packet-dump and pcap
-capture** options (parse-packets, traffic logging, and per-transport capture
-file paths). The **Logs** tab streams the server's log output live (recent
-history is replayed on open, then new lines append) with a client-side level
-filter. Edits stage in memory; **Apply** re-wires the running stack (the web
-UI server is preserved across the rebuild), **Save** writes `server.toml`
-(backing up the prior file to `server.toml.NNNN` and dropping comments), and
-**Download backup** exports the current config. The same operations are exposed
-by the transport-agnostic `pkg/control` API, so a future text/telnet UI can
-reuse them.
+From **Status** you can **start, stop, and restart** services live. **Sharing**
+adds, updates, and removes AFP volumes, SMB shares, NCP volumes, and EtherDFS
+drives. **Logs** streams the server's log output live with a client-side level
+filter. **Save** on the Sharing tab writes `server.toml` (numbered backups).
+The same management operations are exposed by the transport-agnostic
+`pkg/control` API.
 
 ## File client — mount and browse remote shares
 

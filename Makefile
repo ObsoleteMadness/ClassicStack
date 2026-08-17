@@ -31,8 +31,17 @@ GOSEC_PKG       := github.com/securego/gosec/v2/cmd/gosec@latest
 # the CI Quality job exactly.
 GOSEC_PKGS := ./service/macip/... ./service/macgarden/... ./service/afpfs/macgarden/...
 
-.PHONY: build build-svc build-mount test test-race test-tags lint quality vet vuln gosec fuzz clean \
+.PHONY: build build-svc build-mount spa test test-race test-tags lint quality vet vuln gosec fuzz clean \
         harness archtest tinygo-gate
+
+# Vite SPA (Finder + admin). Required for TAGS that embed webui (all, webui).
+# Uses third_party/classicstack-web, sibling ../ClassicStack-web, or WEB_REF clone.
+spa:
+	bash scripts/ci/spa.sh
+
+ifneq ($(filter all webui,$(TAGS)),)
+build: spa
+endif
 
 build: build-svc build-mount
 	go build -tags "$(TAGS)" -o classicstack ./cmd/classicstack

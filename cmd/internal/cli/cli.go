@@ -32,6 +32,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/adapter/config/describe"
 	configtoml "github.com/ObsoleteMadness/ClassicStack/adapter/config/toml"
 	configuci "github.com/ObsoleteMadness/ClassicStack/adapter/config/uci"
+	finderadapter "github.com/ObsoleteMadness/ClassicStack/adapter/control/finder"
 	controlhttp "github.com/ObsoleteMadness/ClassicStack/adapter/control/http"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/pcap"
 	logbus "github.com/ObsoleteMadness/ClassicStack/adapter/log/bus"
@@ -195,6 +196,10 @@ func Run(ctx context.Context, args []string, v Version) error {
 		// by the diagnostics adapter (which imports the services), NOT through the neutral
 		// plane — so core/control carries no protocol type.
 		httpServer.SetDiagProvider(buildDiagProvider(rt))
+		httpServer.SetFinder(finderadapter.New(rt, log.New("finder",
+			log.NewStderrSink(log.NewLevelVar(logLevel)),
+			busLogSink,
+		)))
 		if err := httpServer.Start(); err != nil {
 			_ = rt.Stop(context.Background())
 			return fmt.Errorf("start web-admin on %s: %w", *httpAddr, err)

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/adapter/control/diag"
+	"github.com/ObsoleteMadness/ClassicStack/adapter/control/finder"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/control/inproc"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/extmap"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/serial"
@@ -45,6 +46,7 @@ type Client = inproc.Client
 type Server struct {
 	plane    control.Plane
 	diag     DiagProvider // protocol-specific diagnostic drill-downs (adapter/control/diag); nil = unavailable
+	finder   *finder.Service
 	addr     string
 	listener net.Listener
 	server   *http.Server
@@ -70,6 +72,10 @@ type DiagProvider interface {
 // SetDiagProvider installs the protocol diagnostics provider (the cmd edge builds it
 // over the runtime). Safe before Serve; nil leaves the drill-down routes unavailable.
 func (s *Server) SetDiagProvider(d DiagProvider) { s.diag = d }
+
+// SetFinder installs the operator file-browser service (live shares + remote
+// client sessions). Nil leaves /finder/* reporting unavailable.
+func (s *Server) SetFinder(f *finder.Service) { s.finder = f }
 
 // NewServer builds an HTTP Server for the plane on address addr.
 func NewServer(plane control.Plane, addr string) *Server {
@@ -122,6 +128,20 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/config_apply", s.handleConfigApply)
 	mux.HandleFunc("/list_serial_ports", s.handleListSerialPorts)
 	mux.HandleFunc("/browse_path", s.handleBrowsePath)
+	mux.HandleFunc("/finder/local", s.handleFinderLocal)
+	mux.HandleFunc("/finder/discover", s.handleFinderDiscover)
+	mux.HandleFunc("/finder/sessions", s.handleFinderSessions)
+	mux.HandleFunc("/finder/open", s.handleFinderOpen)
+	mux.HandleFunc("/finder/node", s.handleFinderNode)
+	mux.HandleFunc("/finder/children", s.handleFinderChildren)
+	mux.HandleFunc("/finder/lookup", s.handleFinderLookup)
+	mux.HandleFunc("/finder/mkdir", s.handleFinderMkdir)
+	mux.HandleFunc("/finder/create", s.handleFinderCreate)
+	mux.HandleFunc("/finder/rename", s.handleFinderRename)
+	mux.HandleFunc("/finder/move", s.handleFinderMove)
+	mux.HandleFunc("/finder/remove", s.handleFinderRemove)
+	mux.HandleFunc("/finder/fork", s.handleFinderFork)
+	mux.HandleFunc("/finder/finderinfo", s.handleFinderFinderInfo)
 	mux.HandleFunc("/users", s.handleUsers)
 	mux.HandleFunc("/set_user", s.handleSetUser)
 	mux.HandleFunc("/set_user_disabled", s.handleSetUserDisabled)

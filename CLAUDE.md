@@ -77,7 +77,7 @@ cmd/classicstack/main.go  →  internal/app (run-core)  →  Ports  →  Router 
 | `service/dsi/` | Data Stream Interface — AFP transport over TCP |
 | `service/macip/` | IP-over-AppleTalk gateway with NAT and DHCP relay |
 | `core/service/ncp/` | Novell NetWare Core Protocol file server (NetWare 3.x bindery emulation) over IPX + SAP advertising (`-tags ncp`); reuses the AFP/SMB storage + auth seams. See `spec/17-ncp.md` |
-| `service/webui/` | Management web UI (`-tags webui`): HTTPS adapter over `pkg/control` — JSON API, SSE stats stream, embedded SPA |
+| `adapter/control/http/` | Management web UI (`-tags webui`): HTTPS adapter over `pkg/control` — JSON API, Finder over `/finder`, SSE stats stream, Vite SPA (`make spa`) |
 | `pkg/control/` | Transport-agnostic management API (status, config stage/apply/save, service start/stop/restart, diagnostics); the single contract every UI front-end shares |
 | `pkg/status/` | In-process service-status registry read by the dashboard |
 | `pkg/metrics/` | Streaming stats hub (expvar + SSE sinks) |
