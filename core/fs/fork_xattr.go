@@ -73,6 +73,25 @@ const (
 	xattrFiller = "Netatalk        "
 )
 
+// Exported Netatalk EA names and the fixed Metadata blob size, so the FUSE mount
+// client can present the same layout the xattr fork backend stores (spec/16 §1c).
+const (
+	NetatalkMetadataEA     = xattrMetadataEA
+	NetatalkResourceForkEA = xattrResourceEA
+	NetatalkMetadataSize   = xattrMetadataSize
+)
+
+// EncodeNetatalkMetadataEA builds the fixed-size Netatalk Metadata EA (AD_DATASZ_EA).
+func EncodeNetatalkMetadataEA(p appledouble.Parsed, rsrcLen uint32) []byte {
+	return encodeMetadataEA(p, rsrcLen)
+}
+
+// ParseNetatalkMetadataEA decodes a Metadata EA. A missing or wrong-magic blob
+// returns an error; callers that want Netatalk tolerance treat that as "no metadata".
+func ParseNetatalkMetadataEA(b []byte) (appledouble.Parsed, uint32, error) {
+	return parseMetadataEA(b)
+}
+
 // eaPath returns the base-FileSystem key for an extended attribute of path. The
 // NUL-delimited form cannot collide with an ordinary path element (which never
 // contains a NUL) nor with the ads engine's "path:stream" keys.

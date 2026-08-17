@@ -129,7 +129,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpcap-dev
+          sudo apt-get install -y libpcap-dev libfuse-dev
 
       - name: Build classicstack (Linux/macOS)
         if: runner.os != 'Windows'
@@ -139,6 +139,10 @@ jobs:
           BUILD_COMMIT: ${{ github.sha }}
           OUTPUT: ${{ matrix.output }}
         run: ${{ matrix.script }}
+
+      - name: Build csmount (Linux FUSE)
+        if: runner.os == 'Linux'
+        run: go build -tags "all fuse" -o out/csmount ./cmd/csmount
 
       - name: Build classicstack (Windows)
         if: runner.os == 'Windows'

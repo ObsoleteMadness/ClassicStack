@@ -132,6 +132,29 @@ the server-side `ads` layout above so a fork is addressed by the same stream nam
 whether ClassicStack is serving or mounting it. SFM's server-internal volume
 streams (`AFP_DeskTop`, `AFP_IdIndex`) are not surfaced.
 
+### 1b-ii. FUSE mount client: forks as xattrs
+
+The same `csmount` client on macOS (macFUSE) and Linux (libfuse) presents forks
+through `client/fuse` via cgofuse. Native forks (`-fork` empty / `passthrough` /
+`native` / `hfs` / `ads` / `xattr`) map `fs.ForkEngine` onto host xattrs; sidecar
+layouts still project `._name` / `.rdump` via `fork_export.go`. Names and blobs
+are per-GOOS so a file copied off the mount is readable by that platform's usual
+clients:
+
+| platform | xattr | source |
+|---|---|---|
+| Darwin | `com.apple.FinderInfo` | 32-byte `ReadFinderInfo` / `WriteFinderInfo` |
+| Darwin | `com.apple.ResourceFork` | `OpenFork(ResourceFork)`; Darwin `position` is a byte offset |
+| Darwin | `file/..namedfork/rsrc` | same resource fork as a virtual path (not listed in `Readdir`) |
+| Linux | `user.org.netatalk.Metadata` | 402-byte Netatalk Metadata EA (§1c); comments live in this header |
+| Linux | `user.org.netatalk.ResourceFork` | raw resource-fork bytes |
+
+Linux also accepts the unprefixed `org.netatalk.*` names if FUSE strips the
+`user.` namespace. `Listxattr` advertises an attribute only when it has content.
+The Metadata EA codec is the exported `fs.EncodeNetatalkMetadataEA` /
+`ParseNetatalkMetadataEA` pair shared with `fork_xattr.go`. Linux FUSE support
+is experimental.
+
 ### 1c. Netatalk EA layout (`core/fs/fork_xattr.go`)
 
 Netatalk's `ea = sys` volume option stores each fork/metadata item as a host

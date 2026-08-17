@@ -25,8 +25,9 @@ ClassicStack is an AppleTalk router and classic LAN services stack that bridges 
 - MacIPX gateway for IPX-over-AppleTalk clients. 
 - Optional IPX, NetBEUI, NetBIOS, and SMB1 services (build-tag gated).
 - Shared raw-link bridge settings for EtherTalk, MacIP, IPX, and NetBEUI.
-- File **client** that mounts remote AFP / SMB / NCP / EtherDFS shares as a Windows
-  drive via WinFsp (`csmount`), plus a cross-platform CLI (`csfs`).
+- File **client** that mounts remote AFP / SMB / NCP / EtherDFS shares as a host
+  filesystem via WinFsp (`csmount` on Windows), macFUSE / libfuse (`csmount` on
+  macOS and Linux), plus a cross-platform CLI (`csfs`).
 
 ## Releases
 Grab the latest release from Github Releases [releases](https://github.com/ObsoleteMadness/ClassicStack/releases/latest).
@@ -323,9 +324,9 @@ a legacy file server — AFP, SMB (over IPX / NBIPX / NetBEUI / TCP), NetWare NC
 EtherDFS — and presents it through one uniform interface. Two commands share that
 client:
 
-- **`csmount`** — mount a remote share as a Windows drive letter or directory via
-  [WinFsp](https://winfsp.dev/), so any application (Explorer, `copy`, editors) can
-  use it.
+- **`csmount`** — mount a remote share as a host filesystem: a Windows drive letter
+  via [WinFsp](https://winfsp.dev/), a directory via [macFUSE](https://macfuse.github.io/)
+  on macOS, or libfuse on Linux, so any application can use it.
 - **`csfs`** — a cross-platform CLI over the same client (`ls` / `cp` / `mv` / `rm` /
   `attrib` / `type` / `creator`), plus an interactive REPL.
 
@@ -345,47 +346,52 @@ the scheme), `-iface` (the IPv4 address / pcap device / serial port / host),
 for raw-Ethernet SMB carriers), `-fork` (fork container, see below), and `-v` (client
 wire-trace to stderr).
 
-### csmount (Windows, WinFsp)
+### csmount (Windows / macOS / Linux)
 
-`csmount` is **Windows-only** and needs the **WinFsp runtime** installed on the machine
-(https://winfsp.dev/rel/). It compiles with no cgo; add the `pcap` build tag for the raw-
-Ethernet carriers (SMB-over-IPX/NBIPX/NBF, NCP, EtherDFS):
+`csmount [flags] <uri> <mountpoint>` connects with the same client SDK as `csfs` and
+mounts the share so Finder, Explorer, or any local program can use it. Ctrl-C unmounts
+cleanly. Add the `pcap` build tag for raw-Ethernet carriers (SMB-over-IPX/NBIPX/NBF,
+NCP, EtherDFS).
+
+**Windows** needs the [WinFsp runtime](https://winfsp.dev/rel/). It compiles with no cgo:
 
 ~~~powershell
 go build -tags pcap -o csmount.exe ./cmd/csmount
-# or via the Makefile (builds csmount.exe only on Windows):
-#   make build
-~~~
-
-Usage — `csmount [flags] <uri> <mountpoint>`, where `<mountpoint>` is a drive letter
-(`X:`) or an empty directory. Ctrl-C unmounts cleanly.
-
-~~~powershell
-# AFP over LToUDP (the scheme default), mounted at M:
+# or: make build-mount
 .\csmount.exe "afp://user@MyServer/My Volume" M:
-
-# SMB over NetBEUI (raw Ethernet — pick the NIC on the server's segment)
 .\csmount.exe -iface "\Device\NPF_{GUID}" "smb://WIN98,nbf/C-DRIVE" N:
-
-# NetWare NCP over IPX
-.\csmount.exe -iface "\Device\NPF_{GUID}" "ncp://SERVER/SYS" N:
 ~~~
 
-List pcap device names with `.\classicstack.exe -list-pcap-devices`.
+`<mountpoint>` is a drive letter (`X:`) or an empty directory. `-fork native` (or
+`ads` / `hfs`) surfaces the resource fork, Finder info, and comment as NTFS named
+streams under the Services-for-Macintosh names (`:AFP_Resource`, `:AFP_AfpInfo`,
+`:Comments`).
 
-**What maps through to Windows:**
+**macOS** needs [macFUSE](https://macfuse.github.io/) and cgo. **Linux** needs libfuse
+(`libfuse-dev`) and cgo; Linux FUSE support is experimental and has not been tested.
 
-- **AFP resource forks / Finder info** are handled by the `-fork` backend chosen at
-  connect time (`appledouble` — the SMB/NCP/EtherDFS default, `applesingle`,
-  `macbinary`, `derez`, `native`, `nofork`, or `passthrough` — the AFP default, native
-  forks straight off the wire). Sidecar backends project forks into the namespace as
-  ordinary files; `native` (which on Windows means the `ads` layout) surfaces the
-  resource fork, Finder info, and comment as NTFS named streams under the Services-for-
-  Macintosh names (`:AFP_Resource`, `:AFP_AfpInfo`, `:Comments`), so Windows tools and
-  the SMB redirector see the same streams a real SFM/AFP server exposes.
-- **DOS attributes** (hidden / system / read-only) and **file dates** are read live from
-  the server and surfaced to Explorer — AFP maps Invisible→hidden, System→system,
-  WriteInhibit→read-only; SMB uses the server's FileAttributes and timestamps directly.
+~~~bash
+go build -tags fuse -o csmount ./cmd/csmount
+# or: make build-mount
+csmount -ifacetype tcp "afp://user@MyServer/My Volume" /Volumes/Classic
+~~~
+
+`<mountpoint>` is an empty directory. The default `-fork` (AFP `passthrough`, or
+`native` / `hfs` / `xattr` / `ads`) maps forks to host xattrs:
+
+- macOS: `com.apple.FinderInfo` (32-byte FInfo+FXInfo) and `com.apple.ResourceFork`,
+  plus the virtual path `file/..namedfork/rsrc`.
+- Linux: `user.org.netatalk.Metadata` (402-byte Netatalk AppleDouble header, including
+  the Finder comment) and `user.org.netatalk.ResourceFork`.
+
+Sidecar `-fork` values (`appledouble`, `derez`, …) still project `._name` / `.rdump`
+files into the mount instead.
+
+**DOS attributes** (hidden / system / read-only) and **file dates** are read live from
+the server — AFP maps Invisible→hidden, System→system, WriteInhibit→read-only; SMB
+uses the server's FileAttributes and timestamps directly.
+
+List pcap device names with `classicstack -list-pcap-devices` (or `csmount -list-ifaces`).
 
 ### csfs (cross-platform CLI)
 
@@ -503,7 +509,7 @@ a clear debt to the originals.
   `IPADDRESS`/`IPGATEWAY` NBP naming, source-IP ARP snooping, and the 586-byte MacIP
   MTU. An independent Go reimplementation over our egress seam; macipgw is GPLv2+
   (compatible with our GPLv3).
-- **go-winfsp** by Bill Zissimopoulos. 
+- **go-winfsp** and **cgofuse** by Bill Zissimopoulos. 
 - **EtherDFS** by **Mateusz Viste**, Copyright © 2017-2023 Mateusz Viste — the EtherType
   0xEDF5 DOS file-system protocol our EtherDFS service re-implements.
 

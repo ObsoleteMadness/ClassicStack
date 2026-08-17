@@ -19,6 +19,7 @@ require (
 	github.com/ncruces/go-strftime v0.1.9 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/winfsp/cgofuse v1.6.0
 	github.com/winfsp/go-winfsp v1.0.3
 	golang.org/x/exp v0.0.0-20240119083558-1b970713d09a // indirect
 	golang.org/x/mod v0.35.0 // indirect
@@ -30,3 +31,6 @@ require (
 
 // Local patch: expose FileInfoTimeout Option (upstream leaves it at 0).
 replace github.com/winfsp/go-winfsp => ./third_party/go-winfsp
+
+// Local patch: Darwin getxattr/setxattr position for com.apple.ResourceFork.
+replace github.com/winfsp/cgofuse => ./third_party/cgofuse

@@ -1,8 +1,9 @@
-//go:build !windows
+//go:build !windows && !darwin && !linux
 
-// Command csmount mounts a ClassicStack share as a Windows filesystem via WinFsp. It is
-// Windows-only; on other platforms this stub prints a message and exits non-zero, keeping
-// `go build ./...` green everywhere (mirrors cmd/classicstackd's per-OS stub pattern).
+// Command csmount mounts a ClassicStack share as a host filesystem. It is
+// supported on Windows (WinFsp), macOS (macFUSE), and Linux (libfuse); on
+// other platforms this stub prints a message and exits non-zero, keeping
+// `go build ./...` green everywhere.
 package main
 
 import (
@@ -11,6 +12,6 @@ import (
 )
 
 func main() {
-	fmt.Fprintln(os.Stderr, "csmount is only supported on Windows (WinFsp)")
+	fmt.Fprintln(os.Stderr, "csmount is only supported on Windows (WinFsp), macOS (macFUSE), and Linux (libfuse)")
 	os.Exit(1)
 }

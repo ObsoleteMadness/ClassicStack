@@ -6,12 +6,19 @@ GOOS ?= $(shell go env GOOS)
 ifeq ($(GOOS),windows)
 SVC_PKG := ./cmd/classicstack-svc
 SVC_BIN := classicstack-svc.exe
-# csmount (the WinFsp mount client) is Windows-only; built only on Windows.
 MOUNT_BIN := csmount.exe
+MOUNT_TAGS := $(TAGS)
+else ifeq ($(filter $(GOOS),darwin linux),$(GOOS))
+SVC_PKG := ./cmd/classicstackd
+SVC_BIN := classicstackd
+MOUNT_BIN := csmount
+# fuse tag pulls in cgofuse (macFUSE / libfuse). Requires cgo + FUSE headers.
+MOUNT_TAGS := $(TAGS) fuse
 else
 SVC_PKG := ./cmd/classicstackd
 SVC_BIN := classicstackd
 MOUNT_BIN :=
+MOUNT_TAGS := $(TAGS)
 endif
 
 # Versions of the quality tools to install when absent. Kept here so a local
@@ -33,10 +40,10 @@ build: build-svc build-mount
 build-svc:
 	go build -tags "$(TAGS)" -o $(SVC_BIN) $(SVC_PKG)
 
-# build-mount builds the WinFsp mount client. It is a no-op off Windows (MOUNT_BIN empty).
+# build-mount builds the host mount client (WinFsp on Windows, FUSE on Darwin/Linux).
 build-mount:
 ifneq ($(MOUNT_BIN),)
-	go build -tags "$(TAGS)" -o $(MOUNT_BIN) ./cmd/csmount
+	go build -tags "$(MOUNT_TAGS)" -o $(MOUNT_BIN) ./cmd/csmount
 endif
 
 test:
@@ -117,6 +124,6 @@ build-pico2w:
 	bash scripts/build_pico.sh pico2w
 
 clean:
-	rm -f classicstack classicstack.exe classicstackd classicstack-svc.exe csmount.exe cs-tinygo.exe
+	rm -f classicstack classicstack.exe classicstackd classicstack-svc.exe csmount csmount.exe cs-tinygo.exe
 	rm -rf out dist bin/*.bin bin/*.uf2
 
