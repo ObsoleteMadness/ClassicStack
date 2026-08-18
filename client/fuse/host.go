@@ -5,12 +5,14 @@ package fuse
 import (
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	cgofuse "github.com/winfsp/cgofuse/fuse"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 )
 
 type hostFS struct {
@@ -246,12 +248,20 @@ func (h *hostFS) Getxattr(path, name string) (int, []byte) {
 	return 0, b
 }
 
+func (h *hostFS) GetxattrSize(path, name string) (int, int) {
+	n, err := h.Adapter.XattrSize(path, name)
+	if err != nil {
+		return h.errno(err), 0
+	}
+	return 0, n
+}
+
 func (h *hostFS) SetxattrP(path, name string, value []byte, flags int, position uint32) int {
 	return h.errno(h.Adapter.SetxattrP(path, name, value, flags, position))
 }
 
-func (h *hostFS) GetxattrP(path, name string, position uint32) (int, []byte) {
-	b, err := h.Adapter.GetxattrP(path, name, position)
+func (h *hostFS) GetxattrP(path, name string, position uint32, size int) (int, []byte) {
+	b, err := h.Adapter.GetxattrRange(path, name, int64(position), int64(size))
 	if err != nil {
 		return h.errno(err), nil
 	}
@@ -290,8 +300,17 @@ var (
 	_ cgofuse.FileSystemSetcrtime = (*hostFS)(nil)
 )
 
+// Available reports that this binary was built with `-tags fuse` and cgo on
+// Darwin or Linux.
+func Available() bool { return true }
+
 // MountAt builds an Adapter over fsys and mounts it at mountpoint via cgofuse.
 func MountAt(fsys fs.ForkFS, mountpoint string, opts Options) (*Mount, error) {
+	var err error
+	mountpoint, err = ResolveMountpoint(mountpoint)
+	if err != nil {
+		return nil, err
+	}
 	a := newAdapter(fsys, opts)
 	ready := make(chan struct{})
 	var once sync.Once
@@ -301,10 +320,8 @@ func MountAt(fsys fs.ForkFS, mountpoint string, opts Options) (*Mount, error) {
 	host := cgofuse.NewFileSystemHost(fsop)
 	host.SetCapCaseInsensitive(true)
 
-	args := []string{"-o", "fsname=ClassicStack"}
-	if a.volLabel != "" {
-		args = append(args, "-o", "volname="+a.volLabel)
-	}
+	args := fuseHostArgs(a.volLabel)
+	a.dbg(nil, "fuse mount", log.Str("mountpoint", mountpoint), log.Str("args", strings.Join(args, " ")))
 
 	done := make(chan struct{})
 	m := &Mount{

@@ -40,23 +40,32 @@ func nicLinkOpener(ctx *BuildContext, sec *port.Section, iface config.InterfaceS
 	open := ctx.Opener
 	// pcap/Npcap opens by DEVICE, not friendly name: on Windows the device is the
 	// "\Device\NPF_{GUID}" string in iface.Device; on Linux Device is empty and the
-	// friendly Name ("eth0") is itself the pcap device. PcapDevice picks the right one.
-	device := iface.PcapDevice()
-	// "Easy mode" auto-NIC: a NIC port with no interface configured (and no namespace
-	// default) resolves to an empty device. When the cmd edge injected a DefaultDevice
-	// resolver, fall back to the host's primary (default-route) NIC so a single-NIC
-	// server works out of the box. A configured device always wins (this is skipped when
-	// non-empty); a resolver error or no resolver leaves device empty → inert-but-routed,
-	// the same degradation as before. We announce the auto-picked NIC so it is never a
-	// hidden default.
-	if device == "" && ctx.DefaultDevice != nil {
-		if dev, err := ctx.DefaultDevice(); err == nil && dev != "" {
-			device = dev
-			ctx.Logger(sec.InstanceName()).Log1(log.Info, "auto-selected primary NIC", log.Str("device", dev))
-		}
+	// friendly Name ("eth0") is itself the pcap device. effectivePcapDevice picks the
+	// right one, falling back to the injected DefaultDevice ("Easy mode" auto-NIC).
+	configured := iface.PcapDevice()
+	device := effectivePcapDevice(ctx, iface)
+	if configured == "" && device != "" {
+		ctx.Logger(sec.InstanceName()).Log1(log.Info, "auto-selected primary NIC", log.Str("device", device))
 	}
 	base := func() (link.FrameLink, error) { return open(device, bpf) }
 	return captureOpener(sec, pcapfile.LinkTypeEthernet, base)
+}
+
+// effectivePcapDevice is the pcap/Npcap name a NIC port opens: the interface's
+// PcapDevice (Device when set, else Name), or — when that is empty — the injected
+// DefaultDevice (host primary NIC). Shared by nicLinkOpener and sectionMACFor so the
+// station-MAC auto-detect looks up the SAME device the handle is opened on. A nil
+// ctx, missing resolver, or resolver error leaves the device empty.
+func effectivePcapDevice(ctx *BuildContext, iface config.InterfaceSection) string {
+	device := iface.PcapDevice()
+	if device != "" || ctx == nil || ctx.DefaultDevice == nil {
+		return device
+	}
+	dev, err := ctx.DefaultDevice()
+	if err != nil {
+		return ""
+	}
+	return dev
 }
 
 // serialLinkOpener binds a serial interface (device path + baud) to a per-Start

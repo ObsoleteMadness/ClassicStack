@@ -27,6 +27,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	proto "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
+	"github.com/ObsoleteMadness/ClassicStack/core/protocol/atp"
 )
 
 // afpLog narrates FP* calls when csfs/csmount -v is on (client/trace).
@@ -55,6 +56,9 @@ type FS struct {
 	user    string
 	pass    string
 	srvInfo proto.ServerInfo
+
+	// onMessage delivers login/attention text to the Connect caller (Finder).
+	onMessage func(kind, from, text string)
 
 	mu       sync.Mutex
 	readOnly bool
@@ -141,6 +145,15 @@ func splitPath(p string) (dir, base string) {
 	return "", p
 }
 
+// childPath joins a directory store path and a child name.
+func childPath(dir, name string) string {
+	dir = strings.Trim(dir, "/")
+	if dir == "" {
+		return name
+	}
+	return dir + "/" + name
+}
+
 // command runs an AFP command block and returns the reply body, mapping a non-zero
 // result to an error. When -v is on it narrates the FP* name, path, and result.
 // build is called with the current volume ID so a reconnect (new OpenVol) can rebuild
@@ -165,79 +178,89 @@ func (f *FS) command(name, path string, build func(volID uint16) []byte) ([]byte
 // Fork-ref commands (FPRead/FPWrite/…) must use sessForkCommand instead: after a
 // reconnect the old fork ref is dead and the caller has to OpenFork again.
 func (f *FS) sessCommand(name, path string, build func(volID uint16) []byte) (body []byte, result int32, err error) {
-	return f.sessCommandRetry(name, path, build, true)
+	return f.sessCommandRetry(name, path, 1, build, true)
+}
+
+// sessCommandQuantum is sessCommand for replies that may fill an ASP quantum
+// (FPEnumerate). The ATP bitmap asks for 8 slots, matching classicstack-web.
+func (f *FS) sessCommandQuantum(name, path string, build func(volID uint16) []byte) (body []byte, result int32, err error) {
+	return f.sessCommandRetry(name, path, atp.MaxResponsePackets, build, true)
 }
 
 // sessForkCommand is like sessCommand but does not retry after reconnect — the
 // command's fork ref is invalid on the new session. It still re-establishes so the
 // next OpenFork / path-based call succeeds, and returns ErrSessionClosed so the
-// caller can reopen the fork and retry.
-func (f *FS) sessForkCommand(name, path string, build func(volID uint16) []byte) (body []byte, result int32, err error) {
-	return f.sessCommandRetry(name, path, build, false)
+// caller can reopen the fork and retry. maxResp is the ATP slot budget for the reply
+// (FPRead sizes it to the requested byte count).
+func (f *FS) sessForkCommand(name, path string, maxResp int, build func(volID uint16) []byte, extra ...log.Field) (body []byte, result int32, err error) {
+	return f.sessCommandRetry(name, path, maxResp, build, false, extra...)
 }
 
-func (f *FS) sessCommandRetry(name, path string, build func(volID uint16) []byte, retry bool) (body []byte, result int32, err error) {
-	body, result, dead, err := f.sessCommandOnce(name, path, build)
+func (f *FS) sessCommandRetry(name, path string, maxResp int, build func(volID uint16) []byte, retry bool, extra ...log.Field) (body []byte, result int32, err error) {
+	body, result, dead, err := f.sessCommandOnce(name, path, maxResp, build, extra...)
 	if !errors.Is(err, aspclient.ErrSessionClosed) {
 		return body, result, err
 	}
 	if rerr := f.reestablish(dead); rerr != nil {
-		if afpLog.Enabled(log.Trace) {
-			afpLog.Log2(log.Trace, "reconnect failed", log.Str("op", name), log.Str("err", rerr.Error()))
-		}
+		afpLog.Log2(log.Debug, "reconnect failed", log.Str("op", name), log.Str("err", rerr.Error()))
 		return nil, 0, err
 	}
 	if !retry {
-		if afpLog.Enabled(log.Trace) {
-			afpLog.Log1(log.Trace, "reconnected; fork ref stale", log.Str("op", name))
-		}
+		afpLog.Log1(log.Debug, "reconnected; fork ref stale", log.Str("op", name))
 		return nil, 0, aspclient.ErrSessionClosed
 	}
-	if afpLog.Enabled(log.Trace) {
-		afpLog.Log1(log.Trace, "reconnected; retrying", log.Str("op", name))
-	}
-	body, result, _, err = f.sessCommandOnce(name, path, build)
+	afpLog.Log1(log.Debug, "reconnected; retrying", log.Str("op", name))
+	body, result, _, err = f.sessCommandOnce(name, path, maxResp, build, extra...)
 	return body, result, err
 }
 
-func (f *FS) sessCommandOnce(name, path string, build func(volID uint16) []byte) (body []byte, result int32, sess *aspclient.Session, err error) {
-	if afpLog.Enabled(log.Trace) {
-		if path != "" {
-			afpLog.Log2(log.Trace, "command", log.Str("op", name), log.Str("path", path))
-		} else {
-			afpLog.Log1(log.Trace, "command", log.Str("op", name))
-		}
-	}
+func (f *FS) sessCommandOnce(name, path string, maxResp int, build func(volID uint16) []byte, extra ...log.Field) (body []byte, result int32, sess *aspclient.Session, err error) {
+	start := time.Now()
 	var volID uint16
 	sess, volID = f.session()
 	if sess == nil {
+		logAFPCommand(name, path, maxResp, 0, 0, 0, aspclient.ErrSessionClosed, extra...)
 		return nil, 0, nil, aspclient.ErrSessionClosed
 	}
-	body, result, err = sess.Command(build(volID))
+	body, result, err = sess.CommandMax(build(volID), maxResp)
+	logAFPCommand(name, path, maxResp, len(body), result, time.Since(start).Milliseconds(), err, extra...)
+	return body, result, sess, err
+}
+
+// logAFPCommand records one FP* round-trip. The sink threshold decides whether
+// the line is printed; callers always emit.
+func logAFPCommand(name, path string, maxResp, n int, result int32, ms int64, err error, extra ...log.Field) {
+	fields := []log.Field{
+		log.Str("op", name),
+		log.Int("maxResp", int64(maxResp)),
+		log.Int("n", int64(n)),
+		log.Int("ms", ms),
+	}
+	if path != "" {
+		fields = append(fields, log.Str("path", path))
+	}
+	fields = append(fields, extra...)
+	if result != proto.NoErr {
+		fields = append(fields, log.Int("result", int64(result)))
+	}
 	if err != nil {
-		if afpLog.Enabled(log.Trace) {
-			afpLog.Log2(log.Trace, "command transport err", log.Str("op", name), log.Str("err", err.Error()))
-		}
-		return body, result, sess, err
+		fields = append(fields, log.Str("err", err.Error()))
 	}
-	if afpLog.Enabled(log.Trace) && result != proto.NoErr {
-		afpLog.Log2(log.Trace, "command afp result", log.Str("op", name), log.Int("result", int64(result)))
-	}
-	return body, result, sess, nil
+	afpLog.Log(log.Debug, "command", fields...)
 }
 
 // sessWrite runs an ASP Write (FPWrite) with the same session-closed reconnect as
 // sessCommand. On ErrSessionClosed it re-establishes but does NOT auto-retry: the
 // fork ref in the header is stale until the caller reopens the fork.
 func (f *FS) sessWrite(path string, header []byte, data []byte) (body []byte, result int32, err error) {
-	if afpLog.Enabled(log.Trace) {
-		afpLog.Log2(log.Trace, "command", log.Str("op", "FPWrite"), log.Str("path", path))
-	}
+	start := time.Now()
 	sess, _ := f.session()
 	if sess == nil {
+		logAFPCommand("FPWrite", path, 1, 0, 0, 0, aspclient.ErrSessionClosed)
 		return nil, 0, aspclient.ErrSessionClosed
 	}
 	body, result, err = sess.Write(header, data)
+	logAFPCommand("FPWrite", path, 1, len(data), result, time.Since(start).Milliseconds(), err)
 	if !errors.Is(err, aspclient.ErrSessionClosed) {
 		return body, result, err
 	}
@@ -314,9 +337,9 @@ func (f *FS) reestablish(dead *aspclient.Session) error {
 	f.sess = sess
 	f.volID = vp.VolID
 	f.cache.invalidateAll()
-	if afpLog.Enabled(log.Trace) {
-		afpLog.Log1(log.Trace, "session re-established", log.Str("vol", f.name))
-	}
+	afpLog.Log1(log.Debug, "session re-established", log.Str("vol", f.name))
+	// The new ASP session needs its own attention handler; the old WSS loop is gone.
+	sess.SetAttentionHandler(f.handleAttention)
 	return nil
 }
 

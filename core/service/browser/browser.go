@@ -164,6 +164,22 @@ func (s *Service) SetDescription(desc string) {
 	s.mu.Unlock()
 }
 
+// SetIdentity restamps the advertised server name, workgroup, and comment from
+// config.Identity. Idempotent; takes effect on the next announcement (Start).
+func (s *Service) SetIdentity(server, workgroup, desc string) {
+	if server == "" {
+		server = "CLASSICSTACK"
+	}
+	if workgroup == "" {
+		workgroup = "WORKGROUP"
+	}
+	s.mu.Lock()
+	s.server = proto.NormalizeName(server)
+	s.workgroup = proto.NormalizeName(workgroup)
+	s.desc = desc
+	s.mu.Unlock()
+}
+
 // SetSink installs the outbound mailslot seam late, for compose: the browser
 // factory builds the service before the mailslot router exists (the router needs
 // the NetBIOS service), so the cross-wire injects the sink afterwards — mirroring

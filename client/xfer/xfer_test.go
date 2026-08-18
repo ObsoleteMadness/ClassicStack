@@ -2,6 +2,7 @@ package xfer
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"testing"
 
@@ -192,5 +193,31 @@ func TestSetAttrToggles(t *testing.T) {
 	}
 	if attr, _ := sh.Meta().Attrs("f"); attr.Attrs&fs.DOSReadOnly != 0 {
 		t.Errorf("RO not cleared")
+	}
+}
+
+func TestCopyCtxReportsProgressAndCancel(t *testing.T) {
+	src := buildShare(t)
+	dst := buildShare(t)
+	payload := bytes.Repeat([]byte("x"), 200_000)
+	writeData(t, src, "big.bin", payload)
+
+	var last Progress
+	if err := CopyCtx(context.Background(), src, dst, "big.bin", "out.bin", func(p Progress) {
+		last = p
+	}); err != nil {
+		t.Fatalf("CopyCtx: %v", err)
+	}
+	if last.BytesDone < int64(len(payload)) {
+		t.Fatalf("bytesDone %d want >= %d", last.BytesDone, len(payload))
+	}
+	if last.BytesTotal < int64(len(payload)) {
+		t.Fatalf("bytesTotal %d", last.BytesTotal)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := CopyCtx(ctx, src, dst, "big.bin", "cancelled.bin", nil); err == nil {
+		t.Fatal("expected canceled copy")
 	}
 }

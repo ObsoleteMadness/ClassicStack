@@ -32,6 +32,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
@@ -87,6 +88,7 @@ type Service struct {
 	rxObs     func(rx, tx int)             // §5 traffic observer; nil = unmetered
 
 	counters counters // monotonic protocol counters (guarded by mu)
+	enabled  bool     // configured-enabled flag (component.Enableable); default true
 }
 
 // circuitCloser is the per-transport teardown surface the service holds: a
@@ -101,7 +103,7 @@ func New(logger log.Logger) *Service {
 	if logger == nil {
 		logger = log.New(Name)
 	}
-	s := &Service{logging: logger, conns: newConnTable()}
+	s := &Service{logging: logger, conns: newConnTable(), enabled: true}
 	// §10d reactor: deliver foreign-origin FS mutations under one of our volumes to
 	// the NCP wire-push sink. NCP (like classic AFP) has no per-directory async push
 	// on the wire, so the sink is count-only for now — a clean hook a later slice
@@ -334,6 +336,54 @@ func (s *Service) busForSpec(spec fs.ShareSpec) bus.Bus {
 	return resolve(spec)
 }
 
+// SetEnabled records the configured-enabled flag (component.Enableable). The compose
+// factory sets it from the NCP server section; missing config keeps the New() default
+// of true so existing deployments without enabled= stay on.
+func (s *Service) SetEnabled(enabled bool) {
+	s.mu.Lock()
+	s.enabled = enabled
+	s.mu.Unlock()
+}
+
+// Enabled reports the configured-enabled flag (component.Enableable).
+func (s *Service) Enabled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.enabled
+}
+
+// SessionInfo is a diagnostics snapshot of one NCP service-connection.
+type SessionInfo struct {
+	Number    uint16
+	Endpoint  string
+	User      string
+	LoggedIn  bool
+	OpenFiles int
+	LastSeen  time.Time
+}
+
+// Sessions snapshots live NCP connections for the Sharing Monitor.
+func (s *Service) Sessions() []SessionInfo {
+	if s.conns == nil {
+		return nil
+	}
+	all := s.conns.All()
+	out := make([]SessionInfo, 0, len(all))
+	for _, c := range all {
+		c.mu.Lock()
+		out = append(out, SessionInfo{
+			Number:    c.number,
+			Endpoint:  c.ep.String(),
+			User:      c.user,
+			LoggedIn:  c.loggedIn,
+			OpenFiles: len(c.files),
+			LastSeen:  c.lastSeen,
+		})
+		c.mu.Unlock()
+	}
+	return out
+}
+
 // ApplyConfig hot-applies config changes (§11b). A *ServerSection payload updates
 // the advertised name/description and asks for a restart so the IPX transport
 // cross-wire can re-bind the internal network. A nil / other payload (volume
@@ -398,6 +448,10 @@ func (s *Service) Start(ctx context.Context) error {
 		return nil
 	}
 	s.running = true
+	if !s.enabled {
+		s.logging.Log0(log.Info, "NCP service disabled; not advertising")
+		return nil
+	}
 	s.subscribeReactorLocked()
 	s.logging.Log0(log.Info, "NCP service started (NetWare 3.x bindery; NCP over IPX socket 0x0451)")
 	return nil
@@ -455,6 +509,7 @@ func (s *Service) Stop(ctx context.Context) error {
 // compile-time assertions.
 var (
 	_ component.Component    = (*Service)(nil)
+	_ component.Enableable   = (*Service)(nil)
 	_ component.Configurable = (*Service)(nil)
 	_ share.Manager          = (*Service)(nil)
 )

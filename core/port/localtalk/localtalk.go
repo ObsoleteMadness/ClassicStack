@@ -143,6 +143,11 @@ func buildOpenerFactory(opener func() (link.FrameLink, error), framer link.Frame
 		if err != nil {
 			return nil, err
 		}
+		// A nil FrameLink is the no-pcap / inert contract. Framing rejects nil;
+		// treat it as a successful no-data-path start, matching runport.Start.
+		if frame == nil {
+			return nil, nil
+		}
 		return framer.Framing(frame)
 	}
 }

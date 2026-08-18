@@ -11,13 +11,14 @@
 # not something the running server preserves.
 #
 # Sections come in three shapes:
-#   - well-known singletons:   [identity] [logging] [router] [adminauth]
+#   - well-known singletons:   [identity] [logging] [http] [Client] [FUSE] [router] [adminauth]
 #   - the interface namespace: repeated [[interface]] array-of-tables — the UPLINK
 #                              bridge(s) only (pcap/tap/raw). Serial and multicast
 #                              are NOT interfaces; their ports carry their own binding.
 #   - ports:                   repeated [[ethertalk]] [[ltoudp]] [[tashtalk]]
 #                                       [[ipx]] [[netbeui]] (lower-case, array-of-tables)
 #   - file-service shares:     repeated [[afpvolumes]] / [[smbshares]] / [[ncpvolumes]]
+#                              plus auto-mounted client volumes as [[fusevolumes]]
 #
 # The layering: a bridge/uplink INTERFACE is just the wire. A PORT is a transport
 # stack bound to it (EtherTalk→bridge, LToUDP→host multicast, TashTalk→a serial tty,
@@ -75,6 +76,10 @@ members = ["EtherTalk", "LToUDP"]
 #   Kind     bridge (pcap/tap/raw over a host NIC)
 #   Device   the host adaptor (pcap device; on Windows a "\Device\NPF_{GUID}")
 #   Backend  pcap (default) | tap | raw
+#   hw_address  station MAC stamped on pcap inject (EtherTalk/IPX/NetBEUI/EtherDFS).
+#               Blank = the NIC's own hardware address (required on WiFi / Npcap:
+#               APs drop frames sourced from any other MAC). Set a value only to
+#               spoof a distinct station on wired Ethernet (e.g. DE:AD:BE:EF:CA:FE).
 #   default  true marks the bridge un-bound ports inherit
 [[interface]]
 Name = "br-lan"
@@ -82,6 +87,7 @@ Kind = "bridge"
 Backend = "pcap"
 default = true
 # Device = "eth0"                 # host NIC (empty = resolve at open time)
+# hw_address = "DE:AD:BE:EF:CA:FE"  # opt-in spoof; leave blank on WiFi
 
 
 # --- Ports -------------------------------------------------------------------
@@ -95,7 +101,8 @@ default = true
 #   seed_zone        default zone this port seeds (blank = non-seed / inherit)
 # Per-port binding (only the fields that apply to the transport):
 #   iface            EtherTalk/IPX/NetBEUI: the bridge to bind (blank = the default)
-#   mac              EtherTalk: station MAC (blank = use the bridge NIC's own)
+#   mac              station MAC (blank = interface hw_address, else the NIC's own).
+#                    On WiFi leave blank so injected frames use the host MAC.
 #   device / baud    TashTalk: the host serial tty + line speed (serial is a PORT
 #                    property, not an interface)
 #   ipx_frame_type   IPX: Ethernet encapsulation for OUTBOUND frames — one of
@@ -142,6 +149,8 @@ seed_zone = "TashTalk Network"
 
 # IPX — Novell IPX over Ethernet (a NetBIOS/SMB transport, not an AppleTalk
 # router member; build tag `ipx`). Binds the bridge; inherits the default when blank.
+# Station MAC is the IPX node ID: blank mac/hw_address uses the host NIC (required
+# on WiFi). Only one IPX server instance can run per NIC.
 #   ipx_frame_type  Ethernet encapsulation for OUTBOUND frames — ethernet_ii
 #                   (default, MacIPX-compatible) | 802.3 | 802.2
 #   ipx_network     IPX network number for this segment (0 = local/unknown).
@@ -155,6 +164,7 @@ ipx_frame_type = "ethernet_ii"
 # ipx_network = 0x10
 
 # NetBEUI — NBF over 802.2 LLC (a NetBIOS/SMB transport; build tag `netbeui`).
+# Same station-MAC rule as IPX: blank = host NIC; one instance per NIC.
 [[netbeui]]
 iface = "br-lan"
 enabled = false
@@ -187,7 +197,10 @@ enabled = false
 #   host_ip          host's own IPv4 on the uplink (blank = auto)
 #   default_gateway  upstream router for off-subnet bridge egress (blank = auto)
 #   dhcp_relay       true = relay DHCP for client addresses instead of the
-#                    static pool
+#                    static pool. Fabricates per-Mac MACs — does not work on WiFi.
+#
+# On WiFi use Example B (mode = "nat", dhcp_relay = false). Bridge mode injects
+# IP/ARP on the wire; APs drop frames not sourced from the host NIC.
 #
 # Pick ONE of the two examples below (only one [MacIP] section is allowed).
 
@@ -213,9 +226,9 @@ default_gateway = "192.168.0.1"
 dhcp_relay = false
 
 # Example B — NAT (private client subnet, host OS NATs upstream).
-# Clients get addresses on 192.168.100.0/24; outbound traffic is NATed through
-# the host's own IP on br-lan — no host route needed on the LAN. Uncomment this
-# block and remove Example A above to use it.
+# Use this on WiFi. Clients get addresses on 192.168.100.0/24; outbound traffic
+# is NATed through the host's own IP — no pcap inject, no host route needed.
+# Uncomment this block and remove Example A above to use it.
 # [MacIP]
 # enabled = true
 # mode = "nat"
@@ -363,7 +376,8 @@ read_only = false
 # wire endpoint and the file server, so its singleton [etherdfs] section carries
 # the NIC binding, and [[etherdfsdrives]] maps drive letters to backends.
 # There is NO authentication: any client that can reach the server's MAC may use
-# any drive (gated only by read_only / allowed_users). See spec/18-etherdfs.md.
+# any drive (gated only by read_only / allowed_users). Blank mac = host NIC MAC
+# (required on WiFi); only one EtherDFS instance can run per NIC. See spec/18-etherdfs.md.
 [EtherDFS]
 enabled = true
 iface = "br-lan"          # the bridge/uplink to bind (empty = the default interface)
@@ -427,12 +441,66 @@ read_only = false
 # name = "0000"             # NBP object shown in the registry (matching is any-object)
 # zone = "*"                # NBP zone to register in
 
+# --- Web-admin UI ------------------------------------------------------------
+# Served by default on :1984 (this host). Set enabled = false to turn it off.
+# -http on the command line overrides addr and implies enabled.
+[http]
+enabled = true
+addr = ":1984"
+
+
+# --- In-process file client --------------------------------------------------
+# ClassicStack is not only a server. When enabled, this process also acts as a
+# file *client*: it scans the LAN at startup for AFP / SMB / NCP / EtherDFS
+# servers, tracks connections and open volumes, and the operator Finder
+# (GET /finder/state, GET/POST /finder/discover, GET /finder/mounted) reads that
+# state. Default is disabled so a server does not open outbound client sockets
+# unless the operator opts in.
+#
+#   enabled           gate the client on/off (default false)
+#   iface             [[interface]] NAME to bind (e.g. br-lan). Empty = the
+#                     default interface.
+#   services          schemes to probe and connect: "afp", "smb", "ncp",
+#                     "etherdfs". Empty = all four.
+#   max_idle_minutes  unused remote session idle time before disconnect
+#                     (default 10)
+#   mount             true = allow FUSE (macFUSE/libfuse) or WinFsp host mounts
+#                     of remote volumes the client opens
+#   log_file          extra log path for client/Finder traffic (blank = none;
+#                     lines still go to the process logger)
+[Client]
+enabled = false
+iface = "br-lan"
+services = ["afp", "smb", "ncp", "etherdfs"]
+max_idle_minutes = 10
+mount = false
+# log_file = "client.log"
+
+# --- FUSE / WinFsp host mounts ------------------------------------------------
+# Connect timeout for host mounts, plus volumes to attach at startup.
+# Auto-mount requires [Client] enabled = true and mount = true, and a binary
+# built with FUSE (macFUSE/libfuse, -tags fuse) or WinFsp on Windows.
+#
+#   mount_timeout_seconds  how long to wait to connect to the remote server
+#                          (default 30). Auto-mount retries until this deadline.
+#
+# Each [[fusevolumes]] row is one auto-mounted share:
+#   remote       client URI (scheme://[user[:pass]@]server[,transport]/volume)
+#   mountpoint   host directory or Windows drive letter
+#   read_only    true = mount read-only
+[FUSE]
+mount_timeout_seconds = 30
+
+# [[fusevolumes]]
+# remote = "smb://user:pass@foohost,smb/share"
+# mountpoint = "/Volumes/share"
+# read_only = false
+
 # --- Web-admin credential (§4-ter) -------------------------------------------
 # [adminauth] is written by the FIRST-RUN setup of the web-admin UI (it stores a
 # username + a salted PBKDF2-SHA256 hash, never a cleartext password). Do not
 # author it by hand — leaving it absent is what marks the server "needs setup".
-# Serve the web-admin API with:  classicstack -http :8080
-# (HTTP Basic over the chosen address; run it over loopback or behind TLS.)
+# (HTTP Basic over the listen address; run it over loopback or behind TLS.)
 #
 # [adminauth]
 # user = "admin"

@@ -68,8 +68,10 @@ func (s *Supervisor) StopStatsFlush() {
 	if stop == nil {
 		return
 	}
+	s.logShutdown0("waiting for telemetry stats flush")
 	close(stop)
 	s.statsWG.Wait()
+	s.logShutdown0("telemetry stats flush stopped")
 
 	// Detach push sinks so a stopped supervisor publishes nothing further.
 	s.mu.Lock()

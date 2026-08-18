@@ -2,6 +2,7 @@ package fs
 
 import (
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -54,4 +55,29 @@ func forkAdapterByName(name string, spec ShareSpec, base FileSystem) (ForkEngine
 		return nil, errors.New("fs: unknown fork backend")
 	}
 	return f(spec, base)
+}
+
+// forkBackendAliases are registered names that duplicate a canonical adapter.
+// The UI lists canonical names only (appledouble, not auto / appledouble-default).
+var forkBackendAliases = map[string]struct{}{
+	"auto":                {},
+	"appledouble-default": {},
+	"null":                {},
+	"none":                {},
+}
+
+// ForkBackends returns the registered fork-adapter names a share can select, sorted,
+// omitting aliases of a canonical adapter.
+func ForkBackends() []string {
+	forkAdapterMu.RLock()
+	out := make([]string, 0, len(forkAdapters))
+	for name := range forkAdapters {
+		if _, hide := forkBackendAliases[name]; hide {
+			continue
+		}
+		out = append(out, name)
+	}
+	forkAdapterMu.RUnlock()
+	sort.Strings(out)
+	return out
 }

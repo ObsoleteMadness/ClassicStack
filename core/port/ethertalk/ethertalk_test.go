@@ -262,6 +262,24 @@ func TestReconfigureIfaceChangeNeedsRestart(t *testing.T) {
 	}
 }
 
+func TestOpenerNilFrameStartsInert(t *testing.T) {
+	sec := port.SectionFromModel(enabledModel(t), Name)
+	open := func() (link.FrameLink, error) { return nil, nil }
+	c, err := NewInstanceFromOpener(sec, open, fakeFramer{}, &recordingRouter{}, newTestLogger())
+	if err != nil {
+		t.Fatalf("NewInstanceFromOpener: %v", err)
+	}
+	if c == nil {
+		t.Fatal("enabled section must still build when the opener returns a nil FrameLink")
+	}
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v (nil FrameLink should be inert, not a framing error)", err)
+	}
+	if err := c.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+}
+
 // framerFunc adapts a per-call link opener to a link.Framer so a test can hand
 // out a different DatagramLink on each Start (modelling the LinkFactory).
 type framerFunc func() (link.DatagramLink, error)

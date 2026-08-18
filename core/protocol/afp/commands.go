@@ -27,7 +27,7 @@ func even(b []byte) []byte {
 
 // --- FPLogin (cmd 18) — core/service/afp/handlers.go:afpLogin ---
 // Request: cmd(1) pstring AFPVersion, pstring UAM, [UAM data].
-// Cleartext adds: pstring username, 8-byte space-padded password.
+// Cleartext adds: pstring username, 8-byte NUL-padded password.
 
 // LoginRequest builds an FPLogin block for a single-step UAM. For UAMNoUserAuthent the
 // User/Pass fields are ignored; for UAMCleartext they are the credentials.
@@ -51,14 +51,68 @@ func (r LoginRequest) Marshal() []byte {
 	out := []byte{CmdLogin}
 	out = PutPString(out, []byte(r.AFPVersion))
 	out = PutPString(out, []byte(r.UAM))
-	if !strings.EqualFold(r.UAM, UAMNoUserAuthent) {
+	switch {
+	case strings.EqualFold(r.UAM, UAMNoUserAuthent):
+		// guest: no UserAuthInfo
+	case IsCleartextUAM(r.UAM):
 		out = PutPString(out, []byte(r.User))
-		// 8-byte cleartext password field, space-padded then NUL-filled to 8.
+		// Word-align the 8-byte password (Inside AppleTalk "possible null byte";
+		// ClassicStack-web loginCleartext). User "mac" made the block odd-length
+		// and System 7.1 then read the password on the wrong byte → kFPUserNotAuth.
+		out = even(out)
 		var pw [8]byte
 		copy(pw[:], r.Pass)
 		out = append(out, pw[:]...)
+	default:
+		// Randnum and other multi-step UAMs: username only on FPLogin.
+		out = PutPString(out, []byte(r.User))
 	}
 	return out
+}
+
+// IsCleartextUAM reports whether name is the cleartext-password UAM (case-insensitive).
+func IsCleartextUAM(name string) bool {
+	return strings.EqualFold(name, UAMCleartext)
+}
+
+// IsRandnumUAM reports whether name is the single-step Randnum exchange UAM.
+func IsRandnumUAM(name string) bool {
+	return strings.EqualFold(name, UAMRandnum)
+}
+
+// Is2WayRandnumUAM reports whether name is the mutual Randnum UAM.
+func Is2WayRandnumUAM(name string) bool {
+	return strings.EqualFold(name, UAM2WayRandnum)
+}
+
+// --- FPLoginCont (cmd 19) — multi-step UAM continuation ---
+// Request: cmd(1) uint16 sessionID, UAM-specific data (Randnum: 8-byte DES response).
+// Reply: empty on success; Randnum has no reply data.
+
+// LoginContRequest builds an FPLoginCont block for Randnum exchange.
+type LoginContRequest struct {
+	SessionID uint16
+	Response  [8]byte
+}
+
+// Marshal encodes the FPLoginCont command block.
+func (r LoginContRequest) Marshal() []byte {
+	out := []byte{CmdLoginCont, 0} // pad: ClassicStack-web loginCont is cmd+pad+id+auth
+	var id [2]byte
+	bp.PutBE16(id[:], r.SessionID)
+	out = append(out, id[:]...)
+	return append(out, r.Response[:]...)
+}
+
+// ParseLoginContinueReply decodes the FPLogin reply body for Randnum exchange:
+// uint16 session ID + 8-byte server challenge.
+func ParseLoginContinueReply(b []byte) (sessionID uint16, challenge [8]byte, ok bool) {
+	if len(b) < 10 {
+		return 0, challenge, false
+	}
+	sessionID = bp.BE16(b[0:2])
+	copy(challenge[:], b[2:10])
+	return sessionID, challenge, true
 }
 
 // --- FPLogout (cmd 20) ---
@@ -368,6 +422,51 @@ func ParseEnumerateReply(b []byte) (EnumerateReply, bool) {
 		r.Entries = append(r.Entries, ParseFileDirParams(params, bitmap, isDir))
 		off += entryLen
 	}
+	return r, true
+}
+
+// --- FPGetSrvrMsg (cmd 38) — handlers.go:afpGetSrvrMsg ---
+// Request: cmd(1) pad(1) MessageType(2) MessageBitmap(2).
+// Reply:   MessageType(2) MessageBitmap(2) pstring(message)  (MacRoman bytes).
+
+// GetSrvrMsgRequest builds an FPGetSrvrMsg block. Type is SrvrMsgTypeLogin (0,
+// greeting after FPOpenVol) or SrvrMsgTypeServer (1, after a message attention).
+// Bitmap is SrvrMsgBitmapText for the observed AppleShare text form.
+type GetSrvrMsgRequest struct {
+	Type   uint16
+	Bitmap uint16
+}
+
+// Marshal encodes the FPGetSrvrMsg command block.
+func (r GetSrvrMsgRequest) Marshal() []byte {
+	out := []byte{CmdGetSrvrMsg, 0}
+	out = bp.AppendBE16(out, r.Type)
+	out = bp.AppendBE16(out, r.Bitmap)
+	return out
+}
+
+// GetSrvrMsgReply is the parsed FPGetSrvrMsg reply. Message is the raw MacRoman
+// Pascal-string payload (undecoded); the caller applies the share codec.
+type GetSrvrMsgReply struct {
+	Type    uint16
+	Bitmap  uint16
+	Message []byte
+}
+
+// ParseGetSrvrMsgReply decodes an FPGetSrvrMsg reply body.
+func ParseGetSrvrMsgReply(b []byte) (GetSrvrMsgReply, bool) {
+	if len(b) < 4 {
+		return GetSrvrMsgReply{}, false
+	}
+	r := GetSrvrMsgReply{
+		Type:   bp.BE16(b[0:2]),
+		Bitmap: bp.BE16(b[2:4]),
+	}
+	msg, _, ok := PString(b, 4)
+	if !ok {
+		return r, false
+	}
+	r.Message = msg
 	return r, true
 }
 

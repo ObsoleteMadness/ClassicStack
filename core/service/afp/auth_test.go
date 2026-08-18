@@ -5,6 +5,7 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
+	proto "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 )
 
 // fakeAuth is a tiny Authenticator: it admits exactly one (user, pass) pair.
@@ -118,6 +119,24 @@ func TestAFPLogin_CleartextValidatesAgainstStore(t *testing.T) {
 	}
 	if anon.user != "" {
 		t.Fatalf("anonymous identity = %q, want guest", anon.user)
+	}
+}
+
+func TestAFPLogin_EvenPaddedCleartext(t *testing.T) {
+	s := newAuthService(t)
+	s.SetAuthenticator(fakeAuth{user: "mac", pass: ""})
+	a := newAFPSession()
+	block := proto.LoginRequest{
+		AFPVersion: "AFP2.2",
+		UAM:        "Cleartxt Passwrd",
+		User:       "mac",
+		Pass:       "",
+	}.Marshal()
+	if _, res := s.afpLogin(a, block[1:]); res != afpNoErr {
+		t.Fatalf("even-padded blank-password login = %d, want NoErr", res)
+	}
+	if a.user != "mac" {
+		t.Fatalf("identity = %q, want mac", a.user)
 	}
 }
 

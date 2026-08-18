@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"golang.org/x/net/ipv4"
 
+	"github.com/ObsoleteMadness/ClassicStack/core/hostinfo"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 )
 
 // LToUDP multicast group — the shared "LocalTalk over UDP" segment.
@@ -38,11 +41,14 @@ const (
 // wildcard interface with the default read timeout.
 type Config struct {
 	// Interface is the local IPv4 address to bind/join on ("" or "0.0.0.0" → join
-	// on every multicast-capable interface, the legacy default).
+	// on every host LAN multicast-capable interface).
 	Interface string
 	// ReadTimeout bounds a blocking Read before it returns link.ErrTimeout (0 →
 	// defaultReadTimeout).
 	ReadTimeout time.Duration
+	// Logger, when set, records the multicast join and the interface outbound
+	// packets are pinned to. Nil is silent (tests).
+	Logger log.Logger
 }
 
 // DefaultConfig returns a Config for the given interface address with the
@@ -96,15 +102,23 @@ func Open(cfg Config) (link.FrameLink, error) {
 	c := pc2.(*net.UDPConn)
 
 	pc := ipv4.NewPacketConn(c)
-	if err := joinMulticastGroup(pc, cfg.Interface); err != nil {
+	joined, send, err := joinMulticastGroup(pc, cfg.Interface)
+	if err != nil {
 		_ = c.Close()
 		return nil, fmt.Errorf("ltoudp: join group: %w", err)
 	}
+	logJoin(cfg.Logger, joined, send)
 
 	// TTL 1 keeps the segment link-local; loopback on so we receive our own sends
 	// (and rely on the sender ID to drop them). Both are best-effort.
 	_ = pc.SetMulticastTTL(1)
 	_ = pc.SetMulticastLoopback(true)
+
+	// macOS Local Network privacy (15+) silently drops multicast unless the
+	// responsible app is allowed. Connecting UDP to the group raises the system
+	// prompt; a CLI started from Terminal is auto-allowed, but a process spawned
+	// by another app (IDE, Finder) uses that app's Local Network privilege.
+	triggerLocalNetworkPrivacyAlert()
 
 	// Fat socket buffers: a default ~8 KB SO_RCVBUF (Windows) drops packets during
 	// bursty multi-fragment ATP responses on loopback.
@@ -215,75 +229,100 @@ func putUint32(b []byte, v uint32) {
 }
 
 // joinMulticastGroup joins the LToUDP group on the configured interface, or on
-// every multicast-capable IPv4 interface when iface is empty/wildcard. Ported
-// from the legacy LtoudpPort.joinMulticastGroup.
-func joinMulticastGroup(pc *ipv4.PacketConn, iface string) error {
+// every host LAN multicast-capable IPv4 interface when iface is empty/wildcard.
+// Outbound multicast is pinned to a real LAN NIC (the default-route interface
+// when it is in the join set) so TTL-1 packets leave Wi-Fi/Ethernet instead of
+// a VPN/AirDrop iface the kernel might otherwise pick.
+func joinMulticastGroup(pc *ipv4.PacketConn, iface string) (joined []string, send string, err error) {
 	groupIP := net.ParseIP(GroupAddr)
 	g := &net.UDPAddr{IP: groupIP}
 
 	if iface != "" && iface != "0.0.0.0" {
 		intf, err := interfaceByIPv4(iface)
 		if err != nil {
-			return err
+			return nil, "", err
 		}
 		if err := pc.JoinGroup(intf, g); err != nil {
-			return err
+			return nil, "", err
 		}
 		_ = pc.SetMulticastInterface(intf)
-		return nil
+		return []string{intf.Name}, intf.Name, nil
 	}
 
-	if err := pc.JoinGroup(nil, g); err == nil {
-		return nil
-	}
-	return joinOnAnyInterface(pc, g)
+	return joinOnLANInterfaces(pc, g)
 }
 
-// joinOnAnyInterface joins the group on every up, multicast-capable IPv4
-// interface, preferring real NICs over loopback. Ported from the legacy
-// tryJoinGroupOnAnyInterface (trimmed of the per-OS oper-status probe, which was
-// a Windows refinement; JoinGroup failure already filters dead interfaces).
-func joinOnAnyInterface(pc *ipv4.PacketConn, g *net.UDPAddr) error {
+// joinOnLANInterfaces joins the group on every up, multicast-capable IPv4 host
+// LAN interface (skipping VPN/AirDrop/tunnels), then loopback so two processes
+// on one machine still share the segment. Outbound packets are pinned to the
+// default-route LAN NIC when possible.
+func joinOnLANInterfaces(pc *ipv4.PacketConn, g *net.UDPAddr) (joined []string, send string, err error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		return err
+		return nil, "", err
 	}
-	var joined int
+	lan, loopback := classifyMulticastInterfaces(ifaces)
 	var lastErr error
 	var sendIntf *net.Interface
 
-	joinClass := func(loopback bool) {
-		for i := range ifaces {
-			intf := &ifaces[i]
-			if (intf.Flags&net.FlagLoopback != 0) != loopback {
-				continue
-			}
-			if intf.Flags&net.FlagUp == 0 || intf.Flags&net.FlagMulticast == 0 || !interfaceHasIPv4(intf) {
-				continue
-			}
+	join := func(list []*net.Interface) {
+		for _, intf := range list {
 			if err := pc.JoinGroup(intf, g); err != nil {
 				lastErr = err
 				continue
 			}
+			joined = append(joined, intf.Name)
 			if sendIntf == nil {
 				sendIntf = intf
 			}
-			joined++
 		}
 	}
-	joinClass(false) // real NICs first
-	joinClass(true)  // then loopback
+	join(lan)
+	if len(joined) == 0 {
+		join(loopback)
+	} else {
+		// Still join loopback so same-host peers arrive, but do not pin send to it.
+		for _, intf := range loopback {
+			if err := pc.JoinGroup(intf, g); err != nil {
+				lastErr = err
+				continue
+			}
+			joined = append(joined, intf.Name)
+		}
+	}
 
-	if joined > 0 {
-		if sendIntf != nil {
-			_ = pc.SetMulticastInterface(sendIntf)
+	if len(joined) == 0 {
+		if lastErr != nil {
+			return nil, "", lastErr
 		}
-		return nil
+		return nil, "", errors.New("no multicast-capable IPv4 interface available")
 	}
-	if lastErr != nil {
-		return lastErr
+
+	if prefer, perr := hostinfo.PrimaryInterface(); perr == nil {
+		if picked := pickSendInterface(lan, &prefer); picked != nil {
+			sendIntf = picked
+		}
 	}
-	return errors.New("no multicast-capable IPv4 interface available")
+	if sendIntf != nil {
+		_ = pc.SetMulticastInterface(sendIntf)
+		send = sendIntf.Name
+	}
+	return joined, send, nil
+}
+
+func logJoin(logger log.Logger, joined []string, send string) {
+	if logger == nil {
+		return
+	}
+	logger.Log(log.Info, "ltoudp multicast joined",
+		log.Str("group", group),
+		log.Str("ifaces", strings.Join(joined, ",")),
+		log.Str("send", send))
+	if send != "" {
+		logger.Log(log.Debug, "ltoudp outbound multicast pinned to LAN interface",
+			log.Str("iface", send),
+			log.Str("note", "macOS Local Network (Privacy & Security) and the Application Firewall can silently drop UDP multicast; a CLI from Terminal is auto-allowed, a process spawned by another app uses that app's permission"))
+	}
 }
 
 // interfaceByIPv4 finds the interface owning the given IPv4 address.

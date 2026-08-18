@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
@@ -9,6 +10,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	"github.com/ObsoleteMadness/ClassicStack/core/hostinfo"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
+	"github.com/ObsoleteMadness/ClassicStack/core/metastore"
 )
 
 var (
@@ -29,6 +31,9 @@ type Plane interface {
 	// existing instance rides Reconfigure.
 	AddInstance(ctx context.Context, owner string, section config.NamedSection) error
 	RemoveInstance(ctx context.Context, owner, key, instanceName string) error
+	// SetWellKnown updates a well-known Model field (Identity, Router, Logging, HTTP,
+	// Client, FUSE) outside the registered Sections map.
+	SetWellKnown(ctx context.Context, key string, section json.RawMessage) error
 	Save(ctx context.Context) (revision string, err error)
 	// MarshalConfig serialises the live (masked) model through the configured codec —
 	// the on-disk form (TOML/UCI) — so a front-end can offer a faithful "download
@@ -81,6 +86,10 @@ type Plane interface {
 	// → a password field). Unknown/param-less types yield an empty slice. It is the
 	// schema half of ListFSTypes (which returns only the names).
 	ParamsFor(fsType string) []ParamInfo
+	// ShareBackends returns the share/volume picker catalogues (fs types, fork
+	// adapters, codecs, metastores, meta engines) plus per-fs_type param schemas
+	// so a UI can render selects and backend-specific Options without N+1 calls.
+	ShareBackends() ShareBackends
 	Diagnostics() Diagnostics
 	// SetDiagnostics installs a real diagnostics probe surface (replacing the default
 	// "unavailable" one). The cmd/compose edge wires it after the runtime is built, when
@@ -143,6 +152,8 @@ type Unit struct {
 	Binding   string
 	DependsOn []string
 	Props     map[string]string
+	// Error is the last Start failure for this unit (empty when the last Start succeeded).
+	Error string
 }
 
 // InterfaceInfo is the management view of one host NIC for the UI's device picker.
@@ -162,6 +173,18 @@ type ParamInfo struct {
 	Required bool   `json:"required"`
 	Secret   bool   `json:"secret"`
 	Doc      string `json:"doc"`
+}
+
+// ShareBackends is the one-shot catalogue a share/volume editor uses to populate
+// filesystem-type / fork / codec / metastore / meta-backend selects and to render
+// backend-specific Options from each fs_type's Param schema.
+type ShareBackends struct {
+	FSTypes        []string               `json:"fs_types"`
+	ForkBackends   []string               `json:"fork_backends"`
+	FilenameCodecs []string               `json:"filename_codecs"`
+	Metastores     []string               `json:"metastores"`
+	MetaBackends   []string               `json:"meta_backends"`
+	FSParams       map[string][]ParamInfo `json:"fs_params"`
 }
 
 // Supervisor is the lifecycle/model surface a Plane drives.
@@ -184,6 +207,9 @@ type Supervisor interface {
 	// interface so the change goes live.
 	SetInterface(ctx context.Context, iface config.InterfaceSection) error
 	RemoveInterface(ctx context.Context, name string) error
+	// SetWellKnown updates a well-known Model field (Identity, Router, Logging, HTTP,
+	// Client, FUSE) outside the registered Sections map.
+	SetWellKnown(ctx context.Context, key string, section json.RawMessage) error
 	ListFSTypes() []string
 	// ReplaceModel installs a new config model as the live source of truth and
 	// reconciles the running component set (stop → swap → rebuild → start). Used by
@@ -511,6 +537,17 @@ func (p *plane) RemoveInterface(ctx context.Context, name string) error {
 	p.logger.Log1(log.Info, "control: interface removed", log.Str("interface", name))
 	return nil
 }
+
+func (p *plane) SetWellKnown(ctx context.Context, key string, section json.RawMessage) error {
+	if err := p.sup.SetWellKnown(ctx, key, section); err != nil {
+		p.logger.Log2(log.Error, "control: set well-known failed",
+			log.Str("key", key), log.Str("err", err.Error()))
+		return err
+	}
+	p.logger.Log1(log.Info, "control: well-known section updated", log.Str("key", key))
+	return nil
+}
+
 func (p *plane) ListFSTypes() []string    { return p.sup.ListFSTypes() }
 func (p *plane) Diagnostics() Diagnostics { return p.diag }
 
@@ -541,6 +578,24 @@ func (p *plane) ParamsFor(fsType string) []ParamInfo {
 		out[i] = ParamInfo{Key: pm.Key, Required: pm.Required, Secret: pm.Secret, Doc: pm.Doc}
 	}
 	return out
+}
+
+// ShareBackends returns the share/volume picker catalogues from the linked
+// registries (fs factories, fork/meta adapters, filename codecs, metastore kinds).
+func (p *plane) ShareBackends() ShareBackends {
+	types := fs.Types()
+	params := make(map[string][]ParamInfo, len(types))
+	for _, t := range types {
+		params[t] = p.ParamsFor(t)
+	}
+	return ShareBackends{
+		FSTypes:        types,
+		ForkBackends:   fs.ForkBackends(),
+		FilenameCodecs: fs.FilenameCodecs(),
+		Metastores:     metastore.Kinds(),
+		MetaBackends:   fs.MetaBackends(),
+		FSParams:       params,
+	}
 }
 
 // userAdmin returns the supervisor's user-management surface if it exposes one,

@@ -45,7 +45,7 @@ func (f *FS) readDirUncached(path string) ([]stdfs.DirEntry, error) {
 	var out []stdfs.DirEntry
 	start := uint16(1)
 	for {
-		body, result, err := f.sessCommand("FPEnumerate", path, func(volID uint16) []byte {
+		body, result, err := f.sessCommandQuantum("FPEnumerate", path, func(volID uint16) []byte {
 			req := proto.EnumerateRequest{
 				VolID:        volID,
 				DirID:        proto.CNIDRoot,
@@ -76,8 +76,9 @@ func (f *FS) readDirUncached(path string) ([]stdfs.DirEntry, error) {
 			break
 		}
 		for _, e := range reply.Entries {
-			out = append(out, dirEntry{
-				name:      afpDecodeName(e.LongName),
+			name := afpDecodeName(e.LongName)
+			de := dirEntry{
+				name:      name,
 				dir:       e.IsDir,
 				size:      int64(e.DataForkLen),
 				rsrcLen:   int64(e.RsrcForkLen),
@@ -86,7 +87,14 @@ func (f *FS) readDirUncached(path string) ([]stdfs.DirEntry, error) {
 				afpAttrs:  e.Attributes,
 				finder:    e.FinderInfo,
 				hasFinder: true,
-			})
+			}
+			out = append(out, de)
+			// Seed Stat from Enumerate so FUSE ls getattr/listxattr/getxattr
+			// size probes do not issue per-file FPGetFileDirParms (web Finder
+			// already uses the enumerate records).
+			if fi, err := de.Info(); err == nil {
+				f.cache.putStat(childPath(path, name), fi, nil)
+			}
 		}
 		start += uint16(len(reply.Entries))
 	}
@@ -158,6 +166,9 @@ func (f *FS) getFileDirParms(path string) (proto.GetFileDirParmsReply, error) {
 
 // DiskUsage reports the volume's total/free bytes via FPGetVolParms.
 func (f *FS) DiskUsage(path string) (total, free uint64, err error) {
+	if t, fr, e, ok := f.cache.getDisk(); ok {
+		return t, fr, e
+	}
 	body, e := f.command("FPGetVolParms", "", func(volID uint16) []byte {
 		req := proto.GetVolParmsRequest{
 			VolID:  volID,
@@ -166,13 +177,18 @@ func (f *FS) DiskUsage(path string) (total, free uint64, err error) {
 		return req.Marshal()
 	})
 	if e != nil {
+		f.cache.putDisk(0, 0, e)
 		return 0, 0, e
 	}
 	vp, ok := proto.ParseVolParams(body)
 	if !ok {
-		return 0, 0, errMalformed("FPGetVolParms reply")
+		err = errMalformed("FPGetVolParms reply")
+		f.cache.putDisk(0, 0, err)
+		return 0, 0, err
 	}
-	return uint64(vp.BytesTotal), uint64(vp.BytesFree), nil
+	total, free = uint64(vp.BytesTotal), uint64(vp.BytesFree)
+	f.cache.putDisk(total, free, nil)
+	return total, free, nil
 }
 
 // CreateDir creates a directory via FPCreateDir.

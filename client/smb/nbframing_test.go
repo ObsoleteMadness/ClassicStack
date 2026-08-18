@@ -100,8 +100,8 @@ func TestNBIPXInitFrameShape(t *testing.T) {
 	if hdr.DestConnID != nbipxUnassignedConnID {
 		t.Errorf("DestConnID = %#x, want unassigned sentinel %#x", hdr.DestConnID, nbipxUnassignedConnID)
 	}
-	if hdr.SourceConnID != nbipxClientConnID {
-		t.Errorf("SourceConnID = %#x, want client conn id %#x", hdr.SourceConnID, nbipxClientConnID)
+	if hdr.SourceConnID == 0 {
+		t.Errorf("SourceConnID = 0, want a non-zero client circuit id")
 	}
 	if hdr.SendSeq != 0 {
 		t.Errorf("SendSeq = %d, want 0 (the INIT consumes seq 0; first SMB is seq 1)", hdr.SendSeq)
@@ -176,4 +176,15 @@ func waitFirstWrite(t *testing.T, l *captureLink) []byte {
 	}
 	t.Fatal("transport wrote no frame within the poll budget")
 	return nil
+}
+
+func TestNBIPXClientConnIDsAreUnique(t *testing.T) {
+	a := nextNBIPXClientConnID()
+	b := nextNBIPXClientConnID()
+	if a == 0 || b == 0 {
+		t.Fatalf("allocated 0 (%d, %d)", a, b)
+	}
+	if a == b {
+		t.Fatalf("consecutive Dials allocated the same SourceConnID %#x", a)
+	}
 }

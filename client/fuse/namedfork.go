@@ -23,14 +23,19 @@ func (a *Adapter) getattrNamedFork(base string, kind namedKind) (Stat, error) {
 		st.Flags = 0
 		return st, nil
 	}
-	n, err := a.fsys.ForkLen(base, fs.ResourceFork)
-	if err != nil {
-		return Stat{}, err
+	n, ok := wireRsrcLen(fi)
+	if !ok {
+		var err error
+		n, err = a.fsys.ForkLen(base, fs.ResourceFork)
+		if err != nil {
+			return Stat{}, err
+		}
 	}
 	st.IsDir = false
 	st.Mode = 0o644
 	st.Size = n
 	st.Flags = 0
+	a.dbg(nil, "fuse getattr namedfork", log.Str("path", base), log.Int("size", n))
 	return st, nil
 }
 
@@ -50,11 +55,16 @@ func (a *Adapter) openNamedFork(base string, kind namedKind, flags int) (uint64,
 	f, err := a.fsys.OpenFork(base, fs.ResourceFork, flag)
 	if err != nil {
 		trace("Open namedfork %q → err=%v", base, err)
+		a.dbg(err, "fuse open namedfork", log.Str("path", base))
 		return 0, err
 	}
 	h := &openFile{path: base, f: f, flag: flag, rsrc: true}
+	if st, err := f.Stat(); err == nil {
+		h.size = st.Size()
+		h.hasSize = true
+	}
 	fh := a.handles.add(h)
 	trace("Open namedfork %q → fh=%d", base, fh)
-	a.log.Log2(log.Debug, "fuse open namedfork", log.Str("path", base), log.Int("fh", int64(fh)))
+	a.dbg(nil, "fuse open namedfork", log.Str("path", base), log.Int("fh", int64(fh)))
 	return fh, nil
 }

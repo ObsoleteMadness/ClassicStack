@@ -81,9 +81,10 @@ type Session struct {
 	rootDir   uint8  // permanent dir handle bound to the volume root
 	rwBuffer  uint16 // negotiated read/write buffer size
 
-	mu   sync.Mutex
-	req  proto.Requester
-	conn uint16
+	mu        sync.Mutex
+	req       proto.Requester
+	conn      uint16
+	encrypted bool // keyed bindery login was used (else cleartext)
 }
 
 // DialParams carries what Open needs beyond the transport: the volume to mount and the
@@ -236,6 +237,7 @@ func (s *Session) login(user, password string) error {
 		if err := s.loginEncrypted(name, password, key); err != nil {
 			return err
 		}
+		s.encrypted = true
 		return nil
 	}
 	return s.loginUnencrypted(user, password)

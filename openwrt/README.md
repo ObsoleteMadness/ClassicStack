@@ -65,10 +65,12 @@ drop both together if you build without raw-Ethernet transports.
 logread -e classicstack              # follow logs (procd captures stdout/stderr)
 ```
 
-To expose the management UI, set `option http_addr ':8080'` in the
-`config classicstack 'init'` block and reload. HTTP Basic over that address has
-no TLS of its own — keep it on the LAN or behind a TLS reverse proxy, and note
-the web-admin requires a first-run setup before it serves anything.
+The management UI is on **:1984** by default (`config http`). Override the
+listen address with `option http_addr ':1984'` in `config classicstack 'init'`,
+or set `option enabled '0'` under `config http` to turn it off. HTTP Basic over
+that address has no TLS of its own — keep it on the LAN or behind a TLS reverse
+proxy, and note the web-admin requires a first-run setup before it serves
+anything.
 
 ## Privileges & interfaces
 

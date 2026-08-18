@@ -1,4 +1,4 @@
-//go:build pcap
+//go:build pcap || all
 
 package link
 
@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/ObsoleteMadness/ClassicStack/adapter/capture/pcapfile"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/framing"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/pcap"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
@@ -17,7 +18,7 @@ import (
 // frames ("" captures everything); EtherDFS/IPX/NetBEUI pass their own filter, so they
 // are NOT constrained to the EtherTalk "atalk or aarp" preset. The caller's framer
 // deframes what survives.
-func openPcapFrame(device, filter string) (link.FrameLink, error) {
+func openPcapFrame(device, filter, capturePath string, captureSnaplen uint32) (link.FrameLink, error) {
 	if device == "" {
 		return nil, fmt.Errorf("pcap transport needs a NIC device name")
 	}
@@ -27,20 +28,22 @@ func openPcapFrame(device, filter string) (link.FrameLink, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open pcap %s: %w", device, err)
 	}
-	return fl, nil
+	return maybeCapture(fl, capturePath, pcapfile.LinkTypeEthernet, captureSnaplen), nil
 }
 
 // openPcapDDP opens an EtherTalk NIC via libpcap with Ethernet/SNAP DDP framing
 // (mirrors atlink.openPcap): the AFP-over-EtherTalk path. It keeps the EtherTalk BPF
 // filter so the handle only surfaces DDP + AARP.
-func openPcapDDP(device string, network uint16, srcNode uint8) (link.DatagramLink, error) {
-	_ = network
-	_ = srcNode
-	fl, err := openPcapFrame(device, pcap.EtherTalkBPFFilter)
+func openPcapDDP(device string, mac [6]byte, capturePath string, captureSnaplen uint32) (link.DatagramLink, error) {
+	fl, err := openPcapFrame(device, pcap.EtherTalkBPFFilter, capturePath, captureSnaplen)
 	if err != nil {
 		return nil, err
 	}
-	framer := &framing.EtherTalk{SrcMAC: interfaceMAC(device)}
+	src := mac[:]
+	if mac == ([6]byte{}) {
+		src = interfaceMAC(device)
+	}
+	framer := &framing.EtherTalk{SrcMAC: src}
 	dl, err := framer.Framing(fl)
 	if err != nil {
 		_ = fl.Close()

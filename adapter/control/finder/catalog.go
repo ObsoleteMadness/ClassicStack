@@ -9,6 +9,7 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
+	"github.com/ObsoleteMadness/ClassicStack/core/protocol/asp"
 )
 
 func joinStore(parent, name string) string {
@@ -20,6 +21,20 @@ func joinStore(parent, name string) string {
 		return parent
 	}
 	return parent + "/" + name
+}
+
+// hiddenListingName reports sidecar / Netatalk metadata names that catalogs omit
+// when the share's fork adapter consumes them (AppleDouble, derez). A nofork
+// share does not implement ListingFilter, so a host `._file` stays visible.
+func hiddenListingName(ffs fs.ForkFS, name string) bool {
+	if f, ok := ffs.(fs.ListingFilter); ok && f.HiddenName(name) {
+		return true
+	}
+	switch strings.ToLower(name) {
+	case ".appledesktop", ".desktop.db":
+		return true
+	}
+	return false
 }
 
 func (s *Service) pathFor(sess *Session, id uint32) (string, error) {
@@ -104,8 +119,11 @@ func (s *Service) Children(sessionID string, parentID uint32) ([]Node, error) {
 	pid := ffs.Meta().EnsureCNID(path)
 	out := make([]Node, 0, len(ents))
 	for _, e := range ents {
+		if hiddenListingName(ffs, e.Name()) {
+			continue
+		}
 		child := joinStore(path, e.Name())
-		n, err := nodeFrom(ffs, child, e.Name(), e.IsDir(), pid)
+		n, err := nodeFromEntry(ffs, child, e, pid)
 		if err != nil {
 			return nil, err
 		}
@@ -115,18 +133,36 @@ func (s *Service) Children(sessionID string, parentID uint32) ([]Node, error) {
 	return out, nil
 }
 
-// Lookup finds a named child of parent.
+// Lookup finds a named child of parent via Stat, not a full directory listing.
+// Icon\\r probes (and other one-name lookups) must not enumerate every sibling
+// over AFP.
 func (s *Service) Lookup(sessionID string, parentID uint32, name string) (Node, error) {
-	kids, err := s.Children(sessionID, parentID)
+	sess, err := s.get(sessionID)
 	if err != nil {
 		return Node{}, err
 	}
-	for _, n := range kids {
-		if n.Name == name {
-			return n, nil
-		}
+	ffs, err := sess.requireFS()
+	if err != nil {
+		return Node{}, err
 	}
-	return Node{}, ErrNotFound
+	parent, err := s.pathFor(sess, parentID)
+	if err != nil {
+		return Node{}, err
+	}
+	name = strings.Trim(name, "/")
+	if name == "" || strings.Contains(name, "/") {
+		return Node{}, ErrNotFound
+	}
+	path := joinStore(parent, name)
+	info, err := ffs.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Node{}, ErrNotFound
+		}
+		return Node{}, err
+	}
+	s.log.Log2(log.Debug, "finder lookup", log.Str("path", path), log.Str("name", name))
+	return nodeFrom(ffs, path, name, info.IsDir(), ffs.Meta().EnsureCNID(parent))
 }
 
 // Mkdir creates a directory.
@@ -297,7 +333,10 @@ func (s *Service) Remove(sessionID string, id uint32) error {
 	return ffs.Meta().RemoveCNID(path)
 }
 
-// ReadFork reads a slice of a data or resource fork.
+// ReadFork reads a slice of a data or resource fork. Like classicstack-web
+// withOpenFork, it always opens the fork first, reads, and closes when finished
+// so classic servers do not leak fork slots. A missing length reads until EOF
+// in ASP-quantum chunks instead of ForkLen + allocating the whole fork.
 func (s *Service) ReadFork(sessionID string, id uint32, resource bool, off, length int64) ([]byte, error) {
 	sess, err := s.get(sessionID)
 	if err != nil {
@@ -315,28 +354,39 @@ func (s *Service) ReadFork(sessionID string, id uint32, resource bool, off, leng
 	if resource {
 		fork = fs.ResourceFork
 	}
-	if length <= 0 {
-		sz, err := ffs.ForkLen(path, fork)
-		if err != nil {
-			return nil, err
-		}
-		length = sz - off
-		if length < 0 {
-			length = 0
-		}
-	}
 	f, err := ffs.OpenFork(path, fork, os.O_RDONLY)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	buf := make([]byte, length)
-	n, err := f.ReadAt(buf, off)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, err
+
+	var data []byte
+	if length > 0 {
+		buf := make([]byte, length)
+		n, err := f.ReadAt(buf, off)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, err
+		}
+		data = buf[:n]
+	} else {
+		chunk := make([]byte, asp.QuantumSize)
+		pos := off
+		for {
+			n, err := f.ReadAt(chunk, pos)
+			if n > 0 {
+				data = append(data, chunk[:n]...)
+				pos += int64(n)
+			}
+			if n == 0 || errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
-	s.log.Log2(log.Debug, "finder read fork", log.Str("path", path), log.Int("n", int64(n)))
-	return buf[:n], nil
+	s.log.Log2(log.Debug, "finder read fork", log.Str("path", path), log.Int("n", int64(len(data))))
+	return data, nil
 }
 
 // WriteFork writes a slice of a data or resource fork.

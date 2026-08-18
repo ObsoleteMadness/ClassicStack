@@ -479,12 +479,23 @@ Clients get IPs on an **existing** subnet. The gateway:
 Return routing requires the rest of the network to reach the MacIP subnet (proxy
 ARP handles the local segment; off-segment needs a host route).
 
+Bridge mode injects Ethernet frames (proxy-ARP replies and IP datagrams) sourced
+from `host_mac`. That works on wired Ethernet. **On WiFi use NAT mode** (§6.2):
+access points drop frames not sourced from the associated NIC MAC, and extra ARP
+identities for leased client IPs are not reliable. ClassicStack logs a warning
+when bridge mode starts.
+
 ### 6.2 NAT mode
 
 Off-subnet client traffic is forwarded through the **host OS network stack**
 (real sockets) so the host's own IP is the NAT source — no host route needed.
 ICMP echo to the *gateway IP itself* is answered locally. Replies are reassembled
 and delivered back through the inbound callback.
+
+NAT-only (`mode = "nat"` and `dhcp_relay = false`) does **not** open a pcap
+handle: there is nothing to inject. That is the WiFi path (Mac laptop, Npcap).
+`dhcp_relay` still needs pcap and fabricates per-Mac MACs (`02:00:00:…`) that
+WiFi APs will drop — leave it false on wireless.
 
 ### 6.3 DHCP-relay mode
 
@@ -504,7 +515,9 @@ AssignIP(atNet, atNode, requested):           # called in place of the static po
 
 The fabricated MAC uses the locally-administered OUI `02:00:00` followed by the
 3-byte AppleTalk address, giving each Mac a **stable** identity so the DHCP
-server hands back the same lease across reconnects. The resulting lease is
+server hands back the same lease across reconnects. Those fabricated MACs are
+dropped by WiFi APs — do not enable `dhcp_relay` on wireless (use NAT mode with
+the static pool instead). The resulting lease is
 recorded in an "external" table (it may fall outside the static range) so inbound
 IP for it still routes to the right Mac.
 

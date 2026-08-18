@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -78,6 +79,27 @@ func (s *fakeSupervisor) RemoveInterface(_ context.Context, name string) error {
 		delete(s.model.Interfaces, name)
 	}
 	return nil
+}
+func (s *fakeSupervisor) SetWellKnown(_ context.Context, key string, section json.RawMessage) error {
+	if s.model == nil {
+		return nil
+	}
+	switch key {
+	case config.IdentityKey:
+		return json.Unmarshal(section, &s.model.Identity)
+	case "Router":
+		return json.Unmarshal(section, &s.model.Router)
+	case "Logging":
+		return json.Unmarshal(section, &s.model.Logging)
+	case config.HTTPKey:
+		return json.Unmarshal(section, &s.model.HTTP)
+	case config.ClientKey:
+		return json.Unmarshal(section, &s.model.Client)
+	case config.FUSEKey:
+		return json.Unmarshal(section, &s.model.FUSE)
+	default:
+		return errors.New("unknown well-known key")
+	}
 }
 func (s *fakeSupervisor) SetAdminAuth(a config.AdminAuth) {
 	if s.model != nil {

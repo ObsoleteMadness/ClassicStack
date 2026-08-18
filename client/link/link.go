@@ -30,6 +30,7 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/framing"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/inmem"
+	"github.com/ObsoleteMadness/ClassicStack/core/hostinfo"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 )
 
@@ -104,11 +105,12 @@ type Opener struct {
 	// client/atalk), in which case it opens a FrameLink and frames it itself.
 	Net  uint16
 	Node uint8
-	// MAC, when non-zero, is the hardware address a raw-Ethernet client transport
-	// (SMB-over-IPX, EtherDFS) presents as its virtual station's source node. The client
-	// is a distinct station on the segment the pcap device bridges, not the host itself,
-	// so it must NOT borrow the host NIC's MAC; a zero value tells the transport to
-	// synthesise a locally-administered random MAC (the default). A CLI -mac flag pins it.
+	// MAC, when non-zero, is the Ethernet source a raw-Ethernet client transport
+	// (SMB-over-IPX, EtherDFS, NBF) stamps. NewOpener fills this from the host NIC
+	// for pcap/tap (the same "be the host" default the server uses: WiFi APs drop
+	// any other source). A caller that pins a MAC (CLI -mac, [[interface]]
+	// hw_address) overwrites it. A still-zero value lets the transport synthesise a
+	// locally-administered random MAC (wired Ethernet spoofing / tests).
 	MAC [6]byte
 	// inmemPeer, when set, is the loopback peer a KindInmem opener hands back so an
 	// in-process test can wire the client to a server over one frame pair.
@@ -118,6 +120,9 @@ type Opener struct {
 	// a running server's Inbound, so the whole AFP client stack (ATP requester, ASP
 	// session, fs adapter) runs against the real service without a wire.
 	datagram link.DatagramLink
+	// CapturePath / CaptureSnaplen tee raw frames to a pcap file when non-empty (pcap/tap).
+	CapturePath    string
+	CaptureSnaplen uint32
 }
 
 // LLAP node-ID ranges (Inside AppleTalk, 2nd ed., §1 "LocalTalk Link Access Protocol",
@@ -160,7 +165,13 @@ func pickClientNode() uint8 {
 // are deliverable and do not collide with the server; callers that run a real node-claim
 // or need a specific node set Opener.Node afterwards.
 func NewOpener(spec Spec) *Opener {
-	return &Opener{Spec: spec, Net: 0, Node: pickClientNode()}
+	o := &Opener{Spec: spec, Net: 0, Node: pickClientNode()}
+	if IsRawEtherKind(spec.Kind) && spec.Name != "" {
+		if mac, err := hostinfo.HardwareAddrForDevice(spec.Name, nil); err == nil {
+			o.MAC = mac
+		}
+	}
+	return o
 }
 
 // NewInmemOpener builds an Opener whose FrameLink is one end of an in-memory pair;
@@ -192,7 +203,7 @@ func (o *Opener) FrameLink(filter string) (link.FrameLink, error) {
 		a, _ := inmem.Pair(16)
 		return a, nil
 	case KindPcap:
-		return openPcapFrame(o.Spec.Name, filter)
+		return openPcapFrame(o.Spec.Name, filter, o.CapturePath, o.CaptureSnaplen)
 	case KindTap:
 		// A TUN/TAP device is a raw Ethernet FrameLink with no libpcap dependency — the
 		// pcap-free alternative for the raw-Ethernet carriers on Linux. It delivers whole
@@ -218,7 +229,7 @@ func (o *Opener) DatagramLinkDDP() (link.DatagramLink, error) {
 	case KindTashTalk:
 		return openTashTalk(o.Spec.Name, o.Spec.Baud, o.Net, o.Node)
 	case KindPcap:
-		return openPcapDDP(o.Spec.Name, o.Net, o.Node)
+		return openPcapDDP(o.Spec.Name, o.MAC, o.CapturePath, o.CaptureSnaplen)
 	case KindInmem:
 		fl, err := o.FrameLink("")
 		if err != nil {

@@ -125,6 +125,7 @@ type Service struct {
 	loginMsg   string                       // greeting served as the login message (FPGetSrvrMsg type 0); "" = none
 	running    bool
 	stopping   bool // Stop's client-notice phase is underway (still serving; a second Stop is a no-op)
+	enabled    bool // configured-enabled flag (component.Enableable); default true
 }
 
 // Authenticator validates a (username, cleartext password) credential. It is the
@@ -177,6 +178,7 @@ func New(logger log.Logger) *Service {
 		socket:        defaultSocket,
 		sessions:      newSessionTable(),
 		pendingWrites: newPendingWriteTable(),
+		enabled:       true, // unit tests and missing config keep the service on
 	}
 	// §10d reactor: observe foreign-origin FS mutations under one of our volumes.
 	// AFP is deliberately EXCLUDED from wire notifications — classic AFP has no
@@ -472,16 +474,34 @@ func (s *Service) busForSpec(spec fs.ShareSpec) bus.Bus {
 	return resolve(spec)
 }
 
+// SetEnabled records the configured-enabled flag (component.Enableable). The compose
+// factory sets it from the AFP server section; missing config keeps the New() default
+// of true so existing deployments without enabled= stay on.
+func (s *Service) SetEnabled(enabled bool) {
+	s.mu.Lock()
+	s.enabled = enabled
+	s.mu.Unlock()
+}
+
+// Enabled reports the configured-enabled flag (component.Enableable).
+func (s *Service) Enabled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.enabled
+}
+
 // ApplyConfig hot-applies a changed volume set (§11b): the AFP "config" is the set
 // of repeated volume sections (config.Model.Lists[VolumesKey]), not a singleton
-// section, so the passed section payload is ignored — ApplyConfig re-resolves the
-// whole desired set from the model and reconciles it against the live volumes via
-// the share.Manager (Add new, Update changed, Remove dropped). A volume's fs-type /
-// backend change is absorbed by UpdateShare rebuilding that one volume's stack — no
-// service restart, and unrelated sessions are undisturbed. When no resolver is wired
+// section, so a nil / other payload re-resolves the whole desired set from the model
+// and reconciles it against the live volumes via the share.Manager (Add new, Update
+// changed, Remove dropped). A *ServerSection payload (Enabled / identity / transports)
+// needs a restart so Start can re-evaluate advertising. When no resolver is wired
 // (e.g. a unit-level service with no compose root) it returns ErrNeedsRestart so the
 // supervisor falls back to the rebuild path.
-func (s *Service) ApplyConfig(_ any) error {
+func (s *Service) ApplyConfig(section any) error {
+	if ss, ok := section.(*ServerSection); ok && ss != nil {
+		return component.ErrNeedsRestart
+	}
 	s.mu.Lock()
 	resolve := s.resolver
 	s.mu.Unlock()
@@ -649,6 +669,10 @@ func (s *Service) Start(ctx context.Context) error {
 		return nil
 	}
 	s.running = true
+	if !s.enabled {
+		s.logf("AFP service disabled; not advertising")
+		return nil
+	}
 	s.drainStop = make(chan struct{})
 	s.subscribeReactorLocked()
 	s.registerNBPLocked()
@@ -804,6 +828,7 @@ func (s *Service) Dependencies() []string { return []string{router.Name, nbpComp
 // compile-time assertions.
 var (
 	_ component.Component    = (*Service)(nil)
+	_ component.Enableable   = (*Service)(nil)
 	_ component.Configurable = (*Service)(nil)
 	_ component.DependsOn    = (*Service)(nil)
 	_ router.Service         = (*Service)(nil)

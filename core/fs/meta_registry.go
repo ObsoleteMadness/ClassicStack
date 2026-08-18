@@ -2,6 +2,7 @@ package fs
 
 import (
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 
@@ -50,4 +51,16 @@ func metaEngineByName(name string, spec ShareSpec, base FileSystem, store metast
 		return nil, errors.New("fs: unknown meta backend")
 	}
 	return f(spec, base, store)
+}
+
+// MetaBackends returns the registered MetaEngine names a share can select, sorted.
+func MetaBackends() []string {
+	metaEngineMu.RLock()
+	out := make([]string, 0, len(metaEngineAdaps))
+	for name := range metaEngineAdaps {
+		out = append(out, name)
+	}
+	metaEngineMu.RUnlock()
+	sort.Strings(out)
+	return out
 }

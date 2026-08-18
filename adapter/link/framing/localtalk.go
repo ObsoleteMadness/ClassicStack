@@ -38,6 +38,11 @@ const (
 	llapProbeInterval = 250 * time.Millisecond
 )
 
+// claimCloseWait is how long Close waits for the node-claim goroutine after the
+// serial link is closed. The loop should exit on the next done/close signal; this
+// cap keeps TashTalk shutdown from hanging when a driver ignores Close.
+const claimCloseWait = 2 * time.Second
+
 var (
 	// ErrShortLLAP is returned (and surfaced as a skipped frame) for a frame too
 	// small to hold the 3-byte LLAP header.
@@ -272,6 +277,9 @@ func (d *ltDatagramLink) node() uint8 {
 // link's ErrTimeout/ErrClosed.
 func (d *ltDatagramLink) ReadDatagram() (ddp.Datagram, error) {
 	for {
+		if err := d.checkClosed(); err != nil {
+			return ddp.Datagram{}, err
+		}
 		frame, err := d.fl.Read()
 		if err != nil {
 			return ddp.Datagram{}, err
@@ -360,8 +368,28 @@ func (d *ltDatagramLink) Close() error {
 		}
 	}
 	err := d.fl.Close()
-	d.wg.Wait()
+	waitDone := make(chan struct{})
+	go func() {
+		d.wg.Wait()
+		close(waitDone)
+	}()
+	select {
+	case <-waitDone:
+	case <-time.After(claimCloseWait):
+	}
 	return err
+}
+
+func (d *ltDatagramLink) checkClosed() error {
+	if d.done == nil {
+		return nil
+	}
+	select {
+	case <-d.done:
+		return link.ErrClosed
+	default:
+		return nil
+	}
 }
 
 // claimLoop runs the LLAP node-address acquisition: probe the candidate node with
@@ -411,9 +439,21 @@ func (d *ltDatagramLink) probeBurst() bool {
 		// be deaf for the whole burst and could never hear the defending ACK that
 		// signals a collision — it would "win" every candidate by deafness. Cheap and
 		// idempotent: the engine reuses one candidate for a whole burst.
+		select {
+		case <-d.done:
+			return true
+		default:
+		}
 		d.armNodeFilter(enq.Dst)
+		if err := d.checkClosed(); err != nil {
+			return true
+		}
 		d.logControl("LLAP tx", enq)
-		_ = d.fl.Write(llap.EncodeControl(enq))
+		if err := d.fl.Write(llap.EncodeControl(enq)); err != nil {
+			if errors.Is(err, link.ErrClosed) {
+				return true
+			}
+		}
 
 		select {
 		case <-d.done:

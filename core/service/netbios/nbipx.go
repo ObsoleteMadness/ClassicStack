@@ -285,9 +285,11 @@ func keyFor(d *ipxproto.Datagram, hdr *protocol.NBIPXSessionHeader) ipxCircuitKe
 // a local connection ID, opens the circuit keyed by the peer's address +
 // SourceConnID, and replies with a DATA frame that assigns our ID (SourceConnID) and
 // echoes the client's (DestConnID), swapping the two names (the wire's session-accept
-// form: [calling || called || trailer]). A repeated request for an existing circuit
-// re-accepts with the same local ID (idempotent retransmit handling). The circuit is
-// then ready to carry SMB messages. (ERRATA captures/ipx.pcap frames 23/24.)
+// form: [calling || called || trailer]). A repeated request for a still-unused
+// circuit re-accepts with the same local ID (idempotent retransmit handling). A
+// request that collides with a circuit that has already carried data is a reconnect:
+// the old circuit is torn down and a fresh one accepted (clients reuse SourceConnID
+// 0x0001 across Dial, and Close does not send SESSION_END).
 func (e *ipxSessionEngine) handleSessionRequest(d *ipxproto.Datagram, hdr *protocol.NBIPXSessionHeader) {
 	if len(d.Payload) < protocol.NBIPXSessionHeaderLen+nbipxSessionRequestNameLen {
 		return
@@ -300,6 +302,12 @@ func (e *ipxSessionEngine) handleSessionRequest(d *ipxproto.Datagram, hdr *proto
 	key := keyFor(d, hdr)
 	e.mu.Lock()
 	c := e.circuits[key]
+	var stale SessionCircuit
+	if c != nil && ipxCircuitUsed(c) {
+		stale = c.conn
+		delete(e.circuits, key)
+		c = nil
+	}
 	if c == nil {
 		c = &ipxCircuit{
 			net:      d.SrcNet,
@@ -315,6 +323,9 @@ func (e *ipxSessionEngine) handleSessionRequest(d *ipxproto.Datagram, hdr *proto
 	}
 	localID, sendSeq, recvSeq := c.localID, c.sendSeq, c.recvSeq
 	e.mu.Unlock()
+	if stale != nil {
+		stale.Close()
+	}
 
 	// Session-accept payload: swap the called/calling names, preserve the trailer.
 	accept := make([]byte, 0, nbipxSessionRequestNameLen+len(trailer))
@@ -323,6 +334,13 @@ func (e *ipxSessionEngine) handleSessionRequest(d *ipxproto.Datagram, hdr *proto
 	accept = append(accept, trailer...)
 	e.sendSessionAccept(d, hdr, localID, sendSeq, recvSeq, accept)
 	e.logf("NBIPX circuit established")
+}
+
+// ipxCircuitUsed reports whether c has carried session data (or opened an SMB conn)
+// so a new SESSION_INITIALIZE with the same remote id is a reconnect, not an INIT
+// retransmit. A fresh accept has recvSeq 1, sendSeq 0, and no conn.
+func ipxCircuitUsed(c *ipxCircuit) bool {
+	return c.conn != nil || c.sendSeq != 0 || c.recvSeq != 1 || len(c.frag) > 0 || len(c.lastResp) > 0
 }
 
 // sendSessionAccept replies to a session request with a DATA frame that assigns our

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	aspclient "github.com/ObsoleteMadness/ClassicStack/client/asp"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	proto "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 )
 
@@ -37,42 +38,108 @@ func LoginNegotiated(sess *aspclient.Session, user, pass string, srv proto.Serve
 		version = proto.AFPVersion21 // GetStatus failed / no known version advertised
 	}
 
-	// Guest (No User Authent) when no user is given; otherwise the cleartext UAM,
-	// preferring the server's advertised spelling (case varies by server) and falling
-	// back to the canonical constant when it did not advertise the list.
-	uam := proto.UAMNoUserAuthent
-	if user != "" {
-		uam = pickCleartextUAM(srv)
+	var uam string
+	var err error
+	if user == "" {
+		uam, err = pickGuestUAM(srv)
+	} else {
+		uam, err = pickPasswordUAM(srv)
+	}
+	if err != nil {
+		return err
+	}
+	afpLog.Log(log.Debug, "FPLogin negotiate",
+		log.Str("version", version),
+		log.Str("uam", uam),
+		log.Str("user", user),
+		log.Int("pass_len", int64(len(pass))),
+		log.Str("advertised_versions", strings.Join(srv.AFPVersions, "|")),
+		log.Str("advertised_uams", strings.Join(srv.UAMs, "|")),
+		log.Bool("guest", user == ""))
+	if user != "" && proto.IsRandnumUAM(uam) {
+		return loginRandnum(sess, version, uam, user, pass)
 	}
 	return login(sess, version, uam, user, pass)
 }
 
-// pickCleartextUAM returns the server's advertised cleartext-password UAM name (the
-// spelling/case varies — "Cleartxt Passwrd" vs "Cleartxt passwrd"), or the canonical
-// constant when the server advertised no UAM list. It matches case-insensitively
-// against the known cleartext name so either spelling the server used is honoured.
-func pickCleartextUAM(srv proto.ServerInfo) string {
+// pickGuestUAM returns the server's advertised guest UAM name (spelling varies) when
+// the server offers one. When GetStatus failed (empty UAM list) it falls back to the
+// canonical constant.
+func pickGuestUAM(srv proto.ServerInfo) (string, error) {
 	for _, u := range srv.UAMs {
-		if strings.EqualFold(u, proto.UAMCleartext) {
-			return u // use the server's exact spelling
+		if strings.EqualFold(u, proto.UAMNoUserAuthent) {
+			return u, nil
 		}
 	}
-	return proto.UAMCleartext
+	if len(srv.UAMs) == 0 {
+		return proto.UAMNoUserAuthent, nil
+	}
+	return "", fmt.Errorf("afp: server does not offer guest login (advertised uams: %v)", srv.UAMs)
+}
+
+// pickPasswordUAM picks the best password UAM the server advertised that this client
+// implements. ClassicStack-web prefers advertised cleartext (verbatim spelling) and
+// only uses Randnum when cleartext is absent. System 7.1 Personal File Sharing
+// accepts a word-aligned Cleartxt FPLogin; a misaligned password field returns
+// kFPUserNotAuth (observed 2026-08-18).
+func pickPasswordUAM(srv proto.ServerInfo) (string, error) {
+	if u, err := pickCleartextUAM(srv); err == nil {
+		return u, nil
+	}
+	if u, err := pickRandnumUAM(srv); err == nil {
+		return u, nil
+	}
+	if len(srv.UAMs) == 0 {
+		return proto.UAMCleartext, nil
+	}
+	return "", fmt.Errorf("afp: no supported password UAM (advertised uams: %v)", srv.UAMs)
+}
+
+// pickRandnumUAM returns the server's advertised Randnum exchange UAM name (verbatim
+// spelling), or the canonical constant when GetStatus failed.
+func pickRandnumUAM(srv proto.ServerInfo) (string, error) {
+	for _, u := range srv.UAMs {
+		if proto.IsRandnumUAM(u) {
+			return u, nil
+		}
+	}
+	if len(srv.UAMs) == 0 {
+		return proto.UAMRandnum, nil
+	}
+	return "", fmt.Errorf("afp: server does not offer Randnum exchange (advertised uams: %v)", srv.UAMs)
+}
+
+// pickCleartextUAM returns the server's advertised cleartext-password UAM name (the
+// spelling/case varies — "Cleartxt Passwrd" vs "Cleartxt passwrd"), or the canonical
+// constant when GetStatus failed (empty list). When the server advertised UAMs but none
+// is cleartext, it returns an error rather than sending an unsupported UAM name.
+func pickCleartextUAM(srv proto.ServerInfo) (string, error) {
+	for _, u := range srv.UAMs {
+		if strings.EqualFold(u, proto.UAMCleartext) {
+			return u, nil
+		}
+	}
+	if len(srv.UAMs) == 0 {
+		return proto.UAMCleartext, nil
+	}
+	return "", fmt.Errorf("afp: server does not offer cleartext password login (advertised uams: %v)", srv.UAMs)
 }
 
 // login sends one FPLogin command block with the chosen version/UAM/credentials and
 // maps a non-zero AFP result to an error.
 func login(sess *aspclient.Session, version, uam, user, pass string) error {
-	req := proto.LoginRequest{AFPVersion: version, UAM: uam}
-	if uam != proto.UAMNoUserAuthent {
-		req.User = user
-		req.Pass = pass
-	}
+	req := proto.LoginRequest{AFPVersion: version, UAM: uam, User: user, Pass: pass}
 	_, result, err := sess.Command(req.Marshal())
 	if err != nil {
 		return err
 	}
 	if result != proto.NoErr {
+		afpLog.Log(log.Debug, "FPLogin failed",
+			log.Str("version", version),
+			log.Str("uam", uam),
+			log.Bool("guest", strings.EqualFold(uam, proto.UAMNoUserAuthent)),
+			log.Str("result", proto.ResultName(result)),
+			log.Int("code", int64(result)))
 		return afpError("FPLogin", result)
 	}
 	return nil

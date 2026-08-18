@@ -40,6 +40,9 @@ var (
 
 	mutedMu sync.Mutex
 	muted   = map[string]bool{}
+
+	extraMu    sync.Mutex
+	extraSinks []log.Sink
 )
 
 // SetVerbose turns the client wire-trace on (Trace) or off (silent). csfs's `-v` flag
@@ -52,6 +55,20 @@ func SetVerbose(on bool) {
 		return
 	}
 	sharedLevel.Set(levelOff)
+}
+
+// SetLevel sets the client-trace threshold. classicstack uses this so AFP/FUSE
+// Debug command logs appear when [Logging] Level is debug, without ATP Trace spam.
+func SetLevel(lvl log.Level) { sharedLevel.Set(lvl) }
+
+// AddSink fans client-trace records to an extra sink (bus ring, client log file).
+func AddSink(s log.Sink) {
+	if s == nil {
+		return
+	}
+	extraMu.Lock()
+	extraSinks = append(extraSinks, s)
+	extraMu.Unlock()
 }
 
 // SetScope enables or disables one named logger scope when verbose is on. Scopes start
@@ -87,18 +104,40 @@ func scopeMuted(scope string) bool {
 // (Enabled stays false) and drops Write.
 type gatedSink struct{ scope string }
 
+func extraMin() log.Level {
+	extraMu.Lock()
+	defer extraMu.Unlock()
+	min := sharedSink.Min()
+	for _, s := range extraSinks {
+		if m := s.Min(); m < min {
+			min = m
+		}
+	}
+	return min
+}
+
 func (g *gatedSink) Min() log.Level {
 	if scopeMuted(g.scope) {
 		return levelOff
 	}
-	return sharedSink.Min()
+	return extraMin()
 }
 
 func (g *gatedSink) Write(rec log.Record) {
 	if scopeMuted(g.scope) {
 		return
 	}
-	sharedSink.Write(rec)
+	if rec.Level >= sharedSink.Min() {
+		sharedSink.Write(rec)
+	}
+	extraMu.Lock()
+	sinks := extraSinks
+	extraMu.Unlock()
+	for _, s := range sinks {
+		if rec.Level >= s.Min() {
+			s.Write(rec)
+		}
+	}
 }
 
 func (g *gatedSink) Close() error { return nil }

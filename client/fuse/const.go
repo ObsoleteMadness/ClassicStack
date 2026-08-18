@@ -34,3 +34,12 @@ var errIsDir = errors.New("fuse: is a directory")
 
 // errNotDir is returned when a directory operation is applied to a file.
 var errNotDir = errors.New("fuse: not a directory")
+
+// macFUSE iosize (bytes) is the I/O block size of the hypothetical backing
+// device. A slow link (AFP over EtherTalk) stays more responsive with the
+// smallest legal value: 16 KiB on Apple Silicon, 4 KiB on Intel. Must be a
+// power of two; default without -oiosize is 64 KiB.
+const (
+	fuseIOSizeDarwinARM64 = 16384
+	fuseIOSizeDarwinIntel = 4096
+)

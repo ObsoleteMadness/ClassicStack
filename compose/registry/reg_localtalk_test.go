@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/ObsoleteMadness/ClassicStack/adapter/link/ltoudp"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
@@ -20,7 +21,9 @@ import (
 func swapLtoudpOpen(t *testing.T, fn func(iface string) (link.FrameLink, error)) {
 	t.Helper()
 	prev := ltoudpOpen
-	ltoudpOpen = fn
+	ltoudpOpen = func(cfg ltoudp.Config) (link.FrameLink, error) {
+		return fn(cfg.Interface)
+	}
 	t.Cleanup(func() { ltoudpOpen = prev })
 }
 

@@ -109,6 +109,9 @@ func TestVolumeSectionValidate(t *testing.T) {
 	if err := (&VolumeSection{VName: "ok"}).Validate(); err != nil {
 		t.Fatalf("named volume should validate: %v", err)
 	}
+	if err := (&VolumeSection{VName: "disk", FSType: "local_fs"}).Validate(); err == nil {
+		t.Fatal("local_fs volume without a path should fail validation")
+	}
 }
 
 func TestSpecsFromModelInOrder(t *testing.T) {

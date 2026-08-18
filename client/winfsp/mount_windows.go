@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	csfuse "github.com/ObsoleteMadness/ClassicStack/client/fuse"
 	winfsp "github.com/winfsp/go-winfsp"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
@@ -69,6 +70,11 @@ func New(fsys fs.ForkFS, opts Options) *Adapter { return newAdapter(fsys, opts) 
 // "X:" or an empty directory). It is the entry point cmd/csmount drives. Read-only is
 // honoured via Options.ReadOnly in the Adapter itself (see newAdapter).
 func MountAt(fsys fs.ForkFS, mountpoint string, opts Options) (*Mount, error) {
+	var err error
+	mountpoint, err = csfuse.ResolveMountpoint(mountpoint)
+	if err != nil {
+		return nil, err
+	}
 	a := newAdapter(fsys, opts)
 	host, err := winfsp.Mount(a.mountable(), mountpoint, a.mountOptions(opts)...)
 	if err != nil {

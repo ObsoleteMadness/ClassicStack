@@ -46,6 +46,10 @@ const (
 	// NBIPX is NetBIOS-over-IPX (NWLink) — the mailslot rides an NMPI MailslotSend in an
 	// IPX type-20 datagram on socket 0x0553.
 	NBIPX Protocol = "nbipx"
+	// TCP is the TCP/IP browse family (NBT name service + SMB-over-TCP). It is NOT a
+	// datagram Conn carrier — Conn.Open rejects it — but browse.EnumerateTCP tags
+	// servers with this so a UI can badge TCP/IP hits separately from NBF/NBIPX.
+	TCP Protocol = "tcp"
 )
 
 // Protocols is every carrier a Conn can open, in a stable order. csnetview iterates it

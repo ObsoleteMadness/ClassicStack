@@ -4,7 +4,10 @@ package port
 type SeedFields struct {
 	SeedNetwork    uint16 `toml:"seed_network,omitempty" display:"Seed network start" desc:"First AppleTalk network number this port asserts. 0 = non-seed (learn from a peer)." default:"0" example:"3" capability:"appletalk_seed"`
 	SeedNetworkEnd uint16 `toml:"seed_network_end,omitempty" display:"Seed network end" desc:"Last network number of the seed range. 0 = a single number (== start)." default:"0" example:"5" capability:"appletalk_seed"`
-	SeedZone       string `toml:"seed_zone,omitempty" display:"Seed zone" desc:"Default zone name this port seeds. Empty = non-seed / inherit." example:"EtherTalk Network" capability:"appletalk_seed" widget:"zone"`
+	// SeedZone is the zone name this port publishes (EtherTalk / LToUDP / TashTalk
+	// seed the zone list). It is free-form on purpose — not a picker of existing
+	// zones, which services like AFP/MacIP/IPXGW use via widget:"zone".
+	SeedZone string `toml:"seed_zone,omitempty" display:"Seed zone" desc:"Zone name this port seeds and advertises. Empty = non-seed / inherit." example:"EtherTalk Network" capability:"appletalk_seed"`
 }
 
 // SeedProvider is the capability a section implements when it seeds an AppleTalk network.

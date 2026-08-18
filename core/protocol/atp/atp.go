@@ -99,6 +99,25 @@ const (
 	MaxATPData = 578
 )
 
+// MaxRespForPayload returns how many ATP response packets (1..8) are needed to
+// carry bytes of payload. The workstation puts this count in the TReq bitmap so
+// a System 7 responder that omits EOM still completes when the requested slots
+// arrive (classicstack-web bitmapForPayload). Asking for more slots than the
+// server will send stalls until ATP retry.
+func MaxRespForPayload(bytes int) int {
+	if bytes < 1 {
+		bytes = 1
+	}
+	n := (bytes + MaxATPData - 1) / MaxATPData
+	if n < 1 {
+		n = 1
+	}
+	if n > MaxResponsePackets {
+		n = MaxResponsePackets
+	}
+	return n
+}
+
 // DDPType is the DDP protocol type for ATP packets.
 const DDPType = 3
 

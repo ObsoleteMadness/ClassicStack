@@ -673,6 +673,14 @@ func (t *nbfTransport) handleFrame(frame []byte) {
 		if dstMAC != t.srcMAC {
 			return
 		}
+		// SESSION_INITIALIZE is caller-only. When the client and server share a MAC,
+		// pcap reads back our own Initialize I-frame (N(S)=0); consuming it advances
+		// N(R) so the server's SESSION_CONFIRM (also N(S)=0) is dropped as a duplicate
+		// and establish times out. Ignore the echo: do not ack and do not move N(R).
+		if nbfIsSessionInitialize(body[4:]) {
+			nbftracef("dropping inbound SESSION_INITIALIZE (own I-frame echo)")
+			return
+		}
 		poll := body[3]&0x01 != 0
 		remoteNS := ctrl >> 1
 		t.mu.Lock()
@@ -693,6 +701,13 @@ func (t *nbfTransport) handleFrame(frame []byte) {
 		t.deliverNBF(srcMAC, body[4:])
 		t.ackInbound(poll)
 	}
+}
+
+// nbfIsSessionInitialize reports whether nbfBody is a SESSION_INITIALIZE command. The
+// caller never receives that command from a responder; seeing it inbound is a TX echo.
+func nbfIsSessionInitialize(nbfBody []byte) bool {
+	f, err := nbfproto.Decode(nbfBody)
+	return err == nil && f.Command == nbfproto.CmdSessionInitialize
 }
 
 // ackInbound acknowledges an inbound I-frame at the LLC layer: an RR-response-final when

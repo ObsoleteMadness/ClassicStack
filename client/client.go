@@ -53,6 +53,13 @@ type Options struct {
 	FilenameCodec string
 	// ReadOnly opens the remote volume read-only when the protocol supports it.
 	ReadOnly bool
+	// OnServerMessage, if set, is invoked when a protocol delivers a pop-up the
+	// operator UI should display: an AFP login greeting (kind "login", after
+	// FPOpenVol) or a later FPGetSrvrMsg fetched after an ASP attention (kind
+	// "server"). from is the server name; text is the decoded message body. The
+	// callback must not block for long (it typically publishes on the telemetry
+	// bus). Nil disables delivery; empty text is never delivered.
+	OnServerMessage func(kind, from, text string)
 }
 
 // Factory builds a protocol client's base fs.FileSystem for one connection. It parses

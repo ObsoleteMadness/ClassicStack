@@ -108,11 +108,10 @@ func (c *captureLink) SetNodeAddress(node uint8) error {
 }
 
 func (c *captureLink) Close() error {
-	err := c.FrameLink.Close()
-	if c.sink != nil {
-		_ = c.sink.Close()
-	}
-	return err
+	// The registry owns capture sink lifetime (FlushCaptureSinks / CloseCaptureSinks
+	// on process shutdown). Closing a shared sink here would truncate a capture file
+	// another port restart still expects and can block shutdown on a large flush.
+	return c.FrameLink.Close()
 }
 
 // Capture wraps inner with frame teeing into sink.

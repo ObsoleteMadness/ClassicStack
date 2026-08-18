@@ -58,6 +58,9 @@ func TestHandleMailslotPublishesAndLogs(t *testing.T) {
 	if ev.From != "ALICE" || ev.To != "CLASSICSTACK" || ev.Text != "ping" {
 		t.Errorf("event = %+v, want from ALICE to CLASSICSTACK text ping", ev)
 	}
+	if ev.Kind != bus.MessageKindMessenger {
+		t.Errorf("kind = %q, want %q", ev.Kind, bus.MessageKindMessenger)
+	}
 	if ev.Topic() != bus.TopicMessage {
 		t.Errorf("topic = %q, want %q", ev.Topic(), bus.TopicMessage)
 	}

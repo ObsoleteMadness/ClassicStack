@@ -50,7 +50,7 @@ Raw-link protocols share one bridge identity and backend selection via
 
 - mode: pcap, tap, tun
 - device: selected interface/device
-- hw_address: shared host MAC identity
+- hw_address: shared station MAC (blank = NIC's own; set to spoof on wired Ethernet)
 - bridge_mode: auto, ethernet, wifi
 
 Consumers that can use shared bridge defaults:

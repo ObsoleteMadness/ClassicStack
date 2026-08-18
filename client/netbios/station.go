@@ -10,19 +10,15 @@ import (
 	nb "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbios"
 )
 
-// station.go holds the virtual-station identity helpers shared by the datagram carriers:
-// the synthetic MAC and the default NetBIOS name a datagram client presents. They mirror
-// client/smb's RandomMAC / calling-name derivation so a datagram station on the segment
-// looks like any other client station, never the host itself.
+// station.go holds the station identity helpers shared by the datagram carriers:
+// the Ethernet source MAC (host NIC by default, RandomMAC when that cannot be
+// resolved) and the default NetBIOS name a datagram client presents.
 
 // OpenerFor builds a raw-Ethernet link.Opener for a datagram carrier from an interface
-// type (pcap | tap) and device name, with the virtual-station MAC pinned (or a synthetic
-// RandomMAC when mac is zero). It is the shared opener-construction a datagram tool needs,
-// so csnetsend/csnetview — and any client embedding this package — select the carrier the
-// same way the SMB file client does (a raw-Ethernet FrameLink over pcap or the
-// libpcap-free TUN/TAP), rather than each re-deriving it. ifaceType must be a raw-Ethernet
-// kind (link.RawEtherKinds); ltoudp/tashtalk/tcp carry no NetBIOS datagrams and are
-// rejected with a clear message. An empty ifaceType defaults to pcap.
+// type (pcap | tap) and device name. A non-zero mac pins the Ethernet source; a zero
+// mac keeps NewOpener's host-NIC MAC (WiFi APs drop any other source). If the host
+// MAC cannot be resolved, a synthetic RandomMAC is used so the carrier still has a
+// source address.
 func OpenerFor(ifaceType, device string, mac [6]byte) (*link.Opener, error) {
 	kind := ifaceType
 	if kind == "" {
@@ -32,10 +28,13 @@ func OpenerFor(ifaceType, device string, mac [6]byte) (*link.Opener, error) {
 		return nil, fmt.Errorf("netbios: -ifacetype %q carries no NetBIOS datagrams (want %v)", ifaceType, link.RawEtherKinds)
 	}
 	opener := link.NewOpener(link.Spec{Kind: strings.ToLower(kind), Name: device})
-	if mac == ([6]byte{}) {
-		mac = RandomMAC()
+	if mac != ([6]byte{}) {
+		opener.MAC = mac
+	} else if opener.MAC == ([6]byte{}) {
+		// Host NIC MAC was not resolvable (unknown device / tests); fall back to a
+		// synthetic station so the carrier still has a source address.
+		opener.MAC = RandomMAC()
 	}
-	opener.MAC = mac // synthetic virtual-station node (never the host NIC's)
 	return opener, nil
 }
 

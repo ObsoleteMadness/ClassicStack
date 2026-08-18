@@ -56,6 +56,7 @@ export type Unit = {
   Binding?: string;
   DependsOn?: string[];
   Props?: Record<string, string>;
+  Error?: string;
 };
 
 export type HostInfo = {
@@ -81,7 +82,24 @@ export type FieldInfo = {
   description?: string;
   type: string;
   widget?: string;
+  capability?: string;
   secret?: boolean;
+};
+
+export type FSParamInfo = {
+  key: string;
+  required: boolean;
+  secret: boolean;
+  doc: string;
+};
+
+export type ShareBackends = {
+  fs_types: string[];
+  fork_backends: string[];
+  filename_codecs: string[];
+  metastores: string[];
+  meta_backends: string[];
+  fs_params: Record<string, FSParamInfo[]>;
 };
 
 export type SectionInfo = {
@@ -89,6 +107,7 @@ export type SectionInfo = {
   repeated?: boolean;
   display_name?: string;
   description?: string;
+  capabilities?: string[];
   fields?: FieldInfo[];
 };
 
@@ -99,8 +118,71 @@ export type Schemas = {
 };
 
 export type ConfigModel = {
+  Identity?: Record<string, unknown>;
+  Logging?: Record<string, unknown>;
+  HTTP?: Record<string, unknown>;
+  Client?: Record<string, unknown>;
+  FUSE?: Record<string, unknown>;
+  Router?: Record<string, unknown>;
+  Interfaces?: Record<string, Record<string, unknown>>;
   Lists?: Record<string, Record<string, unknown>[]>;
   Sections?: Record<string, Record<string, unknown>>;
+};
+
+export type InterfaceInfo = {
+  Name: string;
+  Description?: string;
+  Addr?: string;
+};
+
+export type SerialPortInfo = {
+  device: string;
+  label: string;
+};
+
+export type AFPSessionInfo = {
+  id: number;
+  network: number;
+  node: number;
+  user: string;
+  logged_in: boolean;
+  last_seen: number;
+};
+
+export type SMBSessionInfo = {
+  client: string;
+  mac: string;
+  netbios_name: string;
+  user: string;
+  dialect: string;
+  negotiated_at: number;
+  native_os: string;
+  native_lanman: string;
+  primary_domain: string;
+  open_trees: number;
+  open_files: number;
+};
+
+export type NCPSessionInfo = {
+  number: number;
+  endpoint: string;
+  user: string;
+  logged_in: boolean;
+  open_files: number;
+  last_seen: number;
+};
+
+export type EtherDFSSessionInfo = {
+  mac: string;
+  open_files: number;
+  last_seen: number;
+};
+
+export type MacIPLeaseInfo = {
+  ip: string;
+  at_network: number;
+  at_node: number;
+  source: string;
 };
 
 export type BrowsePath = {
@@ -116,6 +198,10 @@ export type FinderVolume = {
   subtitle?: string;
   protocol?: string;
   transport?: string;
+  address?: string;
+  uri?: string;
+  os?: string;
+  version?: string;
   readOnly?: boolean;
 };
 
@@ -127,6 +213,48 @@ export type FinderSession = {
   allowGuest: boolean;
   uams?: string[];
   rootId?: number;
+  volume?: string;
+  target?: string;
+  transport?: string;
+  os?: string;
+  dialect?: string;
+};
+
+export type FinderMountedVolume = {
+  sessionId: string;
+  kind: string;
+  serverName: string;
+  volume: string;
+  target?: string;
+  transport?: string;
+  rootId?: number;
+  mountpoint?: string;
+};
+
+export type FinderMountInfo = {
+  id: string;
+  mountpoint: string;
+  volume: string;
+  kind: string;
+  server?: string;
+};
+
+export type FinderMountStatus = {
+  mountAvailable: boolean;
+  defaultMountDir: string;
+  hint?: string;
+  mounts: FinderMountInfo[];
+};
+
+export type FinderClientState = {
+  enabled: boolean;
+  scanning: boolean;
+  mountEnabled: boolean;
+  iface?: string;
+  services?: string[];
+  networks: FinderVolume[];
+  connections: FinderSession[];
+  volumes: FinderMountedVolume[];
 };
 
 export type FinderNode = {
@@ -141,12 +269,23 @@ export type FinderNode = {
   modDate?: number;
 };
 
+export type FinderOpProgress = {
+  phase?: 'copying' | 'moving' | 'expanding' | 'listing';
+  path?: string;
+  bytesDone?: number;
+  bytesTotal?: number;
+  destName?: string;
+  destParentId?: number;
+  done?: boolean;
+  error?: string;
+};
+
 export type LogRecord = {
   Time?: string;
   Level?: number;
   Component?: string;
   Msg?: string;
-  Fields?: { Key: string; Value?: unknown; Str?: string; Int?: number }[];
+  Fields?: { Key: string; Kind?: number; Value?: unknown; Str?: string; Int?: number; Bool?: boolean }[];
 };
 
 export const api = {
@@ -160,10 +299,26 @@ export const api = {
     }),
   action: (verb: 'start' | 'stop' | 'restart', name: string) =>
     apiSend(verb, { method: 'POST', body: JSON.stringify({ Name: name }) }),
+  shutdown: () => apiSend('shutdown', { method: 'POST', body: '{}' }),
+  stackRestart: () => apiSend('stack_restart', { method: 'POST', body: '{}' }),
   config: () => apiJSON<ConfigModel>('config'),
+  reconfigure: (name: string, section: Record<string, unknown>) =>
+    apiSend('reconfigure', { method: 'POST', body: JSON.stringify({ name, section }) }),
+  setWellKnown: (key: string, section: Record<string, unknown>) =>
+    apiSend('set_well_known', { method: 'POST', body: JSON.stringify({ key, section }) }),
+  setInterface: (iface: Record<string, unknown>) =>
+    apiSend('set_interface', { method: 'POST', body: JSON.stringify(iface) }),
+  listInterfaces: () => apiJSON<InterfaceInfo[]>('list_interfaces'),
+  serialPorts: () => apiJSON<SerialPortInfo[]>('list_serial_ports'),
+  configDownload: () => fetch('config_download').then((r) => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`)))),
+  configValidate: (toml: string) =>
+    apiJSON<{ ok: boolean }>('config_validate', { method: 'POST', body: toml, headers: { 'Content-Type': 'text/plain' } }),
+  configApply: (toml: string) =>
+    apiJSON<{ revision: string }>('config_apply', { method: 'POST', body: toml, headers: { 'Content-Type': 'text/plain' } }),
   save: () => apiJSON<{ revision: string }>('save', { method: 'POST', body: '{}' }),
   schemas: () => apiJSON<Schemas>('schemas'),
   fsTypes: () => apiJSON<string[]>('list_fs_types'),
+  shareBackends: () => apiJSON<ShareBackends>('share_backends'),
   addInstance: (owner: string, key: string, section: Record<string, unknown>) =>
     apiSend('add_instance', { method: 'POST', body: JSON.stringify({ owner, key, section }) }),
   removeInstance: (owner: string, key: string, name: string) =>
@@ -192,6 +347,9 @@ export const api = {
     }),
 
   finderLocal: () => apiJSON<FinderVolume[]>('finder/local'),
+  finderSeen: (scheme?: string) =>
+    apiJSON<FinderVolume[]>('finder/discover' + (scheme ? '?scheme=' + encodeURIComponent(scheme) : '')),
+  finderState: () => apiJSON<FinderClientState>('finder/state'),
   finderDiscover: (scheme: string) =>
     apiJSON<FinderVolume[]>('finder/discover', {
       method: 'POST',
@@ -199,6 +357,7 @@ export const api = {
     }),
   finderConnect: (body: Record<string, unknown>) =>
     apiJSON<FinderSession>('finder/sessions', { method: 'POST', body: JSON.stringify(body) }),
+  finderMounted: () => apiJSON<FinderMountedVolume[]>('finder/mounted'),
   finderClose: (id: string) =>
     apiSend('finder/sessions?id=' + encodeURIComponent(id), { method: 'DELETE' }),
   finderOpen: (sessionId: string, volume: string) =>
@@ -228,6 +387,8 @@ export const api = {
     apiSend('finder/rename', { method: 'POST', body: JSON.stringify({ sessionId, id, name }) }),
   finderMove: (sessionId: string, id: number, parentId: number) =>
     apiSend('finder/move', { method: 'POST', body: JSON.stringify({ sessionId, id, parentId }) }),
+  finderMoveAcross: (body: Record<string, unknown>) =>
+    fetch('finder/move', { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } }),
   finderRemove: (sessionId: string, id: number) =>
     apiSend('finder/remove', { method: 'POST', body: JSON.stringify({ sessionId, id }) }),
   finderFinderInfo: (sessionId: string, id: number, finderInfo: string) =>
@@ -235,4 +396,34 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ sessionId, id, finderInfo }),
     }),
+  finderMountStatus: () => apiJSON<FinderMountStatus>('finder/mount'),
+  finderMount: (body: Record<string, unknown>) =>
+    apiJSON<FinderMountInfo>('finder/mount', { method: 'POST', body: JSON.stringify(body) }),
+  finderCopy: (body: Record<string, unknown>) =>
+    fetch('finder/copy', { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } }),
+  finderExpand: (body: Record<string, unknown>) =>
+    fetch('finder/expand', { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } }),
+  finderUnmount: (id: string) =>
+    apiSend('finder/mount?id=' + encodeURIComponent(id), { method: 'DELETE' }),
+  finderCloseVolume: (sessionId: string, volume: string) =>
+    apiSend(
+      'finder/open?session=' + encodeURIComponent(sessionId) + '&volume=' + encodeURIComponent(volume),
+      { method: 'DELETE' },
+    ),
+
+  listZones: () => apiJSON<string[]>('list_zones'),
+  macipLeases: () => apiJSON<MacIPLeaseInfo[]>('macip_leases'),
+  smbSessions: () => apiJSON<SMBSessionInfo[]>('smb_sessions'),
+  afpSessions: () => apiJSON<AFPSessionInfo[]>('afp_sessions'),
+  ncpSessions: () => apiJSON<NCPSessionInfo[]>('ncp_sessions'),
+  etherdfsSessions: () => apiJSON<EtherDFSSessionInfo[]>('etherdfs_sessions'),
+  afpMessage: (sessionId: number, text: string) =>
+    apiSend('afp_message', { method: 'POST', body: JSON.stringify({ session_id: sessionId, text }) }),
+  afpDisconnect: (sessionId: number, text: string, minutes = 0) =>
+    apiSend('afp_disconnect', {
+      method: 'POST',
+      body: JSON.stringify({ session_id: sessionId, text, minutes }),
+    }),
+  netSend: (to: string, text: string) =>
+    apiSend('netsend', { method: 'POST', body: JSON.stringify({ to, text }) }),
 };

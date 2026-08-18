@@ -52,6 +52,9 @@ type Options struct {
 	Window    time.Duration
 	Workgroup string
 	Trace     func(string)
+	// Carriers restricts the NetBIOS datagram sweep to these protocols (nbf, nbipx).
+	// Empty runs every datagram carrier in netbios.Protocols.
+	Carriers []netbios.Protocol
 }
 
 // Protocol is the NetBIOS datagram carrier a server was heard/queried on (re-exported from
@@ -77,6 +80,22 @@ type Server struct {
 	Comment   string             // operator comment, if any source carried one
 	Role      string             // "master browser" / "backup browser" / "" (ordinary)
 	OSVersion string             // "major.minor" from an announcement, if seen
+	Address   string             // TCP/IP: IPv4 of the host when known (NBNS); empty on NBF/NBIPX
+	addrs     map[netbios.Protocol]string
+}
+
+// AddressFor is the protocol source address for one carrier: MAC on NBF, IPX net.node
+// on NBIPX, IPv4 on TCP. Empty when that carrier was only learned from a browse list.
+func (s Server) AddressFor(p netbios.Protocol) string {
+	if s.addrs != nil {
+		if a := strings.TrimSpace(s.addrs[p]); a != "" {
+			return a
+		}
+	}
+	if p == netbios.TCP {
+		return strings.TrimSpace(s.Address)
+	}
+	return ""
 }
 
 // Result is the outcome of one carrier's sweep: the master browser it found (if any), its
@@ -98,11 +117,15 @@ func Enumerate(opts Options) ([]Server, []Result) {
 	if window <= 0 {
 		window = 4 * time.Second
 	}
+	carriers := opts.Carriers
+	if len(carriers) == 0 {
+		carriers = netbios.Protocols
+	}
 	opener, err := netbios.OpenerFor(opts.Kind, opts.Device, opts.MAC)
 	if err != nil {
 		// Every carrier fails identically when the opener cannot be built.
-		results := make([]Result, 0, len(netbios.Protocols))
-		for _, p := range netbios.Protocols {
+		results := make([]Result, 0, len(carriers))
+		for _, p := range carriers {
 			results = append(results, Result{Protocol: p, Err: err})
 		}
 		return nil, results
@@ -110,8 +133,8 @@ func Enumerate(opts Options) ([]Server, []Result) {
 	station := netbios.DefaultStationName(opener.MAC, netbios.NameTypeWorkstation)
 
 	agg := map[string]*Server{}
-	results := make([]Result, 0, len(netbios.Protocols))
-	for _, p := range netbios.Protocols {
+	results := make([]Result, 0, len(carriers))
+	for _, p := range carriers {
 		results = append(results, enumerateCarrier(opener, station, p, opts, window, agg))
 	}
 	return sortedServers(agg), results
@@ -130,7 +153,7 @@ func enumerateCarrier(opener *clientlink.Opener, station nb.Name, p netbios.Prot
 	// Source 1: solicit + sniff announcements (self-announcers + masters).
 	hosts, _ := c.Browse(window)
 	for _, h := range hosts {
-		merge(agg, h.Name, p, SourceAnnouncement, hostRole(h), h.Comment, h.OSVersion)
+		merge(agg, h.Name, p, SourceAnnouncement, hostRole(h), h.Comment, h.OSVersion, h.Address)
 	}
 
 	// Learn the workgroup to target if the caller pinned none: a real GetBackupList /
@@ -151,7 +174,7 @@ func enumerateCarrier(opener *clientlink.Opener, station nb.Name, p netbios.Prot
 	res.BackupBrowsers = master.BackupBrowsers
 	if master.MasterName != "" {
 		tracef(opts, "[%s] master browser: %s%s", p, master.MasterName, backupNote(master))
-		merge(agg, master.MasterName, p, SourceMaster, "master browser", "", "")
+		merge(agg, master.MasterName, p, SourceMaster, "master browser", "", "", master.MasterAddress)
 	}
 
 	// Source 3: ask the master (or a backup browser) for the authoritative server list.
@@ -168,7 +191,7 @@ func enumerateCarrier(opener *clientlink.Opener, station nb.Name, p netbios.Prot
 		}
 		tracef(opts, "[%s] %s returned %d servers (NetServerEnum2)", p, tgt, len(servers))
 		for _, s := range servers {
-			merge(agg, s.Name, p, SourceBrowseList, serverRole(s), s.Comment, "")
+			merge(agg, s.Name, p, SourceBrowseList, serverRole(s), s.Comment, "", "")
 		}
 		break // one authoritative list per carrier is enough
 	}
@@ -206,7 +229,7 @@ func enumServers(opts Options, p netbios.Protocol, master, workgroup string) ([]
 
 // merge inserts or enriches a discovered server, keeping the most authoritative source and
 // not losing a richer field (comment/role/version) to a sparser later one.
-func merge(agg map[string]*Server, name string, p netbios.Protocol, src Source, role, comment, osVersion string) {
+func merge(agg map[string]*Server, name string, p netbios.Protocol, src Source, role, comment, osVersion, addr string) {
 	name = strings.ToUpper(strings.TrimSpace(name))
 	if name == "" {
 		return
@@ -228,6 +251,16 @@ func merge(agg map[string]*Server, name string, p netbios.Protocol, src Source, 
 	}
 	if osVersion != "" && osVersion != "0.0" {
 		s.OSVersion = osVersion
+	}
+	addr = strings.TrimSpace(addr)
+	if addr != "" {
+		if s.addrs == nil {
+			s.addrs = map[netbios.Protocol]string{}
+		}
+		s.addrs[p] = addr
+		if p == netbios.TCP {
+			s.Address = addr
+		}
 	}
 }
 

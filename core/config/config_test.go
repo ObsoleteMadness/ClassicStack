@@ -48,6 +48,18 @@ func TestModelValidate(t *testing.T) {
 		t.Fatalf("valid model should pass: %v", err)
 	}
 
+	badLog := NewModel()
+	badLog.Logging.Level = "nope"
+	if err := badLog.Validate(ValidateOptions{}); err == nil {
+		t.Fatal("unknown log level should fail Validate")
+	}
+
+	badHTTP := NewModel()
+	badHTTP.HTTP.Addr = "not-a-port"
+	if err := badHTTP.Validate(ValidateOptions{}); err == nil {
+		t.Fatal("invalid HTTP listen address should fail Validate")
+	}
+
 	// Bad identity (control char) → rejected regardless of NetBIOS.
 	bad := NewModel()
 	bad.Identity = Identity{Hostname: "bad\x01name"}

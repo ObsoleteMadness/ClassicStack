@@ -21,6 +21,9 @@ const ServerKey = Name
 type ServerSection struct {
 	// SKey is the section key; always "NCP". Stored so Key() is a plain getter.
 	SKey string `toml:"-"`
+	// Enabled gates the NCP service (component.Enableable). Missing key keeps the
+	// New() default of true so existing configs without enabled= stay on.
+	Enabled bool `toml:"enabled" display:"Enabled" desc:"Whether the NCP (NetWare) file service is configured on." default:"true"`
 	// ServerName is the NetWare file-server name advertised via SAP and Get Server
 	// Info. Empty → Identity.Hostname, then the built-in default ("OMNITALK").
 	ServerName string `toml:"server_name,omitempty" display:"Server name" desc:"NetWare server name (upper-cased on the wire). Empty = Identity.Hostname, then OMNITALK." example:"FILESERVER"`
@@ -91,7 +94,7 @@ func ServerSectionFromModel(m *config.Model) *ServerSection {
 			}
 		}
 	}
-	return &ServerSection{SKey: ServerKey}
+	return &ServerSection{SKey: ServerKey, Enabled: true}
 }
 
 // RegisterServer installs the NCP server-section schema so codecs round-trip it.
@@ -100,7 +103,7 @@ func ServerSectionFromModel(m *config.Model) *ServerSection {
 func RegisterServer() {
 	config.Register(config.SectionSchema{
 		Key: ServerKey,
-		New: func() config.Section { return &ServerSection{SKey: ServerKey} },
+		New: func() config.Section { return &ServerSection{SKey: ServerKey, Enabled: true} },
 		Validate: func(s config.Section) error {
 			if ss, ok := s.(*ServerSection); ok {
 				return ss.Validate()

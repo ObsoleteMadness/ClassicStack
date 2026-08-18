@@ -194,13 +194,14 @@ func (b *Builder) BuildNegotiate() []byte {
 // server's SecurityMode/MaxBufferSize/Capabilities are read but only SecurityMode is
 // surfaced — this client always uses plain READ/WRITE_ANDX and its own buffer cap.
 type NegotiateResult struct {
-	DialectIndex uint16
-	Dialect      string
-	Family       DialectFamily
-	UserSecurity bool   // server advertised SECURITY_MODE_USER_SECURITY (send credentials)
-	MaxBuffer    uint32 // server MaxBufferSize (the largest single request it accepts)
-	Capabilities uint32 // server Capabilities word (NT family only; 0 for older dialects)
-	SessionKey   uint32 // server SessionKey; the client echoes it in SESSION_SETUP
+	DialectIndex     uint16
+	Dialect          string
+	Family           DialectFamily
+	UserSecurity     bool   // server advertised SECURITY_MODE_USER_SECURITY (send credentials)
+	EncryptPasswords bool   // server advertised NEGOTIATE_ENCRYPT_PASSWORDS
+	MaxBuffer        uint32 // server MaxBufferSize (the largest single request it accepts)
+	Capabilities     uint32 // server Capabilities word (NT family only; 0 for older dialects)
+	SessionKey       uint32 // server SessionKey; the client echoes it in SESSION_SETUP
 }
 
 // SupportsNTStatus reports whether the negotiated server speaks 32-bit NTSTATUS in its
@@ -242,7 +243,9 @@ func ParseNegotiate(resp []byte) (NegotiateResult, error) {
 		if len(words) < 34 {
 			return res, ErrShortResponse
 		}
-		res.UserSecurity = words[2]&0x01 != 0
+		sec := uint16(words[2])
+		res.UserSecurity = sec&SecurityModeUser != 0
+		res.EncryptPasswords = sec&SecurityModeEncrypt != 0
 		res.MaxBuffer = bp.LE32(words[7:11])
 		res.SessionKey = bp.LE32(words[15:19])
 		res.Capabilities = bp.LE32(words[19:23])
@@ -251,7 +254,9 @@ func ParseNegotiate(resp []byte) (NegotiateResult, error) {
 		if len(words) < 6 {
 			return res, ErrShortResponse
 		}
-		res.UserSecurity = bp.LE16(words[2:4])&0x01 != 0
+		sec := bp.LE16(words[2:4])
+		res.UserSecurity = sec&SecurityModeUser != 0
+		res.EncryptPasswords = sec&SecurityModeEncrypt != 0
 		res.MaxBuffer = uint32(bp.LE16(words[4:6]))
 	default:
 		// Core WCT=1: no security/buffer fields; share-level, minimal buffer.

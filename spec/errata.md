@@ -12,6 +12,14 @@ This document records places where ClassicStack's wire behavior intentionally di
 
 **What we do:** capture `respUserData` from the **seq-0** response packet only. **Where:** `client/atalk/atp.go` (`(*ATP).Request`). Test: `TestRequestUserDataFromFirstPacket`.
 
+### ATP TReq bitmap must match the expected reply size — observed
+
+**Spec (Inside AppleTalk, ATP):** the requester may ask for up to 8 response packets (bitmap `0xFF`); the responder sets EOM on the last packet of a short reply.
+
+**Observed (System 7.x ASP, matching classicstack-web):** a real Mac often answers a Command/OpenSession TResp **without EOM**. Completing “when every requested slot has arrived” is correct for a 1-packet request, but an 8-slot bitmap on a 20-byte `FPOpenFork`/`FPCloseFork` reply then waits out the 2 s ATP retry on **every small AFP command** — the Go client felt like it was buffering a full quantum per request. classicstack-web defaults ASP Command to bitmap `0x01`, sizes `FPRead` with `bitmapForPayload(n)`, and uses `0xFF` only for `FPEnumerate` / full-quantum reads. After a short quiet burst it also accepts a contiguous prefix from slot 0 if EOM never arrives.
+
+**What we do:** ASP `Command` asks for 1 ATP packet; `CommandMax` is used for Enumerate (8) and FPRead (`MaxRespForPayload`). `Write` phase-1 also asks for 1 packet. The ATP requester idle-completes a short no-EOM reply after 400 ms instead of waiting for the retry timer. **Where:** `client/asp/asp.go` (`Command`/`CommandMax`), `client/asp/write.go`, `client/afp/{afp.go,fork.go,filesystem.go}`, `client/atalk/atp.go` (`atpBurstIdle`). Tests: `TestMaxRespForPayload`, `TestRequestIdleCompletesShortReply`.
+
 ## Metadata mapping (client)
 
 ### Remote DOS attributes/dates reach a DOS/Windows view through an fs-native MetaEngine — design
@@ -787,11 +795,21 @@ Observed DataStreamType values are a small set: `0x01` FIND.NAME, `0x02` NAME.RE
 
 2. **FPLogin must name a version/UAM the server ADVERTISED, verbatim.** The client hardcoded `"AFP2.2"` + `"Cleartxt Passwrd"`. System 7.5 offers `AFPVersion 1.1/2.0/2.1` (note the space, and NO 2.2) and `Cleartxt passwrd` (**lower-case p**). A classic Mac SILENTLY IGNORES an FPLogin whose version string or UAM name it never advertised. Fix: call FPGetSrvrInfo (ASPGetStatus) first, parse the version/UAM lists (`core/protocol/afp/srvrinfo.go` `ParseServerInfo`/`PickVersion`), and log in with the server's exact strings (`client/afp` `LoginNegotiated`).
 
+   System 7.1 Personal File Sharing advertises `Cleartxt passwrd` **and** `Randnum exchange`. A registered-user Cleartxt FPLogin for user `mac` (odd-length command, no pad before the 8-byte password) returned **kFPUserNotAuth (-5023)** (observed 2026-08-18 `client-afp.pcap`). ClassicStack-web even-aligns that password field (`loginCleartext`) and prefers advertised cleartext, and signs in immediately. The Go client now matches that packing and UAM order. `core/protocol/afp/commands.go` `LoginRequest.Marshal`; `client/afp/login.go` `pickPasswordUAM`.
+
+   Switching to Randnum without that pad exposed the next miss: System 7 returns **kFPAuthContinue as -5001** (netatalk `AFPERR_AUTHCONT`), not `5`. The client treated `-5001` as a hard FPLogin failure (`kFP#-5001`) and never sent FPLoginCont. `core/protocol/afp/afp.go` `ErrAuthContinue` / `IsAuthContinue`. FPLoginCont is `cmd + pad + id + auth` (ClassicStack-web `loginCont`). The Randnum DES key is NUL-padded, same as Cleartxt (blank owner password = eight `$00`). `client/afp/randnum.go` `afpPasswordKey`.
+
 3. **The FPLogin credential trailer was keyed on the capital-P constant.** `LoginRequest.Marshal` appended the username + 8-byte password only when `UAM == "Cleartxt Passwrd"` (exact match). Once we echoed the server's lower-case `"Cleartxt passwrd"`, the block carried the UAM with NO credentials, and the Mac discarded it. Fix: append the trailer for any non-guest UAM (`!= "No User Authent"`). `core/protocol/afp/commands.go`.
 
 4. **The first ASP Command sequence number must be 0.** Ground truth (`captures/vmac-to-vmac.pcapng`): the real Mac workstation's first Command is sequence 0, then 1, 2, … A real Mac SERVER tracks the expected sequence and SILENTLY DROPS a Command whose sequence it did not expect. Our client's `nextSeq` pre-incremented, so the first Command was sequence 1 and every Command went unanswered (only the tickles flowed). Fix: the first Command/Write uses sequence 0. `client/asp/asp.go`.
 
-With all four fixed, `csfs ls "afp://pete:@vmac1:*/System 7.5.3"` mounts and lists a real System 7.5 volume (data + resource-fork sizes + Finder type/creator). A server-root URI with no volume (`afp://server/`) now lists the server info + volumes via FPGetSrvrParms instead of failing FPOpenVol with an empty name (`client/afp/browse.go`).
+5. **Workstation tickles go to the SLS, not the SSS.** Inside AppleTalk 11-15; System 7 AppleShare ignores Tickle on the session socket and CloseSess after the 2-minute maintenance timeout. classicstack-web sends workstation tickles to the SLS. `client/asp/write.go` `tickleServer`.
+
+6. **ASP Command/Write are one-at-a-time.** System 7 ASP silently drops overlapping sequences. classicstack-web `enqueueCmd`; the Go client now holds `cmdMu` across Command and Write.
+
+7. **Attention TResp UserData is four zeros** (observed AppleShare; already documented above). `client/asp/write.go` `handleWSSReq`.
+
+With the sequence-0 and EOM-clear fixes, `csfs ls "afp://pete:@vmac1:*/System 7.5.3"` mounts and lists a real System 7.5 volume (data + resource-fork sizes + Finder type/creator). A server-root URI with no volume (`afp://server/`) now lists the server info + volumes via FPGetSrvrParms instead of failing FPOpenVol with an empty name (`client/afp/browse.go`).
 
 **Where:** `client/atalk/atp.go`, `client/asp/asp.go`, `client/afp/{login.go,register.go,browse.go}`, `core/protocol/afp/{srvrinfo.go,commands.go}`; `csfs -v` wire-trace in `client/atalk/verbose.go`.
 

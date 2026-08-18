@@ -7,6 +7,7 @@ import (
 	"io"
 	stdfs "io/fs"
 	"os"
+	"strings"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/macresources"
 )
@@ -185,6 +186,12 @@ func (e *derezForkEngine) DeleteMetadata(path string) error {
 // same-host-path peer must follow on a rename/delete.
 func (e *derezForkEngine) MetadataPaths(storePath string) []string {
 	return []string{e.rdumpPath(storePath), e.idumpPath(storePath)}
+}
+
+// HiddenName reports DeRez sidecar names that must not appear as catalog entries.
+func (e *derezForkEngine) HiddenName(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.HasSuffix(lower, derezRdumpExt) || strings.HasSuffix(lower, derezIdumpExt)
 }
 
 // derezForkFile buffers the binary resource fork a client reads/writes; on Close/Sync it

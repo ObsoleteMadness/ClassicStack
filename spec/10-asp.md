@@ -152,6 +152,11 @@ UserData[2-3]= 0
 ATP Data     = empty
 ```
 
+Workstation-initiated tickles go to the **SLS**, not the SSS (Inside AppleTalk 11-15).
+System 7 AppleShare ignores Tickle on the session socket and then ends the session
+after the 2-minute maintenance timeout. Server-initiated tickles still arrive on the
+workstation session socket (WSS).
+
 ---
 
 ## Two-Phase Write Protocol (ASPUserWrite → FPWrite)

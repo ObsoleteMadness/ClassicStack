@@ -22,10 +22,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	gort "runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -39,6 +41,7 @@ import (
 	adaptermetrics "github.com/ObsoleteMadness/ClassicStack/adapter/metrics"
 	adapterserial "github.com/ObsoleteMadness/ClassicStack/adapter/serial"
 	storefile "github.com/ObsoleteMadness/ClassicStack/adapter/store/file"
+	clienttrace "github.com/ObsoleteMadness/ClassicStack/client/trace"
 	"github.com/ObsoleteMadness/ClassicStack/compose/registry"
 	"github.com/ObsoleteMadness/ClassicStack/compose/runtime"
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
@@ -103,7 +106,7 @@ func Run(ctx context.Context, args []string, v Version) error {
 
 	fs := flag.NewFlagSet("classicstack", flag.ContinueOnError)
 	configPath := fs.String("config", DefaultConfigPath, "path to the config file (TOML, or UCI for an /etc/config path or *.uci file)")
-	httpAddr := fs.String("http", "", "serve the web-admin control API on this address (e.g. :8080); empty = disabled")
+	httpAddr := fs.String("http", "", "override [http] listen address (empty = server.toml, default :1984)")
 	showVersion := fs.Bool("version", false, "print version information and exit")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -134,7 +137,15 @@ func Run(ctx context.Context, args []string, v Version) error {
 	// telemetry "log" topic so the web-UI / ubus log viewer sees Start/Stop and
 	// configuration-change audit lines. Threshold follows [Logging] Level.
 	logLevel := registry.ParseLevel(m.Logging.Level)
-	busLogSink := logbus.New(telemetry, log.NewLevelVar(logLevel))
+	logLevelVar := log.NewLevelVar(logLevel)
+	busLogSink := logbus.New(telemetry, logLevelVar)
+	// Client AFP/FUSE loggers emit Debug; this sink threshold (not the caller)
+	// decides whether those lines print. Mute ATP packet trace unless Level is trace.
+	clienttrace.SetLevel(logLevel)
+	if logLevel > log.Trace {
+		clienttrace.SetScope("atp", false)
+	}
+	clienttrace.AddSink(busLogSink)
 
 	// Build the supervised runtime. The pcap opener + serial opener are injected here
 	// so compose/runtime pulls in no cgo/libpcap; under the pcap tag they open real
@@ -148,16 +159,33 @@ func Run(ctx context.Context, args []string, v Version) error {
 		Serial:              serialOpener,
 		InterfaceEnumerator: interfaceEnumerator,
 		DefaultDevice:       defaultDevice,
+		HostMAC:             hostMAC,
 		MacIPEgress:         macipEgressOpener,
 		LogSinks:            []log.Sink{busLogSink},
+		LogLevel:            logLevelVar,
 	})
 	if err != nil {
 		return fmt.Errorf("build runtime: %w", err)
 	}
+	rt.Supervisor().SetLogLevelApplier(func(level string) {
+		lvl := registry.ParseLevel(level)
+		logLevelVar.Set(lvl)
+		clienttrace.SetLevel(lvl)
+		if lvl > log.Trace {
+			clienttrace.SetScope("atp", false)
+		} else {
+			clienttrace.SetScope("atp", true)
+		}
+	})
 
 	if err := rt.Start(ctx); err != nil {
-		return fmt.Errorf("start runtime: %w", err)
+		fmt.Fprintln(os.Stderr, "classicstack: start:", err)
 	}
+
+	runCtx, stopRun := context.WithCancel(ctx)
+	defer stopRun()
+
+	var restartRequested atomic.Bool
 
 	// Periodically flush per-port pcap capture files so an ungraceful kill (SIGKILL /
 	// double-Ctrl-C, which skips the clean-shutdown flush below) loses at most one interval
@@ -174,16 +202,26 @@ func Run(ctx context.Context, args []string, v Version) error {
 	metricsSink := adaptermetrics.New(telemetry)
 	metricsSink.Start()
 
-	// Web-admin control API (opt-in via -http): a control.Plane over the supervisor +
-	// the same Store/Codec, exposed through the new-ring HTTP control adapter.
+	// Web-admin control API: [http] in server.toml (default enabled on :1984).
+	// -http overrides the listen address and implies enabled.
 	var httpServer *controlhttp.Server
-	if *httpAddr != "" {
+	listen := strings.TrimSpace(*httpAddr)
+	if listen == "" && m.HTTP.Enabled {
+		listen = m.HTTP.ListenAddr()
+	}
+
+	var finderSvc *finderadapter.Service
+	if c := rt.Component(config.ClientKey); c != nil {
+		finderSvc, _ = c.(*finderadapter.Service)
+	}
+
+	if listen != "" {
 		plane := control.New(rt.Supervisor(), codec, store, telemetry)
 		// Management-action logger: stderr + bus so Start/Stop/Restart and config
 		// apply/save from any front-end (web UI, ubus) produce Info audit lines both
 		// on the console and in the Logs tab.
 		plane.SetLogger(log.New("control",
-			log.NewStderrSink(log.NewLevelVar(logLevel)),
+			log.NewStderrSink(logLevelVar),
 			busLogSink,
 		))
 		// Wire the real diagnostics probe surface (zone/routing-table reads) now that the
@@ -191,31 +229,71 @@ func Run(ctx context.Context, args []string, v Version) error {
 		// passes nil, which keeps the probes reporting ErrUnavailable.
 		plane.SetDiagnostics(buildDiagnostics(rt))
 		plane.SetSchemaDescriber(describe.All)
-		httpServer = controlhttp.NewServer(plane, *httpAddr)
+		httpServer = controlhttp.NewServer(plane, listen)
 		// The protocol-specific diagnostic drill-downs (NBP names, MacIP leases) are served
 		// by the diagnostics adapter (which imports the services), NOT through the neutral
 		// plane — so core/control carries no protocol type.
 		httpServer.SetDiagProvider(buildDiagProvider(rt))
-		httpServer.SetFinder(finderadapter.New(rt, log.New("finder",
-			log.NewStderrSink(log.NewLevelVar(logLevel)),
-			busLogSink,
-		)))
+		httpServer.SetFinder(finderSvc)
+		httpServer.SetLifecycle(controlhttp.Lifecycle{
+			Shutdown: func() {
+				fmt.Fprintln(os.Stderr, "classicstack: shutdown requested from web admin")
+				stopRun()
+			},
+			Restart: func() {
+				fmt.Fprintln(os.Stderr, "classicstack: restart requested from web admin")
+				restartRequested.Store(true)
+				stopRun()
+			},
+		})
 		if err := httpServer.Start(); err != nil {
 			_ = rt.Stop(context.Background())
-			return fmt.Errorf("start web-admin on %s: %w", *httpAddr, err)
+			return fmt.Errorf("start web-admin on %s: %w", listen, err)
 		}
 		fmt.Printf("web-admin control API listening on %s\n", httpServer.Addr())
 	}
 
-	<-ctx.Done()
+	<-runCtx.Done()
 
+	fmt.Fprintln(os.Stderr, "classicstack: shutting down")
 	metricsSink.Stop()
 	if httpServer != nil {
+		fmt.Fprintln(os.Stderr, "classicstack: stopping web-admin")
 		httpServer.Stop()
 	}
+	fmt.Fprintln(os.Stderr, "classicstack: stopping runtime")
 	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return rt.Stop(stopCtx)
+	stopErr := rt.Stop(stopCtx)
+	if stopErr != nil {
+		fmt.Fprintf(os.Stderr, "classicstack: runtime stop: %v\n", stopErr)
+	} else {
+		fmt.Fprintln(os.Stderr, "classicstack: shutdown complete")
+	}
+	if restartRequested.Load() {
+		if err := relaunchProcess(args); err != nil {
+			return fmt.Errorf("restart: %w", err)
+		}
+	}
+	return stopErr
+}
+
+// relaunchProcess starts a fresh ClassicStack with the same CLI args and exits the
+// current process. Used when the web admin requests a stack restart.
+func relaunchProcess(args []string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exe, args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	os.Exit(0)
+	return nil
 }
 
 // pickCodec selects the config Codec from the config path: the OpenWRT UCI codec when
@@ -244,13 +322,14 @@ func pickCodec(configPath string) config.Codec {
 // traffic. The low-latency profile (promiscuous, immediate mode, 250ms timeout) suits
 // every NIC transport, so we reuse the EtherTalk shape and only swap the filter.
 //
-// Under the pcap tag this is a real capture handle. WITHOUT the tag the stub returns
-// pcap.ErrUnavailable — which we map to (nil, nil) here so the port comes up
-// INERT-BUT-ROUTED rather than failing Start and aborting the whole runtime. This is the
-// documented degradation (runport.Start treats a nil link as a successful inert start): a
-// build with no libpcap should still boot its other transports/services, not crash
-// because one port has no backend. A genuine open error (device busy / no permission on a
-// pcap build) is still propagated. Called per Start so a reopened port gets a fresh handle.
+// Under `-tags pcap` or `-tags all` this is a real capture handle. WITHOUT those
+// tags the stub returns pcap.ErrUnavailable — which we map to (nil, nil) here so
+// the port comes up INERT-BUT-ROUTED rather than failing Start and aborting the
+// whole runtime. This is the documented degradation (runport.Start treats a nil
+// link as a successful inert start): a build with no libpcap should still boot
+// its other transports/services, not crash because one port has no backend. A
+// genuine open error (device busy / no permission on a pcap build) is still
+// propagated. Called per Start so a reopened port gets a fresh handle.
 var pcapOpener registry.LinkOpener = func(iface, bpf string) (link.FrameLink, error) {
 	cfg := pcap.DefaultEtherTalkConfig(iface)
 	cfg.Filter = bpf
@@ -308,17 +387,39 @@ func interfaceEnumerator() ([]control.InterfaceInfo, error) {
 // Under the pcap tag it resolves a real device; the stub's ListDevices errors and this
 // returns that error, which nicLinkOpener treats as "no auto-NIC" → inert-but-routed.
 func defaultDevice() (string, error) {
-	devs, err := pcap.ListDevices()
+	hd, err := pcapHostDevices()
 	if err != nil {
 		return "", err
-	}
-	hd := make([]hostinfo.Device, len(devs))
-	for i, d := range devs {
-		hd[i] = hostinfo.Device{Name: d.Name, Addresses: d.Addresses}
 	}
 	pick, err := hostinfo.PrimaryDevice(hd)
 	if err != nil {
 		return "", err
 	}
 	return pick.Name, nil
+}
+
+// hostMAC resolves the real hardware address of a pcap device so NIC ports that leave
+// mac / hw_address blank stamp the host NIC's own MAC (WiFi APs drop any other source).
+func hostMAC(device string) ([6]byte, error) {
+	// pcap.ListDevices can fail (no pcap tag, no permission) while the OS still
+	// knows the NIC — fall through to InterfaceByName via an empty device list.
+	hd, err := pcapHostDevices()
+	if err != nil {
+		hd = nil
+	}
+	return hostinfo.HardwareAddrForDevice(device, hd)
+}
+
+// pcapHostDevices maps adapter/link/pcap's device list to the pcap-free hostinfo.Device
+// view PrimaryDevice / HardwareAddrForDevice consume.
+func pcapHostDevices() ([]hostinfo.Device, error) {
+	devs, err := pcap.ListDevices()
+	if err != nil {
+		return nil, err
+	}
+	hd := make([]hostinfo.Device, len(devs))
+	for i, d := range devs {
+		hd[i] = hostinfo.Device{Name: d.Name, Addresses: d.Addresses}
+	}
+	return hd, nil
 }

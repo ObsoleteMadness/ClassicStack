@@ -4,6 +4,7 @@ import type { FinderWindow } from 'classicstack-web/ui/finder-window';
 import type { ExtensionEditorDialog } from 'classicstack-web/ui/extension-editor-dialog';
 import { loadPrefs, savePrefs } from 'classicstack-web/util/prefs';
 import { iconCache } from 'classicstack-web/fs/icon-cache';
+import { MENUBAR_CHANGE, menubarOpenKey, setMenubarOpen } from 'classicstack-web/ui/menu-bar-track';
 
 export function mountFinderMenu(
   header: HTMLElement,
@@ -12,14 +13,19 @@ export function mountFinderMenu(
 ): void {
   const wrap = document.createElement('div');
   wrap.className = 'app-menu finder-view-menu';
-  header.insertBefore(wrap, header.querySelector('#conn'));
+  wrap.dataset.menu = 'view';
+  const menus = header.querySelector('.app-brand-menus') as HTMLElement | null;
+  const advanced = menus?.querySelector('.app-advanced-menu');
+  if (menus && advanced) menus.insertBefore(wrap, advanced);
+  else header.insertBefore(wrap, header.querySelector('#conn'));
 
   const paint = (): void => {
-    const open = wrap.classList.contains('open');
+    const open = (menus ? menubarOpenKey(menus) : null) === 'view';
     const hidden = finder.getShowHiddenFiles();
     const autoExpand = finder.getAutoExpandFiles();
     const icons = finder.getReadFinderIcons();
     const zipStyle = loadPrefs().zipExportStyle;
+    wrap.classList.toggle('open', open);
     wrap.innerHTML = `
       <button type="button" class="app-menu__trigger" data-act="toggle" aria-haspopup="true" aria-expanded="${open}">
         View
@@ -60,21 +66,20 @@ export function mountFinderMenu(
     `;
   };
 
-  const close = (): void => {
-    wrap.classList.remove('open');
-    paint();
+  const dismiss = (): void => {
+    if (menus) setMenubarOpen(menus, null);
+    else {
+      wrap.classList.remove('open');
+      paint();
+    }
   };
 
   wrap.addEventListener('click', (e) => {
     const t = (e.target as HTMLElement).closest('[data-act]') as HTMLElement | null;
     if (!t) return;
-    e.stopPropagation();
     const act = t.dataset.act;
-    if (act === 'toggle') {
-      wrap.classList.toggle('open');
-      paint();
-      return;
-    }
+    if (act === 'toggle') return;
+    e.stopPropagation();
     if (act === 'toggle-show-hidden') finder.setShowHiddenFiles(!finder.getShowHiddenFiles());
     else if (act === 'toggle-auto-expand') finder.setAutoExpandFiles(!finder.getAutoExpandFiles());
     else if (act === 'toggle-read-finder-icons') finder.setReadFinderIcons(!finder.getReadFinderIcons());
@@ -85,15 +90,11 @@ export function mountFinderMenu(
     else if (act === 'clear-icon-cache') {
       void iconCache.clear().then(() => finder.invalidateIcons());
     }
-    close();
+    dismiss();
+    paint();
   });
 
-  window.addEventListener('click', (e) => {
-    if (!wrap.contains(e.target as Node) && wrap.classList.contains('open')) close();
-  });
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && wrap.classList.contains('open')) close();
-  });
+  menus?.addEventListener(MENUBAR_CHANGE, paint);
 
   paint();
 }

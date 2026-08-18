@@ -2,6 +2,7 @@ package afp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -16,20 +17,24 @@ import (
 	proto "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 )
 
+// errDSINotImplemented is returned when a URI selects AFP-over-TCP. Discover lists
+// those servers (Bonjour _afpovertcp._tcp); the DSI session itself is not built yet.
+var errDSINotImplemented = errors.New("afp: AFP over TCP (DSI) is not implemented yet")
+
 // register.go plugs the AFP client into the client scheme registry. Importing this
 // package registers "afp"; client.Connect then builds an *FS and (because AFP
 // implements fs.ForkEngine natively) wraps it with the "passthrough" fork backend so
 // resource forks come off the wire.
 
 func init() {
-	// AFP rides DDP, so its transports are the three AppleTalk segments: LToUDP
-	// multicast (the default — needs no pcap/Npcap), EtherTalk over pcap, and TashTalk
-	// serial. TCP (AFP-over-DSI) is intentionally absent — DSI does not exist yet. The
-	// CLI validates -ifacetype against this set, so `smb over ltoudp` (etc.) is rejected
-	// with a clear message rather than dialing a transport the protocol can't use.
+	// AFP rides DDP on the three AppleTalk segments (LToUDP multicast — the default,
+	// needs no pcap/Npcap — EtherTalk over pcap, and TashTalk serial) plus TCP as a
+	// discover/connect kind for AFP-over-DSI. Connect over TCP returns a clear
+	// "DSI is not implemented" error until that adapter exists; the CLI still
+	// rejects transports the scheme does not declare (e.g. smb over ltoudp).
 	client.RegisterClient("afp", "passthrough",
 		client.Transports{
-			Kinds:   []string{clientlink.KindLToUDP, clientlink.KindPcap, clientlink.KindTashTalk},
+			Kinds:   []string{clientlink.KindLToUDP, clientlink.KindPcap, clientlink.KindTashTalk, clientlink.KindTCP},
 			Default: clientlink.KindLToUDP,
 		},
 		connect,
@@ -66,7 +71,10 @@ func connect(ctx context.Context, target uri.Target, opts client.Options) (fs.Fi
 	f.user = target.User
 	f.pass = target.Pass
 	f.srvInfo = srvInfo
+	f.onMessage = opts.OnServerMessage
 	f.onClose = func() { _ = ep.Close() }
+	f.installAttentionHandler()
+	f.fetchLoginMessage()
 	return f, nil
 }
 
@@ -76,6 +84,9 @@ func connect(ctx context.Context, target uri.Target, opts client.Options) (fs.Fi
 // the live session, the SLS address, and the parsed server info. On any failure it tears
 // down what it built and returns the error, so the caller only closes on success.
 func dialAndLogin(target uri.Target, opts client.Options) (*atalk.Endpoint, *aspclient.Session, atalk.Addr, proto.ServerInfo, error) {
+	if opts.Opener != nil && opts.Opener.Spec.Kind == clientlink.KindTCP {
+		return nil, nil, atalk.Addr{}, proto.ServerInfo{}, errDSINotImplemented
+	}
 	dl, err := opts.Opener.DatagramLinkDDP()
 	if err != nil {
 		return nil, nil, atalk.Addr{}, proto.ServerInfo{}, fmt.Errorf("afp: open transport: %w", err)

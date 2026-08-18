@@ -4,6 +4,7 @@ package registry
 
 import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
+	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/messenger"
 )
 
@@ -27,5 +28,13 @@ func init() {
 		}
 		svc := messenger.New(logger, pub, nil, m.Identity.Hostname, m.Identity.Workgroup)
 		return svc, nil
+	})
+	registerIdentityStamper(func(c component.Component, m *config.Model) bool {
+		svc, ok := c.(*messenger.Service)
+		if !ok {
+			return false
+		}
+		svc.SetIdentity(m.Identity.Hostname, m.Identity.Workgroup)
+		return true
 	})
 }

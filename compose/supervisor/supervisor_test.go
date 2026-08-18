@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"sync"
 	"testing"
@@ -86,6 +87,41 @@ func TestStateChangedPublished(t *testing.T) {
 	ev = (<-ch).(bus.StateChanged)
 	if ev.Component != "port" || ev.From != stateRunning || ev.To != stateStopped {
 		t.Fatalf("stop transition = %+v, want port running->stopped", ev)
+	}
+}
+
+type failingComponent struct {
+	name string
+	err  error
+}
+
+func (c *failingComponent) Name() string                { return c.name }
+func (c *failingComponent) Start(context.Context) error { return c.err }
+func (c *failingComponent) Stop(context.Context) error  { return nil }
+
+func TestStartAllContinuesAfterFailure(t *testing.T) {
+	log := &orderLog{}
+	s := New(config.NewModel(), nil)
+	s.Add(&failingComponent{name: "port", err: errors.New("no such device")}, nil)
+	s.Add(&recordingComponent{name: "router", log: log}, []string{"port"})
+
+	if err := s.StartAll(context.Background()); err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+	if got := log.seq; len(got) != 1 || got[0] != "start:router" {
+		t.Fatalf("continued start = %v, want [start:router]", got)
+	}
+	var portErr string
+	for _, u := range s.Status() {
+		if u.Name == "port" {
+			portErr = u.Error
+			if u.Running {
+				t.Fatal("failed port reported Running")
+			}
+		}
+	}
+	if portErr == "" {
+		t.Fatal("failed port Status.Error empty")
 	}
 }
 

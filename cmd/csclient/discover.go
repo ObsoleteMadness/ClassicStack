@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	afpclient "github.com/ObsoleteMadness/ClassicStack/client/afp"
 	"github.com/ObsoleteMadness/ClassicStack/client/atalk"
 	"github.com/ObsoleteMadness/ClassicStack/client/browse"
 	etherdfsclient "github.com/ObsoleteMadness/ClassicStack/client/etherdfs"
@@ -20,9 +21,8 @@ import (
 )
 
 // cmdDiscover runs a scheme's own discovery probe and prints each responder so it can be
-// pasted into a URI. AFP uses an NBP broadcast lookup for the "AFPServer" type; NCP
-// broadcasts a SAP General Query for file servers. The remaining schemes' probes (SMB
-// browser, EtherDFS broadcast) land with their clients in later phases.
+// pasted into a URI. AFP uses NBP on the selected DDP link (plus LToUDP) and Bonjour
+// for AFP-over-TCP; NCP broadcasts a SAP General Query for file servers.
 func cmdDiscover(cfg config, args []string) int {
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "usage: csfs discover <scheme>  (afp | smb | ncp | etherdfs)")
@@ -44,32 +44,62 @@ func cmdDiscover(cfg config, args []string) int {
 	}
 }
 
-// discoverAFP broadcasts an NBP lookup for AFPServer entities over the selected DDP
-// transport (default ltoudp) and prints each responder's name, zone, and net.node.
+// discoverAFP looks up AFPServer NBP entities on the selected DDP transport (and
+// LToUDP when that is not already the selection) and browses AFP-over-TCP via
+// mDNS (_afpovertcp._tcp). Each line is a pasteable URI with the link kind in
+// the ",transport" tail.
 func discoverAFP(cfg config) int {
 	kind := cfg.IfaceType
 	if kind == "" {
 		kind = clientlink.KindLToUDP
 	}
-	opener := clientlink.NewOpener(clientlink.Spec{Kind: kind, Name: csconnect.ResolveIface(kind, cfg.Iface)})
-	dl, err := opener.DatagramLinkDDP()
-	if err != nil {
-		return fail(fmt.Errorf("open transport: %w", err))
+	count := 0
+	scanDDP := func(k, name string) {
+		opener := clientlink.NewOpener(clientlink.Spec{Kind: k, Name: name})
+		dl, err := opener.DatagramLinkDDP()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  (%s unavailable: %v)\n", k, err)
+			return
+		}
+		ep := atalk.NewEndpoint(dl, atalk.Addr{Network: opener.Net, Node: opener.Node})
+		defer ep.Close()
+		ents, err := ep.LookupAllZones("=", atalk.AFPServerType, 2*time.Second)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  (%s NBP: %v)\n", k, err)
+			return
+		}
+		for _, e := range ents {
+			count++
+			fmt.Printf("%s:%s\tafp://%s:%s,%s/  (%d.%d socket %d)\n",
+				e.Object, e.Zone, e.Object, e.Zone, k, e.Addr.Network, e.Addr.Node, e.Addr.Socket)
+		}
 	}
-	ep := atalk.NewEndpoint(dl, atalk.Addr{Network: opener.Net, Node: opener.Node})
-	defer ep.Close()
+	scanDDP(kind, csconnect.ResolveIface(kind, cfg.Iface))
+	if kind != clientlink.KindLToUDP {
+		scanDDP(clientlink.KindLToUDP, "")
+	}
 
-	ents, err := ep.Lookup("=", atalk.AFPServerType, "*")
+	tcpDev := cfg.Iface
+	if tcpDev == "" {
+		if d, err := clientlink.DefaultInterface(); err == nil {
+			tcpDev = d.Name
+		}
+	}
+	servers, err := afpclient.DiscoverTCP(tcpDev, 2*time.Second)
 	if err != nil {
-		return fail(err)
+		fmt.Fprintf(os.Stderr, "  (tcp mDNS unavailable: %v)\n", err)
 	}
-	if len(ents) == 0 {
+	for _, s := range servers {
+		count++
+		host := s.Host
+		if s.Port != 0 && s.Port != afpclient.DSIPort {
+			host = fmt.Sprintf("%s:%d", host, s.Port)
+		}
+		fmt.Printf("%s\tafp://%s,tcp/  (AFP over TCP port %d)\n", s.Name, host, s.Port)
+	}
+
+	if count == 0 {
 		fmt.Println("no AFP servers responded")
-		return 0
-	}
-	for _, e := range ents {
-		fmt.Printf("%s:%s\tafp://%s:%s/  (%d.%d socket %d)\n",
-			e.Object, e.Zone, e.Object, e.Zone, e.Addr.Network, e.Addr.Node, e.Addr.Socket)
 	}
 	return 0
 }
@@ -129,6 +159,16 @@ func discoverSMB(cfg config) int {
 		Window:    smbBrowseWindow,
 		Trace:     func(line string) { fmt.Println(line) },
 	})
+	tcpServers, tcpRes := browse.EnumerateTCP(browse.Options{
+		Device: csconnect.ResolveIface(kind, cfg.Iface),
+		Kind:   kind,
+		Window: smbBrowseWindow,
+		Trace:  func(line string) { fmt.Println(line) },
+	})
+	if tcpRes.Err != nil {
+		fmt.Fprintf(os.Stderr, "  (%s carrier unavailable: %v)\n", tcpRes.Protocol, tcpRes.Err)
+	}
+	servers = mergeBrowseServers(servers, tcpServers)
 	// Surface per-carrier open failures so a segment reachable over only one carrier still
 	// reports usefully (e.g. no IPX on the wire).
 	for _, r := range results {
@@ -161,6 +201,37 @@ func smbVia(s browse.Server) string {
 		via += " master"
 	}
 	return via
+}
+
+func mergeBrowseServers(a, b []browse.Server) []browse.Server {
+	if len(b) == 0 {
+		return a
+	}
+	byName := make(map[string]browse.Server, len(a)+len(b))
+	order := make([]string, 0, len(a)+len(b))
+	for _, s := range append(a, b...) {
+		if exist, ok := byName[s.Name]; ok {
+			exist.Carriers = append(exist.Carriers, s.Carriers...)
+			if s.Comment != "" {
+				exist.Comment = s.Comment
+			}
+			if s.Address != "" {
+				exist.Address = s.Address
+			}
+			if s.Source > exist.Source {
+				exist.Source = s.Source
+			}
+			byName[s.Name] = exist
+			continue
+		}
+		byName[s.Name] = s
+		order = append(order, s.Name)
+	}
+	out := make([]browse.Server, 0, len(order))
+	for _, name := range order {
+		out = append(out, byName[name])
+	}
+	return out
 }
 
 // smbServerNote renders the role/comment detail of a discovered server as a " — ..." suffix.

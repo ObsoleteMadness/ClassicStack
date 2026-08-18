@@ -79,6 +79,15 @@ type ForkContainers interface {
 	MetadataPaths(storePath string) []string
 }
 
+// ListingFilter is an OPTIONAL capability a sidecar fork adapter implements so
+// catalogs (AFP enumerate, operator Finder) omit its metadata containers —
+// AppleDouble `._name` / `.AppleDouble` / `__MACOSX`, derez `.rdump`/`.idump`.
+// Adapters whose metadata rides with the file (ads, xattr, hfs, nofork) omit it,
+// so a nofork share still lists a host `._file` as an ordinary document.
+type ListingFilter interface {
+	HiddenName(name string) bool
+}
+
 // ForkFS is a base FileSystem paired with its two mandatory per-share engines:
 // the fork adapter (ForkEngine) and the metadata engine (MetaEngine). BuildShare
 // always assembles exactly one of each over the fork/meta-unaware base — each
@@ -433,15 +442,30 @@ func lookupFactory(fsType string) (Factory, bool) {
 	return r.factory, ok
 }
 
+// ValidateSpec checks a share is buildable: required backend params, the
+// fs_type × fork × codec triple, and that the fs_type is registered. It is the
+// check Model.Validate / Save run before a share goes live, matching BuildShare
+// without constructing the stack.
+func ValidateSpec(spec ShareSpec) error {
+	spec = withDefaults(spec)
+	if err := validateParams(spec); err != nil {
+		return err
+	}
+	if err := validateShareSpec(spec); err != nil {
+		return err
+	}
+	if _, ok := lookupFactory(spec.FSType); !ok {
+		return errors.New("fs: unknown fs type")
+	}
+	return nil
+}
+
 // BuildShare assembles one per-share stack and validates key compatibility pairs.
 func BuildShare(spec ShareSpec, b bus.Bus) (ForkFS, error) {
+	if err := ValidateSpec(spec); err != nil {
+		return nil, err
+	}
 	spec = withDefaults(spec)
-	if err := validateShareSpec(spec); err != nil {
-		return nil, err
-	}
-	if err := validateParams(spec); err != nil {
-		return nil, err
-	}
 
 	if b == nil {
 		b = NewBus(0)
@@ -672,6 +696,14 @@ func (s *shareFS) MetadataPaths(storePath string) []string {
 		return fc.MetadataPaths(storePath)
 	}
 	return nil
+}
+
+// HiddenName forwards ListingFilter to the fork adapter (sidecar catalogs).
+func (s *shareFS) HiddenName(name string) bool {
+	if f, ok := s.ForkEngine.(ListingFilter); ok {
+		return f.HiddenName(name)
+	}
+	return false
 }
 
 // ShortName and MediumName derive a per-directory short/medium name for the

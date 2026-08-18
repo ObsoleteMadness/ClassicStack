@@ -13,16 +13,16 @@ on a MacFUSE mount.
 
 Added:
 
-- **`FileSystemXattrP`** (`fsop.go`) — optional `GetxattrP` / `SetxattrP`
-  taking a `position uint32`. `GetxattrP` still returns the **full** attribute
-  value; the host applies the offset when copying into the FUSE buffer and
-  uses `len(value)` as the size-probe result. `SetxattrP` writes `value` at
-  offset `position`.
+- **`FileSystemXattrP`** (`fsop.go`) — optional `GetxattrSize` / `GetxattrP` /
+  `SetxattrP`. `GetxattrSize` answers the size=0 probe without reading the
+  value. `GetxattrP(path, name, position, size)` returns at most `size` bytes
+  at `position` (ranged AFP FPRead). `SetxattrP` writes `value` at `position`.
 - **`host.go`** — `hostGetxattr` / `hostSetxattr` dispatch to
-  `FileSystemXattrP` when implemented. With it, a Get that does not fit the
-  caller buffer is copied in chunks (no `ERANGE`) so a large resource fork
-  does not have to be allocated in one shot by the kernel. Without it the
-  original `ERANGE` size-discovery behaviour is unchanged.
+  `FileSystemXattrP` when implemented. A size=0 Get calls `GetxattrSize` (so
+  `ls` does not download resource forks). A sized Get copies the ranged
+  result (no `ERANGE`) so a large resource fork is read in FUSE chunks.
+  Without the interface the original `ERANGE` size-discovery behaviour is
+  unchanged.
 - **`host_cgo.go`** — Darwin `_hostSetxattr` / `_hostGetxattr` pass `position`
   through to Go; Linux wrappers pass `0`.
 - **`host_nocgo_windows.go`** — Windows has no position; callers pass `0`.

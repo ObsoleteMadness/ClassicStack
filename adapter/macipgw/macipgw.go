@@ -12,7 +12,8 @@
 //     the link (return traffic needs a host route to the MacIP subnet, or use DHCP).
 //   - nat: off-subnet client traffic is forwarded through the host OS network stack
 //     (real sockets) so the host IP is the NAT source — no host route needed. ICMP
-//     ping to the gateway IP itself is answered locally.
+//     ping to the gateway IP itself is answered locally. NAT-only (no DHCP-relay)
+//     skips pcap entirely so it works on WiFi.
 //   - dhcp relay: client addresses are obtained by relaying DHCP onto the IP-side
 //     network with a fabricated per-Mac MAC; the adapter implements macip.AddressAssigner
 //     so core delegates assignment to it.
@@ -39,7 +40,7 @@ import (
 // the MacIP section (macip.Section.EgressParams), filling in any auto-detected fields.
 type Config struct {
 	Interface      string // pcap device for the IP-side network (required)
-	HostMAC        string // IP-side host MAC (colon/dash hex; required)
+	HostMAC        string // IP-side host MAC (colon/dash hex; required except NAT-only)
 	HostIP         string // IP-side host IPv4 (dotted quad; may be empty)
 	DefaultGateway string // upstream gateway IPv4 (dotted quad; required for off-subnet egress)
 	GatewayIP      string // gateway IP advertised to clients (the gateway's own IP)
@@ -75,21 +76,20 @@ var (
 	_ macip.AddressAssigner = (*Egress)(nil)
 )
 
-// New builds an IP-side egress over a fresh libpcap link on cfg.Interface, applying a
-// MacIP-shaped BPF filter (ARP + subnet traffic, plus DHCP replies in relay mode). The
-// returned Egress is injected into the MacIP core via Service.SetEgress; call Start
-// once before the service starts and Close on shutdown. ownsIP is the core's lease
-// predicate (Service.OwnsIP) used for proxy ARP and inbound filtering.
+// New builds an IP-side egress. Bridge and DHCP-relay open a libpcap link on
+// cfg.Interface (ARP + subnet BPF, plus DHCP replies in relay mode). NAT-only
+// (NATEnabled && !DHCPRelay) skips pcap entirely and forwards through OS sockets
+// — required on WiFi, where APs drop injected frames that are not sourced from
+// the host NIC. The returned Egress is injected into the MacIP core via
+// Service.SetEgress; call Start once before the service starts and Close on
+// shutdown. ownsIP is the core's lease predicate (Service.OwnsIP) used for proxy
+// ARP and inbound filtering.
 func New(cfg Config, ownsIP func(macip.IPv4) bool, log *slog.Logger) (*Egress, error) {
 	if log == nil {
 		log = slog.Default()
 	}
 	if cfg.Interface == "" {
 		return nil, fmt.Errorf("macipgw: interface is required")
-	}
-	mac, err := parseEthernet(cfg.HostMAC)
-	if err != nil {
-		return nil, fmt.Errorf("macipgw: host MAC: %w", err)
 	}
 	gwIP := net.ParseIP(cfg.GatewayIP).To4()
 	netIP := net.ParseIP(cfg.Network).To4()
@@ -101,17 +101,6 @@ func New(cfg Config, ownsIP func(macip.IPv4) bool, log *slog.Logger) (*Egress, e
 	hostIP := net.ParseIP(cfg.HostIP).To4()
 	defGW := net.ParseIP(cfg.DefaultGateway).To4()
 
-	// Open + BPF-filter the IP-side link.
-	fl, err := pcap.Open(pcap.DefaultMacIPConfig(cfg.Interface))
-	if err != nil {
-		return nil, fmt.Errorf("macipgw: open %s: %w", cfg.Interface, err)
-	}
-	if ff, ok := fl.(link.FilterableLink); ok && ipNet != nil {
-		if err := ff.SetFilter(macipBPFFilter(ipNet, cfg.DHCPRelay)); err != nil {
-			log.Warn("macipgw: BPF filter rejected; capturing unfiltered", "err", err)
-		}
-	}
-
 	e := &Egress{
 		cfg:     cfg,
 		log:     log,
@@ -121,20 +110,37 @@ func New(cfg Config, ownsIP func(macip.IPv4) bool, log *slog.Logger) (*Egress, e
 		stop:    make(chan struct{}),
 	}
 
-	ether, err := newEtherIPLink(fl, mac, hostIP, ipNet, defGW, e.isOurClient, log)
-	if err != nil {
-		_ = fl.Close()
-		return nil, err
+	// NAT-only uses the host OS stack; no Ethernet inject, so no pcap handle.
+	natOnly := cfg.NATEnabled && !cfg.DHCPRelay
+	if !natOnly {
+		mac, err := parseEthernet(cfg.HostMAC)
+		if err != nil {
+			return nil, fmt.Errorf("macipgw: host MAC: %w", err)
+		}
+		fl, err := pcap.Open(pcap.DefaultMacIPConfig(cfg.Interface))
+		if err != nil {
+			return nil, fmt.Errorf("macipgw: open %s: %w", cfg.Interface, err)
+		}
+		if ff, ok := fl.(link.FilterableLink); ok && ipNet != nil {
+			if err := ff.SetFilter(macipBPFFilter(ipNet, cfg.DHCPRelay)); err != nil {
+				log.Warn("macipgw: BPF filter rejected; capturing unfiltered", "err", err)
+			}
+		}
+		ether, err := newEtherIPLink(fl, mac, hostIP, ipNet, defGW, e.isOurClient, log)
+		if err != nil {
+			_ = fl.Close()
+			return nil, err
+		}
+		e.ether = ether
+		ether.onInbound = e.deliverInbound
+		if cfg.DHCPRelay {
+			e.dhcp = newDHCPClient(ether, log, e.stop)
+			ether.onDHCP = e.dhcp.handleReply
+		}
 	}
-	e.ether = ether
-	ether.onInbound = e.deliverInbound
 
 	if cfg.NATEnabled {
 		e.osnat = nat.New(e.deliverInbound, log)
-	}
-	if cfg.DHCPRelay {
-		e.dhcp = newDHCPClient(ether, log, e.stop)
-		ether.onDHCP = e.dhcp.handleReply
 	}
 	return e, nil
 }
@@ -147,12 +153,20 @@ func (e *Egress) Start() {
 		return
 	}
 	e.started = true
-	e.ether.start()
+	if e.ether != nil {
+		e.ether.start()
+	}
 	mode := "bridge"
 	if e.cfg.NATEnabled {
 		mode = "nat"
 	}
 	e.log.Info("macipgw: IP egress started", "iface", e.cfg.Interface, "mode", mode, "dhcp_relay", e.cfg.DHCPRelay)
+	if !e.cfg.NATEnabled {
+		e.log.Warn("macipgw: bridge mode (proxy-ARP / raw IP inject); on WiFi use mode=nat — APs drop non-host source MACs")
+	}
+	if e.cfg.DHCPRelay {
+		e.log.Warn("macipgw: DHCP-relay fabricates per-Mac MACs (02:00:00:…); WiFi APs drop those frames — set dhcp_relay=false")
+	}
 }
 
 // Close stops the egress and frees the link and forwarding state. Idempotent.
@@ -212,6 +226,9 @@ func (e *Egress) SendIP(pkt []byte) error {
 	if e.cfg.NATEnabled && e.osnat != nil {
 		e.osnat.Forward(pkt)
 		return nil
+	}
+	if e.ether == nil {
+		return fmt.Errorf("macipgw: no IP link")
 	}
 	return e.ether.sendIPPacket(pkt)
 }

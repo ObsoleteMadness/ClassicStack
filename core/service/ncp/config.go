@@ -100,13 +100,13 @@ func (s *VolumeSection) Unmask(prev config.Section) config.Section {
 }
 
 // Validate checks the section in isolation. A volume must have a name; the
-// fs_type×fork×codec triple and required backend params are validated later by
-// share.Build.
+// fs_type × fork × codec triple and required backend params are checked here
+// so Save rejects an unbuildable share before it goes live.
 func (s *VolumeSection) Validate() error {
 	if strings.TrimSpace(s.VName) == "" {
 		return ErrVolumeNameRequired
 	}
-	return nil
+	return fs.ValidateSpec(s.fsSpec())
 }
 
 // fsSpec maps the section to an fs.ShareSpec (the storage-seam half). Options

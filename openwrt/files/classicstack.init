@@ -9,7 +9,7 @@
 # Daemon-level options (NOT part of the ClassicStack config sections) live in an
 # optional `config classicstack 'init'` block in /etc/config/classicstack:
 #   option enabled '1'              enable the service (0 to keep it installed but off)
-#   option http_addr ':8080'        serve the web-admin control API here (empty = off)
+#   option http_addr ':1984'        override [http] listen address (empty = UCI [http], default :1984)
 #   option respawn '1'              let procd respawn the daemon on crash
 
 START=95

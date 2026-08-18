@@ -141,12 +141,20 @@ func newServer(t *testing.T) (*afpsvc.Service, *bridge) {
 // addressing the server by a literal net.node (no NBP needed — the bridge is one link).
 func connectClient(t *testing.T, br *bridge) fs.ForkFS {
 	t.Helper()
+	return connectClientWithPopup(t, br, nil)
+}
+
+func connectClientWithPopup(t *testing.T, br *bridge, onMsg func(kind, from, text string)) fs.ForkFS {
+	t.Helper()
 	target, err := uri.Parse("afp://0.0/Share")
 	if err != nil {
 		t.Fatalf("uri.Parse: %v", err)
 	}
 	opener := clientlink.NewDatagramOpener(br)
-	remote, err := clientpkg.Connect(context.Background(), target, clientpkg.Options{Opener: opener})
+	remote, err := clientpkg.Connect(context.Background(), target, clientpkg.Options{
+		Opener:          opener,
+		OnServerMessage: onMsg,
+	})
 	if err != nil {
 		t.Fatalf("client.Connect: %v", err)
 	}
@@ -201,6 +209,44 @@ func TestAFP_InProcessE2E(t *testing.T) {
 	}
 	if _, err := remote.Stat("renamed.txt"); err == nil {
 		t.Fatalf("renamed.txt still present after Remove")
+	}
+}
+
+func TestAFP_LoginMessageDelivered(t *testing.T) {
+	svc, br := newServer(t)
+	svc.SetLoginMessage("Welcome to ClassicStack.")
+	got := make(chan string, 1)
+	connectClientWithPopup(t, br, func(kind, _, text string) {
+		got <- kind + "|" + text
+	})
+	select {
+	case m := <-got:
+		if m != "login|Welcome to ClassicStack." {
+			t.Fatalf("popup = %q, want login greeting", m)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for login message")
+	}
+}
+
+func TestAFP_AttentionMessageDelivered(t *testing.T) {
+	svc, br := newServer(t)
+	got := make(chan string, 1)
+	connectClientWithPopup(t, br, func(kind, _, text string) {
+		if kind == "server" {
+			got <- text
+		}
+	})
+	if err := svc.SendMessage(0, "hello there"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	select {
+	case m := <-got:
+		if m != "hello there" {
+			t.Fatalf("popup = %q, want hello there", m)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for attention message")
 	}
 }
 

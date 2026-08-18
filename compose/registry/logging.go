@@ -47,8 +47,13 @@ func (ctx *BuildContext) LevelFor() log.Level {
 // sink's LevelVar is seeded from [Logging] Level, and the same records fan out to the
 // extra sinks at their own thresholds.
 func (ctx *BuildContext) Logger(scope string) log.Logger {
-	lvl := ctx.LevelFor()
-	sinks := []log.Sink{log.NewStderrSink(log.NewLevelVar(lvl))}
+	var min *log.LevelVar
+	if ctx != nil && ctx.LogLevel != nil {
+		min = ctx.LogLevel
+	} else {
+		min = log.NewLevelVar(ctx.LevelFor())
+	}
+	sinks := []log.Sink{log.NewStderrSink(min)}
 	if ctx != nil {
 		sinks = append(sinks, ctx.LogSinks...)
 	}

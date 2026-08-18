@@ -33,6 +33,9 @@ type wellKnown struct {
 	Identity  config.Identity       `toml:"identity"`
 	AdminAuth config.AdminAuth      `toml:"adminauth"`
 	Logging   config.LoggingSection `toml:"logging"`
+	HTTP      config.HTTPSection    `toml:"http"`
+	Client    config.ClientSection  `toml:"Client"`
+	FUSE      config.FUSESection    `toml:"FUSE"`
 	Router    config.RouterSection  `toml:"router"`
 	// Bridge is the LEGACY singleton [bridge] block (pre-M11). It is read only for
 	// back-compat migration — Unmarshal folds it into the interface namespace as a
@@ -51,6 +54,9 @@ func (c *Codec) Marshal(m *config.Model) ([]byte, error) {
 	top := map[string]any{
 		"identity": m.Identity,
 		"logging":  m.Logging,
+		"http":     m.HTTP,
+		"Client":   m.Client,
+		"FUSE":     m.FUSE,
 		"router":   m.Router,
 	}
 	// Only emit [adminauth] once an admin is configured, so a fresh server.toml has
@@ -112,6 +118,9 @@ func (c *Codec) Unmarshal(data []byte, m *config.Model) error {
 	if err := gotoml.Unmarshal(data, &raw); err != nil {
 		return err
 	}
+	m.HTTP = applyHTTPFromRaw(raw["http"], wk.HTTP)
+	m.Client = applyClientFromRaw(raw["Client"], raw["client"], wk.Client)
+	m.FUSE = applyFUSEFromRaw(raw["FUSE"], raw["fuse"], wk.FUSE)
 	if m.Sections == nil {
 		m.Sections = make(map[string]config.Section)
 	}
@@ -168,4 +177,67 @@ func unmarshalRepeated(raw map[string]any, schema config.SectionSchema, m *confi
 		m.Lists[schema.Key] = append(m.Lists[schema.Key], sec)
 	}
 	return nil
+}
+
+// applyHTTPFromRaw applies product defaults (enabled, :1984) when [http] is
+// omitted, or when a present table left enabled/addr unset.
+func applyHTTPFromRaw(raw any, decoded config.HTTPSection) config.HTTPSection {
+	if raw == nil {
+		return config.DefaultHTTP()
+	}
+	enabledPresent := false
+	if tbl, ok := raw.(map[string]any); ok {
+		_, enabledPresent = tbl["enabled"]
+	}
+	return config.ApplyHTTPDefaults(decoded, true, enabledPresent)
+}
+
+// applyClientFromRaw copies a decoded [Client] table. The section is opt-in
+// (default disabled); an omitted table stays at the zero value. [client] is
+// accepted as a lowercase alias of [Client].
+func applyClientFromRaw(rawClient, rawLower any, decoded config.ClientSection) config.ClientSection {
+	raw := rawClient
+	if raw == nil {
+		raw = rawLower
+	}
+	if raw == nil {
+		return config.ClientSection{}
+	}
+	if rawClient != nil {
+		return decoded
+	}
+	subBytes, err := gotoml.Marshal(raw)
+	if err != nil {
+		return decoded
+	}
+	var sec config.ClientSection
+	if err := gotoml.Unmarshal(subBytes, &sec); err != nil {
+		return decoded
+	}
+	return sec
+}
+
+// applyFUSEFromRaw applies the 30-second default timeout when [FUSE] is omitted,
+// or when a present table left mount_timeout_seconds unset. [fuse] is accepted
+// as a lowercase alias of [FUSE].
+func applyFUSEFromRaw(rawFUSE, rawLower any, decoded config.FUSESection) config.FUSESection {
+	raw := rawFUSE
+	if raw == nil {
+		raw = rawLower
+	}
+	if raw == nil {
+		return config.DefaultFUSE()
+	}
+	if rawFUSE == nil {
+		subBytes, err := gotoml.Marshal(raw)
+		if err != nil {
+			return config.ApplyFUSEDefaults(decoded, true)
+		}
+		var sec config.FUSESection
+		if err := gotoml.Unmarshal(subBytes, &sec); err != nil {
+			return config.ApplyFUSEDefaults(decoded, true)
+		}
+		decoded = sec
+	}
+	return config.ApplyFUSEDefaults(decoded, true)
 }

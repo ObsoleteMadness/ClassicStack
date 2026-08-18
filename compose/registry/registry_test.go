@@ -19,24 +19,56 @@ func TestSectionMACForInheritsInterfaceHWAddress(t *testing.T) {
 	want := [6]byte{0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE}
 
 	// Empty section mac → inherit the interface hw_address.
-	if got := sectionMACFor(&port.Section{}, bridge); got != want {
+	if got := sectionMACFor(nil, &port.Section{}, bridge); got != want {
 		t.Fatalf("empty section mac: got %v, want interface hw_address %v", got, want)
 	}
 
 	// A pinned section mac wins over the interface hw_address.
 	own := [6]byte{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}
-	if got := sectionMACFor(&port.Section{MAC: "00:11:22:33:44:55"}, bridge); got != own {
+	if got := sectionMACFor(nil, &port.Section{MAC: "00:11:22:33:44:55"}, bridge); got != own {
 		t.Fatalf("pinned section mac: got %v, want %v", got, own)
 	}
 
 	// Both empty → the zero MAC (the caller decides whether that is fatal).
-	if got := sectionMACFor(&port.Section{}, config.InterfaceSection{}); got != ([6]byte{}) {
+	if got := sectionMACFor(nil, &port.Section{}, config.InterfaceSection{}); got != ([6]byte{}) {
 		t.Fatalf("no mac anywhere: got %v, want zero MAC", got)
 	}
 
 	// A malformed interface hw_address is ignored (falls through to zero), not panicked on.
-	if got := sectionMACFor(&port.Section{}, config.InterfaceSection{HWAddress: "not-a-mac"}); got != ([6]byte{}) {
+	if got := sectionMACFor(nil, &port.Section{}, config.InterfaceSection{HWAddress: "not-a-mac"}); got != ([6]byte{}) {
 		t.Fatalf("malformed hw_address: got %v, want zero MAC", got)
+	}
+}
+
+// TestSectionMACForHostMAC proves the WiFi/pcap empty-config path: when mac and
+// hw_address are both blank, the injected HostMAC resolver supplies the NIC's own
+// address. A configured mac / hw_address still wins over the resolver.
+func TestSectionMACForHostMAC(t *testing.T) {
+	host := [6]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
+	ctx := &BuildContext{
+		HostMAC: func(device string) ([6]byte, error) {
+			if device != "en0" {
+				t.Fatalf("HostMAC device = %q, want en0", device)
+			}
+			return host, nil
+		},
+	}
+	iface := config.InterfaceSection{Name: "en0"}
+
+	if got := sectionMACFor(ctx, &port.Section{}, iface); got != host {
+		t.Fatalf("empty config: got %v, want host MAC %v", got, host)
+	}
+
+	// Configured hw_address still wins.
+	want := [6]byte{0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE}
+	spoof := config.InterfaceSection{Name: "en0", HWAddress: "DE:AD:BE:EF:CA:FE"}
+	if got := sectionMACFor(ctx, &port.Section{}, spoof); got != want {
+		t.Fatalf("hw_address should win over HostMAC: got %v, want %v", got, want)
+	}
+
+	// Nil HostMAC keeps the zero-MAC fallback.
+	if got := sectionMACFor(&BuildContext{}, &port.Section{}, iface); got != ([6]byte{}) {
+		t.Fatalf("nil HostMAC: got %v, want zero MAC", got)
 	}
 }
 

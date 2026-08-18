@@ -41,6 +41,9 @@ const DefaultDirectTCPAddr = ":445"
 type ServerSection struct {
 	// SKey is the section key; always "SMB". Stored so Key() is a plain getter.
 	SKey string `toml:"-"`
+	// Enabled gates the SMB service (component.Enableable). Missing key keeps the
+	// New() default of true so existing configs without enabled= stay on.
+	Enabled bool `toml:"enabled" display:"Enabled" desc:"Whether the SMB file service is configured on." default:"true"`
 	// Transports lists the transport tokens (netbeui/ipx/nbt/tcp) the SMB service
 	// binds. Empty = bind every transport that was built (back-compat).
 	Transports []string `toml:"transports,omitempty" display:"Transports" desc:"netbeui, ipx, nbt, and/or tcp. Empty = bind every transport built into this binary." example:"netbeui,ipx"`
@@ -90,7 +93,7 @@ func ServerSectionFromModel(m *config.Model) *ServerSection {
 			}
 		}
 	}
-	return &ServerSection{SKey: ServerKey}
+	return &ServerSection{SKey: ServerKey, Enabled: true}
 }
 
 // RegisterServer installs the SMB server-section schema so codecs round-trip it. Kept
@@ -99,7 +102,7 @@ func ServerSectionFromModel(m *config.Model) *ServerSection {
 func RegisterServer() {
 	config.Register(config.SectionSchema{
 		Key: ServerKey,
-		New: func() config.Section { return &ServerSection{SKey: ServerKey} },
+		New: func() config.Section { return &ServerSection{SKey: ServerKey, Enabled: true} },
 		Validate: func(s config.Section) error {
 			if ss, ok := s.(*ServerSection); ok {
 				return ss.Validate()

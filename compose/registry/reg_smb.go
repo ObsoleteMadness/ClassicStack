@@ -4,6 +4,7 @@ package registry
 
 import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
+	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/smb"
 )
 
@@ -38,6 +39,7 @@ func init() {
 		// asks the service instead of re-reading the section (§B). Empty list = bind
 		// every built transport (back-compat); empty addr = do not bind that address.
 		smbSec := smb.ServerSectionFromModel(m)
+		svc.SetEnabled(smbSec.Enabled)
 		svc.SetBoundTransports(smbSec.Transports)
 		// Only the direct-TCP (:445) address is an SMB concern; NBT (:139) is a NetBIOS
 		// transport whose address lives on the NetBIOS service (see reg_netbios.go).
@@ -59,5 +61,15 @@ func init() {
 			return nil, err
 		}
 		return svc, nil
+	})
+	registerIdentityStamper(func(c component.Component, m *config.Model) bool {
+		svc, ok := c.(*smb.Service)
+		if !ok {
+			return false
+		}
+		svc.SetServerName(m.Identity.Hostname)
+		svc.SetWorkgroup(m.Identity.Workgroup)
+		svc.SetDescription(m.Identity.Description)
+		return true
 	})
 }

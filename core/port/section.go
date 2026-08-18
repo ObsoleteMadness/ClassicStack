@@ -28,7 +28,7 @@ type Section struct {
 	IsEnabled bool `toml:"enabled"`
 
 	// MAC is the station hardware address used as the Ethernet source on
-	// outbound frames. "" means "use the interface's own MAC".
+	// outbound frames. "" means "use the interface hw_address, else the NIC's own MAC".
 	MAC string `toml:"mac,omitempty"`
 
 	// SeedNetwork / SeedNetworkEnd / SeedZone are AppleTalk seed config

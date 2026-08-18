@@ -173,8 +173,15 @@ func (s *Service) afpLogin(a *afpSession, args []byte) ([]byte, int32) {
 		}
 		username := strings.TrimRight(string(user), " \x00")
 		password := ""
-		if poff+8 <= len(args) {
-			password = strings.TrimRight(string(args[poff:poff+8]), " \x00")
+		pwOff := poff
+		// Client word-aligns the 8-byte password in the full command (cmd byte +
+		// args). Args have the cmd stripped, so a pad lands on an even args offset
+		// with 9 bytes remaining.
+		if len(args)-poff >= 9 && poff%2 == 0 {
+			pwOff++
+		}
+		if pwOff+8 <= len(args) {
+			password = strings.TrimRight(string(args[pwOff:pwOff+8]), " \x00")
 		}
 
 		s.mu.Lock()

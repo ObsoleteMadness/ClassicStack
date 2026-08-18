@@ -224,8 +224,8 @@ func TestCaptureDecorator(t *testing.T) {
 	if err := cl.Close(); err != nil {
 		t.Fatalf("Close error: %v", err)
 	}
-	if !sink.closed {
-		t.Errorf("Expected sink to be closed")
+	if sink.closed {
+		t.Errorf("capture link Close must not close a shared capture sink")
 	}
 }
 

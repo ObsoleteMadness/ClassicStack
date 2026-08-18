@@ -92,6 +92,18 @@ func (s *Service) Name() string { return Name }
 // Set before Start.
 func (s *Service) SetSink(sink MailslotSink) { s.sink = sink }
 
+// SetIdentity restamps the recipient name and workgroup from config.Identity.
+func (s *Service) SetIdentity(server, workgroup string) {
+	if server == "" {
+		server = "CLASSICSTACK"
+	}
+	if workgroup == "" {
+		workgroup = "WORKGROUP"
+	}
+	s.server = server
+	s.workgroup = workgroup
+}
+
 // Start brings the messenger up. There is no background loop — it is purely
 // reactive to inbound mailslot writes — so Start just marks it running. Idempotent.
 func (s *Service) Start(ctx context.Context) error {
@@ -164,6 +176,7 @@ func (s *Service) publish(m *msframe.Message) {
 		return
 	}
 	s.pub.Publish(bus.MessageReceived{
+		Kind: bus.MessageKindMessenger,
 		From: m.From,
 		To:   m.To,
 		Text: m.Text,

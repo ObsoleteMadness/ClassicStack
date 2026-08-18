@@ -43,11 +43,21 @@ ifneq ($(filter all webui,$(TAGS)),)
 build: spa
 endif
 
+# On macOS, embed Info.plist into the Mach-O so Local Network privacy (TN3179) can
+# show a usage string. Sending/receiving LToUDP multicast is a local-network
+# operation; a CLI from Terminal is auto-allowed, but a binary launched from
+# Finder/an IDE needs this (and the user's Allow). Requires the external linker
+# (cgo), which the default pcap tag already enables.
+DARWIN_INFOPLIST := $(CURDIR)/packaging/darwin/Info.plist
+ifeq ($(GOOS),darwin)
+LDFLAGS += -linkmode=external -extldflags=-Wl,-sectcreate,__TEXT,__info_plist,$(DARWIN_INFOPLIST)
+endif
+
 build: build-svc build-mount
-	go build -tags "$(TAGS)" -o classicstack ./cmd/classicstack
+	go build -tags "$(TAGS)" -ldflags "$(LDFLAGS)" -o classicstack ./cmd/classicstack
 
 build-svc:
-	go build -tags "$(TAGS)" -o $(SVC_BIN) $(SVC_PKG)
+	go build -tags "$(TAGS)" -ldflags "$(LDFLAGS)" -o $(SVC_BIN) $(SVC_PKG)
 
 # build-mount builds the host mount client (WinFsp on Windows, FUSE on Darwin/Linux).
 build-mount:

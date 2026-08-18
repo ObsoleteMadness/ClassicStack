@@ -1,8 +1,10 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -32,8 +34,8 @@ func (s *Server) handleFinderLocal(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, f.LocalVolumes())
 }
 
-func (s *Server) handleFinderDiscover(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+func (s *Server) handleFinderState(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -41,17 +43,36 @@ func (s *Server) handleFinderDiscover(w http.ResponseWriter, r *http.Request) {
 	if f == nil {
 		return
 	}
-	var req finder.DiscoverRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
+	writeJSON(w, f.State())
+}
+
+func (s *Server) handleFinderDiscover(w http.ResponseWriter, r *http.Request) {
+	f := s.requireFinder(w)
+	if f == nil {
 		return
 	}
-	out, err := f.Discover(req)
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
-		return
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, f.LastSeen(r.URL.Query().Get("scheme")))
+	case http.MethodPost:
+		var req finder.DiscoverRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		out, err := f.Discover(req)
+		if err != nil {
+			if errors.Is(err, finder.ErrClientDisabled) || errors.Is(err, finder.ErrServiceDisabled) {
+				writeFinderErr(w, err)
+				return
+			}
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, out)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
-	writeJSON(w, out)
 }
 
 func (s *Server) handleFinderSessions(w http.ResponseWriter, r *http.Request) {
@@ -83,13 +104,15 @@ func (s *Server) handleFinderSessions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, map[string]bool{"ok": true})
+	case http.MethodGet:
+		writeJSON(w, f.MountedVolumes())
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
-func (s *Server) handleFinderOpen(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+func (s *Server) handleFinderMounted(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -97,20 +120,45 @@ func (s *Server) handleFinderOpen(w http.ResponseWriter, r *http.Request) {
 	if f == nil {
 		return
 	}
-	var req struct {
-		SessionID string `json:"sessionId"`
-		Volume    string `json:"volume"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
+	writeJSON(w, f.MountedVolumes())
+}
+
+func (s *Server) handleFinderOpen(w http.ResponseWriter, r *http.Request) {
+	f := s.requireFinder(w)
+	if f == nil {
 		return
 	}
-	info, err := f.OpenVolume(req.SessionID, req.Volume)
-	if err != nil {
-		writeFinderErr(w, err)
-		return
+	switch r.Method {
+	case http.MethodPost:
+		var req struct {
+			SessionID string `json:"sessionId"`
+			Volume    string `json:"volume"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		info, err := f.OpenVolume(req.SessionID, req.Volume)
+		if err != nil {
+			writeFinderErr(w, err)
+			return
+		}
+		writeJSON(w, info)
+	case http.MethodDelete:
+		sessionID := r.URL.Query().Get("session")
+		volume := r.URL.Query().Get("volume")
+		if sessionID == "" {
+			writeJSONError(w, http.StatusBadRequest, "session required")
+			return
+		}
+		if err := f.CloseVolume(sessionID, volume); err != nil {
+			writeFinderErr(w, err)
+			return
+		}
+		writeJSON(w, map[string]bool{"ok": true})
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
-	writeJSON(w, info)
 }
 
 func (s *Server) handleFinderNode(w http.ResponseWriter, r *http.Request) {
@@ -267,12 +315,24 @@ func (s *Server) handleFinderMove(w http.ResponseWriter, r *http.Request) {
 	if f == nil {
 		return
 	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var xferReq finder.TransferRequest
+	if json.Unmarshal(body, &xferReq) == nil && xferReq.SrcSession != "" && xferReq.DestSession != "" {
+		streamFinderTransfer(w, r, body, func(ctx context.Context, emit func(finder.OpProgress)) error {
+			return f.MoveAcross(ctx, xferReq, emit)
+		})
+		return
+	}
 	var req struct {
 		SessionID string `json:"sessionId"`
 		ID        uint32 `json:"id"`
 		Parent    uint32 `json:"parentId"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -281,6 +341,120 @@ func (s *Server) handleFinderMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleFinderCopy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	f := s.requireFinder(w)
+	if f == nil {
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var req finder.TransferRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	streamFinderTransfer(w, r, body, func(ctx context.Context, emit func(finder.OpProgress)) error {
+		return f.Copy(ctx, req, emit)
+	})
+}
+
+func (s *Server) handleFinderExpand(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	f := s.requireFinder(w)
+	if f == nil {
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var req finder.ExpandRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	streamFinderTransfer(w, r, body, func(ctx context.Context, emit func(finder.OpProgress)) error {
+		return f.Expand(ctx, req, emit)
+	})
+}
+
+type finderTransferFn func(ctx context.Context, emit func(finder.OpProgress)) error
+
+func streamFinderTransfer(w http.ResponseWriter, r *http.Request, _ []byte, run finderTransferFn) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSONError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
+	type evt struct {
+		op  finder.OpProgress
+		err error
+	}
+	ch := make(chan evt, 8)
+	go func() {
+		err := run(ctx, func(p finder.OpProgress) {
+			select {
+			case ch <- evt{op: p}:
+			case <-ctx.Done():
+			}
+		})
+		if err != nil {
+			ch <- evt{err: err}
+			return
+		}
+		ch <- evt{op: finder.OpProgress{Done: true}}
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case e := <-ch:
+			if e.err != nil {
+				_ = writeFinderSSE(w, flusher, finder.OpProgress{Error: e.err.Error()})
+				return
+			}
+			if err := writeFinderSSE(w, flusher, e.op); err != nil {
+				return
+			}
+			if e.op.Done || e.op.Error != "" {
+				return
+			}
+		}
+	}
+}
+
+func writeFinderSSE(w http.ResponseWriter, flusher http.Flusher, p finder.OpProgress) error {
+	data, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "event: progress\ndata: %s\n\n", data); err != nil {
+		return err
+	}
+	flusher.Flush()
+	return nil
 }
 
 func (s *Server) handleFinderRemove(w http.ResponseWriter, r *http.Request) {
@@ -385,6 +559,41 @@ func (s *Server) handleFinderFinderInfo(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
+func (s *Server) handleFinderMount(w http.ResponseWriter, r *http.Request) {
+	f := s.requireFinder(w)
+	if f == nil {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, f.MountStatus())
+	case http.MethodPost:
+		var req finder.MountRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		info, err := f.Mount(r.Context(), req)
+		if err != nil {
+			writeFinderErr(w, err)
+			return
+		}
+		writeJSON(w, info)
+	case http.MethodDelete:
+		id := r.URL.Query().Get("id")
+		if id == "" {
+			id = r.URL.Query().Get("mountpoint")
+		}
+		if err := f.Unmount(id); err != nil {
+			writeFinderErr(w, err)
+			return
+		}
+		writeJSON(w, map[string]bool{"ok": true})
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
 func sessionNodeQuery(w http.ResponseWriter, r *http.Request) (string, uint32, bool) {
 	sess := r.URL.Query().Get("session")
 	raw := r.URL.Query().Get("id")
@@ -401,6 +610,12 @@ func writeFinderErr(w http.ResponseWriter, err error) {
 	if errors.Is(err, finder.ErrNotFound) {
 		code = http.StatusNotFound
 	} else if errors.Is(err, finder.ErrReadOnly) {
+		code = http.StatusForbidden
+	} else if errors.Is(err, finder.ErrMountUnavailable) {
+		code = http.StatusNotImplemented
+	} else if errors.Is(err, finder.ErrLocalMount) {
+		code = http.StatusBadRequest
+	} else if errors.Is(err, finder.ErrClientDisabled) || errors.Is(err, finder.ErrServiceDisabled) || errors.Is(err, finder.ErrMountDisabled) {
 		code = http.StatusForbidden
 	}
 	writeJSONError(w, code, err.Error())

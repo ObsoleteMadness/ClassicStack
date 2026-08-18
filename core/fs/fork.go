@@ -309,6 +309,19 @@ func (e *appleDoubleForkEngine) MetadataPaths(storePath string) []string {
 	return []string{e.sidecar(storePath)}
 }
 
+// HiddenName reports AppleDouble listing names that are metadata containers, not
+// documents (fs.ListingFilter).
+func (e *appleDoubleForkEngine) HiddenName(name string) bool {
+	if strings.HasPrefix(name, "._") {
+		return true
+	}
+	switch strings.ToLower(name) {
+	case ".appledouble", "__macosx":
+		return true
+	}
+	return false
+}
+
 // --- resourceForkFile (File) ---
 
 func (f *resourceForkFile) ReadAt(p []byte, off int64) (int, error) {

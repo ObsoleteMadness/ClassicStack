@@ -23,9 +23,13 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/control"
 	"github.com/ObsoleteMadness/ClassicStack/core/port/ethertalk"
+	nbproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbios"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/afp"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/etherdfs"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/macip"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/messenger"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/nbp"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/ncp"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/smb"
 )
 
@@ -193,6 +197,85 @@ func (p *Provider) AFPDisconnect(sessionID uint8, text string, minutes int) erro
 	return svc.Disconnect(sessionID, text, minutes)
 }
 
+// NCPSession is the management view of one NCP service-connection.
+type NCPSession struct {
+	Number    uint16 `json:"number"`
+	Endpoint  string `json:"endpoint"`
+	User      string `json:"user"`
+	LoggedIn  bool   `json:"logged_in"`
+	OpenFiles int    `json:"open_files"`
+	LastSeen  int64  `json:"last_seen"`
+}
+
+// NCPSessions returns the live NCP connection table.
+// control.ErrUnavailable when no NCP service was built.
+func (p *Provider) NCPSessions() ([]NCPSession, error) {
+	svc := p.ncp()
+	if svc == nil {
+		return nil, control.ErrUnavailable
+	}
+	raw := svc.Sessions()
+	out := make([]NCPSession, 0, len(raw))
+	for _, s := range raw {
+		var lastSeen int64
+		if !s.LastSeen.IsZero() {
+			lastSeen = s.LastSeen.UnixNano()
+		}
+		out = append(out, NCPSession{
+			Number:    s.Number,
+			Endpoint:  s.Endpoint,
+			User:      s.User,
+			LoggedIn:  s.LoggedIn,
+			OpenFiles: s.OpenFiles,
+			LastSeen:  lastSeen,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Number < out[j].Number })
+	return out, nil
+}
+
+// EtherDFSSession is the management view of one EtherDFS client.
+type EtherDFSSession struct {
+	MAC       string `json:"mac"`
+	OpenFiles int    `json:"open_files"`
+	LastSeen  int64  `json:"last_seen"`
+}
+
+// EtherDFSSessions returns the live EtherDFS client table.
+// control.ErrUnavailable when no EtherDFS service was built.
+func (p *Provider) EtherDFSSessions() ([]EtherDFSSession, error) {
+	svc := p.etherdfs()
+	if svc == nil {
+		return nil, control.ErrUnavailable
+	}
+	raw := svc.Sessions()
+	out := make([]EtherDFSSession, 0, len(raw))
+	for _, s := range raw {
+		var lastSeen int64
+		if !s.LastSeen.IsZero() {
+			lastSeen = s.LastSeen.UnixNano()
+		}
+		out = append(out, EtherDFSSession{
+			MAC:       s.MAC,
+			OpenFiles: s.OpenFiles,
+			LastSeen:  lastSeen,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].MAC < out[j].MAC })
+	return out, nil
+}
+
+// NetSend delivers a NetBIOS messenger (net send / WinPopup) datagram to dest.
+// control.ErrUnavailable when no Messenger service was built.
+func (p *Provider) NetSend(to, text string) error {
+	svc := p.messenger()
+	if svc == nil {
+		return control.ErrUnavailable
+	}
+	dest := nbproto.NewName(to, nbproto.NameTypeMessenger)
+	return svc.SendMessage(to, dest, text)
+}
+
 // afp resolves the live AFP service, or nil when none was built.
 func (p *Provider) afp() *afp.Service {
 	if p.src == nil {
@@ -213,6 +296,42 @@ func (p *Provider) smb() *smb.Service {
 	}
 	if c := p.src.Component(smb.Name); c != nil {
 		if s, ok := c.(*smb.Service); ok {
+			return s
+		}
+	}
+	return nil
+}
+
+func (p *Provider) ncp() *ncp.Service {
+	if p.src == nil {
+		return nil
+	}
+	if c := p.src.Component(ncp.Name); c != nil {
+		if s, ok := c.(*ncp.Service); ok {
+			return s
+		}
+	}
+	return nil
+}
+
+func (p *Provider) etherdfs() *etherdfs.Service {
+	if p.src == nil {
+		return nil
+	}
+	if c := p.src.Component(etherdfs.Name); c != nil {
+		if s, ok := c.(*etherdfs.Service); ok {
+			return s
+		}
+	}
+	return nil
+}
+
+func (p *Provider) messenger() *messenger.Service {
+	if p.src == nil {
+		return nil
+	}
+	if c := p.src.Component(messenger.Name); c != nil {
+		if s, ok := c.(*messenger.Service); ok {
 			return s
 		}
 	}

@@ -30,7 +30,9 @@ func usageText() string {
 Usage:
   csmount [flags] <uri> <mountpoint>
 
-  <mountpoint> is an empty directory. Rebuild with: go build -tags fuse -o csmount ./cmd/csmount
+  <mountpoint> is an empty directory, except on macOS: pass /Volumes/<name>
+  (spaces allowed) and do not mkdir it — macFUSE creates that /Volumes leaf.
+  Rebuild with: go build -tags fuse -o csmount ./cmd/csmount
   Requires macFUSE (https://macfuse.github.io/) on macOS, or libfuse on Linux.
 
 Flags:
@@ -49,6 +51,7 @@ Flags:
 
 Examples:
   csmount -ifacetype tcp afp://server/Volume /Volumes/Classic
+  csmount -ifacetype tcp "afp://server/OpenRetroSCSI 7.5.3" "/Volumes/OpenRetroSCSI 7.5.3"
   csmount -fork appledouble afp://vmac1/System\ 7.5.3 /mnt/sys75
 `
 }

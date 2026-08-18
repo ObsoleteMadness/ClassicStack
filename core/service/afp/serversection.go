@@ -47,6 +47,9 @@ const DefaultDSITCPAddr = ":548"
 type ServerSection struct {
 	// AKey is the section key; always "AFP". Stored so Key() is a plain getter.
 	AKey string `toml:"-"`
+	// Enabled gates the AFP service (component.Enableable). Missing key keeps the
+	// New() default of true so existing configs without enabled= stay on.
+	Enabled bool `toml:"enabled" display:"Enabled" desc:"Whether the AFP file service is configured on." default:"true"`
 	// ServerName is the AppleTalk/Chooser name this server advertises in
 	// FPGetSrvrInfo / ASPGetStatus. Empty → fall back to config.Identity.Hostname,
 	// then the built-in default ("ClassicStack").
@@ -116,7 +119,7 @@ func ServerSectionFromModel(m *config.Model) *ServerSection {
 			}
 		}
 	}
-	return &ServerSection{AKey: ServerKey}
+	return &ServerSection{AKey: ServerKey, Enabled: true}
 }
 
 // RegisterServer installs the AFP server-section schema so codecs round-trip it. Kept
@@ -125,7 +128,7 @@ func ServerSectionFromModel(m *config.Model) *ServerSection {
 func RegisterServer() {
 	config.Register(config.SectionSchema{
 		Key: ServerKey,
-		New: func() config.Section { return &ServerSection{AKey: ServerKey} },
+		New: func() config.Section { return &ServerSection{AKey: ServerKey, Enabled: true} },
 		Validate: func(s config.Section) error {
 			if ss, ok := s.(*ServerSection); ok {
 				return ss.Validate()

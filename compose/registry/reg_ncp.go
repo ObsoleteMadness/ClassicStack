@@ -4,6 +4,7 @@ package registry
 
 import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
+	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/ncp"
 )
 
@@ -24,6 +25,7 @@ func init() {
 		// falls back to the shared §4-bis Identity hostname/description (upper-cased
 		// to a NetWare name by the service). InternalNetwork 0 = derive from MAC.
 		srv := ncp.ServerSectionFromModel(m)
+		svc.SetEnabled(srv.Enabled)
 		svc.SetServerName(srv.EffectiveServerName(m.Identity.Hostname))
 		svc.SetDescription(srv.EffectiveDescription(m.Identity.Description))
 		svc.SetInternalNetwork(srv.InternalNetwork)
@@ -41,5 +43,15 @@ func init() {
 			return nil, err
 		}
 		return svc, nil
+	})
+	registerIdentityStamper(func(c component.Component, m *config.Model) bool {
+		svc, ok := c.(*ncp.Service)
+		if !ok {
+			return false
+		}
+		srv := ncp.ServerSectionFromModel(m)
+		svc.SetServerName(srv.EffectiveServerName(m.Identity.Hostname))
+		svc.SetDescription(srv.EffectiveDescription(m.Identity.Description))
+		return true
 	})
 }

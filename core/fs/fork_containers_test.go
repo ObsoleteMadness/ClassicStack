@@ -72,3 +72,45 @@ func TestShareFS_MetadataPathsForwards(t *testing.T) {
 		}
 	}
 }
+
+func TestListingFilter_AppleDoubleHidesSidecars(t *testing.T) {
+	eng := newAppleDoubleForkEngine(newMemFS(ShareSpec{}), netatalkSidecarPath)
+	for _, name := range []string{"._doc", ".AppleDouble", ".appledouble", "__MACOSX"} {
+		if !eng.HiddenName(name) {
+			t.Fatalf("HiddenName(%q) = false, want true", name)
+		}
+	}
+	if eng.HiddenName("doc") {
+		t.Fatal("HiddenName(doc) = true, want false")
+	}
+
+	share, err := BuildShare(ShareSpec{FSType: "memfs", ForkBackend: "appledouble"}, nil)
+	if err != nil {
+		t.Fatalf("BuildShare: %v", err)
+	}
+	lf, ok := share.(ListingFilter)
+	if !ok {
+		t.Fatal("appledouble shareFS does not expose ListingFilter")
+	}
+	if !lf.HiddenName("._doc") {
+		t.Fatal("shareFS.HiddenName(._doc) = false")
+	}
+
+	nf, err := BuildShare(ShareSpec{FSType: "memfs", ForkBackend: "nofork"}, nil)
+	if err != nil {
+		t.Fatalf("BuildShare nofork: %v", err)
+	}
+	if lf, ok := nf.(ListingFilter); ok && lf.HiddenName("._doc") {
+		t.Fatal("nofork share hid ._doc")
+	}
+}
+
+func TestListingFilter_DerezHidesSidecars(t *testing.T) {
+	eng := newDerezForkEngine(newMemFS(ShareSpec{}))
+	if !eng.HiddenName("app.rdump") || !eng.HiddenName("app.idump") {
+		t.Fatal("derez should hide .rdump/.idump")
+	}
+	if eng.HiddenName("app") {
+		t.Fatal("derez hid the data file")
+	}
+}

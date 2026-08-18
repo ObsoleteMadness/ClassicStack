@@ -45,6 +45,9 @@ func TestFieldsOfEtherTalkSection(t *testing.T) {
 	if byKey["SeedZone"].Capability != config.CapSeed {
 		t.Errorf("SeedZone capability = %q", byKey["SeedZone"].Capability)
 	}
+	if byKey["SeedZone"].Widget != "" {
+		t.Errorf("SeedZone widget = %q, want empty (ports seed zones; they do not pick from the live list)", byKey["SeedZone"].Widget)
+	}
 	if _, ok := byKey["IPXNetwork"]; ok {
 		t.Error("EtherTalk must not expose IPX network")
 	}

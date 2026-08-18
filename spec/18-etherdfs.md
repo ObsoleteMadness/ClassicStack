@@ -133,7 +133,7 @@ backend, exactly like SMB shares:
 [EtherDFS]
 enabled    = true
 iface      = "eth0"          # the NIC to bind (empty = shared bridge)
-# mac      = "..."           # optional station MAC override
+# mac      = "..."           # optional station MAC override (blank = NIC's own)
 # server_name = "..."        # advertised in install checks (empty = Identity.hostname)
 
 [[EtherDFSDrives]]
@@ -143,6 +143,10 @@ path        = "/srv/dosfiles"
 name_engine = "short"        # 8.3 names for DOS
 read_only   = false
 ```
+
+A blank `mac` (and blank interface `hw_address`) stamps the host NIC's hardware
+address — required on WiFi. EtherDFS identifies the server by that MAC, so only
+**one EtherDFS instance** can run per NIC.
 
 A drive that backs the same host path as an AFP volume or SMB share shares the
 §10d FS-mutation bus, so a file created over EtherDFS is visible over the others and
@@ -158,3 +162,6 @@ vice-versa.
   server's MAC may use any configured drive (gated only by the drive's read-only
   flag and `allowed_users` allow-list). This is the intentional compatibility
   weakness, matching the original ethersrv.
+- **One station MAC / one server instance.** The server accepts frames addressed
+  to its station MAC (or Ethernet broadcast). Blank `mac` uses the host NIC so
+  WiFi APs accept replies; only one EtherDFS server can run per NIC.

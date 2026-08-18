@@ -156,8 +156,8 @@ func paceOpener(sec *port.Section, defMs int, base func() (link.FrameLink, error
 // ltoudpOpen is the LToUDP transport open seam, swappable in tests so the factory's
 // live-wiring (LiveAddr binding, per-Start reopen) can be exercised without binding a
 // real socket. Production points it at the pure-Go ltoudp adapter.
-var ltoudpOpen = func(iface string) (link.FrameLink, error) {
-	return ltoudp.Open(ltoudp.DefaultConfig(iface))
+var ltoudpOpen = func(cfg ltoudp.Config) (link.FrameLink, error) {
+	return ltoudp.Open(cfg)
 }
 
 // tashtalkFrame wraps an open serial byte stream in the TashTalk FrameLink. It is the
@@ -192,8 +192,9 @@ func ltoudpLinkOpener(ctx *BuildContext, sec *port.Section) func() (link.FrameLi
 	if ctx.Opener == nil {
 		return nil
 	}
-	iface := sec.Iface
-	base := func() (link.FrameLink, error) { return ltoudpOpen(iface) }
+	cfg := ltoudp.DefaultConfig(sec.Iface)
+	cfg.Logger = ctx.Logger(sec.InstanceName())
+	base := func() (link.FrameLink, error) { return ltoudpOpen(cfg) }
 	// Per-node write pacing: LToUDP has no link backpressure, so a fast producer
 	// overruns a slow classic-Mac receiver unless successive frames to the same node
 	// are spaced out. Applied BENEATH capture so the .pcap reflects the paced wire

@@ -14,11 +14,16 @@ import (
 // share list — the SMB analogue of AFP's server-root volume browse. When a share IS named
 // in the URI the ordinary connect path mounts it instead.
 
-// ServerListing is the result of a server-root browse: the server label and its shares.
+// ServerListing is the result of a server-root browse: the server label, negotiated
+// dialect/security/capabilities, and its shares.
 type ServerListing struct {
-	ServerName string
-	Dialect    string
-	Shares     []Share
+	ServerName       string
+	Dialect          string
+	Capabilities     uint32
+	UserSecurity     bool
+	EncryptPasswords bool
+	Guest            bool
+	Shares           []Share
 }
 
 // BrowseServer is one server a master browser reported in its browse list (RAP
@@ -97,7 +102,14 @@ func Browse(target uri.Target, opts client.Options) (ServerListing, error) {
 		return ServerListing{}, err
 	}
 
-	out := ServerListing{ServerName: target.Server, Dialect: sess.Dialect()}
+	out := ServerListing{
+		ServerName:       target.Server,
+		Dialect:          sess.Dialect(),
+		Capabilities:     sess.Capabilities(),
+		UserSecurity:     sess.UserSecurity(),
+		EncryptPasswords: sess.EncryptPasswords(),
+		Guest:            sess.Guest(),
+	}
 	for _, sh := range shares {
 		out.Shares = append(out.Shares, Share{
 			Name:    sh.Name,

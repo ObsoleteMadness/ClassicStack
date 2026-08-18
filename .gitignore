@@ -63,4 +63,6 @@ __pycache__/
 # Vite SPA (hashed bundles). Source is adapter/control/http/ui; run `make spa`.
 adapter/control/http/spa/assets/
 adapter/control/http/spa/icons/
-adapter/control/http/ui/node_modules/
+
+# Node.js dependencies (root or package-local)
+node_modules/

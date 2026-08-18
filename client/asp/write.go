@@ -25,6 +25,13 @@ func (s *Session) Write(block, data []byte) (reply []byte, result int32, err err
 		return nil, 0, ErrSessionClosed
 	default:
 	}
+	s.cmdMu.Lock()
+	defer s.cmdMu.Unlock()
+	select {
+	case <-s.stop:
+		return nil, 0, ErrSessionClosed
+	default:
+	}
 	seq := s.nextSeq()
 
 	// Register the data BEFORE sending phase 1, so the server's data pull (which can
@@ -39,7 +46,7 @@ func (s *Session) Write(block, data []byte) (reply []byte, result int32, err err
 	}()
 
 	ud := asp.WritePacket{SessionID: s.id, SeqNum: seq}.MarshalUserData()
-	resp, err := s.atp.Request(s.server, ud, block, true, 8)
+	resp, err := s.atp.Request(s.server, ud, block, true, 1)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -60,7 +67,10 @@ func (s *Session) tickleServer() {
 		case <-t.C:
 			ud := asp.MarshalTickleRequest(s.id)
 			// Tickle is ALO (at-least-once, no retry needed): fire-and-forget.
-			_, _ = s.atp.Request(s.server, ud, nil, false, 1)
+			// Workstation tickles go to the SLS, not the SSS (Inside AppleTalk
+			// 11-15). System 7 AppleShare ignores Tickle on the session socket
+			// and CloseSess after the 2-minute maintenance timeout.
+			_, _ = s.atp.Request(s.sls, ud, nil, false, 1)
 		}
 	}
 }
@@ -98,12 +108,27 @@ func (s *Session) handleWSSReq(req atalk.InboundTReq) {
 		// requester (if it expects one) is satisfied. A Tickle is ALO with no data.
 		_ = s.ep.RespondTReq(req, req.UserData, nil)
 	case asp.SPFuncAttention:
-		// Server attention (shutdown/message). Ack it; higher layers can later expose
-		// the attention code. Answer with an empty TResp.
-		_ = s.ep.RespondTReq(req, req.UserData, nil)
+		// Observed AppleShare: TResp user bytes are four zeros. Ack first, then
+		// notify the AFP layer so it can fetch FPGetSrvrMsg when AspAttnMsg is
+		// set. The handler runs asynchronously: Command from this goroutine
+		// would stall the WSS loop.
+		info, ok := asp.ParseAttention(req.UserData)
+		_ = s.ep.RespondTReq(req, 0, nil)
+		if !ok {
+			return
+		}
+		if h := s.attentionHandler(); h != nil {
+			go h(info.AttentionCode)
+		}
 	case asp.SPFuncCloseSess:
-		// Server-initiated close: ack and stop the session.
-		_ = s.ep.RespondTReq(req, req.UserData, nil)
+		// Server-initiated close: ack and stop the session. Ignore a CloseSess
+		// whose session id does not match (classicstack-web; overlapping SLS
+		// traffic on a shared node).
+		_ = s.ep.RespondTReq(req, 0, nil)
+		cs := asp.ParseCloseSessPacket(req.UserData)
+		if cs.SessionID != s.id {
+			return
+		}
 		s.stopOnce.Do(func() { close(s.stop) })
 	default:
 		// Unknown server-initiated function: ack empty so the server is not left

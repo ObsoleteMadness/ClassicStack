@@ -55,6 +55,22 @@ func lookup(kind string) (func(path string) (Store, error), bool) {
 	return f, ok
 }
 
+// Kinds returns the store kinds Open accepts: the built-in "mem" plus every
+// adapter registered into this process, sorted.
+func Kinds() []string {
+	regMu.RLock()
+	out := make([]string, 0, 1+len(registry))
+	out = append(out, "mem")
+	for k := range registry {
+		if k != "mem" {
+			out = append(out, k)
+		}
+	}
+	regMu.RUnlock()
+	sort.Strings(out)
+	return out
+}
+
 // --- mem: the default in-memory store, snapshotting to a file. ---
 
 // memStore is an in-memory keyed map that snapshots to path on Sync/Close.

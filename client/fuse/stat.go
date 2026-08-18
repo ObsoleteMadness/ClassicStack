@@ -61,11 +61,10 @@ func (a *Adapter) fillStat(storePath string, fi iofs.FileInfo) Stat {
 	st.Ctime = st.Mtime
 
 	if a.nativeForks {
-		if info, ok, err := a.fsys.ReadFinderInfo(storePath); err == nil && ok {
-			flags := uint16(info[8])<<8 | uint16(info[9])
-			if flags&fdFlagsInvisible != 0 {
-				st.Flags |= ufHidden
-			}
+		if info, ok := wireFinderInfo(fi); ok {
+			applyInvisible(info, &st)
+		} else if info, ok, err := a.fsys.ReadFinderInfo(storePath); err == nil && ok {
+			applyInvisible(info, &st)
 		}
 	}
 
@@ -106,4 +105,29 @@ func wireDOSAttr(fi iofs.FileInfo) (metastore.DOSAttr, bool) {
 		}
 	}
 	return attr, has
+}
+
+func applyInvisible(info [32]byte, st *Stat) {
+	flags := uint16(info[8])<<8 | uint16(info[9])
+	if flags&fdFlagsInvisible != 0 {
+		st.Flags |= ufHidden
+	}
+}
+
+func wireFinderInfo(fi iofs.FileInfo) ([32]byte, bool) {
+	if sys := fi.Sys(); sys != nil {
+		if fb, ok := sys.(fs.FinderInfoBits); ok {
+			return fb.FinderInfo()
+		}
+	}
+	return [32]byte{}, false
+}
+
+func wireRsrcLen(fi iofs.FileInfo) (int64, bool) {
+	if sys := fi.Sys(); sys != nil {
+		if rl, ok := sys.(fs.ResourceLenInfo); ok {
+			return rl.ResourceForkLen(), true
+		}
+	}
+	return 0, false
 }

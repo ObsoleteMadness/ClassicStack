@@ -35,6 +35,67 @@ func TestLoginMarshal(t *testing.T) {
 	if !bytes.HasPrefix(clear[off4:], []byte("secret")) {
 		t.Errorf("password field = %q, want secret-prefixed", clear[off4:])
 	}
+
+	// User "mac" leaves the command odd-length; the 8-byte password must start on
+	// an even offset (ClassicStack-web loginCleartext even-align).
+	mac := LoginRequest{AFPVersion: AFPVersion21, UAM: "Cleartxt passwrd", User: "mac", Pass: ""}.Marshal()
+	if len(mac)%2 != 0 {
+		t.Fatalf("mac login length %d, want even", len(mac))
+	}
+	_, m2, _ := PString(mac, 1)
+	_, m3, _ := PString(mac, m2)
+	_, m4, ok := PString(mac, m3)
+	if !ok {
+		t.Fatal("mac username missing")
+	}
+	pwOff := m4
+	if pwOff%2 != 0 {
+		pwOff++
+	}
+	if len(mac)-pwOff != 8 {
+		t.Fatalf("mac password field = %d bytes at %d, want 8", len(mac)-pwOff, pwOff)
+	}
+	if !bytes.Equal(mac[pwOff:], make([]byte, 8)) {
+		t.Fatalf("mac password = % x, want 8 NULs", mac[pwOff:])
+	}
+
+	rand := LoginRequest{AFPVersion: AFPVersion21, UAM: "Randnum exchange", User: "pete"}.Marshal()
+	_, ro2, _ := PString(rand, 1)
+	_, ro3, _ := PString(rand, ro2)
+	user, ro4, ok := PString(rand, ro3)
+	if !ok || string(user) != "pete" {
+		t.Fatalf("randnum user = %q", user)
+	}
+	if ro4 != len(rand) {
+		t.Fatalf("randnum login must not carry password trailer; len=%d ro4=%d", len(rand), ro4)
+	}
+}
+
+func TestIsAuthContinue(t *testing.T) {
+	if !IsAuthContinue(ErrAuthContinue) || !IsAuthContinue(5) {
+		t.Fatal("expected -5001 and 5 to be AuthContinue")
+	}
+	if IsAuthContinue(ErrUserNotAuth) || IsAuthContinue(ErrRangeOverlap) {
+		t.Fatal("UserNotAuth / RangeOverlap must not be AuthContinue")
+	}
+	if ResultName(-5001) != "kFPAuthContinue" {
+		t.Fatalf("ResultName(-5001) = %q", ResultName(-5001))
+	}
+}
+
+func TestParseLoginContinueReply(t *testing.T) {
+	body := []byte{0x12, 0x34, 1, 2, 3, 4, 5, 6, 7, 8}
+	id, ch, ok := ParseLoginContinueReply(body)
+	if !ok || id != 0x1234 {
+		t.Fatalf("id=%#x ok=%v", id, ok)
+	}
+	if ch != [8]byte{1, 2, 3, 4, 5, 6, 7, 8} {
+		t.Fatalf("challenge=%v", ch)
+	}
+	cont := LoginContRequest{SessionID: id, Response: ch}.Marshal()
+	if cont[0] != CmdLoginCont || cont[1] != 0 || len(cont) != 12 {
+		t.Fatalf("LoginCont = % x", cont)
+	}
 }
 
 // TestLoginMarshalServerUAMSpelling is the regression for the credential trailer being
@@ -220,6 +281,47 @@ func TestMacTimeRoundTrip(t *testing.T) {
 	}
 	if !FromMacTime(NoBackupDate).IsZero() {
 		t.Errorf("NoBackupDate should map to zero time")
+	}
+}
+
+// TestGetSrvrMsgRoundTrip pins the FPGetSrvrMsg request/reply to the observed
+// AppleShare layout (type + bitmap + Pascal string).
+func TestGetSrvrMsgRoundTrip(t *testing.T) {
+	req := GetSrvrMsgRequest{Type: SrvrMsgTypeLogin, Bitmap: SrvrMsgBitmapText}.Marshal()
+	wantReq := []byte{CmdGetSrvrMsg, 0, 0x00, 0x00, 0x00, 0x01}
+	if !bytes.Equal(req, wantReq) {
+		t.Fatalf("request = %x, want %x", req, wantReq)
+	}
+
+	body := []byte{0x00, 0x00, 0x00, 0x01, 0x07}
+	body = append(body, "Welcome"...)
+	got, ok := ParseGetSrvrMsgReply(body)
+	if !ok {
+		t.Fatal("ParseGetSrvrMsgReply failed")
+	}
+	if got.Type != SrvrMsgTypeLogin || got.Bitmap != SrvrMsgBitmapText {
+		t.Fatalf("type/bitmap = %d/%#x", got.Type, got.Bitmap)
+	}
+	if string(got.Message) != "Welcome" {
+		t.Fatalf("message = %q, want Welcome", got.Message)
+	}
+
+	empty := []byte{0x00, 0x01, 0x00, 0x01, 0x00}
+	got, ok = ParseGetSrvrMsgReply(empty)
+	if !ok || got.Type != SrvrMsgTypeServer || len(got.Message) != 0 {
+		t.Fatalf("empty reply = %+v ok=%v", got, ok)
+	}
+	if _, ok := ParseGetSrvrMsgReply([]byte{0x00, 0x00}); ok {
+		t.Fatal("truncated reply parsed")
+	}
+}
+
+func TestServerInfoSupportsSrvrMsg(t *testing.T) {
+	if (ServerInfo{}).SupportsSrvrMsg() {
+		t.Fatal("zero flags advertised SrvrMsg")
+	}
+	if !(ServerInfo{Flags: SrvrInfoSupportsSrvrMsg}).SupportsSrvrMsg() {
+		t.Fatal("SupportsSrvrMsg bit not honoured")
 	}
 }
 

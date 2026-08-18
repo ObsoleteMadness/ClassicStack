@@ -245,6 +245,15 @@ func TestRoundTrip(t *testing.T) {
 	if got.Logging != m.Logging {
 		t.Errorf("Logging: got %+v want %+v", got.Logging, m.Logging)
 	}
+	if got.HTTP != m.HTTP {
+		t.Errorf("HTTP: got %+v want %+v", got.HTTP, m.HTTP)
+	}
+	if !reflect.DeepEqual(got.Client, m.Client) {
+		t.Errorf("Client: got %+v want %+v", got.Client, m.Client)
+	}
+	if got.FUSE != m.FUSE {
+		t.Errorf("FUSE: got %+v want %+v", got.FUSE, m.FUSE)
+	}
 	if !reflect.DeepEqual(got.Router, m.Router) {
 		t.Errorf("Router: got %+v want %+v", got.Router, m.Router)
 	}
@@ -364,5 +373,152 @@ func TestRepeatedSectionRoundTrip(t *testing.T) {
 	}
 	if priv.VName != "private" || priv.Path != "/srv/private" || !priv.RO {
 		t.Errorf("private round-trip: %+v", priv)
+	}
+}
+
+func TestHTTPOmittedDefaults(t *testing.T) {
+	c := New()
+	var got config.Model
+	if err := c.Unmarshal([]byte("[identity]\nhostname = \"x\"\n"), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.HTTP.Enabled || got.HTTP.Addr != config.DefaultHTTPAddr {
+		t.Fatalf("omitted [http]: %+v, want enabled on %s", got.HTTP, config.DefaultHTTPAddr)
+	}
+}
+
+func TestHTTPDisabledSticks(t *testing.T) {
+	c := New()
+	var got config.Model
+	if err := c.Unmarshal([]byte("[http]\nenabled = false\n"), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.HTTP.Enabled {
+		t.Fatal("enabled = false did not stick")
+	}
+	if got.HTTP.Addr != config.DefaultHTTPAddr {
+		t.Fatalf("blank addr should default to %s, got %q", config.DefaultHTTPAddr, got.HTTP.Addr)
+	}
+}
+
+func TestClientOmittedDefaultsDisabled(t *testing.T) {
+	c := New()
+	var got config.Model
+	if err := c.Unmarshal([]byte("[identity]\nhostname = \"x\"\n"), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Client.Enabled {
+		t.Fatalf("omitted [Client] should be disabled, got %+v", got.Client)
+	}
+}
+
+func TestClientRoundTrip(t *testing.T) {
+	m := config.NewModel()
+	m.Client = config.ClientSection{
+		Enabled:        true,
+		Iface:          "br-lan",
+		Services:       []string{"afp", "smb", "ncp", "etherdfs"},
+		MaxIdleMinutes: 10,
+		Mount:          true,
+		LogFile:        "client.log",
+	}
+	c := New()
+	data, err := c.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "[Client]") {
+		t.Fatalf("Marshal should emit [Client]; got:\n%s", data)
+	}
+	var got config.Model
+	if err := c.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Client, m.Client) {
+		t.Fatalf("Client round-trip: got %+v want %+v", got.Client, m.Client)
+	}
+}
+
+func TestClientLowercaseAlias(t *testing.T) {
+	c := New()
+	var got config.Model
+	doc := "[client]\nenabled = true\niface = \"br-lan\"\nmount = true\n"
+	if err := c.Unmarshal([]byte(doc), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Client.Enabled || got.Client.Iface != "br-lan" || !got.Client.Mount {
+		t.Fatalf("[client] alias: %+v", got.Client)
+	}
+}
+
+func TestFUSEOmittedDefaults(t *testing.T) {
+	c := New()
+	var got config.Model
+	if err := c.Unmarshal([]byte("[identity]\nhostname = \"x\"\n"), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.FUSE.MountTimeoutSeconds != config.DefaultFUSEMountTimeoutSeconds {
+		t.Fatalf("omitted [FUSE] timeout = %d, want %d", got.FUSE.MountTimeoutSeconds, config.DefaultFUSEMountTimeoutSeconds)
+	}
+}
+
+func TestFUSERoundTrip(t *testing.T) {
+	m := config.NewModel()
+	m.FUSE = config.FUSESection{MountTimeoutSeconds: 45}
+	c := New()
+	data, err := c.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "[FUSE]") {
+		t.Fatalf("Marshal should emit [FUSE]; got:\n%s", data)
+	}
+	var got config.Model
+	if err := c.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.FUSE != m.FUSE {
+		t.Fatalf("FUSE round-trip: got %+v want %+v", got.FUSE, m.FUSE)
+	}
+}
+
+func TestFUSELowercaseAlias(t *testing.T) {
+	c := New()
+	var got config.Model
+	if err := c.Unmarshal([]byte("[fuse]\nmount_timeout_seconds = 8\n"), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.FUSE.MountTimeoutSeconds != 8 {
+		t.Fatalf("[fuse] alias: %+v", got.FUSE)
+	}
+}
+
+func TestFUSEVolumesRoundTrip(t *testing.T) {
+	config.RegisterFUSEVolumes()
+	m := config.NewModel()
+	want := &config.FUSEVolumeSection{
+		Remote:     "smb://foo:pass@foohost,smb/share",
+		Mountpoint: "/Volumes/share",
+		ReadOnly:   true,
+	}
+	m.AddInstance(want)
+	c := New()
+	data, err := c.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "[[fusevolumes]]") {
+		t.Fatalf("Marshal should emit [[fusevolumes]]; got:\n%s", data)
+	}
+	var got config.Model
+	if err := c.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	sec, ok := got.Instance(config.FUSEVolumesKey, "/Volumes/share")
+	if !ok {
+		t.Fatal("FUSE volume missing after round-trip")
+	}
+	if !reflect.DeepEqual(sec, want) {
+		t.Fatalf("FUSE volume round-trip: got %+v want %+v", sec, want)
 	}
 }

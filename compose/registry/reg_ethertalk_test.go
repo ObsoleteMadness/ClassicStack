@@ -270,3 +270,31 @@ func TestEtherTalkInstances_MultipleNamed(t *testing.T) {
 		t.Fatalf("instances opened the wrong interfaces: %v", opened)
 	}
 }
+
+func TestEtherTalkFramer_HostMACUsesAARP(t *testing.T) {
+	want := [6]byte{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}
+	ctx := &BuildContext{
+		HostMAC: func(device string) ([6]byte, error) {
+			if device != "en0" {
+				t.Fatalf("HostMAC device = %q, want en0", device)
+			}
+			return want, nil
+		},
+	}
+	_, aarp := etherTalkFramer(ctx, &port.Section{}, config.InterfaceSection{Name: "en0"})
+	if aarp == nil {
+		t.Fatal("want AARP framer when HostMAC resolves")
+	}
+	var got [6]byte
+	copy(got[:], aarp.SrcMAC)
+	if got != want {
+		t.Fatalf("SrcMAC = %v, want %v", got, want)
+	}
+}
+
+func TestEtherTalkFramer_NoMACBroadcastOnly(t *testing.T) {
+	_, aarp := etherTalkFramer(nil, &port.Section{}, config.InterfaceSection{})
+	if aarp != nil {
+		t.Fatal("want broadcast-only framer when no MAC is configured or detected")
+	}
+}

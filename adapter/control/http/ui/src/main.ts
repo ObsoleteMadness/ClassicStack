@@ -13,15 +13,19 @@ import { hydrateExtensionMap, setExtensionMapStore } from 'classicstack-web/fs/e
 import { GoFinderHost } from './host/go-finder-host';
 import { HttpExtensionMapStore } from './fs/http-extension-map';
 import { mountFinderMenu } from './finder-menu';
+import { mountAppMenu } from './admin/app-menu';
+import { ServerAboutDialog } from './admin/about-dialog';
+import { ServerSettingsWindow } from './admin/server-settings-window';
+import { LogWindow } from './admin/log-window';
+import { NotificationCentre } from './admin/notifications';
+import { SharingMonitorWindow } from './admin/sharing-monitor';
+import { MacIPLeasesWindow } from './admin/macip-leases';
+import { EndpointInfoWindow } from './admin/endpoint-info';
 import { api } from './api';
-import { telemetry } from './telemetry';
+import { telemetry, type ServerMessage } from './telemetry';
 import { renderSetup } from './admin/setup';
-import { renderStatus } from './admin/status';
-import { renderSharing } from './admin/sharing';
-import { renderUsers } from './admin/users';
-import { renderLogs } from './admin/logs';
-
-type View = 'finder' | 'status' | 'sharing' | 'users' | 'logs';
+import { mountControlPlane } from './admin/status';
+import { TopologyWindow } from './admin/topology';
 
 function setConn(text: string, cls = ''): void {
   const node = document.getElementById('conn');
@@ -56,7 +60,6 @@ async function main(): Promise<void> {
     return;
   }
 
-  setConn('connected', 'ok');
   telemetry.start();
   setExtensionMapStore(new HttpExtensionMapStore());
   void hydrateExtensionMap().catch(() => undefined);
@@ -65,21 +68,21 @@ async function main(): Promise<void> {
   header.className = 'cs-shell';
   header.innerHTML = `
     <h1>ClassicStack</h1>
-    <nav>
-      <button type="button" class="tab active" data-view="finder">Finder</button>
-      <button type="button" class="tab" data-view="status">Status</button>
-      <button type="button" class="tab" data-view="sharing">Sharing</button>
-      <button type="button" class="tab" data-view="users">Users</button>
-      <button type="button" class="tab" data-view="logs">Logs</button>
-    </nav>
-    <span id="conn" class="badge ok">connected</span>
+    <div class="header-spacer"></div>
+    <button type="button" class="notify-bell" id="notify-bell" aria-label="Notifications">
+      <span class="notify-bell__glyph" aria-hidden="true">●</span>
+      <span class="notify-bell__count"></span>
+    </button>
   `;
 
+  const workspace = document.createElement('div');
+  workspace.className = 'workspace';
+  const mainCol = document.createElement('div');
+  mainCol.className = 'workspace-main';
+  const finderScreen = document.createElement('div');
+  finderScreen.className = 'finder-screen';
   const stage = document.createElement('div');
   stage.className = 'app-stage';
-  const admin = document.createElement('div');
-  admin.className = 'admin-stage';
-  admin.hidden = true;
 
   const finder = new FinderWindow();
   finder.classList.add('is-maximized');
@@ -92,45 +95,83 @@ async function main(): Promise<void> {
   getInfoWindow.hidden = true;
   const extensionEditor = new ExtensionEditorDialog();
   extensionEditor.hidden = true;
+  const settings = new ServerSettingsWindow();
+  const about = new ServerAboutDialog();
+  const logWindow = new LogWindow();
+  const sharing = new SharingMonitorWindow();
+  const leases = new MacIPLeasesWindow();
+  const notify = new NotificationCentre();
+  const endpointInfo = new EndpointInfoWindow();
+  const topology = new TopologyWindow();
 
   stage.append(finder);
-  app.replaceChildren(
-    header,
+  finderScreen.append(
     stage,
-    admin,
-    alertDialog,
     loginDialog,
     nameConflictDialog,
     resourceExplorer,
     getInfoWindow,
     extensionEditor,
+    settings,
+    about,
+    logWindow,
+    sharing,
+    leases,
+    notify,
+    endpointInfo,
+    topology,
   );
+  mainCol.append(finderScreen);
+  workspace.append(mainCol);
+  app.replaceChildren(header, workspace, alertDialog);
 
-  const host = new GoFinderHost(loginDialog, alertDialog, nameConflictDialog);
+  const host = new GoFinderHost(loginDialog, alertDialog, nameConflictDialog, {
+    onConfigureShare(ep) {
+      settings.open(
+        (ep.protocol?.toLowerCase() === 'smb' ? 'smb' : ep.protocol?.toLowerCase() === 'ncp' ? 'ncp' : ep.protocol?.toLowerCase() === 'etherdfs' ? 'etherdfs' : 'afp') as 'afp' | 'smb' | 'ncp' | 'etherdfs',
+      );
+    },
+    onEndpointInfo(model) {
+      endpointInfo.open(model);
+    },
+  });
+  host.watchNetworks(() => {
+    void host.cachedNetwork().then((list) => finder.setServers(list));
+  });
   finder.bind(null, host);
   finder.bindResourceExplorer(resourceExplorer);
   finder.bindGetInfoWindow(getInfoWindow);
+  mountAppMenu(header, { settings, about, log: logWindow, sharing, leases, notify, topology });
   mountFinderMenu(header, finder, extensionEditor);
+  const bell = header.querySelector<HTMLButtonElement>('#notify-bell');
+  if (bell) notify.bindBell(bell);
+  mountControlPlane(header, workspace, notify);
+  settings.bind({ finder, extensionEditor, leases });
+  topology.openSharing = (protocol) => {
+    settings.open(
+      (protocol?.toLowerCase() === 'smb' ? 'smb' : protocol?.toLowerCase() === 'ncp' ? 'ncp' : protocol?.toLowerCase() === 'etherdfs' ? 'etherdfs' : 'afp') as 'afp' | 'smb' | 'ncp' | 'etherdfs',
+    );
+  };
+  bindServerPopups(alertDialog);
+}
 
-  header.querySelector('nav')?.addEventListener('click', (e) => {
-    const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-view]');
-    if (!btn) return;
-    show(btn.dataset.view as View);
-  });
-
-  function show(next: View) {
-    header.querySelectorAll('.tab').forEach((b) => {
-      b.classList.toggle('active', (b as HTMLElement).dataset.view === next);
-    });
-    const finderOn = next === 'finder';
-    stage.hidden = !finderOn;
-    admin.hidden = finderOn;
-    if (finderOn) return;
-    if (next === 'status') renderStatus(admin);
-    else if (next === 'sharing') void renderSharing(admin);
-    else if (next === 'users') void renderUsers(admin);
-    else renderLogs(admin);
+function popupTitle(m: ServerMessage): { title: string; text: string } {
+  const text = (m.Text || '').trim();
+  if (m.Kind === 'messenger') {
+    const from = (m.From || 'Messenger').trim() || 'Messenger';
+    const to = (m.To || '').trim();
+    const title = to ? `Message from ${from} to ${to}` : `Message from ${from}`;
+    return { title, text };
   }
+  return { title: (m.From || 'Server Message').trim() || 'Server Message', text };
+}
+
+function bindServerPopups(alert: AlertDialog): void {
+  telemetry.onMessage.add((m) => {
+    const { title, text } = popupTitle(m);
+    if (!text) return;
+    alert.show(title, text);
+  });
 }
 
 void main();

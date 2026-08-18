@@ -4,6 +4,7 @@ package registry
 
 import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
+	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/netbios"
 )
 
@@ -43,5 +44,14 @@ func init() {
 		// with SMB's direct-TCP transport, which shares framing).
 		svc.SetNBTListenAddr(nbSec.NBTListenAddr())
 		return svc, nil
+	})
+	registerIdentityStamper(func(c component.Component, m *config.Model) bool {
+		svc, ok := c.(*netbios.Service)
+		if !ok {
+			return false
+		}
+		svc.SetServerName(m.Identity.NetBIOSName())
+		svc.SetWorkgroup(m.Identity.Workgroup)
+		return true
 	})
 }

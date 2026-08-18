@@ -30,6 +30,22 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+// TestTwoOpensSharePort proves SO_REUSEADDR+SO_REUSEPORT let two sockets bind
+// 0.0.0.0:1954 (spec/ltoudp.md: multiple instances on one host). Skipped when
+// the host cannot open the group at all.
+func TestTwoOpensSharePort(t *testing.T) {
+	a, err := Open(DefaultConfig(""))
+	if err != nil {
+		t.Skipf("cannot open LToUDP group: %v", err)
+	}
+	defer a.Close()
+	b, err := Open(DefaultConfig(""))
+	if err != nil {
+		t.Fatalf("second bind of 0.0.0.0:%d failed (need SO_REUSEPORT): %v", GroupPort, err)
+	}
+	defer b.Close()
+}
+
 // TestRoundTripMulticast opens two LToUDP links on the shared group (distinct
 // per-process sender IDs are NOT distinct here — same PID — so we force them
 // apart) and proves a frame written on one is read on the other, with the

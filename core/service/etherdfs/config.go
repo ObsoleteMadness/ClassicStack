@@ -97,13 +97,13 @@ func (d *DriveSection) Unmask(prev config.Section) config.Section {
 }
 
 // Validate checks the section in isolation. A drive must have a name; the
-// fs_type×fork×codec triple and required backend params are validated later by
-// share.Build, so they are not re-checked here.
+// fs_type × fork × codec triple and required backend params are checked here
+// so Save rejects an unbuildable share before it goes live.
 func (d *DriveSection) Validate() error {
 	if strings.TrimSpace(d.DName) == "" {
 		return ErrDriveNameRequired
 	}
-	return nil
+	return fs.ValidateSpec(d.fsSpec())
 }
 
 // fsSpec maps the section to an fs.ShareSpec (the storage-seam half). Options

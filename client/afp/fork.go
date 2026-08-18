@@ -9,7 +9,10 @@ import (
 
 	aspclient "github.com/ObsoleteMadness/ClassicStack/client/asp"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	proto "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
+	aspproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/asp"
+	"github.com/ObsoleteMadness/ClassicStack/core/protocol/atp"
 )
 
 // fork.go implements fs.ForkEngine natively over AFP: OpenFork → FPOpenFork (a fork ref),
@@ -26,12 +29,17 @@ type forkFile struct {
 	forkRef  uint16
 	writable bool
 	closed   bool
+	// size is the fork length from FPOpenFork (or the last Truncate/WriteAt).
+	// hasSize lets ReadAt cap FPRead to the remaining bytes so a FUSE 4 KiB
+	// read of a 100-byte file asks for one ATP packet, not a full quantum.
+	size    int64
+	hasSize bool
 }
 
-// maxForkIO is the largest single FPRead/FPWrite the client issues; the ASP session
-// chunks the underlying transport, but bounding each request keeps replies within a few
-// ASP quanta.
-const maxForkIO = 4096
+// maxForkIO is the largest single FPRead/FPWrite the client issues — one ASP
+// quantum (8 × 578). Each Command's ATP bitmap matches this payload so System 7
+// replies without EOM still complete (classicstack-web readForkRange).
+const maxForkIO = aspproto.QuantumSize
 
 // OpenFork opens a file's data or resource fork via FPOpenFork and returns a handle.
 func (f *FS) OpenFork(path string, fork fs.ForkType, flag int) (fs.File, error) {
@@ -40,11 +48,11 @@ func (f *FS) OpenFork(path string, fork fs.ForkType, flag int) (fs.File, error) 
 	if writable {
 		access |= proto.AccessWrite
 	}
-	ref, err := f.openForkRef(path, fork, access)
+	ref, size, err := f.openForkRef(path, fork, access)
 	if err != nil {
 		return nil, err
 	}
-	ff := &forkFile{fs: f, path: path, fork: fork, forkRef: ref, writable: writable}
+	ff := &forkFile{fs: f, path: path, fork: fork, forkRef: ref, writable: writable, size: size, hasSize: true}
 	// O_TRUNC on a writable open empties the fork first.
 	if writable && flag&os.O_TRUNC != 0 {
 		if err := ff.Truncate(0); err != nil {
@@ -55,8 +63,9 @@ func (f *FS) OpenFork(path string, fork fs.ForkType, flag int) (fs.File, error) 
 	return ff, nil
 }
 
-// openForkRef runs FPOpenFork and returns the fork reference number.
-func (f *FS) openForkRef(path string, fork fs.ForkType, access uint16) (uint16, error) {
+// openForkRef runs FPOpenFork and returns the fork reference number and the
+// length bit requested in the open bitmap (classicstack-web parseOpenFork).
+func (f *FS) openForkRef(path string, fork fs.ForkType, access uint16) (uint16, int64, error) {
 	// FPOpenFork's bitmap requests parameters for the fork being opened — so ask only for
 	// the length bit matching that fork. A strict server (observed: System 7.5 Personal
 	// File Sharing) returns kFPBitmapErr (-5004) when the data-fork open also requests the
@@ -78,19 +87,23 @@ func (f *FS) openForkRef(path string, fork fs.ForkType, access uint16) (uint16, 
 		return req.Marshal()
 	})
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if result == proto.ErrObjectNotFnd {
-		return 0, stdfs.ErrNotExist
+		return 0, 0, stdfs.ErrNotExist
 	}
 	if result != proto.NoErr {
-		return 0, afpError("FPOpenFork", result)
+		return 0, 0, afpError("FPOpenFork", result)
 	}
 	reply, ok := proto.ParseOpenForkReply(body)
 	if !ok {
-		return 0, errMalformed("FPOpenFork reply")
+		return 0, 0, errMalformed("FPOpenFork reply")
 	}
-	return reply.ForkRefNum, nil
+	n := int64(reply.Params.DataForkLen)
+	if fork == fs.ResourceFork {
+		n = int64(reply.Params.RsrcForkLen)
+	}
+	return reply.ForkRefNum, n, nil
 }
 
 // ForkLen returns a fork's length via FPGetFileDirParms (data/rsrc fork length bits).
@@ -193,12 +206,35 @@ func (ff *forkFile) reopen() error {
 	if ff.writable {
 		access |= proto.AccessWrite
 	}
-	ref, err := ff.fs.openForkRef(ff.path, ff.fork, access)
+	ref, size, err := ff.fs.openForkRef(ff.path, ff.fork, access)
 	if err != nil {
 		return err
 	}
 	ff.forkRef = ref
+	ff.size = size
+	ff.hasSize = true
 	return nil
+}
+
+// forkReadWant is how many bytes one FPRead should request. Cap to the known
+// remaining fork length (from OpenFork) so the ATP bitmap matches the payload
+// the server will actually send — a FUSE 4 KiB read of a short file must not
+// ask for 8 slots (classicstack-web readForkRange / bitmapForPayload).
+func forkReadWant(bufLeft int, off int64, size int64, hasSize bool) int {
+	want := bufLeft
+	if hasSize {
+		remain := size - off
+		if remain <= 0 {
+			return 0
+		}
+		if int64(want) > remain {
+			want = int(remain)
+		}
+	}
+	if want > maxForkIO {
+		want = maxForkIO
+	}
+	return want
 }
 
 func (ff *forkFile) ReadAt(p []byte, off int64) (int, error) {
@@ -208,18 +244,21 @@ func (ff *forkFile) ReadAt(p []byte, off int64) (int, error) {
 	total := 0
 	retried := false
 	for total < len(p) {
-		want := len(p) - total
-		if want > maxForkIO {
-			want = maxForkIO
+		want := forkReadWant(len(p)-total, off+int64(total), ff.size, ff.hasSize)
+		if want == 0 {
+			if total == 0 {
+				return 0, io.EOF
+			}
+			return total, io.EOF
 		}
 		offset := uint32(off + int64(total))
-		body, result, err := ff.fs.sessForkCommand("FPRead", ff.path, func(uint16) []byte {
+		body, result, err := ff.fs.sessForkCommand("FPRead", ff.path, atp.MaxRespForPayload(want), func(uint16) []byte {
 			return proto.ReadRequest{
 				ForkRefNum: ff.forkRef,
 				Offset:     offset,
 				ReqCount:   uint32(want),
 			}.Marshal()
-		})
+		}, log.Int("off", int64(offset)), log.Int("want", int64(want)), log.Int("forkRef", int64(ff.forkRef)))
 		if errors.Is(err, aspclient.ErrSessionClosed) && !retried {
 			if rerr := ff.reopen(); rerr != nil {
 				return total, err
@@ -280,6 +319,10 @@ func (ff *forkFile) WriteAt(p []byte, off int64) (int, error) {
 			return total, afpError("FPWrite", result)
 		}
 		total += want
+		if end := off + int64(total); !ff.hasSize || end > ff.size {
+			ff.size = end
+			ff.hasSize = true
+		}
 	}
 	return total, nil
 }
@@ -294,7 +337,7 @@ func (ff *forkFile) Truncate(size int64) error {
 	}
 	retried := false
 	for {
-		_, result, err := ff.fs.sessForkCommand("FPSetForkParms", ff.path, func(uint16) []byte {
+		_, result, err := ff.fs.sessForkCommand("FPSetForkParms", ff.path, 1, func(uint16) []byte {
 			return proto.SetForkParmsRequest{
 				ForkRefNum: ff.forkRef,
 				Bitmap:     bitmap,
@@ -314,14 +357,22 @@ func (ff *forkFile) Truncate(size int64) error {
 		if result != proto.NoErr {
 			return afpError("FPSetForkParms", result)
 		}
+		ff.size = size
+		ff.hasSize = true
 		return nil
 	}
 }
 
 func (ff *forkFile) Stat() (stdfs.FileInfo, error) {
-	n, err := ff.fs.ForkLen(ff.path, ff.fork)
-	if err != nil {
-		return nil, err
+	n := ff.size
+	if !ff.hasSize {
+		var err error
+		n, err = ff.fs.ForkLen(ff.path, ff.fork)
+		if err != nil {
+			return nil, err
+		}
+		ff.size = n
+		ff.hasSize = true
 	}
 	_, base := splitPath(ff.path)
 	return fileInfo{name: base, size: n, modTime: time.Time{}}, nil
@@ -343,7 +394,7 @@ func (ff *forkFile) Close() error {
 	ff.closed = true
 	// Best-effort: if the session already died, the fork is gone with it. Do not
 	// reconnect just to send CloseFork — that would be wasteful and surprising.
-	_, result, _, err := ff.fs.sessCommandOnce("FPCloseFork", ff.path, func(uint16) []byte {
+	_, result, _, err := ff.fs.sessCommandOnce("FPCloseFork", ff.path, 1, func(uint16) []byte {
 		return proto.CloseForkRequest{ForkRefNum: ff.forkRef}.Marshal()
 	})
 	if errors.Is(err, aspclient.ErrSessionClosed) {

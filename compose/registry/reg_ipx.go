@@ -35,6 +35,6 @@ func init() {
 		open := nicLinkOpener(ctx, sec, iface, ipx.BPFFilter)
 		// An empty section mac inherits the bound interface's hw_address so IPX frames
 		// carry a real Ethernet source (else they go out as 00:00:00:00:00:00).
-		return ipx.NewInstanceFromOpener(sec, open, sectionMACFor(sec, iface), logger)
+		return ipx.NewInstanceFromOpener(sec, open, sectionMACFor(ctx, sec, iface), logger)
 	})
 }

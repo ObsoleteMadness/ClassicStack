@@ -54,10 +54,10 @@ type VolumeSection struct {
 	Options []string `toml:"options,omitempty" display:"Options" desc:"Backend-specific key=value parameters."`
 	// ExtMapPath names a Netatalk-style extension→type/creator map file the volume
 	// consults to DEFAULT Finder type/creator for files with no stored classic
-	// metadata. Empty = no defaulting (a file without stored Finder info reads as 32
-	// zero bytes). The file is read at the cmd/compose edge (core does no file I/O for
-	// config) and parsed via afp.ParseExtensionMap.
-	ExtMapPath string `toml:"extmap_path,omitempty" display:"Extension map file" desc:"Netatalk-style type/creator map for files with no stored Finder info." example:"/etc/classicstack/extmap.conf"`
+	// metadata. Empty = the process-global map (DefaultExtMapPath / Settings →
+	// General → File type mappings). The file is read at the cmd/compose edge
+	// (core does no file I/O for config) and parsed via afp.ParseExtensionMap.
+	ExtMapPath string `toml:"extmap_path,omitempty" display:"Extension map file" desc:"Type/creator map for files with no stored Finder info. Empty = the global File type mappings." example:"extmap.conf" widget:"extmap"`
 	// SizeLimitMB is the volume size REPORTED to AFP clients, in MiB (netatalk's
 	// volsizelimit). 0 = the classic-friendly 512 MiB default. Classic clients
 	// derive their HFS allocation-block size from the reported size with 16-bit
@@ -119,14 +119,13 @@ func (s *VolumeSection) Unmask(prev config.Section) config.Section {
 }
 
 // Validate checks the section in isolation. A volume must have a name; the
-// fs_type×fork×codec triple and required backend params are validated later by
-// share.Build (which has the registry of FS factories), so they are not re-checked
-// here — keeping this a cheap, registry-free check.
+// fs_type × fork × codec triple and required backend params are checked here
+// so Save rejects an unbuildable share before it goes live.
 func (s *VolumeSection) Validate() error {
 	if strings.TrimSpace(s.VName) == "" {
 		return ErrVolumeNameRequired
 	}
-	return nil
+	return fs.ValidateSpec(s.Spec())
 }
 
 // Spec maps the section to an fs.ShareSpec the AFP service builds a Volume from.

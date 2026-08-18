@@ -103,3 +103,19 @@ func TestEncodePreservesPrefix(t *testing.T) {
 		t.Fatalf("len = %d, want %d", len(got), len(prefix)+HeaderLen)
 	}
 }
+
+func TestCapabilityNames(t *testing.T) {
+	if CapabilityNames(0) != nil {
+		t.Fatal("zero caps should be empty")
+	}
+	got := CapabilityNames(CapNTSMBs | CapNTStatus | CapNTFind | CapLargeFiles)
+	want := []string{"Large files", "NT SMBs", "NT status", "NT Find"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}

@@ -2,26 +2,16 @@
 
 import type { ExtensionMapStore, ExtensionMapping } from 'classicstack-web/fs/extension-map';
 import { parseNetatalkExtensionMap, serializeNetatalkExtensionMap } from 'classicstack-web/fs/extension-map-netatalk';
-import { api, type ConfigModel } from '../api';
-
-const FALLBACK_PATH = 'extmap.conf';
-
-function volumeExtMapPath(inst: Record<string, unknown>): string {
-  const p = inst.ExtMapPath ?? inst.extmap_path;
-  return typeof p === 'string' ? p.trim() : '';
-}
+import { GLOBAL_EXTMAP_PATH } from '../admin/settings/field-options';
+import { api } from '../api';
 
 export class HttpExtensionMapStore implements ExtensionMapStore {
   private path = '';
   private original = '';
 
-  async resolvePath(model?: ConfigModel): Promise<string> {
-    const cfg = model ?? (await api.config());
-    for (const inst of cfg.Lists?.AFPVolumes ?? []) {
-      const p = volumeExtMapPath(inst);
-      if (p) return p;
-    }
-    return FALLBACK_PATH;
+  /** Settings → General → File type mappings always edits the process-global map. */
+  async resolvePath(): Promise<string> {
+    return GLOBAL_EXTMAP_PATH;
   }
 
   async load(): Promise<ExtensionMapping[]> {

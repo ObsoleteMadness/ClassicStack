@@ -12,10 +12,12 @@ import (
 // an empty volume name.
 
 // ServerListing is the result of browsing an NCP server root: the server name (from the
-// URI, as NCP has no cheap "server info" call the browse needs) and the mounted volumes
-// the logged-in identity can see, each mountable as ncp://SERVER/<volume>.
+// URI, as NCP has no cheap "server info" call the browse needs), whether keyed bindery
+// login was used, and the mounted volumes the logged-in identity can see, each mountable
+// as ncp://SERVER/<volume>.
 type ServerListing struct {
 	ServerName string
+	Encrypted  bool // Get Login Key succeeded and keyed login was used
 	Volumes    []string
 }
 
@@ -39,6 +41,7 @@ func Browse(target uri.Target, opts client.Options) (ServerListing, error) {
 
 	return ServerListing{
 		ServerName: target.Server,
+		Encrypted:  sess.encrypted,
 		Volumes:    sess.ListVolumes(),
 	}, nil
 }

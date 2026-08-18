@@ -46,7 +46,7 @@ Requirements:
 
 - Go 1.23+
 - Npcap on Windows for pcap mode: https://npcap.com/#download
-- libpcap on Linux/macOS for pcap mode
+- libpcap on Linux/macOS for pcap mode. On macOS, `/dev/bpf*` is root-only unless you install Wireshark's **ChmodBPF** (adds your user to `access_bpf`; log out and back in) or run ClassicStack with `sudo`. Wi‑Fi access points drop Ethernet frames not sourced from the NIC's own MAC — leave `hw_address` empty so the server and Finder client both use the host MAC. Many consumer APs also filter non-IP ethertypes (AppleTalk, IPX, NetBEUI); a wired NIC or an AP that bridges those frames is required for remote clients.
 
 Build default binary (all optional protocol hooks enabled):
 
@@ -107,7 +107,7 @@ Bridge defaults live in [Bridge] and are reused by EtherTalk, MacIP, IPX, and Ne
 |---|---|---|---|
 | mode | string | pcap | Raw-link backend: pcap, tap, tun. |
 | device | string | (empty) | Interface/device name used by shared raw-link consumers. |
-| hw_address | string | DE:AD:BE:EF:CA:FE | Shared host MAC identity. |
+| hw_address | string | (empty) | Shared station MAC. Blank = the NIC's own hardware address (required on WiFi). Set a value only to spoof a distinct station on wired Ethernet. |
 | bridge_mode | string | auto | Frame adaptation mode: auto, ethernet, wifi. |
 
 Important: legacy bridge keys under [EtherTalk] are no longer accepted in config files. Use [Bridge] only.
@@ -293,17 +293,22 @@ servers over `/finder` (Go speaks AFP/SMB/NCP/EtherDFS; the browser does not).
 Essential admin tabs cover **status** (start/stop/restart), **sharing**
 (volumes/shares), **users**, and a live **log viewer**.
 
-[WebUI]:
+It listens by default on **:1984** (`[http]` in server.toml). Set
+`enabled = false` to turn it off; `-http :port` overrides the address.
 
-- enabled: turn the listener on (default off)
-- bind: `IP:PORT` to listen on (default `127.0.0.1:8080`, loopback)
-- tls: serve HTTPS (default true); a self-signed certificate is generated at
-  startup when `cert_pem`/`key_pem` are blank
-- cert_pem / key_pem: paths to a PEM certificate and key (supply both, or
-  leave both blank for the self-signed certificate)
+The in-process **file client** (`[Client]` in server.toml) is **off by default**.
+When enabled it binds an `[[interface]]` (e.g. `br-lan`), probes the listed
+schemes (`afp`, `smb`, `ncp`, `etherdfs`) at startup, tracks connections and
+open volumes, and the Finder API (`GET /finder/state`) reads that state.
+`max_idle_minutes` (default 10) disconnects unused remote sessions;
+`mount = true` allows FUSE/WinFsp host mounts; `log_file` is an optional extra
+client log.
 
-Equivalent flags: `-webui-enabled`, `-webui-bind`, `-webui-tls`,
-`-webui-cert-pem`, `-webui-key-pem`.
+**FUSE** (`[FUSE]` in server.toml) sets the host-mount connect timeout
+(`mount_timeout_seconds`, default 30). `[[fusevolumes]]` entries are remote
+shares auto-mounted at startup (URI, local mount point, optional read-only)
+when the client is enabled with `mount = true`. Configure them from Settings →
+FUSE → Auto-mounted volumes.
 
 From **Status** you can **start, stop, and restart** services live. **Sharing**
 adds, updates, and removes AFP volumes, SMB shares, NCP volumes, and EtherDFS
@@ -369,9 +374,13 @@ streams under the Services-for-Macintosh names (`:AFP_Resource`, `:AFP_AfpInfo`,
 go build -tags fuse -o csmount ./cmd/csmount
 # or: make build-mount
 csmount -ifacetype tcp "afp://user@MyServer/My Volume" /Volumes/Classic
+csmount -ifacetype tcp "afp://user@MyServer/OpenRetroSCSI 7.5.3" "/Volumes/OpenRetroSCSI 7.5.3"
 ~~~
 
-`<mountpoint>` is an empty directory. The default `-fork` (AFP `passthrough`, or
+On macOS pass `/Volumes/<name>` (spaces allowed) and do **not** create that folder —
+macFUSE's setuid `mount_macfuse` creates a missing `/Volumes` leaf. A regular user
+cannot `mkdir` under `/Volumes` (`root:wheel` 0755 since Sierra). Linux still needs
+an empty directory. The default `-fork` (AFP `passthrough`, or
 `native` / `hfs` / `xattr` / `ads`) maps forks to host xattrs:
 
 - macOS: `com.apple.FinderInfo` (32-byte FInfo+FXInfo) and `com.apple.ResourceFork`,

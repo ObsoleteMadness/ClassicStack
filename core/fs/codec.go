@@ -364,3 +364,9 @@ func codecByName(name string) (FilenameCodec, error) {
 		return nil, errors.New("fs: unknown filename codec")
 	}
 }
+
+// FilenameCodecs returns the canonical filename-codec names a share can select.
+// Aliases (utf8 → identity) are omitted so the UI lists each codec once.
+func FilenameCodecs() []string {
+	return []string{"identity", "macroman-utf8", "macroman-native"}
+}

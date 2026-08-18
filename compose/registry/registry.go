@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"fmt"
 	"io"
 	"sort"
 	"sync"
@@ -22,6 +23,11 @@ import (
 // build", the same graceful degradation the supervisor's nil-store path expects.
 var userStoreBuilder func(*config.Model) (auth.UserStore, error)
 
+// buildClientHook is the build-tagged Client factory wrapper (reg_client.go, built
+// under webui||all) assigned at init. When unset, BuildClient returns (nil, false, nil)
+// so a headless build carries no in-process file client.
+var buildClientHook func(*BuildContext, map[string]component.Component) (component.Component, bool, error)
+
 // BuildUserStore constructs the configured user store, or (nil, nil) when no file
 // service was built (the hook is unset). The compose root calls it once and hands the
 // store to the supervisor (SetUserStore, for the web UI's user CRUD) and to each file
@@ -32,6 +38,28 @@ func BuildUserStore(m *config.Model) (auth.UserStore, error) {
 		return nil, nil
 	}
 	return userStoreBuilder(m)
+}
+
+// ClientDeps returns supervisor start-order edges for the Client component: every
+// built file service the client may list locally should be running first.
+func ClientDeps(comps map[string]component.Component) []string {
+	want := []string{"AFP", "SMB", "NCP", "EtherDFS"}
+	out := make([]string, 0, len(want))
+	for _, name := range want {
+		if _, ok := comps[name]; ok {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// BuildClient constructs the in-process file client when reg_client.go is linked
+// (webui||all). comps is the map from the first runtime build pass.
+func BuildClient(ctx *BuildContext, comps map[string]component.Component) (component.Component, bool, error) {
+	if buildClientHook == nil {
+		return nil, false, nil
+	}
+	return buildClientHook(ctx, comps)
 }
 
 // LinkOpener opens a raw L2 FrameLink for a NIC by name, applying the caller-supplied
@@ -117,6 +145,18 @@ type BuildContext struct {
 	// stays inert-but-routed exactly as before. nicLinkOpener calls it only as a
 	// fallback, so a configured iface always wins.
 	DefaultDevice func() (string, error)
+	// HostMAC resolves the real hardware address of a pcap device so a NIC port that
+	// names no mac / hw_address can stamp the host NIC's own MAC (required on WiFi:
+	// APs drop frames sourced from any other address). Injected at the cmd edge
+	// (pcap.ListDevices + hostinfo.HardwareAddrForDevice). nil (tests / no-pcap builds)
+	// leaves the zero-MAC fallback — EtherTalk stays broadcast-only, IPX/NetBEUI/
+	// EtherDFS stamp 00:00:00:00:00:00. A configured section mac or interface
+	// hw_address always wins; this is only the empty-config auto-detect.
+	HostMAC func(device string) ([6]byte, error)
+	// LogLevel is the shared process log threshold. Logger() uses it for the
+	// stderr sink so [Logging] Level changes retune every component live.
+	// Nil falls back to a fresh LevelVar from LevelFor().
+	LogLevel *log.LevelVar
 	// Instance is the per-instance name a REPEATED port factory should build (§M11):
 	// a transport is a repeated section, so the runtime calls the factory once per
 	// instance with Instance set to that instance's name, and the factory resolves
@@ -130,6 +170,10 @@ type BuildContext struct {
 	// (the default) means stderr only. The per-component threshold still comes from
 	// [Logging] Level via LevelFor; each extra sink enforces its own Min().
 	LogSinks []log.Sink
+	// Components is the map of components already built in the current runtime pass.
+	// The Client factory reads it so the in-process file client can resolve live local
+	// shares (AFP/SMB/NCP/EtherDFS). nil during an isolated Build (conformance tests).
+	Components map[string]component.Component
 }
 
 // Factory builds a fully-wired component from its BuildContext. Returns the
@@ -229,21 +273,51 @@ func Instances(m *config.Model) []ComponentID {
 }
 
 // sectionMACFor resolves a port instance's station MAC as a fixed [6]byte (the form
-// the frame-port constructors take). The port's own section mac wins; when it is empty
-// the port INHERITS the bound interface's shared HWAddress (the successor to the legacy
-// [Bridge] hw_address), so a NetBEUI/IPX/EtherDFS port that names no mac of its own still
-// stamps a real Ethernet source instead of the all-zero address. Only when BOTH are
-// empty/malformed does it yield the zero MAC — the regression symptom this closes was
-// NBF frames going out with source 00:00:00:00:00:00 because the interface fallback was
-// never consulted. Shared by the IPX/NetBEUI/EtherDFS factories.
-func sectionMACFor(sec *port.Section, iface config.InterfaceSection) [6]byte {
+// the frame-port constructors take). Precedence:
+//  1. the port's own section mac (explicit spoof — still valid on wired Ethernet)
+//  2. the bound interface's shared HWAddress (one identity for every raw-link consumer)
+//  3. the host NIC's real MAC via BuildContext.HostMAC (WiFi / Npcap: APs drop any
+//     other source address; blank config means "be the host")
+//  4. the zero MAC — EtherTalk then stays broadcast-only; IPX/NetBEUI/EtherDFS stamp
+//     00:00:00:00:00:00. nil ctx / nil HostMAC skip step 3 so tests keep that fallback.
+func sectionMACFor(ctx *BuildContext, sec *port.Section, iface config.InterfaceSection) [6]byte {
 	if mac, ok := parseMAC6(sec.MAC); ok {
 		return mac
 	}
 	if mac, ok := parseMAC6(iface.HWAddress); ok {
 		return mac
 	}
-	return [6]byte{}
+	if ctx == nil || ctx.HostMAC == nil {
+		return [6]byte{}
+	}
+	device := effectivePcapDevice(ctx, iface)
+	if device == "" {
+		return [6]byte{}
+	}
+	mac, err := ctx.HostMAC(device)
+	if err != nil || mac == ([6]byte{}) {
+		scope := ""
+		if sec != nil {
+			scope = sec.InstanceName()
+		}
+		errMsg := "unknown"
+		if err != nil {
+			errMsg = err.Error()
+		}
+		ctx.Logger(scope).Log2(log.Warn, "host NIC MAC not detected; set mac or hw_address", log.Str("device", device), log.Str("err", errMsg))
+		return [6]byte{}
+	}
+	scope := ""
+	if sec != nil {
+		scope = sec.InstanceName()
+	}
+	ctx.Logger(scope).Log2(log.Info, "using host NIC MAC", log.Str("device", device), log.Str("mac", formatMAC6(mac)))
+	return mac
+}
+
+// formatMAC6 renders a 6-byte MAC as colon-separated uppercase hex.
+func formatMAC6(mac [6]byte) string {
+	return fmt.Sprintf("%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5])
 }
 
 // parseMAC6 parses a colon/dash-separated MAC string into a fixed [6]byte, reporting

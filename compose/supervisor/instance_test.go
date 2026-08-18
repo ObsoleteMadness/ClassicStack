@@ -107,6 +107,32 @@ func TestAddInstanceBuildsFirstPortNode(t *testing.T) {
 	}
 }
 
+// TestAddInstanceReconfiguresExistingPortWithSection asserts that editing an
+// already-supervised port (owner == schema key, node exists) passes the section
+// into ApplyConfig so iface/device changes take effect instead of a nil notify.
+func TestAddInstanceReconfiguresExistingPortWithSection(t *testing.T) {
+	log := &orderLog{}
+	m := config.NewModel()
+	s := New(m, nil)
+	port := &configurableComp{name: "EtherTalk", log: log}
+	s.Add(port, nil)
+	if err := s.StartAll(context.Background()); err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+	port.applied = 0
+
+	sec := namedSection{key: "EtherTalk", name: "EtherTalk"}
+	if err := s.AddInstance(context.Background(), "EtherTalk", sec); err != nil {
+		t.Fatalf("AddInstance: %v", err)
+	}
+	if port.applied != 1 {
+		t.Fatalf("ApplyConfig called %d times, want 1", port.applied)
+	}
+	if port.lastSection != sec {
+		t.Fatalf("ApplyConfig got %#v, want the port section (not nil)", port.lastSection)
+	}
+}
+
 // TestAddInstanceAttachesBuiltPortToTransport asserts that after AddInstance builds and
 // starts a repeated-port node, the supervisor invokes the injected TransportAttacher on
 // that exact component — the seam that joins a runtime-added IPX/NetBEUI port to its

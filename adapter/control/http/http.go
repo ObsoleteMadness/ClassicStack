@@ -44,15 +44,17 @@ type Client = inproc.Client
 
 // Server exposes control.Plane over HTTP.
 type Server struct {
-	plane    control.Plane
-	diag     DiagProvider // protocol-specific diagnostic drill-downs (adapter/control/diag); nil = unavailable
-	finder   *finder.Service
-	addr     string
-	listener net.Listener
-	server   *http.Server
-	mu       sync.Mutex
-	closed   bool
-	wg       sync.WaitGroup
+	plane     control.Plane
+	diag      DiagProvider // protocol-specific diagnostic drill-downs (adapter/control/diag); nil = unavailable
+	finder    *finder.Service
+	lifecycle Lifecycle
+	addr      string // resolved listener address
+	bind      string // configured listen target (":1984"); empty = not serving
+	listener  net.Listener
+	server    *http.Server
+	mu        sync.Mutex
+	closed    bool
+	wg        sync.WaitGroup
 }
 
 // DiagProvider is the protocol-specific diagnostics surface the server serves on the
@@ -67,6 +69,9 @@ type DiagProvider interface {
 	AFPSessions() ([]diag.AFPSession, error)
 	AFPSendMessage(sessionID uint8, text string) error
 	AFPDisconnect(sessionID uint8, text string, minutes int) error
+	NCPSessions() ([]diag.NCPSession, error)
+	EtherDFSSessions() ([]diag.EtherDFSSession, error)
+	NetSend(to, text string) error
 }
 
 // SetDiagProvider installs the protocol diagnostics provider (the cmd edge builds it
@@ -82,6 +87,7 @@ func NewServer(plane control.Plane, addr string) *Server {
 	return &Server{
 		plane: plane,
 		addr:  addr,
+		bind:  addr,
 	}
 }
 
@@ -89,8 +95,13 @@ func NewServer(plane control.Plane, addr string) *Server {
 func (s *Server) Start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.closed = false
+	listen := s.bind
+	if listen == "" {
+		listen = s.addr
+	}
 
-	l, err := net.Listen("tcp", s.addr)
+	l, err := net.Listen("tcp", listen)
 	if err != nil {
 		return err
 	}
@@ -103,8 +114,11 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/start", s.handleStart)
 	mux.HandleFunc("/stop", s.handleStop)
 	mux.HandleFunc("/restart", s.handleRestart)
+	mux.HandleFunc("/shutdown", s.handleShutdown)
+	mux.HandleFunc("/stack_restart", s.handleStackRestart)
 	mux.HandleFunc("/save", s.handleSave)
 	mux.HandleFunc("/list_fs_types", s.handleListFSTypes)
+	mux.HandleFunc("/share_backends", s.handleShareBackends)
 	mux.HandleFunc("/schemas", s.handleSchemas)
 	mux.HandleFunc("/params_for", s.handleParamsFor)
 	mux.HandleFunc("/list_interfaces", s.handleListInterfaces)
@@ -119,7 +133,11 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/afp_sessions", s.handleAFPSessions)
 	mux.HandleFunc("/afp_message", s.handleAFPMessage)
 	mux.HandleFunc("/afp_disconnect", s.handleAFPDisconnect)
+	mux.HandleFunc("/ncp_sessions", s.handleNCPSessions)
+	mux.HandleFunc("/etherdfs_sessions", s.handleEtherDFSSessions)
+	mux.HandleFunc("/netsend", s.handleNetSend)
 	mux.HandleFunc("/reconfigure", s.handleReconfigure)
+	mux.HandleFunc("/set_well_known", s.handleSetWellKnown)
 	mux.HandleFunc("/add_instance", s.handleAddInstance)
 	mux.HandleFunc("/remove_instance", s.handleRemoveInstance)
 	mux.HandleFunc("/extmap", s.handleExtMap)
@@ -130,6 +148,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/browse_path", s.handleBrowsePath)
 	mux.HandleFunc("/finder/local", s.handleFinderLocal)
 	mux.HandleFunc("/finder/discover", s.handleFinderDiscover)
+	mux.HandleFunc("/finder/state", s.handleFinderState)
 	mux.HandleFunc("/finder/sessions", s.handleFinderSessions)
 	mux.HandleFunc("/finder/open", s.handleFinderOpen)
 	mux.HandleFunc("/finder/node", s.handleFinderNode)
@@ -139,9 +158,13 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/finder/create", s.handleFinderCreate)
 	mux.HandleFunc("/finder/rename", s.handleFinderRename)
 	mux.HandleFunc("/finder/move", s.handleFinderMove)
+	mux.HandleFunc("/finder/copy", s.handleFinderCopy)
+	mux.HandleFunc("/finder/expand", s.handleFinderExpand)
 	mux.HandleFunc("/finder/remove", s.handleFinderRemove)
 	mux.HandleFunc("/finder/fork", s.handleFinderFork)
 	mux.HandleFunc("/finder/finderinfo", s.handleFinderFinderInfo)
+	mux.HandleFunc("/finder/mount", s.handleFinderMount)
+	mux.HandleFunc("/finder/mounted", s.handleFinderMounted)
 	mux.HandleFunc("/users", s.handleUsers)
 	mux.HandleFunc("/set_user", s.handleSetUser)
 	mux.HandleFunc("/set_user_disabled", s.handleSetUserDisabled)
@@ -179,6 +202,44 @@ func (s *Server) Addr() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.addr
+}
+
+// Relisten stops the current listener and binds addr (empty = stop serving).
+func (s *Server) Relisten(bind string) error {
+	s.Stop()
+	s.mu.Lock()
+	s.closed = false
+	s.server = nil
+	s.listener = nil
+	s.bind = strings.TrimSpace(bind)
+	s.addr = s.bind
+	empty := s.bind == ""
+	s.mu.Unlock()
+	if empty {
+		return nil
+	}
+	return s.Start()
+}
+
+func (s *Server) applyHTTPListen(sec config.HTTPSection) {
+	want := ""
+	if sec.Enabled {
+		want = sec.ListenAddr()
+	}
+	s.mu.Lock()
+	cur := s.bind
+	listening := s.listener != nil && !s.closed
+	s.mu.Unlock()
+	if want == "" {
+		if listening {
+			_ = s.Relisten("")
+		}
+		return
+	}
+	if listening && cur == want {
+		return
+	}
+	_ = s.Relisten(want)
 }
 
 // Stop shuts down the HTTP server.
@@ -271,6 +332,16 @@ func (s *Server) handleListFSTypes(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(res)
 }
 
+func (s *Server) handleShareBackends(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	res := s.plane.ShareBackends()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
+}
+
 // handleSchemas reports the self-describing config catalogue for THIS build:
 // section keys, display names, capability flags, and field metadata. Registration
 // is build-tag gated, so this is the runtime signal for "which transports/services
@@ -344,6 +415,41 @@ func (s *Server) handleReconfigure(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// handleSetWellKnown updates a well-known Model field (Identity, Router, Logging,
+// HTTP, Client, FUSE) outside the registered Sections map.
+func (s *Server) handleSetWellKnown(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Key     string          `json:"key"`
+		Section json.RawMessage `json:"section"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if body.Key == "" || len(body.Section) == 0 {
+		http.Error(w, "key and section required", http.StatusBadRequest)
+		return
+	}
+	if err := s.plane.SetWellKnown(r.Context(), body.Key, body.Section); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	if body.Key == config.HTTPKey {
+		var sec config.HTTPSection
+		if err := json.Unmarshal(body.Section, &sec); err == nil {
+			go func() {
+				time.Sleep(200 * time.Millisecond)
+				s.applyHTTPListen(sec)
+			}()
+		}
+	}
 }
 
 // handleAddInstance stages a new repeated-section instance (an AFP volume / SMB share)
@@ -527,6 +633,14 @@ func (s *Server) handleConfigApply(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"revision": rev})
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		m, err := s.plane.Config()
+		if err != nil || m == nil {
+			return
+		}
+		s.applyHTTPListen(m.HTTP)
+	}()
 }
 
 // handleListSerialPorts returns the host serial ports (the TashTalk dropdown). A
@@ -864,6 +978,71 @@ func (s *Server) handleAFPDisconnect(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// handleNCPSessions returns the live NCP connection table. 501 when the provider
+// is absent or no NCP service was built.
+func (s *Server) handleNCPSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.diag == nil {
+		http.Error(w, control.ErrUnavailable.Error(), statusForErr(control.ErrUnavailable))
+		return
+	}
+	res, err := s.diag.NCPSessions()
+	if err != nil {
+		http.Error(w, err.Error(), statusForErr(err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
+}
+
+// handleEtherDFSSessions returns the live EtherDFS client table. 501 when the
+// provider is absent or no EtherDFS service was built.
+func (s *Server) handleEtherDFSSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.diag == nil {
+		http.Error(w, control.ErrUnavailable.Error(), statusForErr(control.ErrUnavailable))
+		return
+	}
+	res, err := s.diag.EtherDFSSessions()
+	if err != nil {
+		http.Error(w, err.Error(), statusForErr(err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
+}
+
+// handleNetSend delivers a NetBIOS messenger pop-up to the named station.
+func (s *Server) handleNetSend(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.diag == nil {
+		http.Error(w, control.ErrUnavailable.Error(), statusForErr(control.ErrUnavailable))
+		return
+	}
+	var body struct {
+		To   string `json:"to"`
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.diag.NetSend(body.To, body.Text); err != nil {
+		http.Error(w, err.Error(), statusForErr(err))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1190,6 +1369,15 @@ func (c *AdapterClient) ListFSTypes() ([]string, error) {
 	return out, err
 }
 
+// ShareBackends returns the share/volume picker catalogues (GET /share_backends).
+func (c *AdapterClient) ShareBackends() (control.ShareBackends, error) {
+	var out control.ShareBackends
+	if err := c.getJSON("/share_backends", &out); err != nil {
+		return control.ShareBackends{}, err
+	}
+	return out, nil
+}
+
 // ParamsFor returns the config-param schema for one fs_type (GET /params_for).
 func (c *AdapterClient) ParamsFor(fsType string) ([]control.ParamInfo, error) {
 	var out []control.ParamInfo
@@ -1362,6 +1550,31 @@ func (c *AdapterClient) AFPDisconnect(ctx context.Context, sessionID uint8, text
 	}{SessionID: sessionID, Text: text, Minutes: minutes})
 }
 
+// NCPSessions runs the NCP connection-table drill-down.
+func (c *AdapterClient) NCPSessions(ctx context.Context) ([]diag.NCPSession, error) {
+	_ = ctx
+	var out []diag.NCPSession
+	err := c.getJSON("/ncp_sessions", &out)
+	return out, err
+}
+
+// EtherDFSSessions runs the EtherDFS client-table drill-down.
+func (c *AdapterClient) EtherDFSSessions(ctx context.Context) ([]diag.EtherDFSSession, error) {
+	_ = ctx
+	var out []diag.EtherDFSSession
+	err := c.getJSON("/etherdfs_sessions", &out)
+	return out, err
+}
+
+// NetSend delivers a NetBIOS messenger pop-up.
+func (c *AdapterClient) NetSend(ctx context.Context, to, text string) error {
+	_ = ctx
+	return c.post("/netsend", struct {
+		To   string `json:"to"`
+		Text string `json:"text"`
+	}{To: to, Text: text})
+}
+
 // Users lists stored identities (control.ErrUnavailable when no store is wired).
 func (c *AdapterClient) Users() ([]control.UserInfo, error) {
 	var out []control.UserInfo
@@ -1449,6 +1662,14 @@ func (c *AdapterClient) Subscribe(topics ...string) (<-chan bus.Event, func(), e
 					var lr bus.LogRecord
 					_ = json.Unmarshal([]byte(dataStr), &lr)
 					ev = lr
+				case bus.TopicMessage:
+					var mr bus.MessageReceived
+					_ = json.Unmarshal([]byte(dataStr), &mr)
+					ev = mr
+				case bus.TopicFinder:
+					var fu bus.FinderUpdated
+					_ = json.Unmarshal([]byte(dataStr), &fu)
+					ev = fu
 				}
 
 				if ev != nil {

@@ -385,6 +385,27 @@ func (s *Service) NBTListenAddr() string {
 	return s.nbtAddr
 }
 
+// SetServerName replaces the workstation and file-server names this service
+// claims. Bindings pick up the new set immediately (or on the next Attach).
+// Empty name leaves the service nameless. Idempotent; safe before Start.
+func (s *Service) SetServerName(name string) {
+	s.mu.Lock()
+	s.serverName = name
+	var names []protocol.Name
+	if name != "" {
+		names = []protocol.Name{
+			protocol.NewName(name, protocol.NameTypeFileServer),
+			protocol.NewName(name, protocol.NameTypeWorkstation),
+		}
+	}
+	s.names = names
+	bindings := append([]*binding(nil), s.bindings...)
+	s.mu.Unlock()
+	for _, b := range bindings {
+		_ = b.setNames(names)
+	}
+}
+
 // HostnameConstraint declares that NetBIOS imposes the ≤15-byte NetBIOS-name rule on the
 // server hostname (component.HostnameConstrainer). The supervisor aggregates this so the
 // management plane applies the rule WITHOUT naming NetBIOS itself (§4-bis). The

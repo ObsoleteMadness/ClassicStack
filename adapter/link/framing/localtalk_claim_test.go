@@ -52,6 +52,26 @@ func newClaimHarness(t *testing.T, desired uint8, respondToEnq bool) (link.Datag
 	}
 }
 
+// TestClaimCloseUnblocksReadDatagram verifies Close stops a blocked ReadDatagram
+// promptly instead of waiting for the next wire frame (TashTalk shutdown path).
+func TestClaimCloseUnblocksReadDatagram(t *testing.T) {
+	dl, _, _, _ := newClaimHarness(t, 0xFE, false)
+	done := make(chan struct{})
+	go func() {
+		_, _ = dl.ReadDatagram()
+		close(done)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	if err := dl.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("ReadDatagram did not return after Close")
+	}
+}
+
 // readControl reads one LLAP control frame from the peer within a deadline.
 func readControl(t *testing.T, peer *inmem.Link, within time.Duration) (llap.ControlFrame, bool) {
 	t.Helper()

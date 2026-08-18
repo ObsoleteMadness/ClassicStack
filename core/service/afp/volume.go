@@ -67,7 +67,7 @@ type VolumeSpec struct {
 	Share fs.ShareSpec
 	// ExtMap is the optional extension→type/creator default map the volume consults for
 	// files with no stored Finder info. Built by the compose/cmd edge (which reads the
-	// configured ExtMapPath file); nil = no defaulting.
+	// configured ExtMapPath, or DefaultExtMapPath when empty); nil = no defaulting.
 	ExtMap *ExtensionMap
 	// SizeLimit is the reported volume size in bytes (the section's size_limit,
 	// MiB, converted at the compose edge); 0 = the classic-friendly default.

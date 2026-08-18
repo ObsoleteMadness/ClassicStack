@@ -1,6 +1,10 @@
 package log
 
-import "testing"
+import (
+	"os"
+	"strings"
+	"testing"
+)
 
 type collectSink struct {
 	min  Level
@@ -165,5 +169,26 @@ func TestPerSinkThresholds(t *testing.T) {
 	}
 	if len(infoSink.recs) != 1 || infoSink.recs[0].Msg != "up" {
 		t.Fatalf("info sink recs=%v, want [up]", infoSink.recs)
+	}
+}
+
+func TestFileSink(t *testing.T) {
+	path := t.TempDir() + "/client.log"
+	sink, err := NewFileSink(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := New("client", sink)
+	l.Log1(Info, "scan", Str("scheme", "afp"))
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(b)
+	if !strings.Contains(got, "client [info] scan scheme=\"afp\"") {
+		t.Fatalf("log file = %q", got)
 	}
 }

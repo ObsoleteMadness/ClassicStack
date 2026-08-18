@@ -365,3 +365,54 @@ func TestNBIPX_EmitDatagramSendsNMPIMailslot(t *testing.T) {
 		t.Errorf("NMPI payload = %q, want %q", nmpi.Payload, payload)
 	}
 }
+
+// TestNBIPX_SessionRequestRetransmitKeepsCircuit proves a second SESSION_INITIALIZE
+// before any data (the client's 500ms INIT retransmit) re-accepts the same local ID
+// and RecvSeq 1 — it is not treated as a reconnect.
+func TestNBIPX_SessionRequestRetransmitKeepsCircuit(t *testing.T) {
+	_, r, port, _ := newWiredIPXEngine(t)
+	remoteID := uint16(0x0001)
+	first := establishIPXCircuit(t, r, port, remoteID)
+	second := establishIPXCircuit(t, r, port, remoteID)
+	if first != second {
+		t.Fatalf("retransmit allocated local ID %#x, want existing %#x", second, first)
+	}
+	_, hdr := port.lastSentStream(protocol.NBIPXSessionData)
+	if hdr.RecvSeq != protocol.NBIPXSessionAcceptRecvSeq || hdr.SendSeq != 0 {
+		t.Fatalf("re-accept SendSeq/RecvSeq = %d/%d, want 0/1", hdr.SendSeq, hdr.RecvSeq)
+	}
+}
+
+// TestNBIPX_ReconnectReplacesUsedCircuit proves a new SESSION_INITIALIZE from a
+// station that already carried data (same SourceConnID, DestConnID 0xFFFF) tears
+// down the old circuit and accepts a fresh one with RecvSeq 1 — the self-talk
+// reconnect that previously reused sendSeq 6 and left SMB Negotiate unanswered.
+func TestNBIPX_ReconnectReplacesUsedCircuit(t *testing.T) {
+	_, r, port, consumer := newWiredIPXEngine(t)
+	remoteID := uint16(0x0001)
+	firstID := establishIPXCircuit(t, r, port, remoteID)
+	r.Inbound(dataDatagram(remoteID, 1, true, []byte("first")))
+	if consumer.opened != 1 {
+		t.Fatalf("opened %d, want 1 after first data", consumer.opened)
+	}
+
+	secondID := establishIPXCircuit(t, r, port, remoteID)
+	if secondID == firstID {
+		t.Fatalf("reconnect reused local ID %#x, want a new circuit", firstID)
+	}
+	if consumer.closed != 1 {
+		t.Fatalf("closed %d, want 1 (old circuit torn down)", consumer.closed)
+	}
+	_, hdr := port.lastSentStream(protocol.NBIPXSessionData)
+	if hdr.RecvSeq != protocol.NBIPXSessionAcceptRecvSeq || hdr.SendSeq != 0 {
+		t.Fatalf("reconnect accept SendSeq/RecvSeq = %d/%d, want 0/1", hdr.SendSeq, hdr.RecvSeq)
+	}
+
+	r.Inbound(dataDatagram(remoteID, 1, true, []byte("second")))
+	if consumer.opened != 2 {
+		t.Fatalf("opened %d, want 2 after reconnect data", consumer.opened)
+	}
+	if string(consumer.last) != "second" {
+		t.Fatalf("consumer saw %q, want second (fresh circuit, not a duplicate on the old one)", consumer.last)
+	}
+}

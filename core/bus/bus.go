@@ -100,7 +100,18 @@ const (
 	TopicLog   = "log"
 	// TopicMessage carries Messenger Service ("net send" / WinPopup) pop-ups the
 	// stack received, so a UI can surface them (§3-quater messenger consumer).
+	// AFP login/attention messages the operator Finder fetched as a client use
+	// the same topic (Kind distinguishes the source).
 	TopicMessage = "message"
+	// TopicFinder carries in-process client discovery updates (LAN scan results)
+	// so the web SPA can refresh server listings without polling.
+	TopicFinder = "finder"
+)
+
+// MessageKind values for MessageReceived.Kind.
+const (
+	MessageKindAFP       = "afp"       // FPGetSrvrMsg login greeting or operator attention
+	MessageKindMessenger = "messenger" // NetBIOS Messenger / WinPopup / net send
 )
 
 // StateChanged is published on every component lifecycle transition. Topic()=="state".
@@ -128,11 +139,13 @@ type LogRecord struct {
 
 func (LogRecord) Topic() string { return TopicLog }
 
-// MessageReceived carries one Messenger Service pop-up ("net send" / WinPopup)
-// the stack received off \MAILSLOT\MESSNGR. From/To are the OEM names on the wire,
-// Text the message body. Topic()=="message". A UI subscribes to TopicMessage to
-// display these net-send events.
+// MessageReceived carries one pop-up the stack received so a UI can display it:
+// a Messenger Service "net send" / WinPopup off \MAILSLOT\MESSNGR, or an AFP
+// server message the operator Finder fetched (FPGetSrvrMsg). From/To are the
+// sender and recipient names on the wire (To is empty for AFP); Text is the
+// message body. Kind is MessageKindAFP or MessageKindMessenger.
 type MessageReceived struct {
+	Kind string // MessageKindAFP or MessageKindMessenger
 	From string
 	To   string
 	Text string
@@ -140,6 +153,41 @@ type MessageReceived struct {
 }
 
 func (MessageReceived) Topic() string { return TopicMessage }
+
+// FinderKind values for FinderUpdated.Kind.
+const (
+	FinderKindNetworks = "networks" // last-seen client list for one scheme changed
+	FinderKindScanning = "scanning" // in-process LAN scan started or finished
+)
+
+// FinderVolume is one remote file server the in-process client discovered.
+type FinderVolume struct {
+	ID        string `json:"id"`
+	Kind      string `json:"kind"`
+	Title     string `json:"title"`
+	Subtitle  string `json:"subtitle,omitempty"`
+	Protocol  string `json:"protocol,omitempty"`
+	Transport string `json:"transport,omitempty"`
+	Address   string `json:"address,omitempty"`
+	URI       string `json:"uri,omitempty"`
+	OS        string `json:"os,omitempty"`
+	Version   string `json:"version,omitempty"`
+	ReadOnly  bool   `json:"readOnly"`
+}
+
+// FinderUpdated is published when the in-process client learns or forgets remote
+// servers, or when a background LAN scan starts or finishes. Kind is
+// FinderKindNetworks or FinderKindScanning. For networks, Scheme is the probe
+// scheme (afp, smb, ncp, etherdfs) and Volumes is the new last-seen list.
+type FinderUpdated struct {
+	Kind     string
+	Scheme   string
+	Scanning bool
+	Volumes  []FinderVolume
+	Time     time.Time
+}
+
+func (FinderUpdated) Topic() string { return TopicFinder }
 
 // Field is one scalar log field; rendered by switch on Kind, not reflection.
 type Field struct {

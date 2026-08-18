@@ -4,6 +4,7 @@ package registry
 
 import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
+	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/browser"
 )
 
@@ -22,5 +23,13 @@ func init() {
 		svc := browser.New(logger, nil, m.Identity.Hostname, m.Identity.Workgroup)
 		svc.SetDescription(m.Identity.Description)
 		return svc, nil
+	})
+	registerIdentityStamper(func(c component.Component, m *config.Model) bool {
+		svc, ok := c.(*browser.Service)
+		if !ok {
+			return false
+		}
+		svc.SetIdentity(m.Identity.Hostname, m.Identity.Workgroup, m.Identity.Description)
+		return true
 	})
 }

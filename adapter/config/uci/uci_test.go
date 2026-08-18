@@ -2,6 +2,7 @@ package uci
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
@@ -38,6 +39,15 @@ func TestUCICodec_RoundTrip(t *testing.T) {
 	}
 	if got.Logging != m.Logging {
 		t.Errorf("Logging: got %+v want %+v", got.Logging, m.Logging)
+	}
+	if got.HTTP != m.HTTP {
+		t.Errorf("HTTP: got %+v want %+v", got.HTTP, m.HTTP)
+	}
+	if !reflect.DeepEqual(got.Client, m.Client) {
+		t.Errorf("Client: got %+v want %+v", got.Client, m.Client)
+	}
+	if got.FUSE != m.FUSE {
+		t.Errorf("FUSE: got %+v want %+v", got.FUSE, m.FUSE)
 	}
 	if !reflect.DeepEqual(got.Router, m.Router) {
 		t.Errorf("Router: got %+v want %+v", got.Router, m.Router)
@@ -152,5 +162,126 @@ func TestUCICodec_BlockNameAuthoritative(t *testing.T) {
 	}
 	if name := list[0].(*uciFakeVolume).VName; name != "renamed" {
 		t.Errorf("block name should win: got %q, want renamed", name)
+	}
+}
+
+func TestUCIHTTPOmittedDefaults(t *testing.T) {
+	var got config.Model
+	if err := New().Unmarshal([]byte("package classicstack\n\nconfig identity\n\toption hostname 'x'\n\n"), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.HTTP.Enabled || got.HTTP.Addr != config.DefaultHTTPAddr {
+		t.Fatalf("omitted config http: %+v, want enabled on %s", got.HTTP, config.DefaultHTTPAddr)
+	}
+}
+
+func TestUCIHTTPDisabledSticks(t *testing.T) {
+	var got config.Model
+	data := []byte("package classicstack\n\nconfig http\n\toption enabled '0'\n\n")
+	if err := New().Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.HTTP.Enabled {
+		t.Fatal("option enabled '0' did not stick")
+	}
+	if got.HTTP.Addr != config.DefaultHTTPAddr {
+		t.Fatalf("blank addr should default to %s, got %q", config.DefaultHTTPAddr, got.HTTP.Addr)
+	}
+}
+
+func TestUCIClientOmittedDefaultsDisabled(t *testing.T) {
+	var got config.Model
+	if err := New().Unmarshal([]byte("package classicstack\n\nconfig identity\n\toption hostname 'x'\n\n"), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Client.Enabled {
+		t.Fatalf("omitted config client should be disabled, got %+v", got.Client)
+	}
+}
+
+func TestUCIClientRoundTrip(t *testing.T) {
+	m := config.NewModel()
+	m.Client = config.ClientSection{
+		Enabled:        true,
+		Iface:          "br-lan",
+		Services:       []string{"afp", "smb", "ncp", "etherdfs"},
+		MaxIdleMinutes: 10,
+		Mount:          true,
+		LogFile:        "client.log",
+	}
+	codec := New()
+	data, err := codec.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "config client") {
+		t.Fatalf("Marshal should emit config client; got:\n%s", data)
+	}
+	got := config.NewModel()
+	if err := codec.Unmarshal(data, got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Client, m.Client) {
+		t.Fatalf("Client round-trip: got %+v want %+v", got.Client, m.Client)
+	}
+}
+
+func TestUCIFUSEOmittedDefaults(t *testing.T) {
+	var got config.Model
+	if err := New().Unmarshal([]byte("package classicstack\n\nconfig identity\n\toption hostname 'x'\n\n"), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.FUSE.MountTimeoutSeconds != config.DefaultFUSEMountTimeoutSeconds {
+		t.Fatalf("omitted config fuse timeout = %d, want %d", got.FUSE.MountTimeoutSeconds, config.DefaultFUSEMountTimeoutSeconds)
+	}
+}
+
+func TestUCIFUSERoundTrip(t *testing.T) {
+	m := config.NewModel()
+	m.FUSE = config.FUSESection{MountTimeoutSeconds: 45}
+	codec := New()
+	data, err := codec.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "config fuse") {
+		t.Fatalf("Marshal should emit config fuse; got:\n%s", data)
+	}
+	got := config.NewModel()
+	if err := codec.Unmarshal(data, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.FUSE != m.FUSE {
+		t.Fatalf("FUSE round-trip: got %+v want %+v", got.FUSE, m.FUSE)
+	}
+}
+
+func TestUCIFUSEVolumesRoundTrip(t *testing.T) {
+	config.RegisterFUSEVolumes()
+	m := config.NewModel()
+	want := &config.FUSEVolumeSection{
+		Remote:     "smb://foo:pass@foohost,smb/share",
+		Mountpoint: "/Volumes/share",
+		ReadOnly:   true,
+	}
+	m.AddInstance(want)
+	codec := New()
+	data, err := codec.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "config fusevolumes") {
+		t.Fatalf("Marshal should emit config fusevolumes; got:\n%s", data)
+	}
+	got := config.NewModel()
+	if err := codec.Unmarshal(data, got); err != nil {
+		t.Fatal(err)
+	}
+	sec, ok := got.Instance(config.FUSEVolumesKey, "/Volumes/share")
+	if !ok {
+		t.Fatal("FUSE volume missing after UCI round-trip")
+	}
+	if !reflect.DeepEqual(sec, want) {
+		t.Fatalf("FUSE volume UCI round-trip: got %+v want %+v", sec, want)
 	}
 }

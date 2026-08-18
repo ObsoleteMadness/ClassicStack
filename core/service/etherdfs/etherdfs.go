@@ -301,6 +301,14 @@ func (s *Service) Props() map[string]string {
 	return map[string]string{"drives": itoa(s.driveCount())}
 }
 
+// Sessions snapshots live EtherDFS clients for the Sharing Monitor.
+func (s *Service) Sessions() []SessionInfo {
+	if s.sessions == nil {
+		return nil
+	}
+	return s.sessions.list()
+}
+
 // Stats overrides the embedded port's snapshot (component.Statful) to add the
 // file-service gauges — configured drives and live client sessions — on top of
 // the port's frame/byte counters, for the dashboard stats line.

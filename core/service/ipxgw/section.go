@@ -26,7 +26,7 @@ type Section struct {
 	// IPX network number announced to MacIPX clients.
 	port.IPXNetworkFields
 	// Bindings are the NBP registrations the gateway publishes.
-	Bindings []string `toml:"bindings,omitempty" display:"NBP bindings" desc:"Object:Zone names the gateway advertises via NBP (empty = one IPX Gateway name per known zone)." example:"IPX Gateway:EtherTalk Network"`
+	Bindings []string `toml:"bindings,omitempty" display:"NBP bindings" desc:"Object:Zone names the gateway advertises via NBP (empty = one IPX Gateway name per known zone)." example:"IPX Gateway:EtherTalk Network" widget:"nbp_bindings"`
 }
 
 // Key returns the section key.

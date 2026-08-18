@@ -94,3 +94,27 @@ func TestNoForkAdapterIsInert(t *testing.T) {
 		t.Fatalf("NewNullForkEngine alias: %v", err)
 	}
 }
+
+func TestForkBackendsOmitsAliases(t *testing.T) {
+	got := ForkBackends()
+	if len(got) == 0 {
+		t.Fatal("ForkBackends: empty")
+	}
+	hidden := map[string]struct{}{"auto": {}, "appledouble-default": {}, "null": {}, "none": {}}
+	seen := map[string]bool{}
+	for _, name := range got {
+		if _, hide := hidden[name]; hide {
+			t.Errorf("ForkBackends listed alias %q", name)
+		}
+		if seen[name] {
+			t.Errorf("ForkBackends duplicate %q", name)
+		}
+		seen[name] = true
+	}
+	if !seen["appledouble"] {
+		t.Error("ForkBackends missing canonical appledouble")
+	}
+	if !seen["nofork"] {
+		t.Error("ForkBackends missing canonical nofork")
+	}
+}

@@ -215,6 +215,42 @@ func (t *sessionTable) count() int {
 	return len(t.sessions)
 }
 
+// SessionInfo is a diagnostics snapshot of one EtherDFS client.
+type SessionInfo struct {
+	MAC       string
+	OpenFiles int
+	LastSeen  time.Time
+}
+
+func formatSessionMAC(mac [6]byte) string {
+	const hex = "0123456789abcdef"
+	b := make([]byte, 0, 17)
+	for i, v := range mac {
+		if i > 0 {
+			b = append(b, ':')
+		}
+		b = append(b, hex[v>>4], hex[v&0x0F])
+	}
+	return string(b)
+}
+
+// list snapshots live client sessions for the Sharing Monitor.
+func (t *sessionTable) list() []SessionInfo {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]SessionInfo, 0, len(t.sessions))
+	for mac, s := range t.sessions {
+		s.mu.Lock()
+		out = append(out, SessionInfo{
+			MAC:       formatSessionMAC(mac),
+			OpenFiles: len(s.files),
+			LastSeen:  s.lastSeen,
+		})
+		s.mu.Unlock()
+	}
+	return out
+}
+
 // closeAll tears down every session (service Stop).
 func (t *sessionTable) closeAll() {
 	t.mu.Lock()

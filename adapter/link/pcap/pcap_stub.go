@@ -1,12 +1,13 @@
-//go:build !pcap
+//go:build !pcap && !all
 
-// This is the no-pcap stub of the pcap link adapter. It is selected whenever the
-// `pcap` build tag is absent, so the default build (and any cgo-free or TinyGo
-// target) compiles without libpcap/Npcap or gopacket linked. Every entry point
-// returns ErrUnavailable rather than capturing real frames.
+// This is the no-pcap stub of the pcap link adapter. It is selected whenever
+// neither the `pcap` nor `all` build tag is present, so the default build (and
+// any cgo-free or TinyGo target) compiles without libpcap/Npcap or gopacket
+// linked. Every entry point returns ErrUnavailable rather than capturing real
+// frames.
 //
-// To get the real libpcap-backed link, build with `-tags pcap` (and have
-// libpcap/Npcap + a cgo toolchain available).
+// To get the real libpcap-backed link, build with `-tags pcap` or `-tags all`
+// (and have libpcap/Npcap + a cgo toolchain available).
 package pcap
 
 import (

@@ -117,13 +117,13 @@ Client                              Server
 
 ### 4b. Multi-step UAMs — FPLoginCont
 
-`Randnum Exchange`, `2-Way Randnum`, and the DH-family UAMs require more than one round trip. After `FPLogin` returns result code `kFPAuthContinue` (5), the client sends `FPLoginCont`:
+`Randnum Exchange`, `2-Way Randnum`, and the DH-family UAMs require more than one round trip. After `FPLogin` returns result code `kFPAuthContinue` (-5001), the client sends `FPLoginCont`:
 
 ```
 Client                              Server
   │                                   │
   │── FPLogin ─────────────────────────►│
-  │◄─ kFPAuthContinue (5) + challenge ─│  server sends random number
+  │◄─ kFPAuthContinue (-5001) + challenge ─│  server sends random number
   │                                   │
   │── FPLoginCont ─────────────────────►│
   │   • ID (from previous reply)      │

@@ -29,10 +29,11 @@ func (f fakeSection) Validate() error { return nil }
 
 // configurableComp records lifecycle events and answers ApplyConfig per a configurable policy.
 type configurableComp struct {
-	name     string
-	log      *orderLog
-	applyErr error // returned by ApplyConfig (nil = hot-apply; ErrNeedsRestart = restart)
-	applied  int
+	name        string
+	log         *orderLog
+	applyErr    error // returned by ApplyConfig (nil = hot-apply; ErrNeedsRestart = restart)
+	applied     int
+	lastSection any
 }
 
 func (c *configurableComp) Name() string { return c.name }
@@ -46,6 +47,7 @@ func (c *configurableComp) Stop(context.Context) error {
 }
 func (c *configurableComp) ApplyConfig(section any) error {
 	c.applied++
+	c.lastSection = section
 	c.log.add("apply:" + c.name)
 	return c.applyErr
 }

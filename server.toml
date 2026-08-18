@@ -1,18 +1,30 @@
 [AFP]
+enabled = true
 server_name = 'ClassicStack'
 zone = '*'
 transports = ['ddp']
 login_message = 'Welcome to ClassicStack - enjoy your stay.'
 
+[Client]
+enabled = true
+iface = 'br-lan'
+services = ['afp', 'smb', 'ncp', 'etherdfs']
+max_idle_minutes = 10
+mount = true
+log_file = 'client.log'
+capture = 'client-afp.pcap'
+
 [EtherDFS]
 enabled = true
 capture = 'etherdfs.pcap'
 
+[FUSE]
+mount_timeout_seconds = 30
+
 [IPXGW]
 enabled = true
+ipx_network = 3
 bindings = ['ClassicStackIPXGW:EtherTalk Network']
-ipx_frame_type = "ethernet_ii"
-ipx_network = 0x03
 
 [MacIP]
 enabled = true
@@ -25,16 +37,12 @@ broadcast = '192.168.100.255'
 subnet_mask = '255.255.255.0'
 interface = 'br-lan'
 default_gateway = '192.168.0.1'
+dhcp_relay = true
 
-# TashTalk — a PIC-based RS422 LocalTalk-to-serial adaptor. The port owns its own
-# serial line: set device/baud here (no serial interface).
-[[tashtalk]]
+[NCP]
 enabled = true
-device = "COM7"
-baud = 1000000
-seed_network = 2
-seed_zone = "TashTalk Network"
-capture = 'tashtalk.pcap'
+server_name = 'Netware'
+description = 'Netware Test share'
 
 [NetBIOS]
 transports = ['netbeui', 'ipx']
@@ -43,14 +51,21 @@ transports = ['netbeui', 'ipx']
 enabled = true
 payload = './netboot/ChainDisk.bin'
 block_size = 256
-disk = 'C:\Users\pgodw\OneDrive\Documents\Vmac\Disk1 - Copy.dsk'
 pace_ms = 2
 chain_pace_ms = 10
 name = '0000'
 zone = '*'
 
+[ProxyAARP]
+enabled = false
+tunnel_interface = ''
+egress_interface = ''
+egress_mac = ''
+
 [SMB]
-transports = ['netbeui', 'ipx', 'nbt']
+enabled = true
+transports = ['netbeui', 'ipx', 'nbt', 'tcp']
+tcp_addr = '::445'
 
 [adminauth]
 user = 'admin'
@@ -60,22 +75,25 @@ hash = 'ff05b74ea38440edef8ea1d7034f118b6fe706bce44ef37e1a9c0c1728b2a74c'
 [[afpvolumes]]
 name = 'Test Volume'
 fs_type = 'local_fs'
-path = 'C:\mac'
+path = './dist/Sample Volume'
 size_limit = 50000
 
 [[etherdfsdrives]]
 name = 'C'
 fs_type = 'local_fs'
-path = 'c:\mac\food'
+path = './dist/Sample Volume'
 
 [[ethertalk]]
 iface = 'br-lan'
 enabled = true
-mac = 'DE:AD:BE:EF:CA:FE'
 seed_network = 3
 seed_network_end = 5
 seed_zone = 'EtherTalk Network'
 capture = 'ethertalk.pcap'
+
+[http]
+enabled = true
+addr = ':1984'
 
 [identity]
 hostname = 'classicstack'
@@ -87,12 +105,13 @@ name = 'br-lan'
 kind = 'bridge'
 default = true
 backend = 'pcap'
-hw_address = 'DE:AD:BE:EF:CA:FE'
-device = '\Device\NPF_{B7D4E073-2185-4912-BBE8-3948C6636D02}'
+device = 'en0'
 
 [[ipx]]
 iface = 'br-lan'
 enabled = true
+ipx_frame_type = 'ethernet_ii'
+ipx_frame_types = ['ethernet_ii', '802.3', '802.2']
 capture = 'ipx.pcap'
 
 [logging]
@@ -107,9 +126,9 @@ capture = 'ltoudp-netboot.pcap'
 pace_ms = 30
 
 [[ncpvolumes]]
-name = 'Foo'
+name = 'Netware'
 fs_type = 'local_fs'
-path = 'c:\mac\food'
+path = './dist/Sample Volume'
 
 [[netbeui]]
 iface = 'br-lan'
@@ -121,7 +140,16 @@ default_zone = 'EtherTalk Network'
 members = ['EtherTalk', 'LToUDP', 'TashTalk']
 
 [[smbshares]]
-name = 'Foo'
+name = 'SMB_Share'
 description = 'Test share'
 fs_type = 'local_fs'
-path = 'C:\mac\food'
+path = './dist/Sample Volume'
+allowed_users = ['Guest']
+
+[[tashtalk]]
+enabled = true
+device = '/dev/tty.usbserial-1130'
+baud = 1000000
+seed_network = 2
+seed_zone = 'TashTalk Network'
+capture = 'tashtalk.pcap'

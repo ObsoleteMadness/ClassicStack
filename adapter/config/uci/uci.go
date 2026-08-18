@@ -49,6 +49,18 @@ func (c *Codec) Marshal(m *config.Model) ([]byte, error) {
 	if err := c.marshalSection(&buf, "logging", "", m.Logging); err != nil {
 		return nil, err
 	}
+	// Marshal well-known web-admin listen section (default enabled :1984)
+	if err := c.marshalSection(&buf, "http", "", m.HTTP); err != nil {
+		return nil, err
+	}
+	// Marshal well-known in-process file-client section (default disabled)
+	if err := c.marshalSection(&buf, "client", "", m.Client); err != nil {
+		return nil, err
+	}
+	// Marshal well-known FUSE/WinFsp host-mount section (default 30s timeout)
+	if err := c.marshalSection(&buf, "fuse", "", m.FUSE); err != nil {
+		return nil, err
+	}
 	// Marshal well-known router section
 	if err := c.marshalSection(&buf, "router", "", m.Router); err != nil {
 		return nil, err
@@ -219,6 +231,9 @@ func (c *Codec) Unmarshal(data []byte, m *config.Model) error {
 	// interface namespace AFTER the loop, so a modern [[interface]] of the same name
 	// (read in the same pass) takes precedence over the legacy block.
 	var legacyBridge config.InterfaceSection
+	httpPresent := false
+	httpEnabledPresent := false
+	fusePresent := false
 
 	for _, sec := range sections {
 		switch sec.Type {
@@ -232,6 +247,23 @@ func (c *Codec) Unmarshal(data []byte, m *config.Model) error {
 			}
 		case "logging":
 			if err := unmarshalStruct(sec, &m.Logging); err != nil {
+				return err
+			}
+		case "http":
+			httpPresent = true
+			if _, ok := sec.Options["enabled"]; ok {
+				httpEnabledPresent = true
+			}
+			if err := unmarshalStruct(sec, &m.HTTP); err != nil {
+				return err
+			}
+		case "client":
+			if err := unmarshalStruct(sec, &m.Client); err != nil {
+				return err
+			}
+		case "fuse":
+			fusePresent = true
+			if err := unmarshalStruct(sec, &m.FUSE); err != nil {
 				return err
 			}
 		case "router":
@@ -280,6 +312,8 @@ func (c *Codec) Unmarshal(data []byte, m *config.Model) error {
 	// Fold a captured pre-M11 bridge into the namespace (no-op when absent or when a
 	// modern [[interface]] of that name was read above).
 	m.MigrateLegacyBridge(legacyBridge)
+	m.HTTP = config.ApplyHTTPDefaults(m.HTTP, httpPresent, httpEnabledPresent)
+	m.FUSE = config.ApplyFUSEDefaults(m.FUSE, fusePresent)
 
 	return nil
 }

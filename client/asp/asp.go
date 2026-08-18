@@ -38,11 +38,19 @@ type Session struct {
 	seq     uint16 // next ASP request sequence number to use
 	seqInit bool   // whether seq has been handed out at least once
 
+	// cmdMu serializes Command and Write. System 7 ASP accepts one Command/Write
+	// at a time and silently drops any other in-flight sequence (classicstack-web
+	// enqueueCmd; ClassicStack errata on overlapping seqs).
+	cmdMu sync.Mutex
+
 	// pending holds the write data awaiting the server's aspDataWrite pull, keyed by
 	// the ASP request sequence number the phase-1 ASPWrite used. serveWSS consumes it
 	// when the matching WriteContinue TReq arrives.
 	pendingMu sync.Mutex
 	pending   map[uint16][]byte
+
+	attnMu      sync.Mutex
+	onAttention func(code uint16)
 
 	stopOnce sync.Once
 	stop     chan struct{}
@@ -105,6 +113,23 @@ func Open(ep *atalk.Endpoint, a *atalk.ATP, sls atalk.Addr) (*Session, error) {
 // SessionID returns the server-assigned session id.
 func (s *Session) SessionID() uint8 { return s.id }
 
+// SetAttentionHandler installs h as the callback for server-initiated ASP
+// Attention packets. h runs on a new goroutine (it must not block the WSS
+// handler) and receives the 16-bit attention code (AspAttn* bits). Passing nil
+// clears the handler. The AFP client uses this to fetch FPGetSrvrMsg after an
+// AspAttnMsg attention.
+func (s *Session) SetAttentionHandler(h func(code uint16)) {
+	s.attnMu.Lock()
+	s.onAttention = h
+	s.attnMu.Unlock()
+}
+
+func (s *Session) attentionHandler() func(code uint16) {
+	s.attnMu.Lock()
+	defer s.attnMu.Unlock()
+	return s.onAttention
+}
+
 // nextSeq returns the next ASP request sequence number. The FIRST Command/Write on a
 // session MUST use sequence number 0 and each subsequent one increments — a real
 // System 7.x ASP server tracks the expected sequence and SILENTLY DROPS a Command whose
@@ -125,8 +150,27 @@ func (s *Session) nextSeq() uint16 {
 
 // Command runs an ASP Command (XO) carrying an AFP command block and returns the reply
 // body plus the AFP result code (the signed 32-bit OSErr the server put in the reply
-// UserData).
+// UserData). Small AFP replies (login, OpenFork, GetFileDirParms, …) fit in one ATP
+// packet; callers that expect a larger body (FPEnumerate, FPRead) use CommandMax.
 func (s *Session) Command(block []byte) (reply []byte, result int32, err error) {
+	return s.CommandMax(block, 1)
+}
+
+// CommandMax is Command with an explicit ATP response-slot budget (1..8). The TReq
+// bitmap must match the expected payload: System 7 often omits EOM, so asking for 8
+// slots on a 20-byte OpenFork reply stalls until ATP retry. classicstack-web defaults
+// Command to bitmap 0x01 and sizes FPRead with bitmapForPayload.
+func (s *Session) CommandMax(block []byte, maxResp int) (reply []byte, result int32, err error) {
+	select {
+	case <-s.stop:
+		return nil, 0, ErrSessionClosed
+	default:
+	}
+	if maxResp < 1 {
+		maxResp = 1
+	}
+	s.cmdMu.Lock()
+	defer s.cmdMu.Unlock()
 	select {
 	case <-s.stop:
 		return nil, 0, ErrSessionClosed
@@ -134,7 +178,7 @@ func (s *Session) Command(block []byte) (reply []byte, result int32, err error) 
 	}
 	seq := s.nextSeq()
 	ud := asp.CommandPacket{SessionID: s.id, SeqNum: seq}.MarshalUserData()
-	resp, err := s.atp.Request(s.server, ud, block, true, 8)
+	resp, err := s.atp.Request(s.server, ud, block, true, maxResp)
 	if err != nil {
 		return nil, 0, err
 	}

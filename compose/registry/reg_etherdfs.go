@@ -4,6 +4,7 @@ package registry
 
 import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
+	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 	etherport "github.com/ObsoleteMadness/ClassicStack/core/port/etherdfs"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/etherdfs"
@@ -53,7 +54,7 @@ func init() {
 		}
 		// An empty section mac inherits the bound interface's hw_address so EtherDFS
 		// frames carry a real Ethernet source (else 00:00:00:00:00:00).
-		p, err := etherport.NewInstanceFromOpener(sec, gated, sectionMACFor(sec, iface), logger)
+		p, err := etherport.NewInstanceFromOpener(sec, gated, sectionMACFor(ctx, sec, iface), logger)
 		if err != nil {
 			return nil, err
 		}
@@ -88,5 +89,18 @@ func init() {
 			return nil, err
 		}
 		return svc, nil
+	})
+	registerIdentityStamper(func(c component.Component, m *config.Model) bool {
+		svc, ok := c.(*etherdfs.Service)
+		if !ok {
+			return false
+		}
+		srv := etherdfs.ServerSectionFromModel(m)
+		name := srv.ServerName
+		if name == "" {
+			name = m.Identity.Hostname
+		}
+		svc.SetServerName(name)
+		return true
 	})
 }

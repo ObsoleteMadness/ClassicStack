@@ -1,0 +1,45 @@
+name: Setup SPA
+description: Check out ClassicStack-web (Finder UI modules) and build the Vite SPA for go:embed.
+
+inputs:
+  web-repository:
+    description: ClassicStack-web GitHub repository (owner/name).
+    required: false
+    default: ObsoleteMadness/ClassicStack-web
+  web-ref:
+    description: ClassicStack-web git ref. Falls back to the default branch when missing.
+    required: false
+    default: feature/shared-finder-host
+
+runs:
+  using: composite
+  steps:
+    # Vite aliases classicstack-web/* into this tree (see adapter/control/http/ui).
+    - name: Checkout ClassicStack-web
+      id: web_ref
+      continue-on-error: true
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.web-repository }}
+        ref: ${{ inputs.web-ref }}
+        path: third_party/classicstack-web
+        persist-credentials: false
+
+    - name: Checkout ClassicStack-web (default branch)
+      if: steps.web_ref.outcome != 'success'
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.web-repository }}
+        path: third_party/classicstack-web
+        persist-credentials: false
+
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+        cache: npm
+        cache-dependency-path: adapter/control/http/ui/package-lock.json
+
+    - name: Build SPA
+      shell: bash
+      run: bash scripts/ci/spa.sh

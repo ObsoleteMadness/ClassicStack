@@ -98,6 +98,7 @@ type Service struct {
 	// Windows owns it). The NBT (:139) address is NOT here: NBT is a NetBIOS transport,
 	// so its address lives on the NetBIOS service (netbios.Service.NBTListenAddr).
 	tcpAddr string
+	enabled bool // configured-enabled flag (component.Enableable); default true
 }
 
 // Authenticator validates a (username, cleartext password) credential. It is the
@@ -200,7 +201,7 @@ type circuitCloser interface{ closeCircuits() }
 
 // New builds the SMB service with no shares (the registry default).
 func New(logger log.Logger) *Service {
-	s := &Service{logger: logger, sessions: make(map[*smbSession]struct{})}
+	s := &Service{logger: logger, sessions: make(map[*smbSession]struct{}), enabled: true}
 	// §10d reactor: deliver foreign-origin FS mutations under one of our shares to
 	// the SMB wire-push sink (notifyFSChange), which completes any held NT_TRANSACT
 	// NOTIFY_CHANGE for that share. shareRoots() re-reads the live share set per event
@@ -475,15 +476,33 @@ func (s *Service) busForSpec(spec fs.ShareSpec) bus.Bus {
 	return resolve(spec)
 }
 
+// SetEnabled records the configured-enabled flag (component.Enableable). The compose
+// factory sets it from the SMB server section; missing config keeps the New() default
+// of true so existing deployments without enabled= stay on.
+func (s *Service) SetEnabled(enabled bool) {
+	s.mu.Lock()
+	s.enabled = enabled
+	s.mu.Unlock()
+}
+
+// Enabled reports the configured-enabled flag (component.Enableable).
+func (s *Service) Enabled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.enabled
+}
+
 // ApplyConfig hot-applies a changed share set (§11b): the SMB "config" is the set of
 // repeated share sections (config.Model.Lists[SharesKey]), not a singleton section,
-// so the passed section payload is ignored — ApplyConfig re-resolves the whole
-// desired set from the model and reconciles it against the live shares via the
-// share.Manager (Add new, Update changed, Remove dropped). A share's fs-type/backend
-// change is absorbed by UpdateShare rebuilding that one share's stack — no service
-// restart, and in-flight tree connects are undisturbed. When no resolver is wired it
-// returns ErrNeedsRestart so the supervisor falls back to the rebuild path.
-func (s *Service) ApplyConfig(_ any) error {
+// so a nil / other payload re-resolves the whole desired set from the model and
+// reconciles it against the live shares via the share.Manager (Add new, Update
+// changed, Remove dropped). A *ServerSection payload (Enabled / transports) needs a
+// restart so Start can re-evaluate binding. When no resolver is wired it returns
+// ErrNeedsRestart so the supervisor falls back to the rebuild path.
+func (s *Service) ApplyConfig(section any) error {
+	if ss, ok := section.(*ServerSection); ok && ss != nil {
+		return component.ErrNeedsRestart
+	}
 	s.mu.Lock()
 	resolve := s.resolver
 	s.mu.Unlock()
@@ -535,6 +554,10 @@ func (s *Service) Start(ctx context.Context) error {
 		return nil
 	}
 	s.running = true
+	if !s.enabled {
+		s.logf("SMB service disabled; not binding shares")
+		return nil
+	}
 	s.subscribeReactorLocked()
 	s.logf("SMB service started (shares bound; session-establishment dispatch: negotiate/setup/treeconnect)")
 	return nil
@@ -647,6 +670,7 @@ func (s *Service) logSMBResponse(sess *smbSession, resp []byte) {
 // compile-time assertions.
 var (
 	_ component.Component       = (*Service)(nil)
+	_ component.Enableable      = (*Service)(nil)
 	_ component.Configurable    = (*Service)(nil)
 	_ component.DependsOn       = (*Service)(nil)
 	_ component.TransportBinder = (*Service)(nil)

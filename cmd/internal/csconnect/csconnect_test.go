@@ -10,8 +10,8 @@ import (
 )
 
 // TestOpenerForValidatesTransport asserts the scheme×ifacetype matrix: AFP accepts
-// ltoudp/pcap/tashtalk and defaults to ltoudp; a transport the scheme does not declare
-// is rejected with a clear error.
+// ltoudp/pcap/tashtalk/tcp and defaults to ltoudp; a transport the scheme does not
+// declare is rejected with a clear error.
 func TestOpenerForValidatesTransport(t *testing.T) {
 	afp, _ := uri.Parse("afp://server/Vol")
 
@@ -29,10 +29,19 @@ func TestOpenerForValidatesTransport(t *testing.T) {
 		t.Errorf("afp over pcap should be valid: %v", err)
 	}
 
-	// tcp is NOT an AFP transport (DSI does not exist) → rejected.
-	_, err = OpenerFor(Config{IfaceType: "tcp"}, afp)
+	// tcp is a declared AFP kind so discover URIs (afp://host,tcp/) resolve; DSI
+	// itself is not implemented yet (Connect returns that error, not this opener).
+	op, err = OpenerFor(Config{IfaceType: "tcp"}, afp)
+	if err != nil {
+		t.Fatalf("afp over tcp opener should be valid: %v", err)
+	}
+	if op.Spec.Kind != "tcp" {
+		t.Errorf("afp over tcp kind = %q, want tcp", op.Spec.Kind)
+	}
+
+	_, err = OpenerFor(Config{IfaceType: "inmem"}, afp)
 	if err == nil {
-		t.Fatal("afp over tcp should be rejected")
+		t.Fatal("afp over inmem should be rejected")
 	}
 	if !strings.Contains(err.Error(), "not valid for afp") {
 		t.Errorf("error = %q, want a clear scheme-mismatch message", err)

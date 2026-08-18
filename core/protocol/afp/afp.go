@@ -63,6 +63,23 @@ const (
 	CmdGetSrvrMsg      uint8 = 38 // FPGetSrvrMsg
 )
 
+// FPGetSrvrInfo Flags bits (Inside Macintosh: Networking, "GetSrvrInfo reply").
+const (
+	// SrvrInfoSupportsSrvrMsg is Flags bit 3: the server implements FPGetSrvrMsg
+	// and ASP attention for operator messages. Classic clients neither fetch the
+	// login greeting nor honour message attentions unless this bit is set.
+	SrvrInfoSupportsSrvrMsg uint16 = 0x0008
+)
+
+// FPGetSrvrMsg (command 38) type and bitmap. From an observed AppleShare capture:
+// the client fetches type 0 unprompted after FPOpenVol and type 1 after each
+// attention with the AspAttnMsg bit; the reply bitmap is always 0x0001 (text).
+const (
+	SrvrMsgTypeLogin  uint16 = 0      // login (greeting) message
+	SrvrMsgTypeServer uint16 = 1      // server (operator) message
+	SrvrMsgBitmapText uint16 = 0x0001 // MessageBitmap bit 0: message as text
+)
+
 // AFP path-type bytes (Inside Macintosh: Networking, AFP 2.x §5). The path-type byte
 // prefixes every AFP pathname argument. Mirrors core/service/afp/pathtype.go.
 const (
@@ -171,10 +188,14 @@ func FromMacTime(mt uint32) time.Time {
 }
 
 // UAM names for FPLogin (Inside Macintosh: Networking, "User Authentication Methods").
-// The client supports the two single-step UAMs the server accepts.
 const (
 	UAMNoUserAuthent = "No User Authent"
 	UAMCleartext     = "Cleartxt Passwrd"
+	// UAMRandnum is the classic single-step challenge/response UAM (DES-ECB). Mac
+	// Classic File Sharing advertises "Randnum exchange" (case varies).
+	UAMRandnum = "Randnum exchange"
+	// UAM2WayRandnum is mutual Randnum (key bytes shifted); not implemented client-side yet.
+	UAM2WayRandnum = "2-Way Randnum exchange"
 )
 
 // AFP version strings the client offers at FPLogin. AFP2.1 is the classic baseline the
@@ -190,26 +211,31 @@ const (
 // 32-bit OSErr values carried in the ASP/ATP reply UserData. Exported so a client can
 // interpret failures; mirror of the unexported set in core/service/afp/dispatch.go.
 const (
-	NoErr            int32 = 0
-	ErrAccessDenied  int32 = -5000
-	ErrBadUAM        int32 = -5002
-	ErrBadVersNum    int32 = -5003
-	ErrBitmapErr     int32 = -5004
-	ErrCantMove      int32 = -5005
-	ErrDiskFull      int32 = -5008
-	ErrEOFErr        int32 = -5009
-	ErrLockErr       int32 = -5013
-	ErrMiscErr       int32 = -5014
-	ErrNoMoreLocks   int32 = -5015
-	ErrObjectExists  int32 = -5017
-	ErrObjectNotFnd  int32 = -5018
-	ErrParamErr      int32 = -5019
-	ErrRangeNotLockd int32 = -5020
-	ErrRangeOverlap  int32 = -5021
-	ErrUserNotAuth   int32 = -5023
-	ErrCallNotSuppt  int32 = -5024
-	ErrObjectTypeErr int32 = -5025
-	ErrDirNotFound   int32 = -5029
+	NoErr int32 = 0
+	// ErrAuthContinue is kFPAuthContinue (netatalk AFPERR_AUTHCONT). System 7
+	// returns this from Randnum FPLogin; the client must follow with FPLoginCont.
+	// Value 5 appears in some secondary docs and is accepted as a synonym.
+	ErrAuthContinue    int32 = -5001
+	errAuthContinueAlt int32 = 5
+	ErrAccessDenied    int32 = -5000
+	ErrBadUAM          int32 = -5002
+	ErrBadVersNum      int32 = -5003
+	ErrBitmapErr       int32 = -5004
+	ErrCantMove        int32 = -5005
+	ErrDiskFull        int32 = -5008
+	ErrEOFErr          int32 = -5009
+	ErrLockErr         int32 = -5013
+	ErrMiscErr         int32 = -5014
+	ErrNoMoreLocks     int32 = -5015
+	ErrObjectExists    int32 = -5017
+	ErrObjectNotFnd    int32 = -5018
+	ErrParamErr        int32 = -5019
+	ErrRangeNotLockd   int32 = -5020
+	ErrRangeOverlap    int32 = -5021
+	ErrUserNotAuth     int32 = -5023
+	ErrCallNotSuppt    int32 = -5024
+	ErrObjectTypeErr   int32 = -5025
+	ErrDirNotFound     int32 = -5029
 )
 
 // ResultName renders an AFP result code for diagnostics.
@@ -217,6 +243,8 @@ func ResultName(code int32) string {
 	switch code {
 	case NoErr:
 		return "kFPNoErr"
+	case ErrAuthContinue, errAuthContinueAlt:
+		return "kFPAuthContinue"
 	case ErrAccessDenied:
 		return "kFPAccessDenied"
 	case ErrBadUAM:
@@ -252,6 +280,12 @@ func ResultName(code int32) string {
 	default:
 		return "kFP#" + itoa(int(code))
 	}
+}
+
+// IsAuthContinue reports whether code is kFPAuthContinue (System 7 uses -5001;
+// some documentation lists 5).
+func IsAuthContinue(code int32) bool {
+	return code == ErrAuthContinue || code == errAuthContinueAlt
 }
 
 // itoa renders a possibly-negative int without importing strconv (keeps the doc.go

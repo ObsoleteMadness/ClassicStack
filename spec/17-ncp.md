@@ -384,6 +384,10 @@ own case rules.
 - **Single IPX segment.** RIP (`0x0453`) is a responder for the server's own
   internal network only (the GetLocalTarget answer above) — it learns no routes and
   forwards nothing. Multi-segment IPX routing is out of scope.
+- **One station MAC / one server instance.** The IPX node ID on Ethernet **is**
+  the station MAC (`[[interface]].hw_address`, else the NIC's own). Blank config
+  uses the host MAC so WiFi APs accept injected frames. Because identity is that
+  MAC, only one IPX (and therefore one NCP) server can run per NIC.
 - **One outbound frame type.** All three Ethernet framings (Ethernet II, raw 802.3,
   802.2 LLC) are accepted inbound, but replies use the port's single configured
   `ipx_frame_type`; a client bound to a different framing never sees them. mars_nwe

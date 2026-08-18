@@ -14,6 +14,7 @@
 package xfer
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -81,19 +82,70 @@ func List(fsys fs.ForkFS, dir string) ([]Entry, error) {
 // sides support them. dst names the destination path (not its parent); a directory
 // copy creates dst and recurses into it.
 func Copy(srcFS, dstFS fs.ForkFS, src, dst string) error {
+	return CopyCtx(context.Background(), srcFS, dstFS, src, dst, nil)
+}
+
+// CopyCtx is Copy with cancellation and optional progress callbacks.
+func CopyCtx(ctx context.Context, srcFS, dstFS fs.ForkFS, src, dst string, progress func(Progress)) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	info, err := srcFS.Stat(src)
 	if err != nil {
 		return fmt.Errorf("stat %s: %w", src, err)
 	}
 	if info.IsDir() {
-		return copyDir(srcFS, dstFS, src, dst)
+		return copyDirCtx(ctx, srcFS, dstFS, src, dst, progress)
 	}
-	return copyFile(srcFS, dstFS, src, dst)
+	return copyFileCtx(ctx, srcFS, dstFS, src, dst, progress)
+}
+
+// MoveAcross copies src to dst on potentially different ForkFS instances, then
+// removes src. Same-FS callers should use Move (Rename) instead.
+func MoveAcross(srcFS, dstFS fs.ForkFS, src, dst string) error {
+	return MoveAcrossCtx(context.Background(), srcFS, dstFS, src, dst, nil)
+}
+
+// MoveAcrossCtx is MoveAcross with cancellation and optional progress callbacks.
+func MoveAcrossCtx(ctx context.Context, srcFS, dstFS fs.ForkFS, src, dst string, progress func(Progress)) error {
+	if err := CopyCtx(ctx, srcFS, dstFS, src, dst, progress); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return Remove(srcFS, src)
+}
+
+func emitProgress(progress func(Progress), p Progress) {
+	if progress != nil {
+		progress(p)
+	}
+}
+
+func fileTransferTotal(srcFS fs.ForkFS, src string) int64 {
+	var total int64
+	if info, err := srcFS.Stat(src); err == nil && !info.IsDir() {
+		total += info.Size()
+	}
+	if n, err := srcFS.ForkLen(src, fs.ResourceFork); err == nil {
+		total += n
+	}
+	return total
 }
 
 // copyDir recurses: create dst, copy every child, then carry the directory's own
 // metadata (Finder info / DOS attrs) last.
 func copyDir(srcFS, dstFS fs.ForkFS, src, dst string) error {
+	return copyDirCtx(context.Background(), srcFS, dstFS, src, dst, nil)
+}
+
+func copyDirCtx(ctx context.Context, srcFS, dstFS fs.ForkFS, src, dst string, progress func(Progress)) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	name := pathBase(src)
+	emitProgress(progress, Progress{Path: name, IsDir: true})
 	if err := dstFS.CreateDir(dst); err != nil && !errors.Is(err, stdfs.ErrExist) {
 		return fmt.Errorf("mkdir %s: %w", dst, err)
 	}
@@ -102,15 +154,18 @@ func copyDir(srcFS, dstFS fs.ForkFS, src, dst string) error {
 		return err
 	}
 	for _, de := range des {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		cs := joinPath(src, de.Name())
 		cd := joinPath(dst, de.Name())
 		if de.IsDir() {
-			if err := copyDir(srcFS, dstFS, cs, cd); err != nil {
+			if err := copyDirCtx(ctx, srcFS, dstFS, cs, cd, progress); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := copyFile(srcFS, dstFS, cs, cd); err != nil {
+		if err := copyFileCtx(ctx, srcFS, dstFS, cs, cd, progress); err != nil {
 			return err
 		}
 	}
@@ -120,13 +175,25 @@ func copyDir(srcFS, dstFS fs.ForkFS, src, dst string) error {
 
 // copyFile copies one file's data fork, then its resource fork and metadata.
 func copyFile(srcFS, dstFS fs.ForkFS, src, dst string) error {
-	if err := copyFork(srcFS, dstFS, src, dst, fs.DataFork, true); err != nil {
+	return copyFileCtx(context.Background(), srcFS, dstFS, src, dst, nil)
+}
+
+func copyFileCtx(ctx context.Context, srcFS, dstFS fs.ForkFS, src, dst string, progress func(Progress)) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	total := fileTransferTotal(srcFS, src)
+	done := int64(0)
+	name := pathBase(src)
+	report := func(n int64) {
+		done += n
+		emitProgress(progress, Progress{Path: name, BytesDone: done, BytesTotal: total})
+	}
+	if err := copyForkCtx(ctx, srcFS, dstFS, src, dst, fs.DataFork, true, report); err != nil {
 		return fmt.Errorf("copy data fork %s: %w", src, err)
 	}
-	// Resource fork: only when the source actually has one (ForkLen > 0). A side
-	// that cannot represent it (nofork adapter) returns 0 and we skip silently.
 	if n, err := srcFS.ForkLen(src, fs.ResourceFork); err == nil && n > 0 {
-		if err := copyFork(srcFS, dstFS, src, dst, fs.ResourceFork, false); err != nil {
+		if err := copyForkCtx(ctx, srcFS, dstFS, src, dst, fs.ResourceFork, false, report); err != nil {
 			return fmt.Errorf("copy resource fork %s: %w", src, err)
 		}
 	}
@@ -137,6 +204,10 @@ func copyFile(srcFS, dstFS fs.ForkFS, src, dst string) error {
 // copyFork streams one fork from src to dst. createData creates the destination file
 // (data fork); the resource fork opens the already-created file's resource fork.
 func copyFork(srcFS, dstFS fs.ForkFS, src, dst string, fork fs.ForkType, createData bool) error {
+	return copyForkCtx(context.Background(), srcFS, dstFS, src, dst, fork, createData, nil)
+}
+
+func copyForkCtx(ctx context.Context, srcFS, dstFS fs.ForkFS, src, dst string, fork fs.ForkType, createData bool, onBytes func(int64)) error {
 	var (
 		in  fs.File
 		err error
@@ -167,12 +238,18 @@ func copyFork(srcFS, dstFS fs.ForkFS, src, dst string, fork fs.ForkType, createD
 	buf := make([]byte, copyBufSize)
 	var off int64
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		n, rerr := in.ReadAt(buf, off)
 		if n > 0 {
 			if _, werr := out.WriteAt(buf[:n], off); werr != nil {
 				return werr
 			}
 			off += int64(n)
+			if onBytes != nil {
+				onBytes(int64(n))
+			}
 		}
 		if rerr == io.EOF || (rerr == nil && n == 0) {
 			break
@@ -182,6 +259,13 @@ func copyFork(srcFS, dstFS fs.ForkFS, src, dst string, fork fs.ForkType, createD
 		}
 	}
 	return out.Sync()
+}
+
+func pathBase(p string) string {
+	if p == "" {
+		return ""
+	}
+	return path.Base(p)
 }
 
 // copyMeta carries Finder info and DOS attributes from src to dst, best-effort. A

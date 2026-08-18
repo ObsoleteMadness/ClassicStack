@@ -272,7 +272,7 @@ func (p *Port) ApplyConfig(section any) error {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if sec.Iface != p.sec.Iface {
+	if sec.Iface != p.sec.Iface || sec.Device != p.sec.Device || sec.Baud != p.sec.Baud || sec.MAC != p.sec.MAC {
 		return component.ErrNeedsRestart
 	}
 	p.sec = sec

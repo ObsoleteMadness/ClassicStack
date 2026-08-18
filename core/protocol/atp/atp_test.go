@@ -61,6 +61,25 @@ func TestControlBits(t *testing.T) {
 	}
 }
 
+func TestMaxRespForPayload(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		bytes int
+		want  int
+	}{
+		{0, 1},
+		{1, 1},
+		{MaxATPData, 1},
+		{MaxATPData + 1, 2},
+		{MaxATPData * MaxResponsePackets, 8},
+		{MaxATPData*MaxResponsePackets + 1, 8},
+	} {
+		if got := MaxRespForPayload(tc.bytes); got != tc.want {
+			t.Errorf("MaxRespForPayload(%d) = %d, want %d", tc.bytes, got, tc.want)
+		}
+	}
+}
+
 func TestTRelTimeoutRoundTrip(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

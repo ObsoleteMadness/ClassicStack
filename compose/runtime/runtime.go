@@ -122,6 +122,11 @@ type Options struct {
 	// inert. nil (a tag-free build, or a test) disables auto-detection. A configured iface
 	// always wins — this is a fallback only.
 	DefaultDevice func() (string, error)
+	// HostMAC resolves the real hardware address of a pcap device so a NIC port that
+	// names no mac / hw_address can stamp the host NIC's own MAC (required on WiFi).
+	// Injected at the cmd edge (pcap.ListDevices + hostinfo.HardwareAddrForDevice) and
+	// threaded into every BuildContext. nil skips auto-detect (zero-MAC fallback).
+	HostMAC func(device string) ([6]byte, error)
 	// MacIPEgress builds the IP-side egress adapter for the MacIP gateway from its
 	// section params + the service's lease predicate. Injected at the cmd edge
 	// (adapter/macipgw, which needs pcap/cgo) and called during cross-wiring when the
@@ -133,6 +138,10 @@ type Options struct {
 	// configured [Logging] Level). Injected at the cmd edge — e.g. the web-UI ring
 	// buffer feeding the log viewer. nil keeps components stderr-only.
 	LogSinks []log.Sink
+	// LogLevel is the shared process log threshold. Threaded into every
+	// BuildContext so [Logging] Level can retune live. Nil creates one from
+	// Model.Logging.Level.
+	LogLevel *log.LevelVar
 	// source enumerates/builds components. nil → the global compose/registry. Set
 	// only by tests (kept unexported so the production API is the registry path).
 	source componentSource
@@ -151,6 +160,7 @@ type Runtime struct {
 	built      []string                       // names actually constructed (diagnostics)
 	transports *transportWiring               // retained IPX/NetBEUI mini-routers + MacIP egress; drives runtime port attach + egress lifecycle
 	comps      map[string]component.Component // built components by name, for compose-edge lookups (diagnostics wiring)
+	log        log.Logger
 }
 
 // Load builds a config.Model from a Store + Codec. A missing store file yields the
@@ -186,6 +196,21 @@ func Build(opts Options) (*Runtime, error) {
 	}
 	sup := supervisor.New(opts.Model, opts.Telemetry)
 	sup.SetInterfaceEnumerator(opts.InterfaceEnumerator)
+	logLevel := opts.LogLevel
+	if logLevel == nil {
+		lvl := log.Info
+		if opts.Model.Logging.Level != "" {
+			lvl = registry.ParseLevel(opts.Model.Logging.Level)
+		}
+		logLevel = log.NewLevelVar(lvl)
+	}
+	sinks := append([]log.Sink{log.NewStderrSink(logLevel)}, opts.LogSinks...)
+	rtLog := log.New("runtime", sinks...)
+	sup.SetLogger(log.New("supervisor", sinks...))
+	sup.SetLogLevelApplier(func(level string) {
+		logLevel.Set(registry.ParseLevel(level))
+	})
+	sup.SetIdentityStamper(registry.StampIdentity)
 
 	// Build the shared AppleTalk router FIRST so it can be threaded into every
 	// dependent factory's BuildContext: ports bind to it as their inbound target,
@@ -205,7 +230,9 @@ func Build(opts Options) (*Runtime, error) {
 		Opener:        opts.Opener,
 		Serial:        opts.Serial,
 		DefaultDevice: opts.DefaultDevice,
+		HostMAC:       opts.HostMAC,
 		LogSinks:      opts.LogSinks,
+		LogLevel:      logLevel,
 	}
 
 	// First pass: build the components, recording which names actually exist so the
@@ -218,6 +245,11 @@ func Build(opts Options) (*Runtime, error) {
 	var order []string
 	for _, id := range src.Instances(opts.Model) {
 		if stubNames[id.Key] {
+			continue
+		}
+		// Client is built after the file services (second pass) so LocalVolumes can
+		// resolve live AFP/SMB/NCP/EtherDFS components from the built map.
+		if id.Key == config.ClientKey {
 			continue
 		}
 		// The Router was already built up-front (buildRouter) so it could be threaded
@@ -244,6 +276,19 @@ func Build(opts Options) (*Runtime, error) {
 		}
 		comps[id.Name] = c
 		order = append(order, id.Name)
+	}
+
+	// Second pass (Client): the in-process file client lists live local shares from
+	// the built file services, so it is registered after them.
+	if client, ok, err := registry.BuildClient(ctx, comps); err != nil {
+		return nil, fmt.Errorf("runtime: build %q: %w", config.ClientKey, err)
+	} else if ok && client != nil {
+		name := client.Name()
+		if _, dup := comps[name]; dup {
+			return nil, fmt.Errorf("runtime: duplicate component name %q", name)
+		}
+		comps[name] = client
+		order = append(order, name)
 	}
 
 	// Cross-wire the runtime data path against the shared router: register DDP
@@ -284,6 +329,9 @@ func Build(opts Options) (*Runtime, error) {
 	// whose dependency is also built).
 	for _, name := range order {
 		deps := builtDeps(name, comps)
+		if name == config.ClientKey {
+			deps = registry.ClientDeps(comps)
+		}
 		sup.Add(comps[name], deps)
 	}
 
@@ -323,6 +371,7 @@ func Build(opts Options) (*Runtime, error) {
 		built:      order,
 		transports: transports,
 		comps:      comps,
+		log:        rtLog,
 	}, nil
 }
 
@@ -472,8 +521,8 @@ func declaredDeps(name string, comps map[string]component.Component) []string {
 // Start brings the whole stack up in dependency order, then attaches the declared
 // router members (§3d). Attach is deferred to here because the router rejects
 // membership changes while stopped (§3); by now the supervisor's dependency order
-// has brought the Router up ahead of its members. A failed attach aborts Start so a
-// misrouted member is not silently dropped.
+// has brought the Router up ahead of its members. A failed attach is logged so a
+// misrouted member does not keep the web UI from starting.
 func (r *Runtime) Start(ctx context.Context) error {
 	if err := r.sup.StartAll(ctx); err != nil {
 		return err
@@ -487,7 +536,11 @@ func (r *Runtime) Start(ctx context.Context) error {
 	if r.rtr != nil {
 		for _, p := range r.members {
 			if err := r.rtr.Attach(p); err != nil {
-				return fmt.Errorf("runtime: attach router member %q: %w", p.Name(), err)
+				if r.log != nil {
+					r.log.Log2(log.Error, "router member attach failed; continuing",
+						log.Str("member", p.Name()), log.Str("err", err.Error()))
+				}
+				continue
 			}
 			seedZone(r.rtr, p)
 		}
@@ -503,8 +556,14 @@ func (r *Runtime) Start(ctx context.Context) error {
 // whole stack down in reverse dependency order. Detach is best-effort — a member
 // already withdrawn (e.g. by an individual Stop) must not block shutdown.
 func (r *Runtime) Stop(ctx context.Context) error {
+	if r.log != nil && r.log.Enabled(log.Info) {
+		r.log.Log0(log.Info, "shutdown: stopping telemetry stats flush")
+	}
 	r.sup.StopStatsFlush()
 	if eg := r.egress(); eg != nil {
+		if r.log != nil && r.log.Enabled(log.Info) {
+			r.log.Log0(log.Info, "shutdown: closing MacIP egress")
+		}
 		_ = eg.Close()
 	}
 	if r.rtr != nil {

@@ -139,9 +139,14 @@ func (p *Port) Start(ctx context.Context) error {
 }
 
 // Stop closes the link and joins the read loop. Safe after a failed/partial
-// Start (§3) and idempotent.
+// Start (§3) and idempotent. It honours ctx: when link Close or the read loop
+// does not finish before ctx is cancelled, Stop returns ctx.Err() rather than
+// blocking process shutdown (serial drivers can ignore Close while a write or
+// read is blocked — TashTalk is the common case).
 func (p *Port) Stop(ctx context.Context) error {
-	_ = ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	p.mu.Lock()
 	if !p.running {
 		p.mu.Unlock()
@@ -153,13 +158,47 @@ func (p *Port) Stop(ctx context.Context) error {
 	p.dl = nil
 	p.mu.Unlock()
 
+	var stopErr error
 	// Close the link OUTSIDE the lock so a blocked ReadDatagram unblocks and the
 	// loop can exit; then wait for it. Closing is what makes ReadDatagram return
-	// ErrClosed.
+	// ErrClosed. Run Close concurrently and honour ctx — a stuck serial driver
+	// must not hold the whole stack past the shutdown deadline.
 	if dl != nil {
-		_ = dl.Close()
+		closeDone := make(chan struct{})
+		go func() {
+			_ = dl.Close()
+			close(closeDone)
+		}()
+		select {
+		case <-closeDone:
+		case <-ctx.Done():
+			stopErr = ctx.Err()
+			if p.logger != nil && p.logger.Enabled(log.Warn) {
+				p.logger.Log(log.Warn, "port link close did not finish before stop deadline",
+					log.Str("port", p.sec.SKey))
+			}
+		}
 	}
-	p.loopWG.Wait()
+	waitDone := make(chan struct{})
+	go func() {
+		p.loopWG.Wait()
+		close(waitDone)
+	}()
+	select {
+	case <-waitDone:
+	case <-ctx.Done():
+		if stopErr == nil {
+			stopErr = ctx.Err()
+		}
+		if p.logger != nil && p.logger.Enabled(log.Warn) {
+			p.logger.Log(log.Warn, "port read loop did not exit before stop deadline",
+				log.Str("port", p.sec.SKey))
+		}
+		return stopErr
+	}
+	if stopErr != nil {
+		return stopErr
+	}
 	p.logf("port stopped")
 	return nil
 }
@@ -361,7 +400,7 @@ func (p *Port) ApplyConfig(section any) error {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if sec.Iface != p.sec.Iface {
+	if sec.Iface != p.sec.Iface || sec.Device != p.sec.Device || sec.Baud != p.sec.Baud || sec.MAC != p.sec.MAC {
 		return component.ErrNeedsRestart
 	}
 	p.sec = sec

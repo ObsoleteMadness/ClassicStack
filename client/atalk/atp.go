@@ -23,6 +23,11 @@ const (
 	atpRetryInterval = 2 * time.Second
 	// atpMaxRetries is the number of TReq retransmissions before giving up.
 	atpMaxRetries = 5
+	// atpBurstIdle is how long to wait after the last TResp before treating a
+	// contiguous prefix as complete when EOM never arrives. System 7 often omits
+	// EOM; asking for 8 slots (FPEnumerate / FPRead) would otherwise stall until
+	// atpRetryInterval. Matches classicstack-web BurstIdleMs (400).
+	atpBurstIdle = 400 * time.Millisecond
 )
 
 // ErrATPTimeout is returned when a transaction gets no complete response after all
@@ -179,6 +184,34 @@ func (a *ATP) Request(dst Addr, userData uint32, reqData []byte, xo bool, maxRes
 	atpf("ATP request → %s transID=%d userData=0x%08x reqLen=%d xo=%t maxResp=%d srcSock=%d",
 		dst, transID, userData, len(reqData), xo, maxResp, srcSocket)
 
+	var idle *time.Timer
+	stopIdle := func() {
+		if idle == nil {
+			return
+		}
+		if !idle.Stop() {
+			select {
+			case <-idle.C:
+			default:
+			}
+		}
+	}
+	defer stopIdle()
+	idleC := func() <-chan time.Time {
+		if idle == nil {
+			return nil
+		}
+		return idle.C
+	}
+	armIdle := func() {
+		if idle == nil {
+			idle = time.NewTimer(atpBurstIdle)
+			return
+		}
+		stopIdle()
+		idle.Reset(atpBurstIdle)
+	}
+
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		mask := fullMask
 		if attempt > 0 {
@@ -192,6 +225,7 @@ func (a *ATP) Request(dst Addr, userData uint32, reqData []byte, xo bool, maxRes
 		}
 
 		deadline := deadlineTimer(retryInterval)
+		stopIdle()
 	collect:
 		for {
 			select {
@@ -235,6 +269,19 @@ func (a *ATP) Request(dst Addr, userData uint32, reqData []byte, xo bool, maxRes
 						transID, resp.seq, resp.eom, resp.userData, len(resp.payload))
 				}
 				if haveAll() {
+					break collect
+				}
+				// Short reply, EOM omitted, bitmap not yet full: finish after a quiet
+				// burst instead of waiting out the 2s retry (classicstack-web idle-complete).
+				armIdle()
+			case <-idleC():
+				if haveAll() {
+					break collect
+				}
+				if n := contiguousLen(); n > 0 && eomSeq < 0 {
+					atpf("ATP idle-complete transID=%d slots=0..%d of %d (no EOM)",
+						transID, n-1, maxResp)
+					eomSeq = n - 1
 					break collect
 				}
 			case <-deadline:

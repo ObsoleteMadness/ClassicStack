@@ -359,33 +359,44 @@ func hostGetxattr(path0 *c_char, name0 *c_char, buff0 *c_char, size0 c_size_t,
 	fsop := hostHandleGet(c_fuse_get_context().private_data).fsop
 	path := c_GoString(path0)
 	name := c_GoString(name0)
+	xp, hasP := fsop.(FileSystemXattrP)
+
+	// size=0 is the Darwin/Linux size probe. Ask for the length only — do not
+	// pull a multi-megabyte resource fork just so ls can print `@`.
+	if 0 == size0 {
+		if hasP {
+			errc, n := xp.GetxattrSize(path, name)
+			if 0 != errc {
+				return c_int(errc)
+			}
+			return c_int(n)
+		}
+		errc, rslt := fsop.Getxattr(path, name)
+		if 0 != errc {
+			return c_int(errc)
+		}
+		return c_int(len(rslt))
+	}
+
 	var errc int
 	var rslt []byte
-	xp, hasP := fsop.(FileSystemXattrP)
 	if hasP {
-		errc, rslt = xp.GetxattrP(path, name, position)
+		errc, rslt = xp.GetxattrP(path, name, position, int(size0))
 	} else {
 		errc, rslt = fsop.Getxattr(path, name)
+		if 0 == errc && position > 0 {
+			if int(position) >= len(rslt) {
+				return 0
+			}
+			rslt = rslt[int(position):]
+		}
 	}
 	if 0 != errc {
 		return c_int(errc)
 	}
-	// size=0 is the Darwin/Linux size probe: return the full attribute length.
-	// GetxattrP returns the full value regardless of position so this is the
-	// total size, not the remaining-from-offset length.
-	if 0 == size0 {
-		return c_int(len(rslt))
-	}
-	if hasP && position > 0 {
-		if int(position) >= len(rslt) {
-			return 0
-		}
-		rslt = rslt[int(position):]
-	}
 	// Resource-fork reads are chunked (position is the offset). Copy what fits
 	// rather than ERANGE, which would force the caller to allocate the whole
-	// fork. Regular xattrs (no FileSystemXattrP, or position 0 with a buffer
-	// smaller than the value) keep the ERANGE size-discovery behaviour.
+	// fork. Regular xattrs (no FileSystemXattrP) keep ERANGE size-discovery.
 	if hasP {
 		n := len(rslt)
 		if n > int(size0) {

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
@@ -42,6 +43,12 @@ const (
 	nodeAddrCmdLen = 33
 	// maxNodeAddr is the highest assignable LLAP node address (255 is broadcast).
 	maxNodeAddr = 254
+
+	// closeWriteWait caps how long Close waits for an in-flight serial Write before
+	// forcing the port shut. Without this, s.Close can block forever when RTS/CTS
+	// flow control stalls a write and the shutdown path never reaches the runtime's
+	// stop deadline.
+	closeWriteWait = 500 * time.Millisecond
 
 	// fcsLen is the 2-byte CRC (FCS) trailer the device appends to inbound frames
 	// and the host appends to outbound frames.
@@ -354,12 +361,52 @@ func llapHeaderOf(frame []byte) (dst, src, typ uint8) {
 // Idempotent.
 func (l *frameLink) Close() error {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.closed {
+		l.mu.Unlock()
 		return nil
 	}
 	l.closed = true
-	return l.s.Close()
+	s := l.s
+	l.mu.Unlock()
+
+	// Nudge any blocked Read/Write out of the driver before closing the port.
+	l.abortBlockedIO()
+
+	// Do not call s.Close while writeMu is held by a blocked serial Write — some
+	// drivers hang until the write completes. Wait briefly, then force the close.
+	writeDone := make(chan struct{})
+	go func() {
+		l.writeMu.Lock()
+		l.writeMu.Unlock()
+		close(writeDone)
+	}()
+	select {
+	case <-writeDone:
+	case <-time.After(closeWriteWait):
+		l.logf(log.Warn, "tashtalk: serial write did not finish before close — forcing port shut")
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if s == nil {
+		return nil
+	}
+	return s.Close()
+}
+
+// abortBlockedIO asks the serial driver to return promptly from a blocked Read or
+// Write. jacobsa/go-serial uses InterCharacterTimeout for reads; some OS drivers
+// still need an explicit deadline on shutdown.
+func (l *frameLink) abortBlockedIO() {
+	now := time.Now()
+	type deadliner interface {
+		SetReadDeadline(time.Time) error
+		SetWriteDeadline(time.Time) error
+	}
+	if d, ok := l.s.(deadliner); ok {
+		_ = d.SetReadDeadline(now)
+		_ = d.SetWriteDeadline(now)
+	}
 }
 
 // buildInitSequence is the reset/init bytes sent after opening: 1024 nulls to flush

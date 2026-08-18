@@ -321,13 +321,14 @@ type FileSystemInterface interface {
 // host calls these methods when the file system implements FileSystemXattrP;
 // otherwise position is ignored and Setxattr/Getxattr are used.
 //
-// GetxattrP must return the FULL attribute value regardless of position — the
-// host applies the offset when copying into the FUSE buffer, and uses
-// len(value) as the size-probe result. SetxattrP writes value at offset
+// GetxattrSize is the size=0 probe (return the total attribute length; do not
+// read the value). GetxattrP returns up to `size` bytes starting at `position`
+// — a ranged AFP FPRead, not the whole fork. SetxattrP writes value at offset
 // position (a zero position with the whole blob is a full replace).
 type FileSystemXattrP interface {
 	SetxattrP(path string, name string, value []byte, flags int, position uint32) int
-	GetxattrP(path string, name string, position uint32) (int, []byte)
+	GetxattrSize(path string, name string) (int, int) // errno, length
+	GetxattrP(path string, name string, position uint32, size int) (int, []byte)
 }
 
 // FileSystemOpenEx is the interface that wraps the OpenEx and CreateEx methods.

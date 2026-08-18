@@ -10,6 +10,8 @@ const SERVICES = [
 
 const GUEST = 'Guest';
 
+export type ShareFocus = { protocol: string; name: string };
+
 function instName(inst: Record<string, unknown>): string {
   return String(inst.VName || inst.SName || inst.DName || inst.Name || inst.name || '');
 }
@@ -20,9 +22,10 @@ function nameKey(key: string): string {
   return 'VName';
 }
 
-export async function renderSharing(root: HTMLElement): Promise<void> {
+export async function renderSharing(root: HTMLElement, focus?: ShareFocus): Promise<void> {
   const wrap = el('div');
   root.replaceChildren(wrap);
+  let openedFocus = false;
   await refresh();
 
   async function refresh() {
@@ -62,6 +65,16 @@ export async function renderSharing(root: HTMLElement): Promise<void> {
       }),
     ]);
     wrap.replaceChildren(...sections, saveRow);
+    if (focus && !openedFocus) {
+      openedFocus = true;
+      const svc = SERVICES.find((s) => s.owner.toLowerCase() === focus.protocol.toLowerCase());
+      if (svc) {
+        const list = model.Lists?.[svc.key] || [];
+        const inst = list.find((i) => instName(i) === focus.name);
+        const schema = schemas.sections.find((s) => s.key === svc.key);
+        if (inst) void openEditor(svc.owner, svc.key, inst, schema?.fields || [], false);
+      }
+    }
   }
 
   function listTable(

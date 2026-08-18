@@ -88,6 +88,13 @@ func parsePStringList(b []byte, off int) []string {
 	return out
 }
 
+// SupportsSrvrMsg reports whether Flags advertises server-message support
+// (SrvrInfoSupportsSrvrMsg). Without it a classic client neither fetches the
+// login greeting nor honours message attentions.
+func (si ServerInfo) SupportsSrvrMsg() bool {
+	return si.Flags&SrvrInfoSupportsSrvrMsg != 0
+}
+
 // HasUAM reports whether the server offers the named UAM (case-sensitive — classic AFP
 // UAM names are matched exactly, and their case varies by server, e.g. "Cleartxt
 // passwrd").

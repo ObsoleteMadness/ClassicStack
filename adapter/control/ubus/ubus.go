@@ -211,6 +211,8 @@ func (s *Server) handleConn(conn net.Conn) {
 			}
 		case "list_fs_types":
 			res = s.plane.ListFSTypes()
+		case "share_backends":
+			res = s.plane.ShareBackends()
 		case "params_for":
 			var args struct {
 				FSType string `json:"fs_type"`

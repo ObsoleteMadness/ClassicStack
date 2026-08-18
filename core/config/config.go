@@ -1,7 +1,9 @@
 package config
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 	"sync"
 )
 
@@ -21,6 +23,9 @@ type Model struct {
 	Identity  Identity  // server hostname/workgroup/description (§4-bis); owned by no service
 	AdminAuth AdminAuth // web-management-interface admin credential (§4-ter); username + salted hash
 	Logging   LoggingSection
+	HTTP      HTTPSection   // web-admin listen address; default enabled on :1984
+	Client    ClientSection // in-process file client (LAN scan / remote sessions); default disabled
+	FUSE      FUSESection   // host FUSE/WinFsp mounts (connect timeout); auto-mounts in Lists[FUSEVolumes]
 	Router    RouterSection
 	// Interfaces is the named interface namespace (§M11): NIC / serial / bridge
 	// entries a port references by name. A bridge is just one entry here; the entry
@@ -34,6 +39,8 @@ type Model struct {
 // NewModel returns an empty model with initialised Sections / Lists maps.
 func NewModel() *Model {
 	return &Model{
+		HTTP:     DefaultHTTP(),
+		FUSE:     DefaultFUSE(),
 		Sections: make(map[string]Section),
 		Lists:    make(map[string][]Section),
 	}
@@ -46,6 +53,9 @@ func (m *Model) Clone() *Model {
 		Identity:  m.Identity.Clone(),
 		AdminAuth: m.AdminAuth.Clone(),
 		Logging:   m.Logging,
+		HTTP:      m.HTTP.Clone(),
+		Client:    m.Client.Clone(),
+		FUSE:      m.FUSE.Clone(),
 		Router:    m.Router.Clone(),
 		Sections:  make(map[string]Section, len(m.Sections)),
 		Lists:     make(map[string][]Section, len(m.Lists)),
@@ -107,10 +117,11 @@ func (o ValidateOptions) hasConstraint(key string) bool {
 // Save path, §4 / §4-bis). It runs, in order:
 //
 //  1. Identity.Validate — the always-on baseline hostname check.
-//  2. every registered section's Validate — singletons in Sections and each repeated
+//  2. well-known fields — AdminAuth, Client, FUSE, Logging, HTTP, Router, Interfaces.
+//  3. every registered section's Validate — singletons in Sections and each repeated
 //     instance in Lists, via the schema registry's Validate when one is registered
 //     (it may wrap the section's own), else the section's own Validate.
-//  3. Identity.ValidateForNetBIOS — the consumer-gated rule, only when the
+//  4. Identity.ValidateForNetBIOS — the consumer-gated rule, only when the
 //     HostnameConstraintNetBIOS key is among opts.HostnameConstraints, with NetBIOS
 //     named as the constraint source in its error.
 //
@@ -123,6 +134,29 @@ func (m *Model) Validate(opts ValidateOptions) error {
 	}
 	if err := m.AdminAuth.Validate(); err != nil {
 		return err
+	}
+	if err := m.Client.Validate(); err != nil {
+		return err
+	}
+	if err := m.FUSE.Validate(); err != nil {
+		return err
+	}
+	if err := m.Logging.Validate(); err != nil {
+		return err
+	}
+	if err := m.HTTP.Validate(); err != nil {
+		return err
+	}
+	if err := m.Router.Validate(); err != nil {
+		return err
+	}
+	for name, iface := range m.Interfaces {
+		if strings.TrimSpace(iface.Name) == "" {
+			iface.Name = name
+		}
+		if err := iface.Validate(); err != nil {
+			return err
+		}
 	}
 	for _, s := range m.Sections {
 		if err := validateSection(s); err != nil {
@@ -465,7 +499,17 @@ func (m *Model) SetInterface(s InterfaceSection) {
 
 // LoggingSection is the logging config (level, sinks).
 type LoggingSection struct {
-	Level string `toml:"level,omitempty"` // "debug"|"info"|"warn"|"error"
+	Level string `toml:"level,omitempty"` // "trace"|"debug"|"info"|"warn"|"error"
+}
+
+// Validate checks the log level is a known threshold (empty = info).
+func (s LoggingSection) Validate() error {
+	switch strings.ToLower(strings.TrimSpace(s.Level)) {
+	case "", "trace", "debug", "info", "warn", "warning", "error":
+		return nil
+	default:
+		return fmt.Errorf("config: unknown log level %q (want trace, debug, info, warn, error)", s.Level)
+	}
 }
 
 // RouterSection is the AppleTalk router config (default zone) and — §3d/D8 — the
@@ -491,6 +535,21 @@ func (s RouterSection) Clone() RouterSection {
 		cp.Members = append([]string(nil), s.Members...)
 	}
 	return cp
+}
+
+// Validate checks the default zone has no control characters and members are named.
+func (s RouterSection) Validate() error {
+	for _, r := range s.DefaultZone {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("config: router default_zone contains an illegal character")
+		}
+	}
+	for _, name := range s.Members {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("config: router members must not contain an empty name")
+		}
+	}
+	return nil
 }
 
 // IsMember reports whether the named port instance is declared a member of the
@@ -547,9 +606,9 @@ type InterfaceSection struct {
 	// [Bridge] hw_address: a NIC-bound transport (NetBEUI, IPX, EtherDFS, EtherTalk)
 	// stamps it as the Ethernet source when its own section's mac is empty, so a
 	// bridge/interface can carry one identity for all its raw-link consumers. Empty =
-	// no shared MAC (a port that also leaves its own mac empty then has no source
-	// identity — the caller decides whether that is fatal). Six hex octets,
-	// colon/dash-separated (e.g. "DE:AD:BE:EF:CA:FE").
+	// auto-detect the NIC's own hardware address (required on WiFi / Npcap: APs drop
+	// frames sourced from any other MAC). Setting a value is opt-in spoofing for wired
+	// bridges (e.g. "DE:AD:BE:EF:CA:FE"). Six hex octets, colon/dash-separated.
 	HWAddress string `toml:"hw_address,omitempty"`
 
 	// Embedded network configuration (IP configuration)
@@ -614,6 +673,19 @@ func (s InterfaceSection) PcapDevice() string {
 // Clone returns a copy. All fields are value types, so a plain struct copy suffices.
 func (s InterfaceSection) Clone() InterfaceSection {
 	return s
+}
+
+// Validate checks the interface has a name and a known kind.
+func (s InterfaceSection) Validate() error {
+	if strings.TrimSpace(s.Name) == "" {
+		return fmt.Errorf("config: interface name is required")
+	}
+	switch strings.ToLower(strings.TrimSpace(s.Kind)) {
+	case "", IfaceKindNIC, IfaceKindSerial, IfaceKindWifi, IfaceKindBridge, IfaceKindMulticast:
+		return nil
+	default:
+		return fmt.Errorf("config: unknown interface kind %q", s.Kind)
+	}
 }
 
 // InterfaceProvider is the optional capability a component Section implements when it can

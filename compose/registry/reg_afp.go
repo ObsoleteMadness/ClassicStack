@@ -30,12 +30,17 @@ func init() {
 		// capture-style best-effort, never failing the volume build.
 		extMapFor := func(path string) *afp.ExtensionMap {
 			if path == "" {
-				return nil
+				path = afp.DefaultExtMapPath
 			}
 			// path is the operator-configured extension-map file from the
 			// volume/AFP config, i.e. trusted input, not attacker-controlled.
 			data, err := os.ReadFile(path) // #nosec G304 -- operator-configured config path
 			if err != nil {
+				// Empty ExtMapPath means "use the global map"; missing that file
+				// is the common zero-config case, not an operator error.
+				if os.IsNotExist(err) && path == afp.DefaultExtMapPath {
+					return nil
+				}
 				logger.Log(log.Warn, "AFP extension map unreadable; type/creator defaulting disabled for volumes using it",
 					log.Str("path", path), log.Str("error", err.Error()))
 				return nil
@@ -62,6 +67,9 @@ func init() {
 				vs := afp.VolumeSpec{ID: uint16(i + 1), Name: spec.Name, Share: spec}
 				if i < len(secs) {
 					p := secs[i].ExtMapPath
+					if p == "" {
+						p = afp.DefaultExtMapPath
+					}
 					em, ok := cache[p]
 					if !ok {
 						em = extMapFor(p)
@@ -84,6 +92,7 @@ func init() {
 		// ServerName falls back to the shared Identity.Hostname (then the service's own
 		// default); an empty Transports list binds all built transports (back-compat).
 		srv := afp.ServerSectionFromModel(m)
+		svc.SetEnabled(srv.Enabled)
 		svc.SetServerName(srv.EffectiveServerName(m.Identity.Hostname))
 		// Advertised zone: the AFP section's own zone, falling back to the router's
 		// configured default_zone. Resolving it from CONFIG (not the live ZIT) makes the
@@ -125,5 +134,19 @@ func init() {
 			return nil, err
 		}
 		return svc, nil
+	})
+	registerIdentityStamper(func(c component.Component, m *config.Model) bool {
+		svc, ok := c.(*afp.Service)
+		if !ok {
+			return false
+		}
+		srv := afp.ServerSectionFromModel(m)
+		svc.SetServerName(srv.EffectiveServerName(m.Identity.Hostname))
+		zone := srv.Zone
+		if zone == "" {
+			zone = m.Router.DefaultZone
+		}
+		svc.SetZone(zone)
+		return true
 	})
 }

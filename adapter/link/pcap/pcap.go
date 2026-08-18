@@ -1,15 +1,17 @@
-//go:build pcap
+//go:build pcap || all
 
 // Package pcap — see doc.go. The libpcap-backed implementation is gated behind
-// the `pcap` build tag because it requires cgo + libpcap/Npcap at build time;
-// builds without the tag get the stub in pcap_stub.go so the tree still compiles
-// (and TinyGo/embedded targets never pull in cgo). Ported from the legacy
-// port/rawlink/pcap.go.
+// the `pcap` or `all` build tags because it requires cgo + libpcap/Npcap at
+// build time; builds without those tags get the stub in pcap_stub.go so the tree
+// still compiles (and TinyGo/embedded targets never pull in cgo). Ported from
+// the legacy port/rawlink/pcap.go.
 package pcap
 
 import (
 	"errors"
 	"fmt"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -138,7 +140,7 @@ func Open(cfg Config) (link.FrameLink, error) {
 	}
 	inactive, err := pcap.NewInactiveHandle(cfg.Interface)
 	if err != nil {
-		return nil, fmt.Errorf("pcap: inactive handle on %s: %w", cfg.Interface, err)
+		return nil, fmt.Errorf("pcap: inactive handle on %s: %w%s", cfg.Interface, err, permissionHint(err))
 	}
 	defer inactive.CleanUp()
 	if err := inactive.SetSnapLen(cfg.SnapLen); err != nil {
@@ -157,7 +159,7 @@ func Open(cfg Config) (link.FrameLink, error) {
 	}
 	h, err := inactive.Activate()
 	if err != nil {
-		return nil, fmt.Errorf("pcap: activate %s: %w", cfg.Interface, err)
+		return nil, fmt.Errorf("pcap: activate %s: %w%s", cfg.Interface, err, permissionHint(err))
 	}
 	// Apply the kernel BPF filter best-effort: a promiscuous handle otherwise surfaces all
 	// NIC traffic (and this station's own looped-back TX). A rejected expression must not
@@ -232,4 +234,20 @@ func linkTypeToMedium(lt layers.LinkType) link.PhysicalMedium {
 	default:
 		return link.MediumEthernet
 	}
+}
+
+// permissionHint appends a macOS BPF grant hint when libpcap refused the device.
+// /dev/bpf* is root-only unless the user is in the access_bpf group (Wireshark's
+// ChmodBPF) or the process is running as root.
+func permissionHint(err error) string {
+	if err == nil || runtime.GOOS != "darwin" {
+		return ""
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "permission") ||
+		strings.Contains(msg, "operation not permitted") ||
+		strings.Contains(msg, "bpf") {
+		return "; macOS needs /dev/bpf access (sudo, or install Wireshark ChmodBPF and log out so your user is in access_bpf)"
+	}
+	return ""
 }

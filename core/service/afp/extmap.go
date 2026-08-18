@@ -17,6 +17,11 @@ import (
 	"strings"
 )
 
+// DefaultExtMapPath is the process-global Netatalk-style extension map edited from
+// Settings → General → File type mappings. A volume with an empty ExtMapPath uses
+// this file when it exists.
+const DefaultExtMapPath = "extmap.conf"
+
 // ExtensionMapping is one extension's classic-Mac type + creator codes (4 bytes each).
 type ExtensionMapping struct {
 	FileType [4]byte

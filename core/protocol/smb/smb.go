@@ -213,15 +213,73 @@ const (
 	Flags2NTStatus       uint16 = 0x4000 // SMB_FLAGS2_NT_STATUS
 )
 
-// NEGOTIATE/SESSION_SETUP Capabilities bits ([MS-CIFS] §2.2.4.52.2 SMB_CAP_*). Only the
-// ones this stack reasons about are named.
+// NEGOTIATE SecurityMode bits ([MS-CIFS] §2.2.4.52.2). NT dialect uses an 8-bit
+// field; LANMAN uses 16-bit. Bit 0/1 are the ones this client surfaces.
 const (
-	CapUnicode    uint32 = 0x00000004 // CAP_UNICODE: server/client speak UTF-16LE strings
-	CapLargeFiles uint32 = 0x00000008 // CAP_LARGE_FILES: 64-bit file offsets
-	CapNTSMBs     uint32 = 0x00000010 // CAP_NT_SMBS: the NT-family request set
-	CapNTStatus   uint32 = 0x00000040 // CAP_STATUS32: 32-bit NTSTATUS in headers (else DOS codes)
-	CapNTFind     uint32 = 0x00000200 // CAP_NT_FIND: TRANS2 FIND_FIRST2/FIND_NEXT2
+	SecurityModeUser    uint16 = 0x0001 // NEGOTIATE_USER_SECURITY (else share-level)
+	SecurityModeEncrypt uint16 = 0x0002 // NEGOTIATE_ENCRYPT_PASSWORDS (else plaintext)
 )
+
+// NEGOTIATE/SESSION_SETUP Capabilities bits ([MS-CIFS] §2.2.4.52.2 SMB_CAP_*).
+// CapUnicode / CapLargeFiles / CapNTSMBs / CapNTStatus / CapNTFind are the ones
+// this stack reasons about; the rest are named so a client can display what the
+// server advertised.
+const (
+	CapRawMode           uint32 = 0x00000001 // CAP_RAW_MODE
+	CapMPXMode           uint32 = 0x00000002 // CAP_MPX_MODE
+	CapUnicode           uint32 = 0x00000004 // CAP_UNICODE: server/client speak UTF-16LE strings
+	CapLargeFiles        uint32 = 0x00000008 // CAP_LARGE_FILES: 64-bit file offsets
+	CapNTSMBs            uint32 = 0x00000010 // CAP_NT_SMBS: the NT-family request set
+	CapRPCRemoteAPIs     uint32 = 0x00000020 // CAP_RPC_REMOTE_APIS
+	CapNTStatus          uint32 = 0x00000040 // CAP_STATUS32: 32-bit NTSTATUS in headers (else DOS codes)
+	CapLevelIIOplocks    uint32 = 0x00000080 // CAP_LEVEL_II_OPLOCKS
+	CapLockAndRead       uint32 = 0x00000100 // CAP_LOCK_AND_READ
+	CapNTFind            uint32 = 0x00000200 // CAP_NT_FIND: TRANS2 FIND_FIRST2/FIND_NEXT2
+	CapDFS               uint32 = 0x00001000 // CAP_DFS
+	CapInfoLevelPassthru uint32 = 0x00002000 // CAP_INFOLEVEL_PASSTHRU
+	CapLargeReadX        uint32 = 0x00004000 // CAP_LARGE_READX
+	CapLargeWriteX       uint32 = 0x00008000 // CAP_LARGE_WRITEX
+	CapUnix              uint32 = 0x00800000 // CAP_UNIX
+	CapExtendedSecurity  uint32 = 0x80000000 // CAP_EXTENDED_SECURITY
+)
+
+// capabilityNames is CAP_* bit → short display name, in [MS-CIFS] bit order.
+var capabilityNames = []struct {
+	bit  uint32
+	name string
+}{
+	{CapRawMode, "Raw mode"},
+	{CapMPXMode, "MPX mode"},
+	{CapUnicode, "Unicode"},
+	{CapLargeFiles, "Large files"},
+	{CapNTSMBs, "NT SMBs"},
+	{CapRPCRemoteAPIs, "RPC APIs"},
+	{CapNTStatus, "NT status"},
+	{CapLevelIIOplocks, "Level II oplocks"},
+	{CapLockAndRead, "Lock and read"},
+	{CapNTFind, "NT Find"},
+	{CapDFS, "DFS"},
+	{CapInfoLevelPassthru, "Info-level passthru"},
+	{CapLargeReadX, "Large ReadX"},
+	{CapLargeWriteX, "Large WriteX"},
+	{CapUnix, "UNIX extensions"},
+	{CapExtendedSecurity, "Extended security"},
+}
+
+// CapabilityNames returns the CAP_* flags set in caps as short display names
+// ([MS-CIFS] §2.2.4.52.2). Unknown bits are omitted.
+func CapabilityNames(caps uint32) []string {
+	if caps == 0 {
+		return nil
+	}
+	out := make([]string, 0, 8)
+	for _, c := range capabilityNames {
+		if caps&c.bit != 0 {
+			out = append(out, c.name)
+		}
+	}
+	return out
+}
 
 // SMB dialect strings ([MS-CIFS] 2.2.4.52; [smb6.0] §"list of SMB protocol dialects").
 // Ordered least→most functional. The NEGOTIATE response format is keyed by which of

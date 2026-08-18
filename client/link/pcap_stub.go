@@ -1,4 +1,4 @@
-//go:build !pcap
+//go:build !pcap && !all
 
 package link
 
@@ -8,20 +8,24 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 )
 
-// errNoPcap is returned by the pcap openers in a build without the 'pcap' tag, so a
-// client asking for a NIC transport fails loudly rather than silently.
-var errNoPcap = errors.New("link: pcap transport requires the 'pcap' build tag")
+// errNoPcap is returned by the pcap openers in a build without the 'pcap' or
+// 'all' tag, so a client asking for a NIC transport fails loudly rather than
+// silently.
+var errNoPcap = errors.New("link: pcap transport requires the 'pcap' or 'all' build tag")
 
-func openPcapFrame(device, filter string) (link.FrameLink, error) {
+func openPcapFrame(device, filter, capturePath string, captureSnaplen uint32) (link.FrameLink, error) {
 	_ = device
 	_ = filter
+	_ = capturePath
+	_ = captureSnaplen
 	return nil, errNoPcap
 }
 
-func openPcapDDP(device string, network uint16, srcNode uint8) (link.DatagramLink, error) {
+func openPcapDDP(device string, mac [6]byte, capturePath string, captureSnaplen uint32) (link.DatagramLink, error) {
 	_ = device
-	_ = network
-	_ = srcNode
+	_ = mac
+	_ = capturePath
+	_ = captureSnaplen
 	return nil, errNoPcap
 }
 

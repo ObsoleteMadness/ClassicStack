@@ -53,6 +53,10 @@ type Session struct {
 	maxIO        int    // largest READ_ANDX/WRITE_ANDX payload (bounded by the transport)
 	negMaxBuffer uint32 // server MaxBufferSize from NEGOTIATE; the SESSION_SETUP MaxBuffer
 	dialect      string // the dialect selected at NEGOTIATE (for display)
+	capabilities uint32 // server Capabilities word (NT family; 0 for older dialects)
+	userSecurity bool   // NEGOTIATE_USER_SECURITY
+	encryptPass  bool   // NEGOTIATE_ENCRYPT_PASSWORDS
+	guest        bool   // SESSION_SETUP Action SMB_SETUP_GUEST
 
 	mu      sync.Mutex
 	builder proto.Builder
@@ -81,6 +85,18 @@ func (s *Session) MarkPathInfoUnsupported() {
 
 // Dialect returns the SMB dialect the server selected at NEGOTIATE (e.g. "NT LM 0.12").
 func (s *Session) Dialect() string { return s.dialect }
+
+// Capabilities returns the server's NEGOTIATE Capabilities word (0 for LANMAN/Core).
+func (s *Session) Capabilities() uint32 { return s.capabilities }
+
+// UserSecurity reports NEGOTIATE_USER_SECURITY (else share-level).
+func (s *Session) UserSecurity() bool { return s.userSecurity }
+
+// EncryptPasswords reports NEGOTIATE_ENCRYPT_PASSWORDS (else plaintext).
+func (s *Session) EncryptPasswords() bool { return s.encryptPass }
+
+// Guest reports whether SESSION_SETUP granted SMB_SETUP_GUEST.
+func (s *Session) Guest() bool { return s.guest }
 
 // DialParams carries what Open needs beyond the transport: the credentials and the
 // UNC target (server label + share). The server label is only used to build the
@@ -134,6 +150,9 @@ func establishSession(tr Transport, p DialParams) (*Session, error) {
 	s.unicode = false
 	s.builder.Unicode = false
 	s.dialect = neg.Dialect
+	s.capabilities = neg.Capabilities
+	s.userSecurity = neg.UserSecurity
+	s.encryptPass = neg.EncryptPasswords
 	// Speak the server's status dialect: 32-bit NTSTATUS only when the server advertised
 	// CAP_STATUS32, else DOS error codes (a Win9x server negotiates NT LM 0.12 WITHOUT
 	// CAP_STATUS32 and silently drops an NT-status header).
@@ -279,7 +298,8 @@ func (s *Session) sessionSetup(user, password, domain string) error {
 		return fmt.Errorf("smb: session setup: %w", err)
 	}
 	s.builder.UID = res.UID
-	smbtracef("SESSION_SETUP_ANDX ok — UID %d", res.UID)
+	s.guest = res.Guest
+	smbtracef("SESSION_SETUP_ANDX ok — UID %d guest=%v", res.UID, res.Guest)
 	return nil
 }
 

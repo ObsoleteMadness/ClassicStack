@@ -199,3 +199,37 @@ func TestRequestUserDataFromFirstPacket(t *testing.T) {
 		t.Errorf("reassembled data = %q, want AAAABBBBCCCC", resp.Data)
 	}
 }
+
+// TestRequestIdleCompletesShortReply is the regression for the "AFP feels buffered"
+// stall: a System 7 responder answers a multi-slot TReq (bitmap 0xff) with a single
+// packet and EOM CLEAR. Completing only when the full bitmap arrives waits out the
+// 2s ATP retry on every small Command. After a quiet burst the contiguous prefix
+// from slot 0 is the whole reply (classicstack-web idle-complete).
+func TestRequestIdleCompletesShortReply(t *testing.T) {
+	link := newFakeLink(func(req ddp.Datagram) []ddp.Datagram {
+		h, err := atp.Decode(req.Data)
+		if err != nil || h.FuncCode() != atp.FuncTReq {
+			return nil
+		}
+		return []ddp.Datagram{tRespDatagram(req.SrcSocket, h.TransID, 0, false, 0, []byte("OK"))}
+	})
+	ep := NewEndpoint(link, Addr{Network: 0, Node: 10})
+	defer ep.Close()
+
+	a := NewATP(ep)
+	start := time.Now()
+	resp, err := a.Request(Addr{Network: 1, Node: 11, Socket: 250}, 0, nil, false, 8)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if string(resp.Data) != "OK" {
+		t.Errorf("data = %q, want OK", resp.Data)
+	}
+	if elapsed > atpRetryInterval {
+		t.Fatalf("idle-complete took %s, want well under the %s retry interval", elapsed, atpRetryInterval)
+	}
+	if elapsed < atpBurstIdle/2 {
+		t.Fatalf("idle-complete took %s, want around %s (burst idle)", elapsed, atpBurstIdle)
+	}
+}

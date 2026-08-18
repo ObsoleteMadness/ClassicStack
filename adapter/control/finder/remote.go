@@ -8,14 +8,13 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/client"
 	afpclient "github.com/ObsoleteMadness/ClassicStack/client/afp"
-	"github.com/ObsoleteMadness/ClassicStack/client/atalk"
-	"github.com/ObsoleteMadness/ClassicStack/client/browse"
-	clientlink "github.com/ObsoleteMadness/ClassicStack/client/link"
 	ncpclient "github.com/ObsoleteMadness/ClassicStack/client/ncp"
 	smbclient "github.com/ObsoleteMadness/ClassicStack/client/smb"
 	"github.com/ObsoleteMadness/ClassicStack/client/uri"
+	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
+	afpproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 )
 
 // ConnectRequest is POST /finder/sessions.
@@ -50,21 +49,43 @@ func (s *Service) Connect(ctx context.Context, req ConnectRequest) (*SessionInfo
 	if kind == "" {
 		return nil, fmt.Errorf("finder: kind or target URI is required")
 	}
+	if err := s.requireClient(kind); err != nil {
+		return nil, err
+	}
+
+	rawTarget := strings.TrimSpace(req.Target)
+	if rawTarget == "" {
+		rawTarget = strings.TrimSpace(req.ID)
+	}
+	if existing := s.existingMounted(kind, rawTarget); existing != nil {
+		info := existing.info()
+		// Reuse the login, but do not pretend this connect opened that volume.
+		// The Finder lists every share; OpenVolume binds a catalog per volume.
+		info.AllowGuest = true
+		info.UAMs = nil // empty auth-methods → Finder skips the password prompt
+		info.RootID = 0
+		info.Volume = ""
+		return info, nil
+	}
 
 	target, err := parseConnectTarget(kind, req)
 	if err != nil {
 		return nil, err
 	}
-	opener, err := openerFor(kind, req.IfaceType, req.Iface, req.Transport, target)
+	opener, err := s.openerFor(kind, req.IfaceType, req.Iface, req.Transport, target)
 	if err != nil {
 		return nil, err
 	}
+	spec := opener.Spec
 	opts := client.Options{Opener: opener}
 	if req.Guest {
 		target.User, target.Pass = "", ""
 	}
 
 	var volumes []string
+	var uams []string
+	var osName, dialect string
+	allowGuest := true
 	serverName := target.Server
 	switch kind {
 	case "afp":
@@ -79,6 +100,8 @@ func (s *Service) Connect(ctx context.Context, req ConnectRequest) (*SessionInfo
 		for _, v := range listing.Volumes {
 			volumes = append(volumes, v.Name)
 		}
+		uams = listing.UAMs
+		allowGuest = guestAllowed(listing.UAMs, req.Guest, req.User)
 	case "smb":
 		listing, err := smbclient.Browse(target, opts)
 		if err != nil {
@@ -93,6 +116,10 @@ func (s *Service) Connect(ctx context.Context, req ConnectRequest) (*SessionInfo
 				volumes = append(volumes, sh.Name)
 			}
 		}
+		dialect = formatSMBVersion(listing.Dialect)
+		osName = s.smbOSFor(serverName)
+		uams = formatSMBAuth(listing.UserSecurity, listing.EncryptPasswords, listing.Capabilities)
+		allowGuest = true
 	case "ncp":
 		listing, err := ncpclient.Browse(target, opts)
 		if err != nil {
@@ -100,6 +127,8 @@ func (s *Service) Connect(ctx context.Context, req ConnectRequest) (*SessionInfo
 		}
 		serverName = listing.ServerName
 		volumes = listing.Volumes
+		uams = formatNCPLogin(listing.Encrypted)
+		allowGuest = true
 	case "etherdfs":
 		if target.Volume != "" {
 			volumes = []string{target.Volume}
@@ -118,25 +147,44 @@ func (s *Service) Connect(ctx context.Context, req ConnectRequest) (*SessionInfo
 		remoteURI:  req.Target,
 		remoteUser: target.User,
 		remotePass: target.Pass,
-		ifaceType:  req.IfaceType,
-		iface:      req.Iface,
-		transport:  req.Transport,
+		ifaceType:  spec.Kind,
+		iface:      spec.Name,
+		transport:  spec.Carrier,
+		os:         osName,
+		dialect:    dialect,
+		uams:       uams,
+		allowGuest: allowGuest,
 		touched:    time.Now(),
 	}
 	if req.Guest {
 		sess.remoteUser, sess.remotePass = "", ""
 	}
 	s.put(sess)
-	s.log.Log2(log.Debug, "finder remote session",
-		log.Str("session", sess.ID), log.Str("server", serverName))
+	s.log.Log(log.Debug, "finder remote session",
+		log.Str("session", sess.ID), log.Str("server", serverName),
+		log.Str("kind", kind), log.Str("auth", strings.Join(uams, "|")))
 	return &SessionInfo{
 		SessionID:  sess.ID,
 		ServerName: serverName,
 		Kind:       kind,
 		Volumes:    volumes,
-		AllowGuest: req.Guest || req.User == "",
-		UAMs:       []string{"No User Authent", "Cleartxt Passwrd"},
+		AllowGuest: allowGuest,
+		UAMs:       uams,
+		OS:         osName,
+		Dialect:    dialect,
 	}, nil
+}
+
+func guestAllowed(advertised []string, guestLogin bool, user string) bool {
+	if guestLogin || user == "" {
+		return true
+	}
+	for _, u := range advertised {
+		if strings.EqualFold(u, afpproto.UAMNoUserAuthent) {
+			return true
+		}
+	}
+	return len(advertised) == 0
 }
 
 func parseConnectTarget(kind string, req ConnectRequest) (uri.Target, error) {
@@ -168,52 +216,8 @@ func parseConnectTarget(kind string, req ConnectRequest) (uri.Target, error) {
 	}, nil
 }
 
-func openerFor(scheme, ifaceType, iface, transport string, target uri.Target) (*clientlink.Opener, error) {
-	transports := client.TransportsFor(scheme)
-	kind := ifaceType
-	if kind == "" && target.Transport != "" {
-		kind = target.Transport
-	}
-	if kind == "" {
-		kind = transports.Default
-	}
-	if kind == "" {
-		return nil, fmt.Errorf("finder: ifaceType required for %s", scheme)
-	}
-	if iface == "" && clientlink.IsRawEtherKind(kind) {
-		if def, err := clientlink.DefaultInterface(); err == nil {
-			iface = def.Name
-		}
-	}
-	carrier := transport
-	if carrier == "" && target.Transport != "" && target.Transport != kind {
-		carrier = target.Transport
-	}
-	return clientlink.NewOpener(clientlink.Spec{Kind: kind, Name: iface, Carrier: carrier}), nil
-}
-
 func (s *Service) connectRemoteVolume(sess *Session, volume string) error {
-	kind := sess.Kind
-	raw := sess.remoteURI
-	if raw == "" || !strings.Contains(raw, "://") {
-		raw = kind + "://" + sess.ServerName + "/" + volume
-	}
-	target, err := uri.Parse(raw)
-	if err != nil {
-		target = uri.Target{Scheme: kind, Server: sess.ServerName, Volume: volume}
-	}
-	target.Volume = volume
-	target.Path = ""
-	if sess.remoteUser != "" || sess.remotePass != "" {
-		target.User = sess.remoteUser
-		target.Pass = sess.remotePass
-		target.HasCreds = true
-	}
-	opener, err := openerFor(kind, sess.ifaceType, sess.iface, sess.transport, target)
-	if err != nil {
-		return err
-	}
-	ffs, err := client.Connect(context.Background(), target, client.Options{Opener: opener})
+	ffs, err := s.remoteForkFS(context.Background(), sess.Kind, sess.remoteURI, sess.ServerName, volume, sess.remoteUser, sess.remotePass, sess.ifaceType, sess.iface, sess.transport, false)
 	if err != nil {
 		return err
 	}
@@ -228,6 +232,74 @@ func (s *Service) connectRemoteVolume(sess *Session, volume string) error {
 	s.log.Log2(log.Debug, "finder mounted remote volume",
 		log.Str("session", sess.ID), log.Str("volume", volume))
 	return nil
+}
+
+// remoteForkFS opens a dedicated client ForkFS for a remote volume (browse or FUSE mount).
+func (s *Service) remoteForkFS(ctx context.Context, kind, rawURI, server, volume, user, pass, ifaceType, iface, transport string, readOnly bool) (fs.ForkFS, error) {
+	raw := strings.TrimSpace(rawURI)
+	if raw == "" || !strings.Contains(raw, "://") {
+		raw = kind + "://" + server + "/" + volume
+	}
+	target, err := uri.Parse(raw)
+	if err != nil {
+		target = uri.Target{Scheme: kind, Server: server, Volume: volume}
+	}
+	target.Volume = volume
+	target.Path = ""
+	if user != "" || pass != "" {
+		target.User = user
+		target.Pass = pass
+		target.HasCreds = true
+	}
+	opener, err := s.openerFor(kind, ifaceType, iface, transport, target)
+	if err != nil {
+		return nil, err
+	}
+	auth := mountAuthLabel(user == "" && !target.HasCreds, user)
+	s.log.Log(log.Debug, "finder remote connect",
+		log.Str("scheme", kind),
+		log.Str("server", target.Redacted()),
+		log.Str("volume", volume),
+		log.Str("auth", auth),
+		log.Str("ifacetype", opener.Spec.Kind),
+		log.Str("iface", opener.Spec.Name))
+	ffs, err := client.Connect(ctx, target, client.Options{
+		Opener:          opener,
+		ReadOnly:        readOnly,
+		OnServerMessage: s.onServerMessage,
+	})
+	if err != nil {
+		s.log.Log(log.Warn, "finder remote connect failed",
+			log.Str("scheme", kind),
+			log.Str("server", target.Redacted()),
+			log.Str("volume", volume),
+			log.Str("auth", auth),
+			log.Str("ifacetype", opener.Spec.Kind),
+			log.Str("iface", opener.Spec.Name),
+			log.Str("err", err.Error()))
+		return nil, err
+	}
+	return ffs, nil
+}
+
+// onServerMessage publishes an AFP client pop-up (login greeting or attention
+// message) on the telemetry bus for the web UI. Empty text is ignored.
+func (s *Service) onServerMessage(kind, from, text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	s.log.Log(log.Debug, "finder AFP server message",
+		log.Str("kind", kind), log.Str("from", from), log.Str("text", text))
+	if s.pub == nil {
+		return
+	}
+	s.pub.Publish(bus.MessageReceived{
+		Kind: bus.MessageKindAFP,
+		From: from,
+		Text: text,
+		Time: time.Now(),
+	})
 }
 
 // DiscoverRequest is POST /finder/discover.
@@ -245,89 +317,33 @@ func (s *Service) Discover(req DiscoverRequest) ([]VolumeInfo, error) {
 	if scheme == "" {
 		scheme = KindAFP
 	}
+	if err := s.requireClient(scheme); err != nil {
+		return nil, err
+	}
 	var out []VolumeInfo
 	var err error
 	switch scheme {
 	case KindAFP:
-		out, err = discoverAFP(req)
+		out, err = s.discoverAFP(req)
 	case KindSMB:
-		out, err = discoverSMB(req)
-	case KindNCP, KindEtherDFS:
-		// SAP / EtherDFS probes need a live NIC; an empty list is a valid miss.
-		out = nil
+		out, err = s.discoverSMB(req)
+	case KindNCP:
+		out, err = s.discoverNCP(req)
+	case KindEtherDFS:
+		out, err = s.discoverEtherDFS(req)
 	default:
 		return nil, fmt.Errorf("finder: unknown discover scheme %q", scheme)
 	}
 	if err != nil {
-		return nil, err
+		cached := s.LastSeen(scheme)
+		if len(cached) == 0 {
+			return nil, err
+		}
+		s.log.Log(log.Debug, "finder discover using last-seen",
+			log.Str("scheme", scheme), log.Str("err", err.Error()), log.Int("count", int64(len(cached))))
+		return cached, nil
 	}
+	s.remember(scheme, out)
 	s.log.Log2(log.Debug, "finder discover", log.Str("scheme", scheme), log.Int("count", int64(len(out))))
-	return out, nil
-}
-
-func discoverAFP(req DiscoverRequest) ([]VolumeInfo, error) {
-	kind := req.IfaceType
-	if kind == "" {
-		kind = clientlink.KindLToUDP
-	}
-	iface := req.Iface
-	if iface == "" && clientlink.IsRawEtherKind(kind) {
-		if def, err := clientlink.DefaultInterface(); err == nil {
-			iface = def.Name
-		}
-	}
-	opener := clientlink.NewOpener(clientlink.Spec{Kind: kind, Name: iface})
-	dl, err := opener.DatagramLinkDDP()
-	if err != nil {
-		return nil, err
-	}
-	ep := atalk.NewEndpoint(dl, atalk.Addr{Network: opener.Net, Node: opener.Node})
-	defer ep.Close()
-	ents, err := ep.Lookup("=", atalk.AFPServerType, "*")
-	if err != nil {
-		return nil, err
-	}
-	out := make([]VolumeInfo, 0, len(ents))
-	for _, e := range ents {
-		out = append(out, VolumeInfo{
-			ID:        e.Object,
-			Kind:      KindAFP,
-			Title:     e.Object,
-			Subtitle:  e.Zone,
-			Protocol:  KindAFP,
-			Transport: TransportNBP,
-		})
-	}
-	return out, nil
-}
-
-func discoverSMB(req DiscoverRequest) ([]VolumeInfo, error) {
-	kind := req.IfaceType
-	if kind == "" {
-		kind = clientlink.KindPcap
-	}
-	iface := req.Iface
-	if iface == "" && clientlink.IsRawEtherKind(kind) {
-		if def, err := clientlink.DefaultInterface(); err == nil {
-			iface = def.Name
-		}
-	}
-	servers, _ := browse.Enumerate(browse.Options{
-		Device:    iface,
-		Kind:      kind,
-		Window:    4 * time.Second,
-		Workgroup: req.Workgroup,
-	})
-	out := make([]VolumeInfo, 0, len(servers))
-	for _, srv := range servers {
-		out = append(out, VolumeInfo{
-			ID:        srv.Name,
-			Kind:      KindSMB,
-			Title:     srv.Name,
-			Subtitle:  srv.Comment,
-			Protocol:  KindSMB,
-			Transport: TransportTCP,
-		})
-	}
-	return out, nil
+	return s.LastSeen(scheme), nil
 }

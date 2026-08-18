@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -13,6 +14,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/control"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
 )
 
 // State labels published on the telemetry bus via StateChanged (§3/§11). They are the To/From
@@ -60,6 +62,7 @@ type node struct {
 	dependsOn []string  // names that must be running before this starts (and stop after it)
 	rebuild   Rebuilder // optional; reconstructs c from the model during a Reconfigure restart
 	running   bool
+	lastErr   error // last Start failure; cleared on a successful Start
 }
 
 // Supervisor owns the component set + dependency DAG. It starts components in dependency order
@@ -78,6 +81,9 @@ type Supervisor struct {
 	enumIfaces func() ([]control.InterfaceInfo, error) // injected host-NIC enumerator (cmd edge); nil = none
 	buildInst  InstanceBuilder                         // injected per-instance builder (runtime owns registry); nil = none
 	attachPort TransportAttacher                       // injected runtime seam joining a new port to its mini-router; nil = none
+	log        log.Logger                              // optional start-failure logger; nil = silent besides Status.Error
+	applyLog   func(level string)                      // retunes the process log LevelVar from [Logging].Level
+	stampIdent func(c component.Component, m *config.Model)
 
 	statsMu   sync.Mutex
 	statsStop chan struct{} // closed to stop the periodic stats flush; nil when not running
@@ -98,6 +104,14 @@ func New(m *config.Model, telemetry bus.Bus) *Supervisor {
 		telemetry: telemetry,
 		nodes:     make(map[string]*node),
 	}
+}
+
+// SetLogger installs the logger used when a component Start fails during StartAll
+// (so a missing pcap device is recorded without aborting the rest of the stack).
+func (s *Supervisor) SetLogger(l log.Logger) {
+	s.mu.Lock()
+	s.log = l
+	s.mu.Unlock()
 }
 
 // Add registers a component with its hard dependencies (DAG edges). dependsOn are component
@@ -128,7 +142,9 @@ func (s *Supervisor) AddBuildable(c component.Component, dependsOn []string, reb
 }
 
 // StartAll brings every component up in dependency order (topological), publishing a
-// StateChanged{stopped->running} per component as it starts.
+// StateChanged{stopped->running} per component as it starts. A component that fails to
+// start (missing interface, bind error) is logged and recorded on Status.Error; the
+// rest of the stack still comes up so the web UI can surface the failure.
 func (s *Supervisor) StartAll(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -138,7 +154,7 @@ func (s *Supervisor) StartAll(ctx context.Context) error {
 	}
 	for _, name := range order {
 		if err := s.startNodeLocked(ctx, name); err != nil {
-			return err
+			s.logStartErrorLocked(name, err)
 		}
 	}
 	return nil
@@ -154,11 +170,15 @@ func (s *Supervisor) StopAll(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	s.logShutdown0("stopping supervised components")
 	var firstErr error
 	for i := len(order) - 1; i >= 0; i-- {
 		if err := s.stopNodeLocked(ctx, order[i]); err != nil && firstErr == nil {
 			firstErr = err
 		}
+	}
+	if firstErr == nil {
+		s.logShutdown0("supervised components stopped")
 	}
 	return firstErr
 }
@@ -173,11 +193,44 @@ func (s *Supervisor) startNodeLocked(ctx context.Context, name string) error {
 		return nil
 	}
 	if err := n.c.Start(ctx); err != nil {
+		n.lastErr = err
+		n.running = false
 		return fmt.Errorf("start %s: %w", name, err)
 	}
+	n.lastErr = nil
 	n.running = true
 	s.publish(name, stateStopped, stateRunning)
 	return nil
+}
+
+func (s *Supervisor) logStartErrorLocked(name string, err error) {
+	if s.log == nil {
+		return
+	}
+	s.log.Log2(log.Error, "component start failed; continuing",
+		log.Str("component", name), log.Str("err", err.Error()))
+}
+
+func (s *Supervisor) logShutdown0(msg string) {
+	if s.log == nil || !s.log.Enabled(log.Info) {
+		return
+	}
+	s.log.Log0(log.Info, "shutdown: "+msg)
+}
+
+func (s *Supervisor) logShutdown1(msg, component string) {
+	if s.log == nil || !s.log.Enabled(log.Info) {
+		return
+	}
+	s.log.Log1(log.Info, "shutdown: "+msg, log.Str("component", component))
+}
+
+func (s *Supervisor) logShutdown2(msg, component, err string) {
+	if s.log == nil {
+		return
+	}
+	s.log.Log(log.Error, "shutdown: "+msg,
+		log.Str("component", component), log.Str("err", err))
 }
 
 // stopNodeLocked stops one node (safe if already stopped) and publishes its transition.
@@ -189,12 +242,15 @@ func (s *Supervisor) stopNodeLocked(ctx context.Context, name string) error {
 	if !n.running {
 		return nil
 	}
+	s.logShutdown1("waiting for component", name)
 	err := n.c.Stop(ctx)
 	n.running = false
 	s.publish(name, stateRunning, stateStopped)
 	if err != nil {
+		s.logShutdown2("component stop failed", name, err.Error())
 		return fmt.Errorf("stop %s: %w", name, err)
 	}
+	s.logShutdown1("component stopped", name)
 	return nil
 }
 
@@ -449,6 +505,9 @@ func (s *Supervisor) Reconfigure(ctx context.Context, name string, section confi
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if section != nil {
+		if err := s.validateMutationLocked(func(m *config.Model) { applySection(m, section) }); err != nil {
+			return err
+		}
 		s.setSectionLocked(section)
 	}
 	return s.reconfigureLocked(ctx, name, section)
@@ -476,6 +535,9 @@ func (s *Supervisor) setSectionLocked(section config.Section) {
 func (s *Supervisor) AddInstance(ctx context.Context, owner string, section config.NamedSection) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.validateMutationLocked(func(m *config.Model) { m.AddInstance(section) }); err != nil {
+		return err
+	}
 	s.model.AddInstance(section)
 
 	// Two shapes of owner (§M11):
@@ -505,6 +567,11 @@ func (s *Supervisor) AddInstance(ctx context.Context, owner string, section conf
 		}
 		if _, exists := s.nodes[nodeName]; !exists && s.buildInst != nil {
 			return s.addInstanceNodeLocked(ctx, owner, nodeName)
+		}
+		if _, exists := s.nodes[nodeName]; exists {
+			// Existing port: pass the section so ApplyConfig sees iface/device changes
+			// (nil would no-op on Configurable ports).
+			return s.reconfigureLocked(ctx, nodeName, section)
 		}
 	}
 
@@ -569,6 +636,30 @@ func (s *Supervisor) RemoveInstance(ctx context.Context, owner, key, instanceNam
 		return nil
 	}
 	return s.reconfigureLocked(ctx, owner, nil)
+}
+
+// applySection installs a section into m: repeated named instances go to Lists,
+// singletons to Sections. Shared by the live mutation and the validate-on-clone path.
+func applySection(m *config.Model, section config.Section) {
+	if ns, ok := section.(config.NamedSection); ok {
+		m.AddInstance(ns)
+		return
+	}
+	if section != nil {
+		m.Set(section)
+	}
+}
+
+// validateMutationLocked clones the live model, applies mutate, and runs Model.Validate
+// so an invalid section never reaches the running stack or a subsequent Save.
+// Caller holds mu.
+func (s *Supervisor) validateMutationLocked(mutate func(*config.Model)) error {
+	if s.model == nil || mutate == nil {
+		return nil
+	}
+	clone := s.model.Clone()
+	mutate(clone)
+	return clone.Validate(config.ValidateOptions{HostnameConstraints: s.hostnameConstraintsLocked()})
 }
 
 // reconfigureLocked is the addressed reconfigure for one component plus the dependent cascade.
@@ -648,6 +739,10 @@ func (s *Supervisor) restartNodeLocked(ctx context.Context, n *node, name string
 func (s *Supervisor) HostnameConstraints() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.hostnameConstraintsLocked()
+}
+
+func (s *Supervisor) hostnameConstraintsLocked() []string {
 	seen := map[string]struct{}{}
 	var out []string
 	for _, n := range s.nodes {
@@ -680,6 +775,9 @@ func (s *Supervisor) Status() []control.Unit {
 			Running:   n.running,
 			Enabled:   true,
 			DependsOn: append([]string(nil), n.dependsOn...),
+		}
+		if n.lastErr != nil {
+			u.Error = n.lastErr.Error()
 		}
 		if en, ok := n.c.(component.Enableable); ok {
 			u.Enabled = en.Enabled()
@@ -754,8 +852,166 @@ func (s *Supervisor) SetInterface(ctx context.Context, iface config.InterfaceSec
 	if iface.Name == "" {
 		return nil
 	}
+	if err := s.validateMutationLocked(func(m *config.Model) { m.SetInterface(iface) }); err != nil {
+		return err
+	}
 	s.model.SetInterface(iface)
 	return s.reconcileInterfaceRefsLocked(ctx, iface.Name)
+}
+
+// SetLogLevelApplier installs the callback that retunes the process-wide log
+// threshold when [Logging] changes. The runtime/cmd edge supplies a closure over
+// the shared *log.LevelVar so verbosity takes effect without rebuilding loggers.
+func (s *Supervisor) SetLogLevelApplier(fn func(level string)) {
+	s.mu.Lock()
+	s.applyLog = fn
+	s.mu.Unlock()
+}
+
+// SetIdentityStamper installs the compose-registry callback that restamps
+// Identity.Hostname/Workgroup/Description onto live services before they restart.
+func (s *Supervisor) SetIdentityStamper(fn func(c component.Component, m *config.Model)) {
+	s.mu.Lock()
+	s.stampIdent = fn
+	s.mu.Unlock()
+}
+
+// SetWellKnown updates one well-known Model field (Identity, Router, Logging, HTTP,
+// Client, FUSE) that lives outside the registered Sections map. The proposed value is
+// validated against a cloned model before it is committed, then dependent components
+// are reconfigured or restarted so the change goes live without a full ReplaceModel.
+func (s *Supervisor) SetWellKnown(ctx context.Context, key string, raw json.RawMessage) error {
+	s.mu.Lock()
+	clone := s.model.Clone()
+	if err := applyWellKnown(clone, key, raw); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	if err := clone.Validate(config.ValidateOptions{HostnameConstraints: s.hostnameConstraintsLocked()}); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	if err := applyWellKnown(s.model, key, raw); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	if key == "Logging" && s.applyLog != nil {
+		s.applyLog(s.model.Logging.Level)
+	}
+	if key == config.IdentityKey || key == "Router" {
+		s.stampIdentityLocked()
+	}
+	s.mu.Unlock()
+
+	return s.reconcileWellKnown(ctx, key)
+}
+
+func (s *Supervisor) stampIdentityLocked() {
+	if s.stampIdent == nil || s.model == nil {
+		return
+	}
+	for _, n := range s.nodes {
+		if n == nil {
+			continue
+		}
+		s.stampIdent(n.c, s.model)
+	}
+}
+
+// identityConsumers are the services that advertise Identity (and, for AFP, the
+// router default zone). They restart after Identity/Router well-known edits so NBP
+// / NetBIOS / browse names pick up the new values.
+var identityConsumers = []string{"SMB", "NetBIOS", "Browser", "Messenger", "NCP", "AFP", "EtherDFS"}
+
+func (s *Supervisor) reconcileWellKnown(ctx context.Context, key string) error {
+	switch key {
+	case config.IdentityKey:
+		return s.restartKnown(ctx, identityConsumers...)
+	case "Router":
+		if err := s.reconfigureKnown(ctx, "Router"); err != nil {
+			return err
+		}
+		if err := s.reconfigureKnown(ctx, "RTMP", "ZIP", "MacIP", "IPXGW", "Netboot"); err != nil {
+			return err
+		}
+		return s.restartKnown(ctx, "AFP")
+	case config.ClientKey, config.FUSEKey:
+		return s.reconfigureKnown(ctx, config.ClientKey)
+	case "Logging", config.HTTPKey:
+		return nil
+	}
+	return nil
+}
+
+func (s *Supervisor) reconfigureKnown(ctx context.Context, names ...string) error {
+	for _, name := range names {
+		if err := s.Reconfigure(ctx, name, nil); err != nil && !errors.Is(err, ErrUnknownComponent) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Supervisor) restartKnown(ctx context.Context, names ...string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, name := range names {
+		n := s.nodes[name]
+		if n == nil {
+			continue
+		}
+		if err := s.restartNodeLocked(ctx, n, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func applyWellKnown(m *config.Model, key string, raw json.RawMessage) error {
+	if m == nil {
+		return fmt.Errorf("supervisor: nil model")
+	}
+	switch key {
+	case config.IdentityKey:
+		var v config.Identity
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return err
+		}
+		m.Identity = v
+	case "Router":
+		var v config.RouterSection
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return err
+		}
+		m.Router = v
+	case "Logging":
+		var v config.LoggingSection
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return err
+		}
+		m.Logging = v
+	case config.HTTPKey:
+		var v config.HTTPSection
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return err
+		}
+		m.HTTP = v
+	case config.ClientKey:
+		var v config.ClientSection
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return err
+		}
+		m.Client = v
+	case config.FUSEKey:
+		var v config.FUSESection
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return err
+		}
+		m.FUSE = v
+	default:
+		return fmt.Errorf("supervisor: unknown well-known key %q", key)
+	}
+	return nil
 }
 
 // RemoveInterface drops the named interface-namespace entry under the lock and
@@ -831,6 +1087,9 @@ func (s *Supervisor) ReplaceModel(ctx context.Context, m *config.Model) error {
 	s.model.Identity = cp.Identity
 	s.model.AdminAuth = cp.AdminAuth
 	s.model.Logging = cp.Logging
+	s.model.HTTP = cp.HTTP
+	s.model.Client = cp.Client
+	s.model.FUSE = cp.FUSE
 	s.model.Router = cp.Router
 	s.model.Interfaces = cp.Interfaces
 	s.model.Sections = cp.Sections

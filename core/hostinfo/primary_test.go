@@ -62,3 +62,67 @@ func TestPrimaryInterface(t *testing.T) {
 		t.Errorf("primary IP %v not bound to reported primary interface %q", ip, ifi.Name)
 	}
 }
+
+func TestHardwareAddrForDeviceUnknown(t *testing.T) {
+	_, err := HardwareAddrForDevice("no-such-pcap-device", nil)
+	if !errors.Is(err, ErrNoHardwareAddr) {
+		t.Fatalf("unknown device: err = %v, want ErrNoHardwareAddr", err)
+	}
+	_, err = HardwareAddrForDevice("", nil)
+	if !errors.Is(err, ErrNoHardwareAddr) {
+		t.Fatalf("empty name: err = %v, want ErrNoHardwareAddr", err)
+	}
+}
+
+// TestHardwareAddrForDeviceIPMatch proves the Windows Npcap path: a pcap device
+// whose name is NOT the OS interface name still resolves by matching a bound IPv4.
+func TestHardwareAddrForDeviceIPMatch(t *testing.T) {
+	ifi, err := PrimaryInterface()
+	if errors.Is(err, ErrNoPrimaryInterface) {
+		t.Skip("no default route on this host; nothing to verify")
+	}
+	if err != nil {
+		t.Fatalf("PrimaryInterface: %v", err)
+	}
+	if len(ifi.HardwareAddr) != 6 {
+		t.Skipf("primary interface %q has no 6-byte MAC", ifi.Name)
+	}
+	ip, err := PrimaryIP()
+	if err != nil {
+		t.Fatalf("PrimaryIP: %v", err)
+	}
+	fake := `\Device\NPF_{TEST-GUID}`
+	got, err := HardwareAddrForDevice(fake, []Device{{Name: fake, Addresses: []string{ip.String()}}})
+	if err != nil {
+		t.Fatalf("HardwareAddrForDevice(IP match): %v", err)
+	}
+	var want [6]byte
+	copy(want[:], ifi.HardwareAddr)
+	if got != want {
+		t.Fatalf("HardwareAddrForDevice = %v, want primary MAC %v", got, want)
+	}
+}
+
+// TestHardwareAddrForDeviceInterfaceByName proves the Linux/macOS path: when the
+// pcap name IS the OS interface name, a device list with no addresses still resolves.
+func TestHardwareAddrForDeviceInterfaceByName(t *testing.T) {
+	ifi, err := PrimaryInterface()
+	if errors.Is(err, ErrNoPrimaryInterface) {
+		t.Skip("no default route on this host; nothing to verify")
+	}
+	if err != nil {
+		t.Fatalf("PrimaryInterface: %v", err)
+	}
+	if len(ifi.HardwareAddr) != 6 {
+		t.Skipf("primary interface %q has no 6-byte MAC", ifi.Name)
+	}
+	got, err := HardwareAddrForDevice(ifi.Name, []Device{{Name: ifi.Name}})
+	if err != nil {
+		t.Fatalf("HardwareAddrForDevice(InterfaceByName): %v", err)
+	}
+	var want [6]byte
+	copy(want[:], ifi.HardwareAddr)
+	if got != want {
+		t.Fatalf("HardwareAddrForDevice = %v, want %v", got, want)
+	}
+}

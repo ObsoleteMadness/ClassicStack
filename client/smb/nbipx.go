@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/client/trace"
@@ -65,11 +66,20 @@ var nbipxSessionSocket = [2]byte{0x04, 0x55}
 // server's nbipxUnassignedConnID).
 const nbipxUnassignedConnID uint16 = 0xFFFF
 
-// nbipxClientConnID is the local circuit id the client assigns itself as SourceConnID.
-// Any non-zero value works (0 means "no connection" on the wire); the server echoes it
-// back as DestConnID so the client correlates the accept and every later frame. A
-// single client circuit needs only one id.
-const nbipxClientConnID uint16 = 0x0001
+// nbipxConnIDs hands out the client's SourceConnID per Dial. 0 means "no connection"
+// on the wire, so it is skipped on wrap. A fixed 0x0001 reused across reconnects from
+// the same station collided with the server's still-live circuit (same node + remote
+// id) and the new SESSION_INITIALIZE was treated as data on the old session.
+var nbipxConnIDs atomic.Uint32
+
+func nextNBIPXClientConnID() uint16 {
+	for {
+		n := uint16(nbipxConnIDs.Add(1))
+		if n != 0 {
+			return n
+		}
+	}
+}
 
 // nbipxInitCtrl is the ConnCtrlFlag on the client's SESSION_INITIALIZE DATA frame:
 // ACK (0x40, request an acknowledgement — the accept) | CONFIRM (0x01). Observed 0x41
@@ -121,6 +131,7 @@ type nbipxTransport struct {
 	serverNet    [4]byte
 	serverMAC    [6]byte // Ethernet source MAC of the server's frames — the L2 next hop
 	haveServer   bool
+	localConnID  uint16 // our SourceConnID, unique per Dial so reconnects do not collide
 	remoteConnID uint16 // the server's SourceConnID, learned from the accept
 	established  bool
 
@@ -164,6 +175,7 @@ func DialNBIPXFrame(fl link.FrameLink, srcMAC [6]byte, serverName string, frameT
 		frameTypePinned: pinned,
 		sendSeq:         1,
 		recvSeq:         0,
+		localConnID:     nextNBIPXClientConnID(),
 		acceptCh:        make(chan struct{}),
 		respCh:          make(chan []byte, 2),
 		stop:            make(chan struct{}),
@@ -193,7 +205,7 @@ func nbipxCallingName(mac [6]byte) string {
 // establish sends the SESSION_INITIALIZE and waits for the server's session-accept,
 // retransmitting on timeout (the connectionless carrier may drop the first broadcast).
 func (t *nbipxTransport) establish() error {
-	nbipxtracef("SESSION_INITIALIZE %q (DestConnID 0xFFFF, SourceConnID %d)", t.calledName.String(), nbipxClientConnID)
+	nbipxtracef("SESSION_INITIALIZE %q (DestConnID 0xFFFF, SourceConnID %d)", t.calledName.String(), t.localConnID)
 	deadline := time.Now().Add(nbipxRequestTimeout)
 	for attempt := 0; time.Now().Before(deadline); attempt++ {
 		if err := t.sendInit(); err != nil {
@@ -227,7 +239,7 @@ func (t *nbipxTransport) sendInit() error {
 	h := &nb.NBIPXSessionHeader{
 		ConnCtrlFlag:   nbipxInitCtrl,
 		DataStreamType: nb.NBIPXSessionData,
-		SourceConnID:   nbipxClientConnID,
+		SourceConnID:   t.localConnID,
 		DestConnID:     nbipxUnassignedConnID,
 		SendSeq:        0, // the INIT consumes seq 0; first SMB frame is seq 1
 		TotalDataLen:   uint16(len(payload)),
@@ -301,7 +313,7 @@ func (t *nbipxTransport) sendDataMessage(req []byte, firstSeq, remoteID, recvSeq
 		h := &nb.NBIPXSessionHeader{
 			ConnCtrlFlag:   ctrl,
 			DataStreamType: nb.NBIPXSessionData,
-			SourceConnID:   nbipxClientConnID,
+			SourceConnID:   t.localConnID,
 			DestConnID:     remoteID,
 			SendSeq:        seq,
 			TotalDataLen:   total,
@@ -394,7 +406,7 @@ func (t *nbipxTransport) readLoop() {
 			continue
 		}
 		// Only frames on our circuit: the server stamps our SourceConnID as DestConnID.
-		if hdr.DestConnID != nbipxClientConnID {
+		if hdr.DestConnID != t.localConnID {
 			continue
 		}
 		t.handleInbound(d, hdr, srcMAC, frameType)
@@ -411,9 +423,10 @@ func (t *nbipxTransport) handleInbound(d *ipxproto.Datagram, hdr *nb.NBIPXSessio
 	eom := hdr.ConnCtrlFlag&nb.NBIPXConnFlagEOM != 0
 
 	t.mu.Lock()
-	// The session-accept: SYS|CONFIRM, RecvSeq 1, carrying the server's SourceConnID. It
-	// is the first frame that reaches us, so it also teaches us the server's node.
-	if !t.established && sys && confirm {
+	// The session-accept: SYS|CONFIRM with RecvSeq 1 (NBIPXSessionAcceptRecvSeq),
+	// carrying the server's SourceConnID. RecvSeq 1 distinguishes a fresh accept from
+	// a SYS|CONFIRM re-accept of a stale circuit (which keeps the old counters).
+	if !t.established && sys && confirm && hdr.RecvSeq == nb.NBIPXSessionAcceptRecvSeq {
 		t.serverNode = d.SrcNode
 		t.serverNet = d.SrcNet
 		t.serverMAC = srcMAC

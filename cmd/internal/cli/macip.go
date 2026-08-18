@@ -3,9 +3,7 @@ package cli
 import (
 	"fmt"
 	"net"
-	"strings"
 
-	"github.com/ObsoleteMadness/ClassicStack/adapter/link/pcap"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/macipgw"
 	"github.com/ObsoleteMadness/ClassicStack/compose/runtime"
 	"github.com/ObsoleteMadness/ClassicStack/core/hostinfo"
@@ -53,7 +51,10 @@ func macipEgressOpener(params macip.EgressParams, ownsIP func(macip.IPv4) bool) 
 		// real gateway. The MacIP gateway logs when it advertises this fallback.
 		defGW = hostIP
 	}
-	if hostMAC == "" {
+	// NAT-only (OS sockets, no pcap) does not need a host MAC. Bridge and DHCP-relay
+	// inject Ethernet frames and still require one.
+	natOnly := params.NATEnabled && !params.DHCPRelay
+	if hostMAC == "" && !natOnly {
 		return nil, fmt.Errorf("macip: host MAC could not be auto-detected for interface %q; set host_mac", params.Interface)
 	}
 
@@ -75,65 +76,43 @@ func macipEgressOpener(params macip.EgressParams, ownsIP func(macip.IPv4) bool) 
 	return eg, nil
 }
 
-// detectIfaceMACIP returns the host MAC and first IPv4 of the OS interface whose IPv4
-// addresses match the named pcap device. Returns empty strings when the device or a
-// matching OS interface cannot be found (the caller then requires explicit config).
+// detectIfaceMACIP returns the host MAC and first IPv4 of the OS interface that
+// corresponds to the named pcap device. Shared with the NIC-port HostMAC path
+// (hostinfo.InterfaceForDevice). Empty strings when the device cannot be resolved.
 func detectIfaceMACIP(pcapName string) (mac, ipv4 string) {
-	devs, err := pcap.ListDevices()
+	hd, err := pcapHostDevices()
 	if err != nil {
 		return "", ""
 	}
-	want := map[string]struct{}{}
-	for _, d := range devs {
-		if d.Name != pcapName {
-			continue
-		}
-		for _, a := range d.Addresses {
-			if ip := parseIP4(a); ip != nil {
-				want[ip.String()] = struct{}{}
-			}
-		}
-		break
-	}
-	if len(want) == 0 {
-		return "", ""
-	}
-	ifaces, err := net.Interfaces()
+	ifi, err := hostinfo.InterfaceForDevice(pcapName, hd)
 	if err != nil {
 		return "", ""
 	}
-	for _, iface := range ifaces {
-		if len(iface.HardwareAddr) != 6 {
-			continue
-		}
-		addrs, _ := iface.Addrs()
-		for _, addr := range addrs {
-			var ip net.IP
-			switch v := addr.(type) {
-			case *net.IPNet:
-				ip = v.IP
-			case *net.IPAddr:
-				ip = v.IP
-			}
-			ip4 := ip.To4()
-			if ip4 == nil {
-				continue
-			}
-			if _, ok := want[ip4.String()]; ok {
-				return iface.HardwareAddr.String(), ip4.String()
-			}
-		}
+	if len(ifi.HardwareAddr) == 6 {
+		mac = ifi.HardwareAddr.String()
 	}
-	return "", ""
+	return mac, firstIPv4(ifi)
 }
 
-// parseIP4 parses a pcap address string (optionally CIDR) to an IPv4, or nil.
-func parseIP4(addr string) net.IP {
-	a := strings.TrimSpace(addr)
-	if slash := strings.IndexByte(a, '/'); slash >= 0 {
-		a = a[:slash]
+// firstIPv4 returns the first IPv4 address bound to ifi, or "".
+func firstIPv4(ifi net.Interface) string {
+	addrs, err := ifi.Addrs()
+	if err != nil {
+		return ""
 	}
-	return net.ParseIP(a).To4()
+	for _, addr := range addrs {
+		var ip net.IP
+		switch v := addr.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
+		}
+		if ip4 := ip.To4(); ip4 != nil {
+			return ip4.String()
+		}
+	}
+	return ""
 }
 
 // ipv4Dotted renders a macip.IPv4 as a dotted-quad string ("" for the zero address).
