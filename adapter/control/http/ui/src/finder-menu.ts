@@ -1,69 +1,45 @@
-/** Finder View menu: auto-expand, fork icons, zip layout, resource explorer. */
+/** Finder File and View menus shared with the PWA (ClassicStack-web). */
 
 import type { FinderWindow } from 'classicstack-web/ui/finder-window';
 import type { ExtensionEditorDialog } from 'classicstack-web/ui/extension-editor-dialog';
-import { loadPrefs, savePrefs } from 'classicstack-web/util/prefs';
-import { iconCache } from 'classicstack-web/fs/icon-cache';
+import {
+  FILE_MENU_KEY,
+  applyFileMenuAction,
+  fileMenuInnerHTML,
+  isFileMenuToggle,
+} from 'classicstack-web/ui/finder-file-menu';
+import {
+  VIEW_MENU_KEY,
+  applyViewMenuAction,
+  isViewMenuToggle,
+  viewMenuInnerHTML,
+} from 'classicstack-web/ui/finder-view-menu';
 import { MENUBAR_CHANGE, menubarOpenKey, setMenubarOpen } from 'classicstack-web/ui/menu-bar-track';
 
-export function mountFinderMenu(
+type FinderMenuHost = { finder: FinderWindow; extensionEditor?: ExtensionEditorDialog };
+
+function mountFinderMenuItem(
   header: HTMLElement,
-  finder: FinderWindow,
-  extensionEditor: ExtensionEditorDialog,
+  key: string,
+  className: string,
+  inner: (host: FinderMenuHost, open: boolean) => string,
+  isToggle: (act: string | undefined) => boolean,
+  apply: (act: string | undefined, host: FinderMenuHost) => Promise<boolean>,
+  host: FinderMenuHost,
+  before?: Element | null,
 ): void {
-  const wrap = document.createElement('div');
-  wrap.className = 'app-menu finder-view-menu';
-  wrap.dataset.menu = 'view';
   const menus = header.querySelector('.app-brand-menus') as HTMLElement | null;
-  const advanced = menus?.querySelector('.app-advanced-menu');
-  if (menus && advanced) menus.insertBefore(wrap, advanced);
+  const wrap = document.createElement('div');
+  wrap.className = `app-menu ${className}`;
+  wrap.dataset.menu = key;
+  if (before) menus?.insertBefore(wrap, before);
+  else if (menus) menus.append(wrap);
   else header.insertBefore(wrap, header.querySelector('#conn'));
 
   const paint = (): void => {
-    const open = (menus ? menubarOpenKey(menus) : null) === 'view';
-    const hidden = finder.getShowHiddenFiles();
-    const autoExpand = finder.getAutoExpandFiles();
-    const icons = finder.getReadFinderIcons();
-    const zipStyle = loadPrefs().zipExportStyle;
+    const open = (menus ? menubarOpenKey(menus) : null) === key;
     wrap.classList.toggle('open', open);
-    wrap.innerHTML = `
-      <button type="button" class="app-menu__trigger" data-act="toggle" aria-haspopup="true" aria-expanded="${open}">
-        View
-      </button>
-      <div class="app-menu__dropdown" role="menu" ${open ? '' : 'hidden'}>
-        <button type="button" role="menuitemcheckbox" aria-checked="${hidden}" data-act="toggle-show-hidden" class="app-menu__item">
-          <span class="app-menu__check">${hidden ? '✓' : ''}</span>
-          Show hidden files
-        </button>
-        <button type="button" role="menuitemcheckbox" aria-checked="${autoExpand}" data-act="toggle-auto-expand" class="app-menu__item">
-          <span class="app-menu__check">${autoExpand ? '✓' : ''}</span>
-          Auto-expand files
-        </button>
-        <button type="button" role="menuitemcheckbox" aria-checked="${icons}" data-act="toggle-read-finder-icons" class="app-menu__item">
-          <span class="app-menu__check">${icons ? '✓' : ''}</span>
-          Read finder icons
-        </button>
-        <hr />
-        <button type="button" role="menuitemradio" aria-checked="${zipStyle === 'appledouble'}" data-act="zip-appledouble" class="app-menu__item">
-          <span class="app-menu__check">${zipStyle === 'appledouble' ? '✓' : ''}</span>
-          AppleDouble zip
-        </button>
-        <button type="button" role="menuitemradio" aria-checked="${zipStyle === 'macosx'}" data-act="zip-macosx" class="app-menu__item">
-          <span class="app-menu__check">${zipStyle === 'macosx' ? '✓' : ''}</span>
-          Mac OS X zip
-        </button>
-        <hr />
-        <button type="button" role="menuitem" data-act="resource-fork" class="app-menu__item">
-          Resource Fork…
-        </button>
-        <button type="button" role="menuitem" data-act="extension-editor" class="app-menu__item">
-          Extension editor…
-        </button>
-        <button type="button" role="menuitem" data-act="clear-icon-cache" class="app-menu__item">
-          Clear icon cache
-        </button>
-      </div>
-    `;
+    wrap.innerHTML = inner(host, open);
   };
 
   const dismiss = (): void => {
@@ -75,26 +51,41 @@ export function mountFinderMenu(
   };
 
   wrap.addEventListener('click', (e) => {
-    const t = (e.target as HTMLElement).closest('[data-act]') as HTMLElement | null;
+    const el = e.target instanceof Element ? e.target : e.target instanceof Node ? e.target.parentElement : null;
+    const t = el?.closest('[data-act]') as HTMLElement | null;
     if (!t) return;
     const act = t.dataset.act;
-    if (act === 'toggle') return;
-    e.stopPropagation();
-    if (act === 'toggle-show-hidden') finder.setShowHiddenFiles(!finder.getShowHiddenFiles());
-    else if (act === 'toggle-auto-expand') finder.setAutoExpandFiles(!finder.getAutoExpandFiles());
-    else if (act === 'toggle-read-finder-icons') finder.setReadFinderIcons(!finder.getReadFinderIcons());
-    else if (act === 'zip-appledouble') savePrefs({ zipExportStyle: 'appledouble' });
-    else if (act === 'zip-macosx') savePrefs({ zipExportStyle: 'macosx' });
-    else if (act === 'resource-fork') finder.openResourceExplorer();
-    else if (act === 'extension-editor') extensionEditor.open();
-    else if (act === 'clear-icon-cache') {
-      void iconCache.clear().then(() => finder.invalidateIcons());
+    if (isToggle(act)) {
+      e.stopPropagation();
+      if (menus) {
+        setMenubarOpen(menus, menubarOpenKey(menus) === key ? null : key);
+      } else {
+        wrap.classList.toggle('open');
+        paint();
+      }
+      return;
     }
-    dismiss();
-    paint();
+    e.stopPropagation();
+    void apply(act, host).then((handled) => {
+      if (handled) {
+        dismiss();
+        paint();
+      }
+    });
   });
 
   menus?.addEventListener(MENUBAR_CHANGE, paint);
-
   paint();
+}
+
+export function mountFinderMenu(
+  header: HTMLElement,
+  finder: FinderWindow,
+  extensionEditor: ExtensionEditorDialog,
+): void {
+  const host = { finder, extensionEditor };
+  const menus = header.querySelector('.app-brand-menus') as HTMLElement | null;
+  const before = menus?.querySelector('.app-advanced-menu') ?? null;
+  mountFinderMenuItem(header, FILE_MENU_KEY, 'finder-file-menu', fileMenuInnerHTML, isFileMenuToggle, applyFileMenuAction, host, before);
+  mountFinderMenuItem(header, VIEW_MENU_KEY, 'finder-view-menu', viewMenuInnerHTML, isViewMenuToggle, applyViewMenuAction, host, before);
 }

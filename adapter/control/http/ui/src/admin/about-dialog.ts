@@ -3,6 +3,7 @@
 import { api, type HostInfo } from '../api';
 
 const REPO = 'https://github.com/ObsoleteMadness/ClassicStack';
+const ICONS8 = 'https://icons8.com/';
 const GPL = 'https://www.gnu.org/licenses/gpl-3.0.html';
 
 function extLink(href: string, label: string): string {
@@ -85,6 +86,10 @@ export class ServerAboutDialog extends HTMLElement {
             ClassicStack is free software under the
             ${extLink(GPL, 'GNU General Public License v3.0')}.
           </p>
+          <h3>Credits</h3>
+          <ul>
+            <li>Icons by ${extLink(ICONS8, 'Icons8')}</li>
+          </ul>
         </div>
         <footer class="netboot-dialog__footer">
           <button type="button" class="btn primary" data-act="close">OK</button>

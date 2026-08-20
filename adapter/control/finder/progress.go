@@ -23,16 +23,17 @@ type OpProgress struct {
 
 // TransferRequest names a cross-session copy or move between two open catalogs.
 type TransferRequest struct {
-	SrcSession  string `json:"srcSession"`
-	DestSession string `json:"destSession"`
-	SrcID       uint32 `json:"srcId"`
-	DestParent  uint32 `json:"destParentId"`
-	DestName    string `json:"destName"`
-	Replace     bool   `json:"replace"`
+	SrcSession  string  `json:"srcSession"`
+	DestSession string  `json:"destSession"`
+	SrcID       NodeRef `json:"srcId"`
+	DestParent  NodeRef `json:"destParentId"`
+	DestName    string  `json:"destName"`
+	Replace     bool    `json:"replace"`
 }
 
 // ExpandRequest names an archive to expand in-place on a session catalog.
 type ExpandRequest struct {
-	SessionID string `json:"sessionId"`
-	ID        uint32 `json:"id"`
+	SessionID string  `json:"sessionId"`
+	ID        NodeRef `json:"id"`
+	Path      string  `json:"path,omitempty"`
 }

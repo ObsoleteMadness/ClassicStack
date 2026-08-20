@@ -2,6 +2,7 @@ package registry
 
 import (
 	"github.com/ObsoleteMadness/ClassicStack/adapter/capture/pcapfile"
+	"github.com/ObsoleteMadness/ClassicStack/adapter/link/pcap"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
@@ -22,11 +23,17 @@ import (
 // dropped every NBF/IPX frame before the NetBEUI/IPX read loops saw it. An empty bpf
 // captures everything and demuxes in userland.
 //
+// mac is the station MAC this instance transmits from (sectionMACFor's resolution), or
+// the zero value when unknown. When non-zero it is ANDed into bpf as "not ether src mac"
+// (pcap.ExcludeSelf) so the kernel drops this instance's own transmitted frames instead of
+// them round-tripping through cgo into the software dedup layer (core/link.Dedup), which
+// remains the fallback when mac is unknown or the kernel rejects the filter.
+//
 // sec is the port section, consulted only for its Capture path: every NIC transport's
 // frames are Ethernet (DLT_EN10MB), so a configured Section.Capture tees them to a pcap
 // file uniformly for EtherTalk/IPX/NetBEUI/EtherDFS. A nil sec (or empty Capture) opens
 // undecorated.
-func nicLinkOpener(ctx *BuildContext, sec *port.Section, iface config.InterfaceSection, bpf string) func() (link.FrameLink, error) {
+func nicLinkOpener(ctx *BuildContext, sec *port.Section, iface config.InterfaceSection, bpf string, mac [6]byte) func() (link.FrameLink, error) {
 	if ctx.Opener == nil {
 		return nil
 	}
@@ -47,6 +54,7 @@ func nicLinkOpener(ctx *BuildContext, sec *port.Section, iface config.InterfaceS
 	if configured == "" && device != "" {
 		ctx.Logger(sec.InstanceName()).Log1(log.Info, "auto-selected primary NIC", log.Str("device", device))
 	}
+	bpf = pcap.ExcludeSelf(bpf, mac)
 	base := func() (link.FrameLink, error) { return open(device, bpf) }
 	return captureOpener(sec, pcapfile.LinkTypeEthernet, base)
 }

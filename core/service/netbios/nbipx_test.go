@@ -97,11 +97,17 @@ func sessionDatagram(hdr *protocol.NBIPXSessionHeader, body []byte) *ipxproto.Da
 // sessionRequestBody builds the [called-name || calling-name || trailer] payload a
 // client sends in its session-request DATA frame (ERRATA captures/ipx.pcap frame 23).
 func sessionRequestBody() []byte {
-	called := protocol.NewName("CLASSICSTACK", protocol.NameTypeFileServer)
+	return sessionRequestBodyNamed("CLASSICSTACK")
+}
+
+// Name order is [SOURCE][DESTINATION]: the caller names itself first, then the
+// server it is calling (golden capture spec/captures/nbipx-win98.pcap frame 65).
+func sessionRequestBodyNamed(called string) []byte {
+	c := protocol.NewName(called, protocol.NameTypeFileServer)
 	calling := protocol.NewName("WIN98", protocol.NameTypeWorkstation)
 	body := make([]byte, 0, 2*protocol.NameLength+6)
-	body = append(body, called[:]...)
 	body = append(body, calling[:]...)
+	body = append(body, c[:]...)
 	body = append(body, 0xa0, 0x05, 0x25, 0x00, 0x0d, 0x00) // observed capability trailer
 	return body
 }
@@ -363,6 +369,26 @@ func TestNBIPX_EmitDatagramSendsNMPIMailslot(t *testing.T) {
 	}
 	if string(nmpi.Payload) != string(payload) {
 		t.Errorf("NMPI payload = %q, want %q", nmpi.Payload, payload)
+	}
+}
+
+// TestNBIPX_SessionRequestForeignNameIgnored proves a SESSION_INITIALIZE whose
+// called-name is not ours draws no accept. A Finder client on this same pcap
+// station used to have its WIN98-1 call stolen (captures/ipx.pcap frames 768–781).
+func TestNBIPX_SessionRequestForeignNameIgnored(t *testing.T) {
+	_, r, port, _ := newWiredIPXEngine(t)
+	body := sessionRequestBodyNamed("WIN98-1")
+	req := &protocol.NBIPXSessionHeader{
+		ConnCtrlFlag:   protocol.NBIPXConnFlagACK | protocol.NBIPXConnFlagEOM,
+		DataStreamType: protocol.NBIPXSessionData,
+		SourceConnID:   0x0001,
+		DestConnID:     0xFFFF,
+		TotalDataLen:   uint16(len(body)),
+		DataLen:        uint16(len(body)),
+	}
+	r.Inbound(sessionDatagram(req, body))
+	if dg, _ := port.lastSentStream(protocol.NBIPXSessionData); dg != nil {
+		t.Fatal("session-accept sent for a foreign called-name")
 	}
 }
 

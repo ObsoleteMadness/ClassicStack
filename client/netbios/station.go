@@ -70,8 +70,10 @@ func DefaultStationName(mac [6]byte, typ uint8) nb.Name {
 // device serves one FrameLink at a time). A per-carrier open failure is returned in errs
 // keyed by protocol rather than aborting the sweep, so a segment reachable over only one
 // carrier still enumerates. station is the source NetBIOS name to present; a zero Name
-// derives one from the opener's MAC.
-func BrowseAll(opener *link.Opener, station nb.Name, window time.Duration) (map[Protocol][]Host, map[Protocol]error) {
+// derives one from the opener's MAC. workgroup is the domain to fan the solicit out to
+// ("" uses the blind default) — load-bearing on the IPX carriers, whose browser datagrams
+// are addressed to <workgroup><00>.
+func BrowseAll(opener *link.Opener, station nb.Name, workgroup string, window time.Duration) (map[Protocol][]Host, map[Protocol]error) {
 	hosts := map[Protocol][]Host{}
 	errs := map[Protocol]error{}
 	for _, p := range Protocols {
@@ -88,7 +90,7 @@ func BrowseAll(opener *link.Opener, station nb.Name, window time.Duration) (map[
 			errs[p] = err
 			continue
 		}
-		found, err := c.Browse(window)
+		found, err := c.Browse(workgroup, window)
 		_ = c.Close()
 		if err != nil {
 			errs[p] = err

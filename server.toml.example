@@ -460,6 +460,13 @@ addr = ":1984"
 #   enabled           gate the client on/off (default false)
 #   iface             [[interface]] NAME to bind (e.g. br-lan). Empty = the
 #                     default interface.
+#   name              NetBIOS/SMB name the outbound client presents when
+#                     browsing/connecting (calling name + browse station name).
+#                     Empty = the server's own [identity] hostname.
+#   mac               Ethernet source address the outbound client presents.
+#                     Empty = the interface's hw_address, or the host NIC's own
+#                     MAC. Set this when the client and the server's own ports
+#                     share one interface, to give the client a distinct station.
 #   services          schemes to probe and connect: "afp", "smb", "ncp",
 #                     "etherdfs". Empty = all four.
 #   max_idle_minutes  unused remote session idle time before disconnect
@@ -471,6 +478,8 @@ addr = ":1984"
 [Client]
 enabled = false
 iface = "br-lan"
+# name = "CLASSICSTACK"
+# mac = "02:00:00:00:00:01"
 services = ["afp", "smb", "ncp", "etherdfs"]
 max_idle_minutes = 10
 mount = false

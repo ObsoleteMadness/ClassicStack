@@ -65,7 +65,12 @@ func proxyAARPSideOpener(ctx *BuildContext, ifaceName string) bridge.LinkOpener 
 	// per-port capture (nil sec); a bridge-side capture would be its own config if wanted.
 	// The bridge sides forward AppleTalk (rewriting AARP Replies), so they capture the
 	// EtherTalk traffic set — DDP + AARP — the same filter the EtherTalk port uses.
-	open := nicLinkOpener(ctx, nil, iface, ethertalk.BPFFilter)
+	// sectionMACFor needs a non-nil section (it reads sec.MAC directly), so an empty one
+	// stands in — this side has no port-level MAC override, only the interface/host
+	// fallbacks — resolving this side's own hardware address so the kernel excludes this
+	// side's own transmitted frames from its capture.
+	mac := sectionMACFor(ctx, &port.Section{}, iface)
+	open := nicLinkOpener(ctx, nil, iface, ethertalk.BPFFilter, mac)
 	if open == nil {
 		return nil
 	}

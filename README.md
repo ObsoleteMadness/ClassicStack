@@ -516,6 +516,7 @@ a clear debt to the originals.
 - **go-winfsp** and **cgofuse** by Bill Zissimopoulos. 
 - **EtherDFS** by **Mateusz Viste**, Copyright © 2017-2023 Mateusz Viste — the EtherType
   0xEDF5 DOS file-system protocol our EtherDFS service re-implements.
+- **Icons8** — icons used in the SPA / topology UI. https://icons8.com/
 
 ## License
 This work is released under the terms of the GPL-3.0. 

@@ -55,9 +55,12 @@ func TestIPXFactory_OpenerGoesLive(t *testing.T) {
 		t.Fatalf("opener called with iface %v, want eth0 (port did not go live)", got)
 	}
 	// The IPX port must program the IPX capture filter — not the shared EtherTalk
-	// filter that previously dropped every IPX frame before the read loop saw it.
-	if got := openedBPF.Load(); got != ipx.BPFFilter {
-		t.Fatalf("opener called with bpf %v, want %v", got, ipx.BPFFilter)
+	// filter that previously dropped every IPX frame before the read loop saw it —
+	// ANDed with a self-exclusion clause for the section's configured MAC so the
+	// kernel drops this instance's own transmitted frames from the capture.
+	wantBPF := "(" + ipx.BPFFilter + ") and not (ether src 00:11:22:33:44:55)"
+	if got := openedBPF.Load(); got != wantBPF {
+		t.Fatalf("opener called with bpf %v, want %v", got, wantBPF)
 	}
 	if err := c.Stop(ctx); err != nil {
 		t.Fatalf("Stop: %v", err)

@@ -44,8 +44,8 @@ func resolveServer(fl link.FrameLink, srcMAC [6]byte, serverName string, frameTy
 	// Broadcast a General Query for the File Server type in each frame type.
 	query := ncpproto.MarshalQuery(ncpproto.SAPGeneralQuery, ncpproto.SAPServerTypeFileServer, nil)
 	d := &ipxproto.Datagram{
-		Type:    0x04, // SAP rides IPX type 4 (PEP); the server accepts type 0/4
-		DstNode: [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
+		Type:    ipxproto.TypePEP, // SAP rides IPX type 4 (PEP); the server accepts type 0/4
+		DstNode: ipxproto.BroadcastNode,
 		DstSock: ncpproto.SAPSocket,
 		SrcNode: srcMAC,
 		SrcSock: ncpproto.SAPSocket,

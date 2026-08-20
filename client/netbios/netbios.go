@@ -11,6 +11,11 @@
 //     to the NetBIOS functional-address multicast MAC.
 //   - NBIPX (NetBIOS-over-IPX / NWLink): the mailslot write rides an NMPI MailslotSend
 //     (opcode 0xFC) inside an IPX type-20 datagram on the datagram socket (0x0553).
+//   - IPX (direct-hosted SMB over IPX): the same NMPI MailslotSend on the same socket —
+//     a direct-hosted station has no NetBIOS session layer but runs the full browser
+//     protocol on the NBIPX datagram plane verbatim (golden nwlink-win98.pcap frames
+//     26-41). It is a separate carrier only so a caller runs the follow-up SMB session
+//     over the right transport.
 //
 // Both wire encodings mirror the SERVER's emitDatagram exactly (core/service/netbios
 // nbf.go / nbipx.go), so a datagram this carrier sends is byte-indistinguishable from
@@ -46,6 +51,18 @@ const (
 	// NBIPX is NetBIOS-over-IPX (NWLink) — the mailslot rides an NMPI MailslotSend in an
 	// IPX type-20 datagram on socket 0x0553.
 	NBIPX Protocol = "nbipx"
+	// IPX is direct-hosted SMB over IPX (NWLink "direct host", socket 0x0550). Its
+	// BROWSER datagram plane is byte-identical to NBIPX's — a direct-hosted station
+	// announces, elects and answers GetBackupList with the same NMPI MailslotSend on
+	// socket 0x0553 (golden spec/captures/nwlink-win98.pcap frames 26-41 versus
+	// nbipx-win98.pcap frames 16-60) — so a Conn opened on it sends and decodes exactly
+	// what NBIPX does. What differs is the SESSION leg a caller runs afterwards: a
+	// browse-list NetServerEnum2 goes over direct-hosted SMB (client/smb's
+	// CarrierDirectIPX) instead of an NB-IPX session on socket 0x0455. The two are
+	// separate carriers because a station binds one or the other: a direct-host-only
+	// Win98 refuses an NB-IPX session and vice versa, so each must be swept and reported
+	// on its own.
+	IPX Protocol = "ipx"
 	// TCP is the TCP/IP browse family (NBT name service + SMB-over-TCP). It is NOT a
 	// datagram Conn carrier — Conn.Open rejects it — but browse.EnumerateTCP tags
 	// servers with this so a UI can badge TCP/IP hits separately from NBF/NBIPX.
@@ -54,7 +71,11 @@ const (
 
 // Protocols is every carrier a Conn can open, in a stable order. csnetview iterates it
 // to sweep each transport; a UI renders it as the transport choices.
-var Protocols = []Protocol{NBF, NBIPX}
+var Protocols = []Protocol{NBF, NBIPX, IPX}
+
+// ipxFamily reports whether p rides the NWLink IPX datagram plane (NMPI MailslotSend on
+// socket 0x0553) — true for both NBIPX and direct-hosted IPX, which share it verbatim.
+func ipxFamily(p Protocol) bool { return p == NBIPX || p == IPX }
 
 // NetBIOS name-type suffixes a datagram consumer needs, re-exported so a caller stamps a
 // station or target name without reaching into the core codec. NameTypeWorkstation (<00>)
@@ -65,7 +86,7 @@ const (
 	NameTypeFileServer  = nb.NameTypeFileServer
 )
 
-// ParseProtocol maps a token ("nbf", "nbipx", case-insensitive) to a Protocol, or
+// ParseProtocol maps a token ("nbf", "nbipx", "ipx", case-insensitive) to a Protocol, or
 // returns an error naming the accepted values. An empty token is rejected (the caller
 // decides its own default) so a silent wrong-carrier send is impossible.
 func ParseProtocol(s string) (Protocol, error) {
@@ -74,8 +95,10 @@ func ParseProtocol(s string) (Protocol, error) {
 		return NBF, nil
 	case string(NBIPX):
 		return NBIPX, nil
+	case string(IPX):
+		return IPX, nil
 	default:
-		return "", fmt.Errorf("netbios: unknown protocol %q (want %s or %s)", s, NBF, NBIPX)
+		return "", fmt.Errorf("netbios: unknown protocol %q (want %s, %s or %s)", s, NBF, NBIPX, IPX)
 	}
 }
 

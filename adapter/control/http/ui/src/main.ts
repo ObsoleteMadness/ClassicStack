@@ -7,6 +7,7 @@ import { AlertDialog } from 'classicstack-web/ui/alert-dialog';
 import { LoginDialog } from 'classicstack-web/ui/login-dialog';
 import { NameConflictDialog } from 'classicstack-web/ui/name-conflict-dialog';
 import { ResourceForkExplorer } from 'classicstack-web/ui/resource-fork-explorer';
+import { WinResourceExplorer } from 'classicstack-web/ui/win-resource-explorer';
 import { GetInfoWindow } from 'classicstack-web/ui/get-info-window';
 import { ExtensionEditorDialog } from 'classicstack-web/ui/extension-editor-dialog';
 import { hydrateExtensionMap, setExtensionMapStore } from 'classicstack-web/fs/extension-map';
@@ -91,6 +92,8 @@ async function main(): Promise<void> {
   const nameConflictDialog = new NameConflictDialog();
   const resourceExplorer = new ResourceForkExplorer();
   resourceExplorer.hidden = true;
+  const winResourceExplorer = new WinResourceExplorer();
+  winResourceExplorer.hidden = true;
   const getInfoWindow = new GetInfoWindow();
   getInfoWindow.hidden = true;
   const extensionEditor = new ExtensionEditorDialog();
@@ -110,6 +113,7 @@ async function main(): Promise<void> {
     loginDialog,
     nameConflictDialog,
     resourceExplorer,
+    winResourceExplorer,
     getInfoWindow,
     extensionEditor,
     settings,
@@ -140,6 +144,7 @@ async function main(): Promise<void> {
   });
   finder.bind(null, host);
   finder.bindResourceExplorer(resourceExplorer);
+  finder.bindWinResourceExplorer(winResourceExplorer);
   finder.bindGetInfoWindow(getInfoWindow);
   mountAppMenu(header, { settings, about, log: logWindow, sharing, leases, notify, topology });
   mountFinderMenu(header, finder, extensionEditor);

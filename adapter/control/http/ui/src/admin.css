@@ -24,11 +24,13 @@
   white-space: nowrap;
 }
 
-.cs-shell .finder-view-menu {
+.cs-shell .finder-view-menu,
+.cs-shell .finder-file-menu {
   position: relative;
 }
 
-.cs-shell .finder-view-menu .app-menu__dropdown {
+.cs-shell .finder-view-menu .app-menu__dropdown,
+.cs-shell .finder-file-menu .app-menu__dropdown {
   left: 0;
   right: auto;
 }

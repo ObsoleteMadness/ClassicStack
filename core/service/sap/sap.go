@@ -62,7 +62,7 @@ const Name = "SAP"
 const sapInterval = 60 * time.Second
 
 // ipxBroadcastNode is the all-ones IPX node the periodic advertisement fans to.
-var ipxBroadcastNode = [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
+var ipxBroadcastNode = ipxproto.BroadcastNode
 
 // IPXSender is the IPX datagram egress the advertiser drives: the core/router/ipx
 // mini-router's Send satisfies it, so the advertiser never imports the router.
@@ -223,7 +223,7 @@ func (a *Advertiser) broadcast() {
 	net := a.network
 	a.mu.Unlock()
 	_ = a.sender.Send(&ipxproto.Datagram{
-		Type:    0x04, // PEP
+		Type:    ipxproto.TypePEP,
 		DstNet:  net,
 		DstNode: ipxBroadcastNode,
 		DstSock: ncpproto.SAPSocket,
@@ -277,7 +277,7 @@ func (a *Advertiser) HandleDatagram(d *ipxproto.Datagram) {
 		log.Str("querier", querier))
 	payload := ncpproto.MarshalResponse(op, entries, nil)
 	_ = a.sender.Send(&ipxproto.Datagram{
-		Type:    0x04,
+		Type:    ipxproto.TypePEP,
 		DstNet:  d.SrcNet,
 		DstNode: d.SrcNode,
 		DstSock: d.SrcSock,

@@ -162,17 +162,9 @@ func (s *Service) Connect(ctx context.Context, req ConnectRequest) (*SessionInfo
 	s.put(sess)
 	s.log.Log(log.Debug, "finder remote session",
 		log.Str("session", sess.ID), log.Str("server", serverName),
-		log.Str("kind", kind), log.Str("auth", strings.Join(uams, "|")))
-	return &SessionInfo{
-		SessionID:  sess.ID,
-		ServerName: serverName,
-		Kind:       kind,
-		Volumes:    volumes,
-		AllowGuest: allowGuest,
-		UAMs:       uams,
-		OS:         osName,
-		Dialect:    dialect,
-	}, nil
+		log.Str("kind", kind), log.Str("auth", strings.Join(uams, "|")),
+		log.Int("volumes", int64(len(volumes))))
+	return sess.info(), nil
 }
 
 func guestAllowed(advertised []string, guestLogin bool, user string) bool {

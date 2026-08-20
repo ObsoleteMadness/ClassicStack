@@ -138,19 +138,24 @@ func openPcapTransport(opener *clientlink.Opener, serverName string) (Transport,
 		if err != nil {
 			return nil, err
 		}
-		return DialIPXFrame(fl, mac, frameType, framePinned), nil
+		return DialIPXWithOpts(fl, mac, serverName, frameType, framePinned, DialIPXOpts{
+			CallingName: opener.CallingName,
+		})
 	case CarrierNBIPX:
 		fl, err := opener.FrameLink(ipxBPF)
 		if err != nil {
 			return nil, err
 		}
-		return DialNBIPXFrame(fl, mac, serverName, frameType, framePinned)
+		return DialNBIPXWithOpts(fl, mac, serverName, frameType, framePinned, DialNBIPXOpts{
+			CallingName: opener.CallingName,
+			KnownServer: opener.KnownServer,
+		})
 	case CarrierNBF:
 		fl, err := opener.FrameLink(nbfBPF)
 		if err != nil {
 			return nil, err
 		}
-		return DialNBF(fl, mac, serverName)
+		return DialNBFWithOpts(fl, mac, serverName, DialNBFOpts{CallingName: opener.CallingName})
 	default:
 		return nil, fmt.Errorf("smb: carrier %q not supported over pcap (want %s|%s|%s)",
 			opener.Spec.Carrier, CarrierDirectIPX, CarrierNBIPX, CarrierNBF)

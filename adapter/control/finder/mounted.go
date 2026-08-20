@@ -44,14 +44,17 @@ func mountedFromSession(sess *Session, mountpoint string) MountedVolume {
 		vol = info.Volumes[0]
 	}
 	return MountedVolume{
-		SessionID:  info.SessionID,
-		Kind:       info.Kind,
-		ServerName: info.ServerName,
-		Volume:     vol,
-		Target:     info.Target,
-		Transport:  info.Transport,
-		RootID:     info.RootID,
-		Mountpoint: mountpoint,
+		SessionID:    info.SessionID,
+		Kind:         info.Kind,
+		ServerName:   info.ServerName,
+		Volume:       vol,
+		Target:       info.Target,
+		Transport:    info.Transport,
+		RootID:       info.RootID,
+		RootPath:     info.RootPath,
+		Mountpoint:   mountpoint,
+		Protocol:     info.Capabilities.Identity.Protocol,
+		Capabilities: info.Capabilities,
 	}
 }
 

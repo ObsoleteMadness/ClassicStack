@@ -112,6 +112,18 @@ type Opener struct {
 	// hw_address) overwrites it. A still-zero value lets the transport synthesise a
 	// locally-administered random MAC (wired Ethernet spoofing / tests).
 	MAC [6]byte
+	// CallingName, when non-empty, overrides a NetBIOS session carrier's (SMB-over-
+	// NBIPX, SMB-over-NBF) MAC-derived calling name. A caller running as part of the
+	// ClassicStack server (finder) sets this to the server's own identity so the
+	// outbound client and the server's own NetBIOS presence share one name instead
+	// of a throwaway "CS-xxxxxx". Ignored by carriers with no NetBIOS calling name.
+	CallingName string
+	// KnownServer tells the NB-IPX carrier the called name is already known to be
+	// present on the segment (typically because a local browser.Service has already
+	// seen it announce itself), so establishment skips its own Find-name locate
+	// phase. Ignored by carriers with no such phase (NBF's LLC2 connect needs the
+	// peer's MAC from NAME_QUERY regardless, so it has no equivalent skip).
+	KnownServer bool
 	// inmemPeer, when set, is the loopback peer a KindInmem opener hands back so an
 	// in-process test can wire the client to a server over one frame pair.
 	inmemFrame link.FrameLink

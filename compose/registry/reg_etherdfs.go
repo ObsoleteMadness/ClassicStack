@@ -46,7 +46,8 @@ func init() {
 				return nil, nil // disabled → inert start
 			}
 			csec := cur.PortSection()
-			open := nicLinkOpener(ctx, csec, m.EffectiveInterfaceFor(csec), etherport.BPFFilter)
+			cIface := m.EffectiveInterfaceFor(csec)
+			open := nicLinkOpener(ctx, csec, cIface, etherport.BPFFilter, sectionMACFor(ctx, csec, cIface))
 			if open == nil {
 				return nil, nil
 			}

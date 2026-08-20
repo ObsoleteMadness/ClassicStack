@@ -13,8 +13,14 @@ import (
 // --- HostAnnouncement (0x01) / LocalMasterAnnouncement (0x0F) ---
 
 // Announcement is a host (0x01) or local-master (0x0F) announcement frame. The two
-// share a 33-byte fixed layout + optional comment; Op selects which opcode is
-// emitted/expected.
+// share a 32-byte fixed layout + a NUL-terminated comment; Op selects which opcode is
+// emitted/expected. Golden bytes, spec/captures/nbf-win98.pcap frame 61 (a Win98
+// local-master announcement):
+//
+//	0f 04 c0 d4 01 00 "WIN98-NBF-1"+NUL-pad(16) 04 00 03 20 44 00 15 04 55 aa "86box win98 nbf" 00
+//
+// — UpdateCount 4, periodicity 120000, OS 4.0, ServerType 0x00442003, browser
+// protocol 21.4, signature 0xAA55, then the comment.
 type Announcement struct {
 	Op             uint8 // OpHostAnnouncement or OpLocalMasterAnnounce
 	UpdateCount    uint8
@@ -28,10 +34,15 @@ type Announcement struct {
 	Comment        string
 }
 
-// Marshal renders an announcement frame (33-byte fixed header + optional
-// NUL-terminated comment).
+// announcementFixed is the fixed-header length of a host/local-master announcement;
+// the NUL-terminated comment follows it (an empty comment is the bare NUL, which is
+// why the minimum frame is announcementFixed+1 = AnnouncementMinLen).
+const announcementFixed = 32
+
+// Marshal renders an announcement frame (32-byte fixed header + NUL-terminated
+// comment).
 func (f Announcement) Marshal() []byte {
-	out := make([]byte, 33)
+	out := make([]byte, announcementFixed+1)
 	out[0] = f.Op
 	out[1] = f.UpdateCount
 	bp.PutLE32(out[2:6], f.PeriodicityMS)
@@ -44,27 +55,28 @@ func (f Announcement) Marshal() []byte {
 	out[29] = f.VersionMinor
 	bp.PutLE16(out[30:32], Signature)
 	comment := f.Comment
-	if len(comment) > 42 {
-		comment = comment[:42]
+	if len(comment) > maxCommentLen {
+		comment = comment[:maxCommentLen]
 	}
 	if comment != "" {
-		return append(out[:32], append([]byte(comment), 0)...)
+		return append(out[:announcementFixed], append([]byte(comment), 0)...)
 	}
 	return out
 }
 
+// maxCommentLen is the longest server comment an announcement carries ([MS-BRWS]
+// §2.2.1 Comment: at most 43 bytes including its NUL).
+const maxCommentLen = 42
+
 // UnmarshalAnnouncement parses a host or local-master announcement.
 func UnmarshalAnnouncement(b []byte) (*Announcement, error) {
-	if len(b) < 33 {
+	if len(b) < AnnouncementMinLen {
 		return nil, ErrShort
 	}
 	if b[0] != OpHostAnnouncement && b[0] != OpLocalMasterAnnounce {
 		return nil, ErrBadOp
 	}
-	comment := ""
-	if len(b) > 32 {
-		comment = parseName(b[32:])
-	}
+	comment := parseName(b[announcementFixed:])
 	return &Announcement{
 		Op:             b[0],
 		UpdateCount:    b[1],
@@ -82,28 +94,64 @@ func UnmarshalAnnouncement(b []byte) (*Announcement, error) {
 // --- DomainAnnouncement (0x0C) ---
 
 // DomainAnnouncement is a workgroup/domain announcement (0x0C): the machine group
-// and the local master browser that owns it.
+// and the local master browser that owns it. A local master browser broadcasts one
+// to __MSBROWSE__<01> alongside its periodic LocalMasterAnnouncement, so every other
+// master on the segment learns the workgroup exists.
+//
+// The layout is the 32-byte announcement fixed header with the MachineGroup in the
+// name field and the local master's name as the trailing NUL-terminated string
+// (where a host announcement carries its comment). Golden bytes,
+// spec/captures/nbf-win98.pcap frame 141:
+//
+//	0c 00 c0 d4 01 00 "WORKGROUP"+NUL-pad(16) 04 00 00 20 40 80 00 00 00 00 "WIN98-NBF-1" 00
+//
+// i.e. UpdateCount 0, periodicity 120000, OS 4.0, ServerType 0x80402000, and — unlike
+// a host announcement — version bytes 0/0 and signature 0x0000, NOT 0xAA55.
 type DomainAnnouncement struct {
-	PeriodicityMS uint32
-	MachineGroup  string
-	ServerType    uint32
-	LocalMaster   string
+	UpdateCount    uint8
+	PeriodicityMS  uint32
+	MachineGroup   string
+	OSVersionMajor uint8
+	OSVersionMinor uint8
+	ServerType     uint32
+	LocalMaster    string
+}
+
+// domainAnnouncementFixed is the fixed-header length shared with Announcement; the
+// local-master name follows it.
+const domainAnnouncementFixed = 32
+
+// Marshal renders a domain announcement (32-byte fixed header + NUL-terminated local
+// master name). The version bytes and signature stay zero, matching the golden frame.
+func (f DomainAnnouncement) Marshal() []byte {
+	out := make([]byte, domainAnnouncementFixed)
+	out[0] = OpDomainAnnouncement
+	out[1] = f.UpdateCount
+	bp.PutLE32(out[2:6], f.PeriodicityMS)
+	group := fixedName(f.MachineGroup)
+	copy(out[6:22], group[:])
+	out[22] = f.OSVersionMajor
+	out[23] = f.OSVersionMinor
+	bp.PutLE32(out[24:28], f.ServerType)
+	return appendName(out, f.LocalMaster)
 }
 
 // UnmarshalDomainAnnouncement parses a domain announcement ([MS-BRWS] §2.2.7).
 func UnmarshalDomainAnnouncement(b []byte) (*DomainAnnouncement, error) {
-	const fixed = 32
-	if len(b) < fixed+1 {
+	if len(b) < DomainAnnouncementMinLen {
 		return nil, ErrShort
 	}
 	if b[0] != OpDomainAnnouncement {
 		return nil, ErrBadOp
 	}
 	return &DomainAnnouncement{
-		PeriodicityMS: bp.LE32(b[2:6]),
-		MachineGroup:  parseName(b[6:22]),
-		ServerType:    bp.LE32(b[24:28]),
-		LocalMaster:   parseName(b[fixed:]),
+		UpdateCount:    b[1],
+		PeriodicityMS:  bp.LE32(b[2:6]),
+		MachineGroup:   parseName(b[6:22]),
+		OSVersionMajor: b[22],
+		OSVersionMinor: b[23],
+		ServerType:     bp.LE32(b[24:28]),
+		LocalMaster:    parseName(b[domainAnnouncementFixed:]),
 	}, nil
 }
 
@@ -119,9 +167,13 @@ type Election struct {
 	ServerName string
 }
 
+// electionFixed is the fixed-header length of an election frame; the NUL-terminated
+// candidate name follows it.
+const electionFixed = 14
+
 // Marshal renders an election frame (14-byte fixed + NUL-terminated name).
 func (f Election) Marshal() []byte {
-	out := make([]byte, 14)
+	out := make([]byte, electionFixed)
 	out[0] = OpRequestElection
 	out[1] = f.Version
 	bp.PutLE32(out[2:6], f.Criteria)
@@ -132,7 +184,7 @@ func (f Election) Marshal() []byte {
 
 // UnmarshalElection parses a request-election frame.
 func UnmarshalElection(b []byte) (*Election, error) {
-	if len(b) < 15 {
+	if len(b) < ElectionMinLen {
 		return nil, ErrShort
 	}
 	if b[0] != OpRequestElection {
@@ -143,7 +195,7 @@ func UnmarshalElection(b []byte) (*Election, error) {
 		Criteria:   bp.LE32(b[2:6]),
 		Uptime:     bp.LE32(b[6:10]),
 		Reserved:   bp.LE32(b[10:14]),
-		ServerName: parseName(b[14:]),
+		ServerName: parseName(b[electionFixed:]),
 	}, nil
 }
 
@@ -195,18 +247,26 @@ type GetBackupListRequest struct {
 	Token          uint32
 }
 
-// Marshal renders the request (6 bytes).
+// Marshal renders the request. [MS-BRWS] §2.2.5 defines six bytes (opcode, requested
+// count, 4-byte token) but every real Win98 GetBackupList request in the golden
+// captures is SEVEN — a trailing NUL after the token (DataCount 7:
+// spec/captures/nbf-win98.pcap frames 22/41/65, nbipx-win98.pcap frames 57/58,
+// nwlink-win98.pcap frames 26–31). We emit the observed seven; Unmarshal accepts
+// either, since the extra byte carries nothing.
 func (f GetBackupListRequest) Marshal() []byte {
-	out := make([]byte, 6)
+	out := make([]byte, getBackupListRequestLen)
 	out[0] = OpGetBackupListReq
 	out[1] = f.RequestedCount
 	bp.PutLE32(out[2:6], f.Token)
 	return out
 }
 
+// getBackupListRequestLen is the observed on-the-wire request length (see Marshal).
+const getBackupListRequestLen = GetBackupListMinLen + 1
+
 // UnmarshalGetBackupListRequest parses a GetBackupList request.
 func UnmarshalGetBackupListRequest(b []byte) (*GetBackupListRequest, error) {
-	if len(b) < 6 {
+	if len(b) < GetBackupListMinLen {
 		return nil, ErrShort
 	}
 	if b[0] != OpGetBackupListReq {
@@ -224,7 +284,7 @@ type GetBackupListResponse struct {
 
 // Marshal renders the response (6-byte header + NUL-terminated server names).
 func (f GetBackupListResponse) Marshal() []byte {
-	out := make([]byte, 6)
+	out := make([]byte, GetBackupListMinLen)
 	out[0] = OpGetBackupListResp
 	out[1] = uint8(len(f.BackupServers))
 	bp.PutLE32(out[2:6], f.Token)
@@ -236,7 +296,7 @@ func (f GetBackupListResponse) Marshal() []byte {
 
 // UnmarshalGetBackupListResponse parses a GetBackupList response.
 func UnmarshalGetBackupListResponse(b []byte) (*GetBackupListResponse, error) {
-	if len(b) < 6 {
+	if len(b) < GetBackupListMinLen {
 		return nil, ErrShort
 	}
 	if b[0] != OpGetBackupListResp {
@@ -244,7 +304,7 @@ func UnmarshalGetBackupListResponse(b []byte) (*GetBackupListResponse, error) {
 	}
 	count := int(b[1])
 	servers := make([]string, 0, count)
-	rest := b[6:]
+	rest := b[GetBackupListMinLen:]
 	for len(rest) > 0 && len(servers) < count {
 		i := indexByte(rest, 0)
 		if i < 0 {
@@ -280,15 +340,15 @@ func (f AnnouncementRequest) Marshal() []byte {
 
 // UnmarshalAnnouncementRequest parses an announcement request.
 func UnmarshalAnnouncementRequest(b []byte) (*AnnouncementRequest, error) {
-	if len(b) < 2 {
+	if len(b) < AnnouncementRequestMinLen {
 		return nil, ErrShort
 	}
 	if b[0] != OpAnnouncementRequest {
 		return nil, ErrBadOp
 	}
 	name := ""
-	if len(b) > 2 {
-		name = parseName(b[2:])
+	if len(b) > AnnouncementRequestMinLen {
+		name = parseName(b[AnnouncementRequestMinLen:])
 	}
 	return &AnnouncementRequest{Reserved: b[1], ResponseName: name}, nil
 }

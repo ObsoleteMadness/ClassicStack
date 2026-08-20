@@ -547,7 +547,7 @@ The name's 16th byte is the type suffix; `CLASSICSTACK<20>` (0x20 = Server servi
 | 16–17 | BytesReceived (LE) | |
 | 18+ | Data | the SMB PDU begins here |
 
-Observed DataStreamType values are a small set: `0x01` FIND.NAME, `0x02` NAME.RECOGNIZED, `0x06` **DATA** (every SMB session frame — establishment and messages both), `0x07` SESSION.END, `0x08` SESSION.END.ACK. **There is no distinct SESSION.INIT/CONFIRM stream type.** A client opens a circuit with a DATA frame whose `DestConnID == 0xFFFF` carrying a `[called-name(16) || calling-name(16) || 6-byte capability trailer]` payload; the server replies with a DATA frame that assigns its own `SourceConnID`, echoes the client's as `DestConnID`, and swaps the two names. SMB then flows as DATA (0x06) with both circuit ids populated; `EOM` in ConnCtrlFlag marks the last fragment.
+Observed DataStreamType values are a small set: `0x01` FIND.NAME, `0x02` NAME.RECOGNIZED, `0x06` **DATA** (every SMB session frame — establishment and messages both), `0x07` SESSION.END, `0x08` SESSION.END.ACK. **There is no distinct SESSION.INIT/CONFIRM stream type.** A client opens a circuit with a DATA frame whose `DestConnID == 0xFFFF` carrying a `[calling-name(16) || called-name(16) || 6-byte capability trailer]` payload — **SOURCE name first, DESTINATION second**; the server replies with a DATA frame that assigns its own `SourceConnID`, echoes the client's as `DestConnID`, and swaps the two names so that it is now the source. SMB then flows as DATA (0x06) with both circuit ids populated; `EOM` in ConnCtrlFlag marks the last fragment.
 
 **Regression (both trees):** the codec (and the legacy `service/netbios/over_ipx` it was ported from) modelled the header as **16 bytes, big-endian**, with a spurious `ConnCtrlByte`+`Reserved` pair at offsets 14–15 in place of the RecvSeq/BytesReceived words, and dispatched session data on stream types `0x15/0x16` (`DATA_ONLY_LAST`/`DATA_FIRST_MIDDLE`) with a `0x05` `SESSION_INIT` — a different NWLink dialect this client never emits. Consequences: (1) decode read the SMB body from offset 16, prepending two junk bytes (`RecvSeq`'s low half) to every SMB request so it never parsed; (2) replies were framed with a 16-byte header the client rejected; (3) the client's `0x06`-typed session request never matched the `0x05` INIT branch, so no circuit was ever accepted. Net effect: an NBIPX client could resolve `CLASSICSTACK` (the name query works) but **never negotiate a session** — `\\classicstack` and `\\classicstack\share` both failed with "cannot find the computer".
 
@@ -566,6 +566,126 @@ Observed DataStreamType values are a small set: `0x01` FIND.NAME, `0x02` NAME.RE
 **What we do:** `sendSessionAccept` now frames the accept as `ConnCtrlFlag = NBIPXConnFlagSYS | NBIPXConnFlagCONFIRM (0x81)` with `RecvSeq = NBIPXSessionAcceptRecvSeq (1)`. New consts `NBIPXConnFlagCONFIRM` and `NBIPXSessionAcceptRecvSeq` in `core/protocol/netbios/nbipx.go`.
 
 **Where:** `core/protocol/netbios/nbipx.go` (`NBIPXConnFlagCONFIRM`, `NBIPXSessionAcceptRecvSeq`), `core/service/netbios/nbipx.go` (`sendSessionAccept`). Coverage: `TestNBIPX_AcceptHeaderMatchesCapture` and the strengthened `establishIPXCircuit` assertions in `core/service/netbios/nbipx_test.go` (pinned to frame 367).
+
+### NBIPX session-request called-name must be one we own; the client Find-names before INIT — observation-based
+
+**No spec:** as above, from observation of Win98 NWLink. The working peer handshake is `Find name X<20>` → `Name recognized X<20>` → unicast `SESSION_INITIALIZE` to the holder.
+
+**Observed (`ipx.pcap` 2026-08-19, Finder → WIN98-1):** connecting to `WIN98-1` from the web Finder succeeded at SMB (NEGOTIATE / SESSION_SETUP / TREE_CONNECT `\\WIN98-1\IPC$` / NetShareEnum) but the share list was **IPC$ only**, so the UI showed zero volumes. The IPX endpoints on that circuit were ClassicStack’s own node (`36:14:41:06:43:70`) on both sides (frames 768–781). The in-process NBIPX client had **broadcast** `SESSION_INITIALIZE` for `WIN98-1<20>` without a prior Find-name; ClassicStack’s session engine accepted it because `handleSessionRequest` ignored the called-name. NetShareEnum then ran against **our** SMB service (AFP-only “Test Volume” is not an SMB share), which correctly returned only IPC$.
+
+Win98 never saw a Find-name for itself from ClassicStack. A real Win98↔Win98 open (same capture, earlier errata) always locates first.
+
+**What we do:**
+
+1. `handleSessionRequest` ignores a SESSION_INITIALIZE whose called-name is not one of our registered names (the same `ownsName` gate Find-name already used). A broadcast call for a neighbour is no longer stolen.
+2. The SMB-over-NBIPX **client** broadcasts type-20 Find-name for `SERVER<20>`, waits for NAME_RECOGNIZED, then sends SESSION_INITIALIZE **unicast to the node that answered** — the golden ordering at the top of this section. SMB data after the accept is likewise unicast to the learned node. Only a Find-name that located nobody falls back to broadcasting the INIT (a server that never answers a locate can still only be reached that way).
+
+   **Correction (2026-08-19, superseding an earlier revision of this item).** This step previously said the client "still **broadcasts** SESSION_INITIALIZE", justified as "a Win98 NWLink server ignores a unicast INIT (`ipx.pcap` 2026-08-19 frames 707–719)". That is retracted. It was **inferred from our own client failing**, not from observing a real implementation — precisely what the "OUR OWN BUGS ARE NOT ERRATA" rule exists to prevent — and it contradicted the golden Win98↔Win98 observation recorded at the head of this same section, which as a real-peer capture outranks it. The true cause of that failure was the inverted name pair documented in the section below; addressing was never the discriminator (broadcast and unicast INITs were both ignored by Win98, for the same underlying reason).
+
+### The \\MAILSLOT\\MESSNGR "net send" body has NO message-type byte — observation-based
+
+**No spec:** ClassicStack does not ship [MS-MSRP]; `core/protocol/messenger` cited "[MS-MSRP] §2.2.2" for a `TypeSingleBlock = 0x01` leading byte that was never checked against a document or a capture.
+
+**Observed (`spec/captures/nbipx-win98.pcap` frames 228/229 — `net send` to the workgroup — and 241/242 — a directed one):** the SMB_COM_TRANSACTION carries `Data Count 32` at `Data Offset 88`, and that data is exactly three NUL-terminated OEM strings with nothing before them:
+
+```
+57 49 4e 39 38 55 53 45 52 00   "WIN98USER\0"     originator
+57 4f 52 4b 47 52 4f 55 50 00   "WORKGROUP\0"     destination
+48 45 4c 4c 4f 20 57 4f 52 4c 44 00  "HELLO WORLD\0"  text
+```
+
+**The trap:** a single byte does sit between the Transaction Name (`\MAILSLOT\MESSNGR\0`) and the data — `0x42` in frames 228/229, `0x2E` in 241/242 — and reading the body as "name, then type byte, then strings" makes it look exactly like a type-tagged protocol whose tag varies per message. It is not: Wireshark labels it `Padding: 42`, and the Trans `DataOffset` points *past* it. It is SMB_COM_TRANSACTION alignment padding, and its value is arbitrary.
+
+**Regression:** `Unmarshal` required `b[0] == 0x01` and so rejected **every** real Win98 pop-up at its first byte (`'W'`), returning `ErrFrame`. `messenger.Service.HandleMailslot` drops an undecodable body silently by design, so a `net send` was never logged at Info and never published on `bus.TopicMessage` — the operator saw nothing in the log and no notification in the SPA, with no error anywhere to explain it. Symmetrically, `Marshal` prepended `0x01`, which a real receiver would have read as the first character of the originator's name. The rest of the chain was sound throughout: socket 0x0553 → `handleNMPI`/`deliverMailslot` (no name filter) → `mailslot.Router` (case-insensitive name dispatch) → `Messenger` (registered by `wireMailslot`), and on the UI side `telemetry.ts` subscribes `topics=…,message` and `admin/notifications.ts` renders `Kind === "messenger"`.
+
+**What we do:** the codec emits and parses `From\0To\0Text\0` with no type byte; a missing terminator on the final Text field is still tolerated. `TypeSingleBlock` is removed rather than kept as an accepted-optional prefix — an originator name legitimately starting with `\x01` is less likely than silently re-breaking on the observed form.
+
+**Where:** `core/protocol/messenger/messenger.go` (`Marshal`, `Unmarshal`, the removed const). Coverage: `TestCaptureReplay_Win98NetSend` replays frame 229's 32-byte body; `TestWireLayout` pins the no-type-byte encoding.
+
+### OS/2 offers XENIX CORE, and Win98 does not recognise the OS/2 LANMAN spellings — observation-based
+
+**Observed (`spec/captures/nbf-os2-win98.pcap`):** an OS/2 LAN Requester (`OS2-NBF-2`) NEGOTIATEs to a Win98 server and to an OS/2 server over NBF, offering the SAME five dialects both times (frames 100 and 123):
+
+```
+PC NETWORK PROGRAM 1.0 | XENIX CORE | LANMAN1.0 | LM1.2X002 | LANMAN2.1
+```
+
+Note what is NOT there: no `NT LM 0.12`, and no DOS-prefixed spellings. The two servers answer that identical list differently:
+
+| server | frame | Selected Index | dialect | WCT |
+|---|---|---|---|---|
+| OS/2 (`OS2-NBF`) | 125 | **4** | `LANMAN2.1` | 13, with `PrimaryDomain: WORKGROUP` |
+| Win98 (`WIN98-NBF-1`) | 102 | **2** | `LANMAN1.0` | 13, no PrimaryDomain |
+
+Win98 declines `LM1.2X002` and `LANMAN2.1` and falls back to `LANMAN1.0`, while the OS/2 server takes `LANMAN2.1`. The most economical reading is that Win98's dialect table carries the DOS-prefixed forms (`DOS LM1.2X002`, `DOS LANMAN2.1`) and not the OS/2 spellings, so `LANMAN1.0` is the highest entry it shares with an OS/2 requester. This is the mirror of why our own client now offers BOTH spellings (see `clientDialects`): a server's table is spelling-sensitive, and offering only one family can silently cost you several dialect levels. It also corroborates the existing errata above that `PrimaryDomain` rides the WCT=13 response only for the LANMAN2.1 dialects — Win98's LANMAN1.0 reply has none.
+
+**Regression:** `XENIX CORE` was absent from `dialectRank`, so it scored 0 and `SelectDialect` (which requires `rank > bestRank`, starting at 0) could never choose it. It appears second in every OS/2 list, so an OS/2 client that offered only the two core dialects would have been answered `DialectIndex 0xFFFF` — "nothing in common" — instead of a working core session. Against the full five-dialect list the bug was masked, because LANMAN2.1 outranks it anyway.
+
+**What we do:** `DialectXenixCore = "XENIX CORE"` is now a named const, ranked 15 (just above `PC NETWORK PROGRAM 1.0`) and mapped to `DialectFamilyCore` (WCT=1 response). Against the golden OS/2 list we select index 4 / `LANMAN2.1` — matching the OS/2 server, i.e. one dialect level BETTER than Win98 manages.
+
+**Where:** `core/protocol/smb/smb.go` (`DialectXenixCore`, `dialectRank`, `dialectFamily`). Coverage: `TestCaptureReplay_OS2DialectNegotiation` in `core/protocol/smb/smb_test.go`, pinned to frames 100/125.
+
+### NBF establishment correlators must be echoed; we sent zeros — spec + capture
+
+**Spec:** IBM SC30-3587 (`spec/iee802.md`) §5.6.18 Table 5-28: SESSION_INITIALIZE carries `XMIT CORRELATOR` — "the correlator that was in the response correlator field of the NAME_RECOGNIZED frame" — and `RSP CORRELATOR`, "returned in the transmit correlator field of the SESSION_CONFIRM frame". §5.6.12 defines the matching NAME_RECOGNIZED fields.
+
+**Observed (`spec/captures/nbf-win98.pcap` frames 67/68/73):** the CALL is one correlated exchange, not three independent frames:
+
+| frame | from | XmitCorrelator | RspCorrelator |
+|---|---|---|---|
+| 67 NAME_QUERY | client | — | `0x0009` |
+| 68 NAME_RECOGNIZED | server | `0x0009` (echoed) | `0x0007` (generated) |
+| 73 SESSION_INITIALIZE | client | `0x0007` (echoed) | `0x0009` |
+
+**Regression:** `client/smb/nbf.go` sent **zero** in every establishment correlator — `sendNameQuery` set no RspCorrelator, and the SESSION_INITIALIZE builder set neither field. The server then echoed our zero back, so nothing in the CALL was correlated. Win98 tolerates it (the session completes and shares enumerate), which is why this survived: it is invisible against a permissive responder, but a stricter one (NT 3.51 / OS-2 LAN Server) has no way to match our SESSION_INITIALIZE to the NAME_RECOGNIZED that invited it, nor our SESSION_CONFIRM to the SESSION_INITIALIZE. Note the DATA path was already correct — `respCorrelator` increments per request there, with its own errata about a zero correlator stalling Win98 — so only establishment was missed.
+
+**What we do:** the transport generates one non-zero `callCorrelator` for the CALL and puts it in the NAME_QUERY's RspCorrelator; `handleNameRecognized` keeps the server's RspCorrelator as `peerCorrelator`; SESSION_INITIALIZE sends `XmitCorrelator = peerCorrelator`, `RspCorrelator = callCorrelator`. Verified live against WIN98-NBF-1 — NAME_QUERY `0x0001` → NAME_RECOGNIZED `0x0001`/`0x000c` → SESSION_INITIALIZE `0x000c`/`0x0001` → SESSION_CONFIRM `0x0001`/`0x000c`, the golden pattern exactly.
+
+**Not replicated (deliberate):** our SESSION_INITIALIZE `DATA1` is `0x0f` where the MS redirector sends `0x8f`. Bit `z` (0x80) advertises SEND.NO.ACK / CHAIN.SEND.NO.ACK support, which this transport does not implement — claiming it would be a lie. `DATA2` (max receive size) is 1464 vs the golden 1468, both well-formed.
+
+**Where:** `client/smb/nbf.go` (`callCorrelator`/`peerCorrelator`, `sendNameQuery`, `handleNameRecognized`, the SESSION_INITIALIZE builder).
+
+### An NBIPX client must SESSION_END its circuit; abandoning it wedges the peer — observation-based
+
+**No spec:** from `spec/captures/nbipx-win98.pcap` (Win98↔Win98 NWLink).
+
+**Observed (frames 76–80):** a real client tears the circuit down explicitly. After `Tree Disconnect Request`/`Response` it sends **SESSION_END** and the server answers **SESSION_END_ACK**:
+
+| frame | dir | header |
+|---|---|---|
+| 78 SESSION_END | client → server | `40 07 01 00 25 00 06 00 00 00 00 00 00 00 05 00 07 00` |
+| 80 SESSION_END_ACK | server → client | `80 08 25 00 01 00 05 00 00 00 00 00 00 00 06 00 09 00` |
+
+SESSION_END is `ConnCtrlFlag = ACK (0x40)`, `DataStreamType = 0x07`, zero data, and it **consumes a sequence number** (SendSeq 6 here, with the ack’s RecvSeq 6 acknowledging it). The ack is `SYS (0x80)`, `DataStreamType = 0x08`.
+
+**Regression:** `client/smb/nbipx.go`’s `Close` deliberately skipped this, reasoning that “the session layer’s Close already issues TREE_DISCONNECT/LOGOFF, and the server ages out an idle circuit”. That is wrong against a real peer. When ClassicStack simply closed its pcap handle, WIN98-1 was left holding a live circuit and **retransmitted the last response of the dead session every 500ms indefinitely** (observed: `Tree Disconnect Response` repeating from t+0.46s onward with nothing acknowledging it). The next connection from the same station then intermittently failed with `smb/nbipx: no response within 5s`, because the peer was still servicing the abandoned circuit. The symptom looked like flakiness in establishment and was initially misattributed there.
+
+**What we do:** `Close` sends SESSION_END on an established circuit (stamping the current SendSeq/RecvSeq, then advancing SendSeq) and waits up to `nbipxEndTimeout` (250ms) for SESSION_END_ACK before closing the link; `readLoop` no longer discards non-DATA stream types so the ack is seen. Both halves are best-effort — a lost teardown never fails or stalls `Close`. Verified live against WIN98-1: SESSION_END → SESSION_END_ACK in ~0.2ms, no retransmit storm, and five back-to-back connects all succeed where the second previously failed.
+
+**Not replicated:** our SESSION_END leaves `BytesReceived` 0 where the golden frame carries 7. WIN98-1 accepts it and acks, and every other frame this transport sends already leaves the field 0 across a fully working session, so it is not load-bearing here.
+
+**Where:** `client/smb/nbipx.go` (`Close`, `endSession`, `signalEndAck`, `nbipxEndTimeout`, `readLoop` stream-type dispatch). The server side already handled inbound SESSION_END/END_ACK (`core/service/netbios/nbipx.go` `handleSessionEnd`).
+
+### NBIPX SESSION_INITIALIZE names are [SOURCE][DESTINATION], not [called][calling] — observation-based
+
+**No spec:** from `spec/captures/nbipx-win98.pcap`, a Win98↔Win98 NWLink open (WIN98-2 `00:86:b0:86:3a:d5` → WIN98-1 `00:86:b0:ae:29:6f`).
+
+**Observed (frames 62→64→65→66):** `Find name WIN98-1<20>` (broadcast) → `Name recognized WIN98-1<20>` (unicast reply) → **unicast** SESSION_INITIALIZE → accept → `Negotiate Protocol Request`. The two 16-byte names in the INIT/accept payload are ordered **sender first, recipient second** — each frame names ITSELF in the first slot:
+
+| frame | direction | name 1 (SOURCE) | name 2 (DESTINATION) |
+|---|---|---|---|
+| 65 (INIT) | WIN98-2 → WIN98-1 | `WIN98-2<00>` | `WIN98-1<20>` |
+| 66 (accept) | WIN98-1 → WIN98-2 | `WIN98-1<20>` | `WIN98-2<00>` |
+
+The 18-byte header and the 6-byte trailer are otherwise **byte-identical** to what ClassicStack already emitted (`41 06 01 00 ff ff 00 00 26 00 00 00 26 00 00 00 00 00` … `a0 05 25 00 0d 00`), so the name order was the ONLY difference on the wire.
+
+**Regression:** both ends of ClassicStack had the pair inverted — the client wrote `[called][calling]` and the server's `handleSessionRequest` read slot 0 as the called name and validated THAT against `ownsName`. Because the two agreed with each other, every in-process e2e test passed while no real NWLink peer would ever answer. Win98 read our INIT as "source `WIN98-1<20>`, destination `CS-C7F001<00>`" — a call addressed to our own workstation name rather than to itself — and silently dropped it, while continuing to answer Find-name normally. Symptom: `Find-name` → `NAME_RECOGNIZED` → INIT retransmitted until timeout (`smb/nbipx: no session-accept within 5s`), identical for broadcast and unicast INITs, which is what sent the earlier investigation down the addressing dead end above.
+
+**What we do:** the client emits `[calling][called]` (`client/smb/nbipx.go` `sendInit`); the server parses slot 0 as the CALLING name and slot 1 as the CALLED name and gates `ownsName` on the latter (`core/service/netbios/nbipx.go` `handleSessionRequest`). The accept still swaps the pair, so its bytes are unchanged. Verified live against WIN98-1: session accepted, `NT LM 0.12` negotiated, `NetShareEnum` returned three shares.
+
+**Where:** `client/smb/nbipx.go` (`sendInit`, file-header contract), `core/service/netbios/nbipx.go` (`handleSessionRequest`, accept payload). Tests: `TestNBIPXInitFrameShape` (client, asserts the SOURCE slot is not the called name), `sessionRequestBodyNamed` (server test helper, now builds the golden order).
+
+**Where:** `core/service/netbios/nbipx.go` (`handleSessionRequest`), `client/smb/nbipx.go` (`findName`/`sendFindName`/`handleNameRecognized`). Tests: `TestNBIPX_SessionRequestForeignNameIgnored`; in-process e2e still reaches CLASSICSTACK because that name is ours.
 
 ### NBIPX browser mailslot delivery on socket 0x0553 — observation-based
 
@@ -622,6 +742,80 @@ Observed DataStreamType values are a small set: `0x01` FIND.NAME, `0x02` NAME.RE
 **What we do:** `ipxCircuit` carries `sendSeq`/`recvSeq` (window-of-one, init `0`/`1` at accept) plus the retained last response (`lastResp`/`lastRespSeq`); `handleData` validates SendSeq, treats `DataLen == 0` as session control (SYS|ACK probe → `sendSystemAck` with unchanged RecvSeq; SYS|RESEND → `resendData`), re-sends the retained response on a duplicate of the last consumed frame instead of re-serving the SMB, and `sendData`/`pushData` allocate one SendSeq per frame, stamp the live RecvSeq, and fragment responses larger than `nbipxMaxFrameData` (1452 = 1500 − IPX 30 − session header 18) via TotalDataLen/Offset/DataLen with EOM on the last frame. Every outbound frame advertises the receive window: `BytesReceived = RecvSeq + nbipxRecvWindow (5)`, mirroring NT's own advertisement. `handleSessionEnd`'s SESSION_END_ACK acknowledges the end frame's consumed seq (`RecvSeq = end SendSeq + 1`) and carries our send counter, matching NT's own end-ack (frame 509).
 
 **Where:** `core/protocol/netbios/nbipx.go` (`NBIPXConnFlagRESEND`, sequencing-rules doc on `NBIPXSessionHeader`), `core/service/netbios/nbipx.go` (`ipxCircuit` seq state, `handleData`, `sendData`/`sendDataFrames`/`resendData`/`sendSystemAck`/`pushData`).
+
+### Direct-hosted SMB over IPX: NEGOTIATE carries a [SOURCE][DESTINATION] name trailer outside ByteCount — observation-based
+
+**No spec:** [MS-CIFS] §2.2.1.6.4 describes the connectionless direct-hosted (NWLink "direct host") transport — one IPX datagram carries one whole SMB message, no NetBIOS name or session layer — but documents no naming at all. The layout below is from `spec/captures/nwlink-win98.pcap`, a Win98↔Win98 direct-hosted open (WIN98-IPX-1 `00:86:b0:eb:04:e1` → WIN98-IPX-2 `00:86:b0:90:8e:3a`).
+
+**Observed:** frame 16's NEGOTIATE request is 230 bytes; its `ByteCount` is `0x0077` = 119 and covers **only** the dialect list, ending at the NUL after `NT LM 0.12`. The IPX datagram then runs **32 bytes further**, carrying two 16-byte NetBIOS names *after* the SMB message and *outside* BCC:
+
+```
+...4e 54 20 4c 4d 20 30 2e 31 32 00   "NT LM 0.12\0"   <- BCC ends here
+57 49 4e 39 38 2d 49 50 58 2d 31 20 20 20 20 00   "WIN98-IPX-1    " + 0x00
+57 49 4e 39 38 2d 49 50 58 2d 32 20 20 20 20 20   "WIN98-IPX-2    " + 0x20
+```
+
+The order is **[SOURCE][DESTINATION]** — the caller's own name with `NameTypeWorkstation` (0x00) first, the server's with `NameTypeFileServer` (0x20) second — the same order as the NBIPX SESSION_INITIALIZE name pair (see that section above). The trailer is on **NEGOTIATE only**: golden frames 18 (SESSION_SETUP + chained TREE_CONNECT), 20 (TRANS `\PIPE\LANMAN`), 22 (ECHO) and 24 (TREE_DISCONNECT) all end at their byte area, because from the NEGOTIATE response onward the server-assigned CID identifies the circuit. This is the transport's substitute for a session layer: with no NetBIOS call, nothing else in the datagram ever says which of the server's names it is addressed to.
+
+Omitting it makes a Win98 direct-hosted server refuse the NEGOTIATE with **ERRSRV / code 18**, a code that appears in **no** published ERRSRV table ([smb6.0] line 4571 jumps 7 → 49) and that Wireshark renders as "Unknown SRV error (12)". Live: request identical to golden frame 16 in every header field, refused; the same request with the trailer appended negotiates `NT LM 0.12` and enumerates all four shares.
+
+**Regression:** our client never sent the trailer. Because the SMB header, Flags/Flags2, SequenceNumber and dialect list had all been brought to byte-parity with golden, the only remaining difference was the 32 bytes past ByteCount — which neither a header diff nor Wireshark's dissection surfaces, since both stop at BCC. Our own server never needed it either (it keys circuits by IPX endpoint), so every in-process e2e test passed.
+
+**What we do:** `protocol.AppendNameTrailer` / `protocol.SplitNameTrailer` (`core/protocol/smb/smb.go`) are the shared codec both directions use. The client appends the pair on `CommandNegotiate` when it has a located server name; the server strips it before dispatching to the command core, and a peer that omits it is still served (the endpoint address, not the name, keys the circuit). `SplitNameTrailer` finds the message end from WCT/BCC rather than the datagram length, so a long byte area is never mistaken for a trailer.
+
+**Where:** `core/protocol/smb/smb.go` (`NameTrailerLen`, `AppendNameTrailer`, `SplitNameTrailer`); `client/smb/ipx.go` (`Send`); `core/service/smb/directipx.go` (`HandleDatagram`). Coverage: `TestCaptureReplay_DirectIPXNegotiateNameTrailer` pins golden frame 16's 32 bytes; `TestSplitNameTrailerAbsent` pins the trailer-less frames 18/20/22/24.
+
+### A reply's error encoding is named by the REPLY's Flags2, not assumed to be NTSTATUS — observation-based
+
+**Spec:** [MS-CIFS] §2.2.3.1 — the header `Status` field is a 32-bit NTSTATUS when `SMB_FLAGS2_NT_STATUS` is set, otherwise the `{ErrorClass(1), Reserved(1), ErrorCode(2 LE)}` DOS triple.
+
+**Observed:** our client's `ErrStatus` documented itself as "because this client always sets SMB_FLAGS2_NT_STATUS the value here is the raw NTSTATUS" and formatted every failure as `status 0x%08X`. That premise is false in two ways: NEGOTIATE requests carry `Flags2 = 0x0000` (see the per-message Flags entry / `negotiateFlags2`), and a server without `CAP_STATUS32` — Windows 9x File & Print Sharing negotiates NT LM 0.12 without it — answers everything in DOS codes. A DOS status packs the class in the **low** byte and the code in the **high** word, so ERRSRV/18 surfaces as the uint32 `0x00120002`. Read as an NTSTATUS that is not merely wrong but misleading: its severity bits (`00`) say *success*, and no NTSTATUS with facility 0x012 exists, which sent the direct-IPX investigation looking for an SMB2-era status on an SMB1 circuit.
+
+**What we do:** `respBody` sets `ErrStatus.DOS` from the **response** header's `Flags2 & Flags2NTStatus`, and `ErrStatus.Error()` renders a DOS status as `ERRSRV/ERRbadpw (2/2)` — class mnemonic, code mnemonic where known, and always the raw numbers so an unnamed code stays diagnosable. `ErrorClass()` exposes the pair for callers that branch on it. The DOS class and ERRSRV code constants (`ErrClassSrv`, `ErrSrvBadPw`, …) now have names on the client side to match the server's `dosErr*` table.
+
+**Where:** `core/protocol/smb/client.go` (`ErrStatus`, `ErrorClass`, `dosErrorName`, `ErrClass*`/`ErrSrv*`). Coverage: `TestDOSErrStatusNaming`.
+
+### NWLink browser datagrams are addressed to `<workgroup><00>`, never `<1D>`/`<1E>` — observation-based
+
+**Spec:** [MS-BRWS] describes a browse client as directing its `AnnouncementRequest` / `GetBackupList` at the local master browser's `<workgroup><1D>` name, and fan-out announcements at the browser group name `<workgroup><1E>`. Those suffixes are what NBF uses on the wire and what our NBF carrier sends successfully.
+
+**Observed:** on the NWLink IPX datagram plane (NMPI `MailslotSend`, opcode 0xFC, socket 0x0553) **neither suffix ever appears**. Every golden fan-out browser datagram — host announcement, local-master announcement, `AnnouncementRequest`, election request, `GetBackupList` request — is addressed to `<workgroup><00>`, the workgroup name each station registers at the *workstation* suffix, and carries `NMPINameTypeWorkgroup` (0x02) in the NMPI header even though `<00>` is indistinguishable from a machine suffix:
+
+```
+fc 02 00 00                                      opcode 0xFC, NMPINameTypeWorkgroup
+57 4f 52 4b 47 52 4f 55 50 20 20 20 20 20 20 00  "WORKGROUP      " + 0x00   RequestedName
+57 49 4e 39 38 2d 32 20 20 20 20 20 20 20 20 00  "WIN98-2        " + 0x00   SourceName
+```
+
+`spec/captures/nbipx-win98.pcap` frames 16/19/48/58 and `nwlink-win98.pcap` frames 1/7/13/26–40 all carry those 20 bytes; the matching `Check name WORKGROUP<00>` registrations are `nbipx-win98.pcap` frames 2/9/11/14. Only the master's **unicast** answer uses `NMPINameTypeMachine` (0x01), addressed to the asking station's own `<name><00>` (frame 60; `nwlink-win98.pcap` frame 41).
+
+Golden Win98 *does* also send a `<workgroup><1D>`-directed `GetBackupList`, but on a different plane entirely — the NB-IPX **session** socket 0x0455, as a bare `NBIPXDirectedDatagram` (`00 0b` + source + destination + payload), `nbipx-win98.pcap` frames 57→63. `__MSBROWSE__<01>` likewise appears only there (`nbipx-nt351-win98.pcap` frame 54). Neither name is ever seen inside an NMPI packet.
+
+**Regression:** our client reused the NBF names on the IPX carrier — `"*"<1E>` for the solicit, `<workgroup><1D>` typed `NMPINameTypeMachine` for the `GetBackupList`. On a live segment with four active NBIPX stations (two Win98, two NT 3.51) **not one frame drew any reply**, so `discover smb` reported no NBIPX servers at all while NBF worked. Our own server accepts a `MailslotSend` regardless of `RequestedName`, so every in-process browse test passed.
+
+**What we do:** `Conn.browseFanoutName` returns `<workgroup><00>` on the IPX carriers and keeps `"*"<1E>` on NBF; `Conn.masterTarget` returns that same fan-out name on IPX (the master self-selects) and the directed `<workgroup><1D>` on NBF. The NMPI name-type byte is chosen by the datagram's fan-out, not by the name's suffix. `__MSBROWSE__` is not emitted on the IPX plane at all, since no capture shows it there. The 0x0455 directed-datagram form is **not** implemented on the client: the 0x0553 path alone draws the master's answer in both golden captures and live.
+
+**Where:** `client/netbios/browser.go` (`browseFanoutName`, `solicit`), `client/netbios/masterbrowse.go` (`masterTarget`, `solicitMasters`, `requestBackupList`), `client/netbios/conn.go` (`nmpiNameType`). Coverage: `TestIPXBrowseDatagramsMatchGolden`, `TestIPXSolicitMastersSkipsMSBrowse`, `TestNBFBrowseNamesUnchanged`.
+
+### A directed NMPI datagram is IPX type 4, not type 20 — observation-based
+
+**Spec:** NBIPX name/datagram traffic is described as riding IPX packet type 20 (`IPXTypeNetBIOS`, "NetBIOS broadcast/forwarding"), which is what makes an IPX router propagate it across up to 8 hops.
+
+**Observed:** that holds for the fan-out half only. The master browser's **unicast** `GetBackupList` response comes back on the same datagram socket 0x0553 as IPX packet type **4** (`IPXTypePEP`): `spec/captures/nbipx-win98.pcap` frame 60 and `nwlink-win98.pcap` frame 41 are both `00 c6 00 04` / `00 ca 00 04` in the IPX length/type fields. A directed answer needs no broadcast forwarding, so it does not claim the type that requests it. The same split shows in the name service (`Find name` type 20 → `Name recognized` type 4).
+
+**Regression:** our client's NBIPX datagram decoder required type 20 and silently dropped anything else — which is *exactly* the one frame in a browse exchange that names the master. Even with the addressing above corrected, `FindMaster` would have returned empty. NBF never exposed this: its reply rides the same UI datagram type as its request. Our server had the mirror-image bug, emitting its directed replies as type 20.
+
+**What we do:** the client accepts type 4 **or** type 20 on socket 0x0553 and uses the *socket* as the discriminator that keeps session/name-service IPX traffic out of the browser decode. The server's `emitDatagram` switches to `IPXTypePEP` when the datagram has a `ReplyTo` endpoint and keeps type 20 for the broadcast.
+
+**Where:** `client/netbios/browser.go` (`decodeNBIPXDatagram`); `core/service/netbios/nbipx.go` (`emitDatagram`). Coverage: `TestDecodeGoldenBackupListResponse` replays golden frame 60 verbatim.
+
+### Direct-hosted IPX shares the NBIPX browser plane; only the session leg differs — observation-based
+
+**Observed:** a direct-hosted-SMB-over-IPX station (NWLink "direct host", no NetBIOS session layer) still runs the full browser protocol, and does so with **byte-identical framing to NBIPX**: `nwlink-win98.pcap` frames 26–41 are NMPI `MailslotSend`s on socket 0x0553 — `GetBackupList` requests, a browser election, `RequestAnnouncement`, a `LocalMasterAnnouncement`, and the master's type-4 unicast response — indistinguishable from `nbipx-win98.pcap` frames 16–60 apart from the station names. What differs is only what happens *after* the master is found: the direct host resolves it with an NMPI `Query name <master><20>` on socket 0x0551 and runs `NetServerEnum2` over direct-hosted SMB on 0x0550/0x0552 (frames 42–49), where an NBIPX station opens a session on 0x0455 instead.
+
+**What we do:** `ipx` is a first-class browse carrier alongside `nbf` and `nbipx`. Its datagram sweep is the NBIPX one verbatim; its `NetServerEnum2` leg opens `client/smb`'s `CarrierDirectIPX`. The two IPX carriers are swept and reported separately because a station binds one or the other — a direct-host-only Win98 refuses an NB-IPX session and vice versa, which is visible in the live result: the same segment's master answers `NetServerEnum2` over direct IPX but times out over NB-IPX.
+
+**Where:** `client/netbios/netbios.go` (`IPX`, `Protocols`, `ipxFamily`); `client/browse/browse.go` threads the carrier token straight into `clientlink.Spec.Carrier`, where `"ipx"` already means direct-hosted SMB.
 
 ## NetBEUI (NBF)
 

@@ -75,7 +75,7 @@ func createConnReply(serverMAC, clientMAC [6]byte, serverNet [4]byte, seq uint8)
 	// NCP reply header: type(2 BE) seq conn-low task conn-high completion.
 	body := []byte{0x33, 0x33, seq, 0x01 /*conn low*/, 0x01 /*task*/, 0x00 /*conn high*/, 0x00 /*completion*/, 0x00 /*conn status*/}
 	d := &ipxproto.Datagram{
-		Type:    ipxNCPType,
+		Type:    ipxproto.TypeNCP,
 		DstNode: clientMAC,
 		DstSock: ncpSocket,
 		SrcNet:  serverNet,
@@ -120,7 +120,7 @@ func TestClientLearnsServerFrameType(t *testing.T) {
 	if first[12] != 0x81 || first[13] != 0x37 {
 		t.Errorf("first frame etherType = % x, want 81 37 (Ethernet II default)", first[12:14])
 	}
-	if [6]byte(first[0:6]) != broadcastNode {
+	if [6]byte(first[0:6]) != ipxproto.BroadcastNode {
 		t.Errorf("first frame dst MAC = % x, want broadcast", first[0:6])
 	}
 
@@ -131,7 +131,7 @@ func TestClientLearnsServerFrameType(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 		// reply of type 0x3333 for seq 1 conn 1
 		body := []byte{0x33, 0x33, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00}
-		d := &ipxproto.Datagram{Type: ipxNCPType, DstNode: clientMAC, DstSock: ncpSocket, SrcNet: serverNet, SrcNode: serverMAC, SrcSock: ncpSocket, Payload: body}
+		d := &ipxproto.Datagram{Type: ipxproto.TypeNCP, DstNode: clientMAC, DstSock: ncpSocket, SrcNet: serverNet, SrcNode: serverMAC, SrcSock: ncpSocket, Payload: body}
 		b, _ := d.Encode(nil)
 		l.inject(ipxport.FrameRaw8023.Encapsulate(clientMAC, serverMAC, b))
 	}()

@@ -25,7 +25,7 @@ func TestCatalogMkdirListRename(t *testing.T) {
 		touched: time.Now(),
 	})
 
-	dir, err := svc.Mkdir("t", root, "Folder")
+	dir, err := svc.Mkdir("t", CNIDRef(root), "Folder")
 	if err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
@@ -33,7 +33,7 @@ func TestCatalogMkdirListRename(t *testing.T) {
 		t.Fatalf("mkdir node = %+v", dir)
 	}
 
-	file, err := svc.CreateFile("t", dir.ID, "hello.txt", []byte("hi"), nil, nil)
+	file, err := svc.CreateFile("t", CNIDRef(dir.ID), "hello.txt", []byte("hi"), nil, nil)
 	if err != nil {
 		t.Fatalf("CreateFile: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestCatalogMkdirListRename(t *testing.T) {
 		t.Fatalf("file node = %+v", file)
 	}
 
-	kids, err := svc.Children("t", dir.ID)
+	kids, err := svc.Children("t", CNIDRef(dir.ID))
 	if err != nil {
 		t.Fatalf("Children: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestCatalogMkdirListRename(t *testing.T) {
 		t.Fatalf("children = %+v", kids)
 	}
 
-	got, err := svc.Lookup("t", dir.ID, "hello.txt")
+	got, err := svc.Lookup("t", CNIDRef(dir.ID), "hello.txt")
 	if err != nil {
 		t.Fatalf("Lookup: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestCatalogMkdirListRename(t *testing.T) {
 		t.Fatalf("lookup id %d want %d", got.ID, file.ID)
 	}
 
-	data, err := svc.ReadFork("t", file.ID, false, 0, 0)
+	data, err := svc.ReadFork("t", CNIDRef(file.ID), false, 0, 0)
 	if err != nil {
 		t.Fatalf("ReadFork: %v", err)
 	}
@@ -65,14 +65,14 @@ func TestCatalogMkdirListRename(t *testing.T) {
 		t.Fatalf("data %q", data)
 	}
 
-	if err := svc.Rename("t", file.ID, "bye.txt"); err != nil {
+	if err := svc.Rename("t", CNIDRef(file.ID), "bye.txt"); err != nil {
 		t.Fatalf("Rename: %v", err)
 	}
-	if _, err := svc.Lookup("t", dir.ID, "bye.txt"); err != nil {
+	if _, err := svc.Lookup("t", CNIDRef(dir.ID), "bye.txt"); err != nil {
 		t.Fatalf("lookup after rename: %v", err)
 	}
 
-	n, err := svc.GetNode("t", dir.ID)
+	n, err := svc.GetNode("t", CNIDRef(dir.ID))
 	if err != nil {
 		t.Fatalf("GetNode: %v", err)
 	}
@@ -80,10 +80,10 @@ func TestCatalogMkdirListRename(t *testing.T) {
 		t.Fatalf("dir name %q", n.Name)
 	}
 
-	if err := svc.Remove("t", file.ID); err != nil {
+	if err := svc.Remove("t", CNIDRef(file.ID)); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
-	kids, err = svc.Children("t", dir.ID)
+	kids, err = svc.Children("t", CNIDRef(dir.ID))
 	if err != nil {
 		t.Fatalf("Children after remove: %v", err)
 	}
@@ -135,12 +135,12 @@ func TestReadForkOpensAndCloses(t *testing.T) {
 	svc := New(nil, nil)
 	root := counted.Meta().EnsureCNID("")
 	svc.put(&Session{ID: "t", Kind: "local", Volume: "Mem", FS: counted, local: true, touched: time.Now()})
-	file, err := svc.Lookup("t", root, "hello.txt")
+	file, err := svc.Lookup("t", CNIDRef(root), "hello.txt")
 	if err != nil {
 		t.Fatalf("Lookup: %v", err)
 	}
 
-	got, err := svc.ReadFork("t", file.ID, false, 1, 3)
+	got, err := svc.ReadFork("t", CNIDRef(file.ID), false, 1, 3)
 	if err != nil {
 		t.Fatalf("ReadFork range: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestReadForkOpensAndCloses(t *testing.T) {
 		t.Fatalf("range open/close = %d/%d, want 1/1", counted.opens, counted.closes)
 	}
 
-	all, err := svc.ReadFork("t", file.ID, false, 0, 0)
+	all, err := svc.ReadFork("t", CNIDRef(file.ID), false, 0, 0)
 	if err != nil {
 		t.Fatalf("ReadFork all: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestLookupDoesNotEnumerateDirectory(t *testing.T) {
 	root := counted.Meta().EnsureCNID("")
 	svc.put(&Session{ID: "t", Kind: "local", Volume: "Mem", FS: counted, local: true, touched: time.Now()})
 
-	folder, err := svc.Lookup("t", root, "Folder")
+	folder, err := svc.Lookup("t", CNIDRef(root), "Folder")
 	if err != nil {
 		t.Fatalf("Lookup Folder: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestLookupDoesNotEnumerateDirectory(t *testing.T) {
 		t.Fatalf("Lookup(Folder) ReadDir count = %d, want 0", counted.n)
 	}
 
-	got, err := svc.Lookup("t", folder.ID, "c")
+	got, err := svc.Lookup("t", CNIDRef(folder.ID), "c")
 	if err != nil {
 		t.Fatalf("Lookup c: %v", err)
 	}
@@ -212,14 +212,14 @@ func TestLookupDoesNotEnumerateDirectory(t *testing.T) {
 		t.Fatalf("Lookup(c) ReadDir count = %d, want 0 (must Stat, not enumerate)", counted.n)
 	}
 
-	if _, err := svc.Lookup("t", folder.ID, "Icon\r"); !errors.Is(err, ErrNotFound) {
+	if _, err := svc.Lookup("t", CNIDRef(folder.ID), "Icon\r"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Lookup Icon\\r err = %v, want ErrNotFound", err)
 	}
 	if counted.n != 0 {
 		t.Fatalf("Lookup(missing) ReadDir count = %d, want 0", counted.n)
 	}
 
-	kids, err := svc.Children("t", folder.ID)
+	kids, err := svc.Children("t", CNIDRef(folder.ID))
 	if err != nil {
 		t.Fatalf("Children: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestChildrenHidesAppleDoubleSidecars(t *testing.T) {
 	svc := New(nil, nil)
 	root := ffs.Meta().EnsureCNID("")
 	svc.put(&Session{ID: "t", Kind: "local", Volume: "Mem", FS: ffs, local: true, touched: time.Now()})
-	kids, err := svc.Children("t", root)
+	kids, err := svc.Children("t", CNIDRef(root))
 	if err != nil {
 		t.Fatalf("Children: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestChildrenShowsSidecarsOnNoFork(t *testing.T) {
 	svc := New(nil, nil)
 	root := ffs.Meta().EnsureCNID("")
 	svc.put(&Session{ID: "t", Kind: "local", Volume: "Mem", FS: ffs, local: true, touched: time.Now()})
-	kids, err := svc.Children("t", root)
+	kids, err := svc.Children("t", CNIDRef(root))
 	if err != nil {
 		t.Fatalf("Children: %v", err)
 	}
@@ -315,5 +315,191 @@ func TestOpenLocalReusesSession(t *testing.T) {
 	}
 	if info.SessionID != "s1" {
 		t.Fatalf("session %q, want reused s1", info.SessionID)
+	}
+}
+
+func TestPathVolumeNoCNIDIdentity(t *testing.T) {
+	ffs, err := fs.BuildShare(fs.ShareSpec{Name: "Mem", FSType: "memfs", ForkBackend: "nofork"}, nil)
+	if err != nil {
+		t.Fatalf("BuildShare: %v", err)
+	}
+	svc := New(nil, nil)
+	svc.put(&Session{
+		ID:       "smb",
+		Kind:     KindSMB,
+		Protocol: KindSMB,
+		Volume:   "Mem",
+		FS:       ffs,
+		touched:  time.Now(),
+	})
+	s, err := svc.get("smb")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	caps := s.capabilities()
+	if caps.AddressBy != AddressPath {
+		t.Fatalf("addressBy %q, want path", caps.AddressBy)
+	}
+	if caps.ResourceFork {
+		t.Fatalf("nofork should not advertise resourceFork")
+	}
+
+	dir, err := svc.Mkdir("smb", PathRef(""), "FOO")
+	if err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if dir.Addr != AddressPath || dir.Path != "FOO" || dir.ParentPath != "" || dir.ID != 0 {
+		t.Fatalf("path dir = %+v", dir)
+	}
+	file, err := svc.CreateFile("smb", PathRef("FOO"), "BAR.TXT", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	if file.Path != "FOO/BAR.TXT" || file.ParentPath != "FOO" || file.ID != 0 {
+		t.Fatalf("path file = %+v", file)
+	}
+	kids, err := svc.Children("smb", PathRef("FOO"))
+	if err != nil {
+		t.Fatalf("Children: %v", err)
+	}
+	if len(kids) != 1 || kids[0].Path != "FOO/BAR.TXT" {
+		t.Fatalf("children = %+v", kids)
+	}
+	got, err := svc.ResolvePath("smb", "FOO/BAR.TXT")
+	if err != nil {
+		t.Fatalf("ResolvePath: %v", err)
+	}
+	if got.Path != file.Path {
+		t.Fatalf("resolve %q want %q", got.Path, file.Path)
+	}
+	p, err := svc.PathOf("smb", PathRef("FOO/BAR.TXT"))
+	if err != nil || p != "FOO/BAR.TXT" {
+		t.Fatalf("PathOf = %q %v", p, err)
+	}
+	if _, err := svc.GetNode("smb", CNIDRef(2)); !errors.Is(err, ErrBadRef) {
+		t.Fatalf("CNID on path volume err = %v, want ErrBadRef", err)
+	}
+}
+
+func TestCNIDVolumeResolvePath(t *testing.T) {
+	ffs, err := fs.BuildShare(fs.ShareSpec{Name: "Mem", FSType: "memfs"}, nil)
+	if err != nil {
+		t.Fatalf("BuildShare: %v", err)
+	}
+	svc := New(nil, nil)
+	svc.put(&Session{ID: "t", Kind: KindLocal, Protocol: KindAFP, Volume: "Mem", FS: ffs, local: true, touched: time.Now()})
+	root := ffs.Meta().EnsureCNID("")
+	if _, err := svc.Mkdir("t", CNIDRef(root), "FOO"); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	file, err := svc.CreateFile("t", CNIDRef(ffs.Meta().EnsureCNID("FOO")), "BAR", []byte("x"), nil, nil)
+	if err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	got, err := svc.ResolvePath("t", "FOO/BAR")
+	if err != nil {
+		t.Fatalf("ResolvePath: %v", err)
+	}
+	if got.Addr != AddressCNID || got.ID != file.ID || got.Path != "" {
+		t.Fatalf("resolved %+v, want CNID %d without path", got, file.ID)
+	}
+	p, err := svc.PathOf("t", CNIDRef(file.ID))
+	if err != nil || p != "FOO/BAR" {
+		t.Fatalf("PathOf = %q %v", p, err)
+	}
+}
+
+func TestWriteAttrsDOS(t *testing.T) {
+	ffs, err := fs.BuildShare(fs.ShareSpec{Name: "Mem", FSType: "memfs", ForkBackend: "nofork"}, nil)
+	if err != nil {
+		t.Fatalf("BuildShare: %v", err)
+	}
+	svc := New(nil, nil)
+	svc.put(&Session{ID: "smb", Kind: KindSMB, Protocol: KindSMB, Volume: "Mem", FS: ffs, touched: time.Now()})
+	file, err := svc.CreateFile("smb", PathRef(""), "HIDDEN.TXT", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	if err := svc.WriteAttrs("smb", PathRef(file.Path), map[string]bool{"hidden": true, "readonly": true}); err != nil {
+		t.Fatalf("WriteAttrs: %v", err)
+	}
+	got, err := svc.GetNode("smb", PathRef(file.Path))
+	if err != nil {
+		t.Fatalf("GetNode: %v", err)
+	}
+	if !got.Attrs["hidden"] || !got.Attrs["readonly"] {
+		t.Fatalf("attrs = %+v", got.Attrs)
+	}
+}
+
+func TestAppleDoubleDoesNotAdvertiseMacMetaOnSMB(t *testing.T) {
+	ffs, err := fs.BuildShare(fs.ShareSpec{Name: "Mem", FSType: "memfs", ForkBackend: "appledouble"}, nil)
+	if err != nil {
+		t.Fatalf("BuildShare: %v", err)
+	}
+	sess := &Session{ID: "smb", Kind: KindSMB, Protocol: KindSMB, Volume: "Mem", FS: ffs}
+	caps := sess.capabilities()
+	if caps.ResourceFork || caps.FinderInfo || caps.ResourceIcons {
+		t.Fatalf("SMB appledouble advertised Mac metadata: %+v", caps)
+	}
+}
+
+func TestLocalSMBAppleDoubleDoesNotAdvertiseMacMeta(t *testing.T) {
+	ffs, err := fs.BuildShare(fs.ShareSpec{Name: "Mem", FSType: "memfs", ForkBackend: "appledouble"}, nil)
+	if err != nil {
+		t.Fatalf("BuildShare: %v", err)
+	}
+	sess := &Session{
+		ID:       "local-smb",
+		Kind:     KindLocal,
+		Protocol: KindSMB,
+		Volume:   "Mem",
+		FS:       ffs,
+		local:    true,
+	}
+	caps := sess.capabilities()
+	if caps.ResourceFork || caps.FinderInfo || caps.ResourceIcons {
+		t.Fatalf("local SMB advertised Mac metadata: %+v", caps)
+	}
+	if caps.AddressBy != AddressPath {
+		t.Fatalf("addressBy %q, want path", caps.AddressBy)
+	}
+}
+
+func TestAFPAppleDoubleAdvertisesMacMeta(t *testing.T) {
+	ffs, err := fs.BuildShare(fs.ShareSpec{Name: "Mem", FSType: "memfs", ForkBackend: "appledouble"}, nil)
+	if err != nil {
+		t.Fatalf("BuildShare: %v", err)
+	}
+	sess := &Session{
+		ID:       "local-afp",
+		Kind:     KindLocal,
+		Protocol: KindAFP,
+		Volume:   "Mem",
+		FS:       ffs,
+		local:    true,
+	}
+	caps := sess.capabilities()
+	if !caps.ResourceFork || !caps.FinderInfo {
+		t.Fatalf("AFP appledouble missing Mac metadata: %+v", caps)
+	}
+}
+
+func TestAFPNoForkDoesNotAdvertiseMacMeta(t *testing.T) {
+	ffs, err := fs.BuildShare(fs.ShareSpec{Name: "Mem", FSType: "memfs", ForkBackend: "nofork"}, nil)
+	if err != nil {
+		t.Fatalf("BuildShare: %v", err)
+	}
+	sess := &Session{
+		ID:       "local-afp",
+		Kind:     KindLocal,
+		Protocol: KindAFP,
+		Volume:   "Mem",
+		FS:       ffs,
+		local:    true,
+	}
+	caps := sess.capabilities()
+	if caps.ResourceFork || caps.FinderInfo || caps.ResourceIcons {
+		t.Fatalf("AFP nofork advertised Mac metadata: %+v", caps)
 	}
 }

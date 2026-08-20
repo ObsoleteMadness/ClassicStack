@@ -84,11 +84,12 @@ export function mountAppMenu(header: HTMLElement, host: AppMenuHost): void {
   bindMenuBarTracking(wrap);
 
   wrap.addEventListener('click', (e) => {
-    if ((e.target as HTMLElement).closest('.finder-view-menu')) return;
-    const t = (e.target as HTMLElement).closest<HTMLElement>('[data-act]');
+    const el = e.target instanceof Element ? e.target : e.target instanceof Node ? e.target.parentElement : null;
+    if (el?.closest('.finder-view-menu, .finder-file-menu')) return;
+    const t = el?.closest<HTMLElement>('[data-act]');
     if (!t) return;
     const act = t.dataset.act;
-    if (act === 'toggle-app' || act === 'toggle-advanced') return;
+    if (act === 'toggle-app' || act === 'toggle-file' || act === 'toggle-view' || act === 'toggle-advanced') return;
     e.stopPropagation();
     setMenubarOpen(wrap, null);
     if (act === 'about') host.about.open();

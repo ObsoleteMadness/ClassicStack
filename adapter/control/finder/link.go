@@ -125,17 +125,61 @@ func (s *Service) openerFor(scheme, ifaceType, iface, transport string, target u
 			opener.CaptureSnaplen = uint32(n)
 		}
 	}
-	if hw := s.configuredInterface().HWAddress; hw != "" {
+	// MAC precedence: an explicit [Client] mac (lets the outbound client present a
+	// distinct station from the server's own NIC-bound ports on the same interface,
+	// avoiding a collision when both run on one bridge); else the bound
+	// [[interface]]'s hw_address; else NewOpener's own "be the host" default (the
+	// host NIC's MAC), already set on opener.
+	if mac := strings.TrimSpace(s.clientConfig().MAC); mac != "" {
+		if parsed, err := parseMAC6(mac); err == nil {
+			opener.MAC = parsed
+		}
+	} else if hw := s.configuredInterface().HWAddress; hw != "" {
 		if mac, err := parseMAC6(hw); err == nil {
 			opener.MAC = mac
 		}
+	}
+	// The outbound client runs as part of the ClassicStack server, so its NetBIOS
+	// session carriers (SMB-over-NBIPX, SMB-over-NBF) present the configured client
+	// identity (or the server's own Identity.Hostname when unset) rather than a
+	// throwaway MAC-derived name — one name for the whole box by default, matching
+	// how a real Windows/DOS station's redirector and file-sharing server share one
+	// NetBIOS name. Harmless when unset: the carrier keeps its MAC-derived default.
+	if name := s.clientName(); name != "" {
+		opener.CallingName = name
+	}
+	// When the local Browser Service already lists the target as a known server
+	// (learned passively from its own Host/LocalMaster Announcements — see
+	// core/service/browser), the NB-IPX carrier skips its own redundant Find-name
+	// locate and goes straight to SESSION_INITIALIZE with the full establish
+	// budget. Nil/unknown falls back to today's independent locate.
+	if srv := strings.TrimSpace(target.Server); srv != "" && s.browserKnows(srv) {
+		opener.KnownServer = true
 	}
 	s.log.Log(log.Debug, "finder client opener",
 		log.Str("scheme", scheme),
 		log.Str("ifacetype", opener.Spec.Kind),
 		log.Str("iface", opener.Spec.Name),
-		log.Str("mac", formatMAC6(opener.MAC)))
+		log.Str("mac", formatMAC6(opener.MAC)),
+		log.Str("callingName", opener.CallingName),
+		log.Bool("knownServer", opener.KnownServer))
 	return opener, nil
+}
+
+// browserKnows reports whether the local Browser Service's browse list already
+// contains name (case-insensitively) — i.e. it has already observed that server
+// announce itself, independent of this connect attempt.
+func (s *Service) browserKnows(name string) bool {
+	b := s.browser()
+	if b == nil {
+		return false
+	}
+	for _, n := range b.BrowseList() {
+		if strings.EqualFold(n, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) configuredInterface() config.InterfaceSection {

@@ -156,9 +156,12 @@ function toFinderSession(m: FinderMountedVolume): FinderSession {
     allowGuest: true,
     uams: [],
     rootId: m.rootId,
+    rootPath: m.rootPath,
     volume: m.volume,
     target: m.target,
     transport: m.transport,
+    protocol: m.protocol,
+    capabilities: m.capabilities,
   };
 }
 
@@ -624,7 +627,10 @@ export class GoFinderHost implements FinderHost {
     const info = await this.finderAPI.connect({ kind: ep.kind, id: ep.id, target: ep.id, guest: true });
     let opened = info;
     if (!info.rootId) {
-      const vol = info.volume || info.volumes?.[0] || ep.title;
+      const vol = info.volume || info.volumes?.[0];
+      if (!vol) {
+        throw new Error(`no volumes on “${ep.title}”`);
+      }
       opened = await this.finderAPI.openVolume(info.sessionId, vol);
     }
     return this.rememberEndpoint(ep, opened);

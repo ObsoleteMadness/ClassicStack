@@ -67,6 +67,34 @@ const getBackupListToken uint32 = 0x43535442 // "CSTB"
 // target; a caller that knows its workgroup passes it and this is not used.
 const defaultWorkgroup = "WORKGROUP"
 
+// workgroupOrDefault substitutes defaultWorkgroup for an unknown workgroup, so every
+// name-building path targets a real workgroup label rather than an empty one.
+func workgroupOrDefault(workgroup string) string {
+	if w := strings.TrimSpace(workgroup); w != "" {
+		return w
+	}
+	return defaultWorkgroup
+}
+
+// masterTarget is the destination a master-directed browser datagram (AnnouncementRequest,
+// GetBackupList) uses on this carrier, plus whether that name is a FAN-OUT address rather
+// than the master's own registered name.
+//
+// Over NBF it is the master's <workgroup><1D>, directed: the master answers only a request
+// bearing its registered local-master name (captures/win98nbf-win31nbf.pcapng frames
+// 25→26). The NWLink IPX datagram plane has no <1D> form at all — golden Win98 sends its
+// GetBackupList to <workgroup><00> on socket 0x0553 and the master answers it
+// (spec/captures/nbipx-win98.pcap frames 58→60, nwlink-win98.pcap frames 40→41), while
+// the <1D>-directed copy it sends in parallel rides a different plane entirely (socket
+// 0x0455, the bare NBIPXDirectedDatagram form, frames 57→63). So on IPX the master is
+// reached by fanning out to the workgroup and letting it self-select.
+func (c *Conn) masterTarget(workgroup string) (nb.Name, bool) {
+	if ipxFamily(c.proto) {
+		return c.browseFanoutName(workgroup), true
+	}
+	return nb.NewName(workgroupOrDefault(workgroup), nameTypeLocalMaster), false
+}
+
 // MasterInfo is what a master-browser probe found on one carrier: which host is acting as
 // the (local) master browser, the workgroup it serves, and the backup browsers it named.
 // Any field may be empty when the segment answered only partially (a common case on a
@@ -187,21 +215,29 @@ func (c *Conn) FindMaster(workgroup string, window time.Duration) (MasterInfo, e
 // never re-announces, so it must be populated (see Conn.announcementRequestBody).
 func (c *Conn) solicitMasters(workgroup string) error {
 	body := c.announcementRequestBody()
-	// Broadcast solicit (all browsers).
-	if err := c.SendMailslot(mailslotproto.NameBrowse, browseGroupName, body, true); err != nil {
+	// Fan-out solicit (all browsers): "*"<1E> on NBF, <workgroup><00> on the IPX plane.
+	if err := c.SendMailslot(mailslotproto.NameBrowse, c.browseFanoutName(workgroup), body, true); err != nil {
 		return err
 	}
-	// Directed solicit to the workgroup's local master browser. Fall back to the default
-	// workgroup when the caller knows none, so the <1D>-registered master is still poked
-	// by name (a wildcard broadcast never reaches it — see requestBackupList).
-	if workgroup == "" {
-		workgroup = defaultWorkgroup
+	// Solicit aimed at the master. On NBF that is a directed datagram to the
+	// <1D>-registered local master (a wildcard broadcast never reaches it — see
+	// requestBackupList); on the IPX plane masterTarget returns the same workgroup
+	// fan-out name, so this repeats the frame above and is skipped.
+	master, fanout := c.masterTarget(workgroup)
+	if !fanout {
+		dtracef("%s browser AnnouncementRequest → %s (local master)", c.proto, master.String())
+		if err := c.SendMailslot(mailslotproto.NameBrowse, master, body, false); err != nil {
+			return err
+		}
 	}
-	dtracef("%s browser AnnouncementRequest → %s<1D> (local master)", c.proto, workgroup)
-	if err := c.SendMailslot(mailslotproto.NameBrowse, nb.NewName(workgroup, nameTypeLocalMaster), body, false); err != nil {
-		return err
+	// Directed solicit to the segment master via the __MSBROWSE__ special name. It is an
+	// NBF-only step here: golden NWLink puts __MSBROWSE__ on the NB-IPX SESSION socket
+	// 0x0455 as a bare directed datagram (spec/captures/nbipx-nt351-win98.pcap frame 54),
+	// never as an NMPI MailslotSend on 0x0553, so emitting it on this plane would put a
+	// frame on the wire no real stack sends.
+	if ipxFamily(c.proto) {
+		return nil
 	}
-	// Directed solicit to the segment master via the __MSBROWSE__ special name.
 	dtracef("%s browser AnnouncementRequest → __MSBROWSE__ (segment master)", c.proto)
 	return c.SendMailslot(mailslotproto.NameBrowse, msBrowseName, body, true)
 }
@@ -217,14 +253,12 @@ func (c *Conn) requestBackupList(workgroup string) error {
 		RequestedCount: getBackupListRequestedCount,
 		Token:          getBackupListToken,
 	}.Marshal()
-	if workgroup == "" {
-		workgroup = defaultWorkgroup
-	}
-	dst := nb.NewName(workgroup, nameTypeLocalMaster)
+	dst, fanout := c.masterTarget(workgroup)
 	dtracef("%s browser GetBackupList → %s", c.proto, dst.String())
-	// broadcast=false: a directed (0x08) datagram by name; sendNBF fans it to the
+	// NBF: broadcast=false — a directed (0x08) datagram by name; sendNBF fans it to the
 	// multicast MAC regardless, so every node — including the master — receives it.
-	return c.SendMailslot(mailslotproto.NameBrowse, dst, body, false)
+	// IPX: broadcast=true — the fan-out name is typed NMPINameTypeWorkgroup, as golden's is.
+	return c.SendMailslot(mailslotproto.NameBrowse, dst, body, fanout)
 }
 
 // decodeBackupList strips this carrier's framing from one inbound frame and, if it carries

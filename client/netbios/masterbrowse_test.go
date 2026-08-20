@@ -152,7 +152,7 @@ func TestSolicitCarriesResponseName(t *testing.T) {
 	c := &Conn{proto: NBF, srcMAC: RandomMAC(), srcName: station}
 	captured := &captureLink{}
 	c.fl = captured
-	if err := c.solicit(); err != nil {
+	if err := c.solicit(""); err != nil {
 		t.Fatalf("solicit: %v", err)
 	}
 	w, err := mailslotproto.Unmarshal(c.browserPayload(captured.last))

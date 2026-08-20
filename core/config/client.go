@@ -33,6 +33,19 @@ type ClientSection struct {
 	// Iface is the [[interface]] NAME the outbound client binds (e.g. br-lan).
 	// Empty = the model's default interface.
 	Iface string `toml:"iface,omitempty" display:"Interface" desc:"[[interface]] name the outbound client binds (e.g. br-lan). Empty = the default interface." example:"br-lan" widget:"iface"`
+	// Name is the NetBIOS/SMB name the outbound client presents when it browses and
+	// connects to servers — the calling name on session carriers (SMB-over-NBIPX/NBF)
+	// and the station name on browse/discovery datagrams. Empty = the server's own
+	// Identity.Hostname (§4-bis), so the client and the server share one identity by
+	// default, matching how a real Windows/DOS station's redirector and file-sharing
+	// server present one NetBIOS name. Set only when the client should present a name
+	// distinct from the server.
+	Name string `toml:"name,omitempty" display:"Client name" desc:"NetBIOS/SMB name the outbound client presents when browsing/connecting. Empty = the server's own Identity.Hostname." example:"CLASSICSTACK"`
+	// MAC pins the outbound client's Ethernet source address on a pcap/tap link,
+	// distinct from the server's own NIC-bound ports on the same interface. Empty =
+	// the bound [[interface]]'s hw_address, or (failing that) the host NIC's own MAC —
+	// the same "be the host" default the server uses.
+	MAC string `toml:"mac,omitempty" display:"Station MAC" desc:"Ethernet source address the outbound client presents. Empty = the interface's hw_address, or the host NIC's own MAC." example:"02:00:00:00:00:01" widget:"mac"`
 	// Services lists which file-sharing schemes to probe and connect: afp, smb,
 	// ncp, etherdfs. Empty = all four when Enabled.
 	Services []string `toml:"services,omitempty" display:"Services" desc:"File-sharing schemes the client probes and connects: afp, smb, ncp, etherdfs. Empty = all four."`

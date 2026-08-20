@@ -11,7 +11,6 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
-	afpproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 )
 
 func newSessionID() string {
@@ -33,10 +32,14 @@ func (s *Service) OpenLocal(id string) (*SessionInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	root := ffs.Meta().EnsureCNID("")
+	root := uint32(0)
+	if proto == KindAFP {
+		root = ffs.Meta().EnsureCNID("")
+	}
 	sess := &Session{
 		ID:         newSessionID(),
-		Kind:       "local",
+		Kind:       KindLocal,
+		Protocol:   proto,
 		ServerName: "ClassicStack",
 		Volumes:    []string{name},
 		Volume:     name,
@@ -50,14 +53,8 @@ func (s *Service) OpenLocal(id string) (*SessionInfo, error) {
 	s.put(sess)
 	s.log.Log2(log.Debug, "finder opened local volume",
 		log.Str("session", sess.ID), log.Str("volume", name))
-	return &SessionInfo{
-		SessionID:  sess.ID,
-		ServerName: sess.ServerName,
-		Kind:       sess.Kind,
-		Volumes:    sess.Volumes,
-		AllowGuest: true,
-		RootID:     root,
-	}, nil
+	_ = root
+	return sess.info(), nil
 }
 
 func (s *Service) existingLocal(id, name string) *Session {
@@ -120,6 +117,7 @@ func cloneLogin(sess *Session) *Session {
 	return &Session{
 		ID:         newSessionID(),
 		Kind:       sess.Kind,
+		Protocol:   sess.Protocol,
 		ServerName: sess.ServerName,
 		Volumes:    vols,
 		remoteURI:  sess.remoteURI,
@@ -138,7 +136,8 @@ func cloneLogin(sess *Session) *Session {
 
 func (sess *Session) info() *SessionInfo {
 	var root uint32
-	if sess.FS != nil {
+	rootPath := ""
+	if sess.FS != nil && sess.addressBy() == AddressCNID {
 		root = sess.FS.Meta().RootCNID()
 		if root == 0 {
 			root = sess.FS.Meta().EnsureCNID("")
@@ -149,18 +148,20 @@ func (sess *Session) info() *SessionInfo {
 		vols = []string{sess.Volume}
 	}
 	return &SessionInfo{
-		SessionID:  sess.ID,
-		ServerName: sess.ServerName,
-		Kind:       sess.Kind,
-		Volumes:    vols,
-		AllowGuest: sess.allowGuest || sess.Kind == "local",
-		UAMs:       append([]string(nil), sess.uams...),
-		RootID:     root,
-		Volume:     sess.Volume,
-		Target:     sess.remoteURI,
-		Transport:  sess.transport,
-		OS:         sess.os,
-		Dialect:    sess.dialect,
+		SessionID:    sess.ID,
+		ServerName:   sess.ServerName,
+		Kind:         sess.Kind,
+		Volumes:      vols,
+		AllowGuest:   sess.allowGuest || sess.Kind == KindLocal,
+		UAMs:         append([]string(nil), sess.uams...),
+		RootID:       root,
+		RootPath:     rootPath,
+		Volume:       sess.Volume,
+		Target:       sess.remoteURI,
+		Transport:    sess.transport,
+		OS:           sess.os,
+		Dialect:      sess.dialect,
+		Capabilities: sess.capabilities(),
 	}
 }
 
@@ -230,14 +231,12 @@ func (sess *Session) requireFS() (fs.ForkFS, error) {
 	return sess.FS, nil
 }
 
-func nodeFrom(ffs fs.ForkFS, path string, name string, isDir bool, parentID uint32) (Node, error) {
-	n := newNode(ffs, path, name, isDir, parentID)
+func nodeFrom(sess *Session, ffs fs.ForkFS, path string, name string, isDir bool) (Node, error) {
+	n := newNode(sess, ffs, path, name, isDir)
 	info, err := ffs.Stat(path)
 	if err == nil {
-		hasFinder, hasRsrc := applyFileInfo(&n, info)
+		hasFinder, hasRsrc := applyFileInfo(&n, ffs, path, info)
 		if hasFinder && (isDir || hasRsrc) {
-			// AFP Enumerate/GetFileDirParms already carried Finder info and fork
-			// lengths; do not issue per-child FPGetFileDirParms / FPGetVolParms.
 			return n, nil
 		}
 		if hasFinder && !isDir {
@@ -251,6 +250,7 @@ func nodeFrom(ffs fs.ForkFS, path string, name string, isDir bool, parentID uint
 	}
 	if fi, ok, err := ffs.ReadFinderInfo(path); err == nil && ok {
 		n.FinderInfo = fi[:]
+		applyFinderFlagAttrs(&n)
 	}
 	if !isDir {
 		if n.DataBytes == 0 {
@@ -265,13 +265,13 @@ func nodeFrom(ffs fs.ForkFS, path string, name string, isDir bool, parentID uint
 	return n, nil
 }
 
-func nodeFromEntry(ffs fs.ForkFS, path string, e stdfs.DirEntry, parentID uint32) (Node, error) {
+func nodeFromEntry(sess *Session, ffs fs.ForkFS, path string, e stdfs.DirEntry) (Node, error) {
 	info, err := e.Info()
 	if err != nil {
-		return nodeFrom(ffs, path, e.Name(), e.IsDir(), parentID)
+		return nodeFrom(sess, ffs, path, e.Name(), e.IsDir())
 	}
-	n := newNode(ffs, path, e.Name(), e.IsDir(), parentID)
-	hasFinder, hasRsrc := applyFileInfo(&n, info)
+	n := newNode(sess, ffs, path, e.Name(), e.IsDir())
+	hasFinder, hasRsrc := applyFileInfo(&n, ffs, path, info)
 	if hasFinder && (e.IsDir() || hasRsrc) {
 		return n, nil
 	}
@@ -283,29 +283,55 @@ func nodeFromEntry(ffs fs.ForkFS, path string, e stdfs.DirEntry, parentID uint32
 		}
 		return n, nil
 	}
-	return nodeFrom(ffs, path, e.Name(), e.IsDir(), parentID)
+	return nodeFrom(sess, ffs, path, e.Name(), e.IsDir())
 }
 
-func newNode(ffs fs.ForkFS, path, name string, isDir bool, parentID uint32) Node {
-	return Node{
-		ID:         ffs.Meta().EnsureCNID(path),
-		ParentID:   parentID,
+func newNode(sess *Session, ffs fs.ForkFS, path, name string, isDir bool) Node {
+	n := Node{
 		Name:       name,
 		IsDir:      isDir,
 		FinderInfo: make([]byte, 32),
 	}
+	if path == "" {
+		n.Name = sess.Volume
+		if n.Name == "" {
+			n.Name = sess.ServerName
+		}
+	}
+	if sess.addressBy() == AddressPath {
+		n.Addr = AddressPath
+		n.pathScheme = true
+		n.Path = path
+		n.ParentPath = parentPathOf(path)
+		return n
+	}
+	n.Addr = AddressCNID
+	n.ID = ffs.Meta().EnsureCNID(path)
+	if path == "" {
+		n.ParentID = 1
+	} else {
+		n.ParentID = ffs.Meta().EnsureCNID(parentPathOf(path))
+	}
+	return n
+}
+
+func unixMs(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UnixMilli()
 }
 
 // applyFileInfo copies Stat/DirEntry metadata onto n. hasFinder/hasRsrc report
 // whether FileInfo.Sys() already carried those fields from the wire (AFP
 // enumerate), so the caller can skip extra fork/Finder-info round-trips.
-func applyFileInfo(n *Node, info stdfs.FileInfo) (hasFinder, hasRsrc bool) {
-	n.ModDate = afpproto.MacTime(info.ModTime())
+func applyFileInfo(n *Node, ffs fs.ForkFS, path string, info stdfs.FileInfo) (hasFinder, hasRsrc bool) {
+	n.ModDate = unixMs(info.ModTime())
 	n.CreateDate = n.ModDate
 	if sys := info.Sys(); sys != nil {
 		if ct, ok := sys.(fs.DOSCreateTimeInfo); ok {
 			if t := ct.DOSCreateTime(); !t.IsZero() {
-				n.CreateDate = afpproto.MacTime(t)
+				n.CreateDate = unixMs(t)
 			}
 		}
 		if fi, ok := sys.(fs.FinderInfoBits); ok {
@@ -313,15 +339,67 @@ func applyFileInfo(n *Node, info stdfs.FileInfo) (hasFinder, hasRsrc bool) {
 				b := bits
 				n.FinderInfo = b[:]
 				hasFinder = true
+				applyFinderFlagAttrs(n)
 			}
 		}
 		if rl, ok := sys.(fs.ResourceLenInfo); ok {
 			n.ResourceBytes = rl.ResourceForkLen()
 			hasRsrc = true
 		}
+		if da, ok := sys.(fs.DOSAttrInfo); ok {
+			mergeAttrs(n, dosAttrMap(da.DOSAttrs()))
+		}
 	}
 	if !n.IsDir {
 		n.DataBytes = info.Size()
 	}
+	if n.Attrs == nil {
+		if attr, ok := ffs.Meta().Attrs(path); ok {
+			mergeAttrs(n, dosAttrMap(attr.Attrs))
+			if !attr.CreateTime.IsZero() && n.CreateDate == 0 {
+				n.CreateDate = unixMs(attr.CreateTime)
+			}
+			if !attr.AccessTime.IsZero() {
+				n.AccessDate = unixMs(attr.AccessTime)
+			}
+		}
+	}
+	if sn, err := ffs.ShortName(path); err == nil && sn != "" && sn != n.Name {
+		n.ShortName = sn
+	}
+	if mn, err := ffs.MediumName(path); err == nil && mn != "" && mn != n.Name {
+		n.MediumName = mn
+	}
 	return hasFinder, hasRsrc
+}
+
+func dosAttrMap(bits uint16) map[string]bool {
+	return map[string]bool{
+		"readonly": bits&fs.DOSReadOnly != 0,
+		"hidden":   bits&fs.DOSHidden != 0,
+		"system":   bits&fs.DOSSystem != 0,
+		"archive":  bits&fs.DOSArchive != 0,
+	}
+}
+
+func applyFinderFlagAttrs(n *Node) {
+	if len(n.FinderInfo) < 10 {
+		return
+	}
+	flags := uint16(n.FinderInfo[8])<<8 | uint16(n.FinderInfo[9])
+	const kIsInvisible = 0x4000
+	const kNameLocked = 0x1000
+	mergeAttrs(n, map[string]bool{
+		"invisible": flags&kIsInvisible != 0,
+		"locked":    flags&kNameLocked != 0,
+	})
+}
+
+func mergeAttrs(n *Node, extra map[string]bool) {
+	if n.Attrs == nil {
+		n.Attrs = map[string]bool{}
+	}
+	for k, v := range extra {
+		n.Attrs[k] = v
+	}
 }

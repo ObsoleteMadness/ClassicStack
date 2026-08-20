@@ -29,7 +29,10 @@ export default defineConfig({
             res.end('not found');
             return;
           }
-          res.setHeader('Content-Type', 'image/png');
+          const ext = path.extname(file).toLowerCase();
+          const type =
+            ext === '.gif' ? 'image/gif' : ext === '.svg' ? 'image/svg+xml' : 'image/png';
+          res.setHeader('Content-Type', type);
           fs.createReadStream(file).pipe(res);
         });
       },
@@ -37,11 +40,18 @@ export default defineConfig({
         const iconsDir = path.join(webRoot, 'icons');
         const outDir = path.join(here, '../spa/icons');
         if (!fs.existsSync(iconsDir)) return;
-        fs.mkdirSync(outDir, { recursive: true });
-        for (const name of fs.readdirSync(iconsDir)) {
-          const src = path.join(iconsDir, name);
-          if (fs.statSync(src).isFile()) fs.copyFileSync(src, path.join(outDir, name));
-        }
+        const copyTree = (srcDir: string, destDir: string): void => {
+          fs.mkdirSync(destDir, { recursive: true });
+          for (const name of fs.readdirSync(srcDir)) {
+            if (name === '.DS_Store') continue;
+            const src = path.join(srcDir, name);
+            const dest = path.join(destDir, name);
+            const st = fs.statSync(src);
+            if (st.isDirectory()) copyTree(src, dest);
+            else if (st.isFile()) fs.copyFileSync(src, dest);
+          }
+        };
+        copyTree(iconsDir, outDir);
       },
     },
   ],

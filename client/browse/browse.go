@@ -5,8 +5,9 @@
 // and does NOT answer a broadcast AnnouncementRequest. So a solicit-and-sniff sweep almost
 // never sees it; the authoritative list lives in the master browser and must be asked for.
 //
-// Over each NetBIOS datagram carrier (NBF over 802.2 LLC, NBIPX over IPX) Enumerate runs
-// three sources and merges them:
+// Over each NetBIOS datagram carrier (NBF over 802.2 LLC, NBIPX over IPX, and direct-hosted
+// IPX — which shares NBIPX's datagram plane byte for byte and differs only in the SMB
+// session it opens for step 3) Enumerate runs three sources and merges them:
 //
 //  1. solicit + sniff browser announcements (client/netbios.Conn.Browse) — catches any host
 //     that announces to the segment during the window and identifies the masters;
@@ -55,6 +56,22 @@ type Options struct {
 	// Carriers restricts the NetBIOS datagram sweep to these protocols (nbf, nbipx).
 	// Empty runs every datagram carrier in netbios.Protocols.
 	Carriers []netbios.Protocol
+	// Station, when non-empty, is the NetBIOS name this sweep presents on browse/
+	// discovery datagrams (solicit + FindMaster) and on the anonymous NetServerEnum2
+	// session used to ask a master for its browse list — overriding the MAC-derived
+	// default (netbios.DefaultStationName). A caller running as part of a
+	// ClassicStack server passes its own client identity here so the sweep is
+	// recognisable on the wire instead of a throwaway "CS-xxxxxx".
+	Station string
+	// CapturePath / CaptureSnaplen tee every frame this sweep's raw links read AND
+	// write to a pcap file (see client/link.Opener). Without them the discovery half
+	// of a browse — the solicit, FindMaster and GetBackupList datagrams, i.e. exactly
+	// the exchange that decides whether a master browser is found — opens undecorated
+	// links and leaves no trace in the operator's client capture, while the later
+	// session half (opened from the file client's own opener) is recorded. Threading
+	// them here makes the whole sweep visible in one file. Empty = no capture.
+	CapturePath    string
+	CaptureSnaplen uint32
 }
 
 // Protocol is the NetBIOS datagram carrier a server was heard/queried on (re-exported from
@@ -130,7 +147,11 @@ func Enumerate(opts Options) ([]Server, []Result) {
 		}
 		return nil, results
 	}
+	applyCapture(opener, opts)
 	station := netbios.DefaultStationName(opener.MAC, netbios.NameTypeWorkstation)
+	if name := strings.TrimSpace(opts.Station); name != "" {
+		station = nb.NewName(name, netbios.NameTypeWorkstation)
+	}
 
 	agg := map[string]*Server{}
 	results := make([]Result, 0, len(carriers))
@@ -150,8 +171,10 @@ func enumerateCarrier(opener *clientlink.Opener, station nb.Name, p netbios.Prot
 		return res
 	}
 
-	// Source 1: solicit + sniff announcements (self-announcers + masters).
-	hosts, _ := c.Browse(window)
+	// Source 1: solicit + sniff announcements (self-announcers + masters). The solicit's
+	// fan-out name needs the workgroup on the IPX carriers, and this runs before the sniff
+	// can learn one, so the caller's pin (or the blind default) is what it goes out with.
+	hosts, _ := c.Browse(opts.Workgroup, window)
 	for _, h := range hosts {
 		merge(agg, h.Name, p, SourceAnnouncement, hostRole(h), h.Comment, h.OSVersion, h.Address)
 	}
@@ -224,7 +247,28 @@ func enumServers(opts Options, p netbios.Protocol, master, workgroup string) ([]
 	if opts.MAC != ([6]byte{}) {
 		opener.MAC = opts.MAC
 	}
+	opener.CallingName = strings.TrimSpace(opts.Station)
+	applyCapture(opener, opts)
 	return clientsmb.EnumServers(opener, master, workgroup, "", "")
+}
+
+// applyCapture copies the sweep's capture destination onto an opener, so every raw
+// link this package opens tees to the same pcap file as the rest of the client.
+// client/link memoises one Sink per path for the whole process, so the several
+// short-lived links a sweep opens (one per carrier, plus the NetServerEnum2 session)
+// append to one file rather than truncating each other.
+func applyCapture(o *clientlink.Opener, opts Options) {
+	if o == nil {
+		return
+	}
+	path := strings.TrimSpace(opts.CapturePath)
+	if path == "" {
+		return
+	}
+	o.CapturePath = path
+	if opts.CaptureSnaplen > 0 {
+		o.CaptureSnaplen = opts.CaptureSnaplen
+	}
 }
 
 // merge inserts or enriches a discovered server, keeping the most authoritative source and

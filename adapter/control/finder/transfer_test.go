@@ -34,11 +34,11 @@ func TestCopyAcrossSessions(t *testing.T) {
 	root := src.FS.Meta().EnsureCNID("")
 	dstRoot := dst.FS.Meta().EnsureCNID("")
 
-	dir, err := svc.Mkdir("src", root, "Folder")
+	dir, err := svc.Mkdir("src", CNIDRef(root), "Folder")
 	if err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	file, err := svc.CreateFile("src", dir.ID, "hello.txt", []byte("payload"), nil, nil)
+	file, err := svc.CreateFile("src", CNIDRef(dir.ID), "hello.txt", []byte("payload"), nil, nil)
 	if err != nil {
 		t.Fatalf("CreateFile: %v", err)
 	}
@@ -47,8 +47,8 @@ func TestCopyAcrossSessions(t *testing.T) {
 	err = svc.Copy(context.Background(), TransferRequest{
 		SrcSession:  "src",
 		DestSession: "dst",
-		SrcID:       file.ID,
-		DestParent:  dstRoot,
+		SrcID:       CNIDRef(file.ID),
+		DestParent:  CNIDRef(dstRoot),
 		DestName:    "hello.txt",
 	}, func(p OpProgress) { last = p })
 	if err != nil {
@@ -58,18 +58,18 @@ func TestCopyAcrossSessions(t *testing.T) {
 		t.Fatalf("progress not done: %+v", last)
 	}
 
-	got, err := svc.Lookup("dst", dstRoot, "hello.txt")
+	got, err := svc.Lookup("dst", CNIDRef(dstRoot), "hello.txt")
 	if err != nil {
 		t.Fatalf("Lookup dest: %v", err)
 	}
-	data, err := svc.ReadFork("dst", got.ID, false, 0, 0)
+	data, err := svc.ReadFork("dst", CNIDRef(got.ID), false, 0, 0)
 	if err != nil {
 		t.Fatalf("ReadFork: %v", err)
 	}
 	if !bytes.Equal(data, []byte("payload")) {
 		t.Fatalf("data %q", data)
 	}
-	if _, err := svc.GetNode("src", file.ID); err != nil {
+	if _, err := svc.GetNode("src", CNIDRef(file.ID)); err != nil {
 		t.Fatalf("source should remain: %v", err)
 	}
 }
@@ -78,25 +78,25 @@ func TestMoveWithinSession(t *testing.T) {
 	svc := New(nil, nil)
 	sess := putMemSession(t, svc, "t", "Mem")
 	root := sess.FS.Meta().EnsureCNID("")
-	dir, err := svc.Mkdir("t", root, "Folder")
+	dir, err := svc.Mkdir("t", CNIDRef(root), "Folder")
 	if err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	file, err := svc.CreateFile("t", root, "a.txt", []byte("x"), nil, nil)
+	file, err := svc.CreateFile("t", CNIDRef(root), "a.txt", []byte("x"), nil, nil)
 	if err != nil {
 		t.Fatalf("CreateFile: %v", err)
 	}
 	err = svc.MoveAcross(context.Background(), TransferRequest{
 		SrcSession:  "t",
 		DestSession: "t",
-		SrcID:       file.ID,
-		DestParent:  dir.ID,
+		SrcID:       CNIDRef(file.ID),
+		DestParent:  CNIDRef(dir.ID),
 		DestName:    "a.txt",
 	}, nil)
 	if err != nil {
 		t.Fatalf("MoveAcross: %v", err)
 	}
-	if _, err := svc.Lookup("t", dir.ID, "a.txt"); err != nil {
+	if _, err := svc.Lookup("t", CNIDRef(dir.ID), "a.txt"); err != nil {
 		t.Fatalf("lookup in folder: %v", err)
 	}
 }

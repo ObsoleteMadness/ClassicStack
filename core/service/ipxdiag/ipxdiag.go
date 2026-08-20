@@ -28,7 +28,7 @@ const Name = "IPXDiag"
 
 // ipxPEPType is the IPX packet-type (4, Packet Exchange Protocol) diagnostic traffic
 // rides, matching NBIPX session traffic and direct-hosted SMB.
-const ipxPEPType uint8 = 0x04
+const ipxPEPType = ipxproto.TypePEP
 
 // Sender is the IPX datagram egress the responder replies through: fill source
 // addressing and write one datagram. The core/router/ipx mini-router's

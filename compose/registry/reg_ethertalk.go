@@ -38,7 +38,10 @@ func init() {
 		// degradation as before: the port satisfies the lifecycle and is attached to
 		// the router, but moves no frames until a backend exists.
 		iface := ctx.Model.EffectiveInterfaceFor(sec)
-		opener := nicLinkOpener(ctx, sec, iface, ethertalk.BPFFilter)
+		// The resolved station mac excludes this instance's own transmitted frames
+		// from the capture at the kernel (nicLinkOpener); etherTalkFramer below
+		// resolves it again for the AARP framer's source-address identity.
+		opener := nicLinkOpener(ctx, sec, iface, ethertalk.BPFFilter, sectionMACFor(ctx, sec, iface))
 		if opener == nil {
 			return ethertalk.NewInstance(sec, nil, nil, ctx.Router, logger)
 		}

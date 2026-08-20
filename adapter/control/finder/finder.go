@@ -10,6 +10,7 @@ package finder
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -34,6 +35,10 @@ const sessionIdle = 10 * time.Minute
 
 // ErrNotFound is returned when a session, node, or volume does not exist.
 var ErrNotFound = errors.New("finder: not found")
+
+// ErrBadRef is returned when a catalog route sends the wrong identity kind
+// (path on a CNID volume, or id on a path volume).
+var ErrBadRef = errors.New("finder: addressing scheme mismatch")
 
 // ErrReadOnly is returned when a mutation is attempted on a read-only catalog.
 var ErrReadOnly = errors.New("finder: volume is read-only")
@@ -206,52 +211,120 @@ func serverURI(scheme, server, transport string) string {
 
 // SessionInfo is returned after connect/login.
 type SessionInfo struct {
-	SessionID  string   `json:"sessionId"`
-	ServerName string   `json:"serverName"`
-	Kind       string   `json:"kind"`
-	Volumes    []string `json:"volumes"`
-	AllowGuest bool     `json:"allowGuest"`
-	UAMs       []string `json:"uams,omitempty"` // AFP UAMs, SMB capabilities, or NCP login methods
-	RootID     uint32   `json:"rootId,omitempty"`
-	Volume     string   `json:"volume,omitempty"` // currently open volume, if any
-	Target     string   `json:"target,omitempty"`
-	Transport  string   `json:"transport,omitempty"`
-	OS         string   `json:"os,omitempty"`
-	Dialect    string   `json:"dialect,omitempty"`
+	SessionID    string              `json:"sessionId"`
+	ServerName   string              `json:"serverName"`
+	Kind         string              `json:"kind"`
+	Volumes      []string            `json:"volumes"`
+	AllowGuest   bool                `json:"allowGuest"`
+	UAMs         []string            `json:"uams,omitempty"` // AFP UAMs, SMB capabilities, or NCP login methods
+	RootID       uint32              `json:"rootId,omitempty"`
+	RootPath     string              `json:"rootPath,omitempty"`
+	Volume       string              `json:"volume,omitempty"` // currently open volume, if any
+	Target       string              `json:"target,omitempty"`
+	Transport    string              `json:"transport,omitempty"`
+	OS           string              `json:"os,omitempty"`
+	Dialect      string              `json:"dialect,omitempty"`
+	Capabilities CatalogCapabilities `json:"capabilities"`
 }
 
 // MountedVolume is one volume this instance currently has open as a client
 // (Finder browse or FUSE/WinFsp host mount). The list is process-global: every
 // web client sees the same mounts.
 type MountedVolume struct {
-	SessionID  string `json:"sessionId"`
-	Kind       string `json:"kind"`
-	ServerName string `json:"serverName"`
-	Volume     string `json:"volume"`
-	Target     string `json:"target,omitempty"`
-	Transport  string `json:"transport,omitempty"`
-	RootID     uint32 `json:"rootId,omitempty"`
-	Mountpoint string `json:"mountpoint,omitempty"`
+	SessionID    string              `json:"sessionId"`
+	Kind         string              `json:"kind"`
+	ServerName   string              `json:"serverName"`
+	Volume       string              `json:"volume"`
+	Target       string              `json:"target,omitempty"`
+	Transport    string              `json:"transport,omitempty"`
+	RootID       uint32              `json:"rootId,omitempty"`
+	RootPath     string              `json:"rootPath,omitempty"`
+	Mountpoint   string              `json:"mountpoint,omitempty"`
+	Protocol     string              `json:"protocol,omitempty"`
+	Capabilities CatalogCapabilities `json:"capabilities"`
 }
 
-// Node is the JSON catalog node (CNID-addressed). Fork bytes are omitted; use
-// Fork/EnsureContent to hydrate them.
+// Node is the JSON catalog node. Identity is CNID (id/parentId) or path
+// (path/parentPath), never both. Dates are Unix milliseconds.
 type Node struct {
-	ID            uint32 `json:"id"`
-	ParentID      uint32 `json:"parentId"`
-	Name          string `json:"name"`
-	IsDir         bool   `json:"isDir"`
-	DataBytes     int64  `json:"dataBytes"`
-	ResourceBytes int64  `json:"resourceBytes"`
-	FinderInfo    []byte `json:"finderInfo"`
-	CreateDate    uint32 `json:"createDate"` // AFP Mac time (seconds since 2000-01-01 UTC)
-	ModDate       uint32 `json:"modDate"`
+	Addr          string          `json:"addr"`
+	ID            uint32          `json:"id,omitempty"`
+	ParentID      uint32          `json:"parentId,omitempty"`
+	Path          string          `json:"path,omitempty"`
+	ParentPath    string          `json:"parentPath,omitempty"`
+	Name          string          `json:"name"`
+	IsDir         bool            `json:"isDir"`
+	DataBytes     int64           `json:"dataBytes,omitempty"`
+	ResourceBytes int64           `json:"resourceBytes,omitempty"`
+	FinderInfo    []byte          `json:"finderInfo,omitempty"`
+	CreateDate    int64           `json:"createDate,omitempty"` // Unix milliseconds
+	ModDate       int64           `json:"modDate,omitempty"`
+	AccessDate    int64           `json:"accessDate,omitempty"`
+	BackupDate    int64           `json:"backupDate,omitempty"`
+	ShortName     string          `json:"shortName,omitempty"`
+	MediumName    string          `json:"mediumName,omitempty"`
+	Attrs         map[string]bool `json:"attrs,omitempty"`
+	pathScheme    bool
+}
+
+func (n Node) MarshalJSON() ([]byte, error) {
+	type cnidNode struct {
+		Addr          string          `json:"addr"`
+		ID            uint32          `json:"id"`
+		ParentID      uint32          `json:"parentId"`
+		Name          string          `json:"name"`
+		IsDir         bool            `json:"isDir"`
+		DataBytes     int64           `json:"dataBytes,omitempty"`
+		ResourceBytes int64           `json:"resourceBytes,omitempty"`
+		FinderInfo    []byte          `json:"finderInfo,omitempty"`
+		CreateDate    int64           `json:"createDate,omitempty"`
+		ModDate       int64           `json:"modDate,omitempty"`
+		AccessDate    int64           `json:"accessDate,omitempty"`
+		BackupDate    int64           `json:"backupDate,omitempty"`
+		ShortName     string          `json:"shortName,omitempty"`
+		MediumName    string          `json:"mediumName,omitempty"`
+		Attrs         map[string]bool `json:"attrs,omitempty"`
+	}
+	type pathNode struct {
+		Addr          string          `json:"addr"`
+		Path          string          `json:"path"`
+		ParentPath    string          `json:"parentPath"`
+		Name          string          `json:"name"`
+		IsDir         bool            `json:"isDir"`
+		DataBytes     int64           `json:"dataBytes,omitempty"`
+		ResourceBytes int64           `json:"resourceBytes,omitempty"`
+		FinderInfo    []byte          `json:"finderInfo,omitempty"`
+		CreateDate    int64           `json:"createDate,omitempty"`
+		ModDate       int64           `json:"modDate,omitempty"`
+		AccessDate    int64           `json:"accessDate,omitempty"`
+		BackupDate    int64           `json:"backupDate,omitempty"`
+		ShortName     string          `json:"shortName,omitempty"`
+		MediumName    string          `json:"mediumName,omitempty"`
+		Attrs         map[string]bool `json:"attrs,omitempty"`
+	}
+	if n.pathScheme || n.Addr == AddressPath {
+		return json.Marshal(pathNode{
+			Addr: AddressPath, Path: n.Path, ParentPath: n.ParentPath,
+			Name: n.Name, IsDir: n.IsDir, DataBytes: n.DataBytes, ResourceBytes: n.ResourceBytes,
+			FinderInfo: n.FinderInfo, CreateDate: n.CreateDate, ModDate: n.ModDate,
+			AccessDate: n.AccessDate, BackupDate: n.BackupDate,
+			ShortName: n.ShortName, MediumName: n.MediumName, Attrs: n.Attrs,
+		})
+	}
+	return json.Marshal(cnidNode{
+		Addr: AddressCNID, ID: n.ID, ParentID: n.ParentID,
+		Name: n.Name, IsDir: n.IsDir, DataBytes: n.DataBytes, ResourceBytes: n.ResourceBytes,
+		FinderInfo: n.FinderInfo, CreateDate: n.CreateDate, ModDate: n.ModDate,
+		AccessDate: n.AccessDate, BackupDate: n.BackupDate,
+		ShortName: n.ShortName, MediumName: n.MediumName, Attrs: n.Attrs,
+	})
 }
 
 // Session is one operator catalog: a live local ForkFS or a remote client.Connect.
 type Session struct {
 	ID         string
 	Kind       string
+	Protocol   string // afp | smb | ncp | etherdfs (local shares: the live service)
 	ServerName string
 	Volumes    []string
 	Volume     string

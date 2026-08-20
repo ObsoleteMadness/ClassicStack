@@ -26,10 +26,6 @@ import (
 	ncpproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ncp"
 )
 
-// ipxNCPType is the IPX packet type NCP rides (0x11, NCP). NetWare clients send NCP
-// as type 0x11; some send type 0 — the transport accepts either.
-const ipxNCPType uint8 = 0x11
-
 // IPXSender is the IPX datagram egress the transport drives: fill source addressing
 // and write one datagram. The core/router/ipx mini-router's Send satisfies it
 // exactly, so compose registers the transport on the mini-router (SocketHandler on
@@ -92,7 +88,9 @@ func (t *OverIPX) HandleDatagram(d *ipxproto.Datagram) {
 	if d == nil {
 		return
 	}
-	if d.Type != ipxNCPType && d.Type != 0 {
+	// NetWare clients send NCP as type 0x11; some send type 0 (TypeUnknown) — accept
+	// either. The type constant is shared with the NCP client transport.
+	if d.Type != ipxproto.TypeNCP && d.Type != ipxproto.TypeUnknown {
 		return
 	}
 	t.svc.observeRX(len(d.Payload))
@@ -184,7 +182,7 @@ func (t *OverIPX) reply(in *ipxproto.Datagram, hdr ncpproto.ReplyHeader, body []
 	payload = append(payload, body...)
 
 	out := &ipxproto.Datagram{
-		Type:    ipxNCPType,
+		Type:    ipxproto.TypeNCP,
 		DstNet:  in.SrcNet,
 		DstNode: in.SrcNode,
 		DstSock: in.SrcSock,

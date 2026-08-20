@@ -451,3 +451,50 @@ func TestStartDoesNotSelfElectWhenMasterExists(t *testing.T) {
 }
 
 func contains(ss []string, want string) bool { return slices.Contains(ss, want) }
+
+// TestElectionUptimeIsMilliseconds proves the election Uptime field carries
+// MILLISECONDS ([MS-BRWS] §2.2.17), not seconds. It used to divide by time.Second,
+// advertising 159 after 159s of uptime — a 1000x under-report that forfeited the
+// uptime tie-break to any peer up longer than a second.
+func TestElectionUptimeIsMilliseconds(t *testing.T) {
+	svc, _ := newBrowser(t) // started an hour ago
+	const wantMin = uint32(59 * 60 * 1000)
+	if got := svc.uptimeMillis(); got < wantMin {
+		t.Errorf("uptimeMillis() = %d, want >= %d (an hour expressed in ms)", got, wantMin)
+	}
+	// Never 0: a zero uptime would lose every tie-break outright.
+	fresh := New(nil, &recordingSink{}, "CLASSICSTACK", "WORKGROUP")
+	fresh.started = time.Now()
+	if fresh.uptimeMillis() == 0 {
+		t.Error("uptimeMillis() = 0 for a just-started browser")
+	}
+}
+
+// TestElectionWaitsForSlowContest proves runElection does not claim the master role
+// inside its transmit burst: a peer whose stronger criteria arrives only after the
+// burst (a real Win9x potential browser backs off seconds before answering) must
+// still win. Before the settle window ClassicStack declared Local Master ~300ms in,
+// got demoted by the late reply, and the two flapped forever.
+func TestElectionWaitsForSlowContest(t *testing.T) {
+	svc, _ := newBrowser(t)
+	svc.electionDelay = func(Role) time.Duration { return time.Millisecond }
+	svc.running = true
+
+	// A weak candidate makes us start transmitting.
+	deliver(svc, "WIN98-1", electionBody("WIN98-1", 0, 0))
+
+	// The burst is 3 x 1ms; the settle is 8ms on top. Contest after the burst but
+	// inside the settle window, with criteria that genuinely outrank ours (an NT
+	// Server — the OS byte dominates, so it beats our WfW master candidacy).
+	time.Sleep(5 * time.Millisecond)
+	strong := proto.ElectionCriteria(proto.ElectionOSNTServer, proto.AnnounceVersionMajor, proto.AnnounceVersionMinor, proto.ElectionDesireMaster)
+	deliver(svc, "NTBOX", electionBody("NTBOX", strong, 76786))
+
+	time.Sleep(40 * time.Millisecond)
+	svc.mu.Lock()
+	role := svc.role
+	svc.mu.Unlock()
+	if role == RoleLocalMaster {
+		t.Error("claimed local master despite a stronger late contest")
+	}
+}

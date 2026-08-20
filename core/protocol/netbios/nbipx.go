@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+	ipxproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx"
 )
 
 // NetBIOS-over-IPX (NBIPX) packet encoding.
@@ -21,12 +22,49 @@ import (
 // the wire whether the sender is OS/2 LAN Server, Win95, or NetWare-based.
 
 // IPXTypeNetBIOS is the IPX packet-type (0x14 = 20) for NBIPX broadcast
-// forwarding (name claim / query).
-const IPXTypeNetBIOS uint8 = 0x14
+// forwarding (name claim / query). It is the IPX-level constant under its
+// NBIPX-facing name; core/protocol/ipx holds the single definition.
+const IPXTypeNetBIOS = ipxproto.TypeNetBIOS
 
 // IPXTypePEP is the IPX packet-type (0x04) for the NB-IPX session protocol on
-// socket 0x0455.
-const IPXTypePEP uint8 = 0x04
+// socket 0x0455. See IPXTypeNetBIOS on where the value is defined.
+const IPXTypePEP = ipxproto.TypePEP
+
+// NB-IPX socket numbers. NetBIOS-over-IPX (NWLink) uses five sockets; the server's
+// session engine (core/service/netbios) registers on each and the client transports
+// (client/smb ipx.go / nbipx.go, client/netbios) address them, so they are defined
+// once here rather than per side — both used to carry private copies.
+//
+//	0x0455 — session + the type-20 NBIPX Find-name broadcast
+//	0x0550 — the NB-IPX server socket (our claim's source socket); ALSO the socket
+//	         direct-hosted SMB listens on (see the SMB service's DirectSMBSocket)
+//	0x0551 — NMPI name-query ("where is CLASSICSTACK?")
+//	0x0552 — the direct-hosted SMB client's own socket (golden capture
+//	         spec/captures/nwlink-win98.pcap frames 14/15/16)
+//	0x0553 — NB-IPX datagram (NMPI mailslot sends: browser traffic)
+//	0x0554 — name service (alternative path some stacks use)
+var (
+	NBIPXSessionSocket   = [2]byte{0x04, 0x55}
+	NBIPXServerSocket    = [2]byte{0x05, 0x50}
+	NBIPXNameQuerySocket = [2]byte{0x05, 0x51}
+	NBIPXClientSocket    = [2]byte{0x05, 0x52}
+	NBIPXDatagramSocket  = [2]byte{0x05, 0x53}
+	NBIPXNameSocket      = [2]byte{0x05, 0x54}
+)
+
+// NBIPXUnassignedConnID is the DestConnID sentinel a client stamps on its NetBIOS
+// session-request (SESSION_INITIALIZE) DATA frame before the server has assigned a
+// connection id, and the value the server keys the request off. Both sides used to
+// declare their own copy.
+const NBIPXUnassignedConnID uint16 = 0xFFFF
+
+// NBIPXMaxFrameData is the most session data one NB-IPX DATA frame carries: an
+// Ethernet II payload (1500) less the IPX header (30) and the NB-IPX session header
+// (18). A message larger than this is fragmented across frames via
+// TotalDataLen/Offset/DataLen with EOM set only on the last; both the client
+// transport and the server engine must agree on the boundary, so the constant is
+// shared rather than restated on each side.
+const NBIPXMaxFrameData = 1500 - ipxproto.HeaderLen - NBIPXSessionHeaderLen
 
 // NB-IPX session header: data_stream_type values.
 //
@@ -212,6 +250,61 @@ func DecodeSessionHeader(b []byte) (*NBIPXSessionHeader, error) {
 		RecvSeq:        bp.LE16(b[14:16]),
 		BytesReceived:  bp.LE16(b[16:18]),
 	}, nil
+}
+
+// NBIPXSessionRequestNameLen is the two 16-byte NetBIOS names that prefix a
+// session-request / session-accept DATA payload on the wire.
+const NBIPXSessionRequestNameLen = 2 * NameLength
+
+// NBIPXSessionRequest is the payload carried by the DATA frame that OPENS an NB-IPX
+// circuit (DestConnID == NBIPXUnassignedConnID) and by the DATA frame that ACCEPTS
+// it: two 16-byte NetBIOS names followed by an opaque capability trailer.
+//
+//	 0:16  Source      — the sender's own name
+//	16:32  Destination — the name being called
+//	32:    Trailer     — capability bytes ([max frame data LE16][timer][timer]),
+//	                     retained and echoed verbatim by the responder
+//
+// ERRATA: the name order is [SOURCE][DESTINATION] — each sender names ITSELF first.
+// Golden capture spec/captures/nbipx-win98.pcap frame 65 (WIN98-2 → WIN98-1) carries
+// "WIN98-2"<00> then "WIN98-1"<20>, and the matching accept (frame 66) carries
+// "WIN98-1"<20> then "WIN98-2"<00>. Both sides of this stack used to read/write the
+// pair as [called][calling], i.e. exactly inverted; because they agreed with each
+// other the in-process e2e passed while no real NWLink peer would ever answer, and a
+// broadcast SESSION_INITIALIZE read as addressed to our own workstation name was
+// silently dropped by Win98. The layout lives here so neither side can re-invert it.
+type NBIPXSessionRequest struct {
+	Source      Name
+	Destination Name
+	Trailer     []byte
+}
+
+// Encode serialises the session-request/accept payload ([source][destination][trailer]).
+func (r *NBIPXSessionRequest) Encode() []byte {
+	out := make([]byte, 0, NBIPXSessionRequestNameLen+len(r.Trailer))
+	out = append(out, r.Source[:]...)
+	out = append(out, r.Destination[:]...)
+	return append(out, r.Trailer...)
+}
+
+// DecodeSessionRequest parses a session-request/accept payload — the bytes AFTER the
+// 18-byte NB-IPX session header. Trailer aliases b (the caller owns b for the dispatch
+// lifetime), matching how the responder echoes it straight back.
+func DecodeSessionRequest(b []byte) (*NBIPXSessionRequest, error) {
+	if len(b) < NBIPXSessionRequestNameLen {
+		return nil, ErrShortNBIPX
+	}
+	r := &NBIPXSessionRequest{Trailer: b[NBIPXSessionRequestNameLen:]}
+	copy(r.Source[:], b[:NameLength])
+	copy(r.Destination[:], b[NameLength:NBIPXSessionRequestNameLen])
+	return r, nil
+}
+
+// Accept returns the session-accept payload answering this request: the names swapped
+// so the RESPONDER is again the source, with the caller's trailer preserved verbatim
+// (golden capture spec/captures/nbipx-win98.pcap frame 66).
+func (r *NBIPXSessionRequest) Accept() *NBIPXSessionRequest {
+	return &NBIPXSessionRequest{Source: r.Destination, Destination: r.Source, Trailer: r.Trailer}
 }
 
 const (

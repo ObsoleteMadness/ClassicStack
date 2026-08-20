@@ -1,59 +1,86 @@
 import { ApiCatalog } from 'classicstack-web/finder/api-catalog';
 import type { FinderAPI, ConnectRequest } from 'classicstack-web/finder/api';
 import type { FinderNodeDto, FinderSessionDto, OpProgress, CrossTransferRequest } from 'classicstack-web/finder/types';
+import type { NodeRef } from 'classicstack-web/finder';
+import { parentBody, refBody, refQuery } from 'classicstack-web/fs/catalog-caps';
 import { readSSEProgress } from 'classicstack-web/finder/progress';
 import { api } from '../api';
 import { bytesToB64 } from '../bytes';
 
+function forkQs(sessionId: string, ref: NodeRef, extra: Record<string, string>): URLSearchParams {
+  const q = new URLSearchParams({ session: sessionId, ...refQuery(ref), ...extra });
+  return q;
+}
+
 export class HttpFinderAPI implements FinderAPI {
   readonly backendId = 'http';
 
-  async getNode(sessionId: string, id: number): Promise<FinderNodeDto> {
-    return api.finderNode(sessionId, id);
+  async getNode(sessionId: string, ref: NodeRef): Promise<FinderNodeDto> {
+    return api.finderNode(sessionId, ref);
   }
-  async children(sessionId: string, parentId: number): Promise<FinderNodeDto[]> {
-    return api.finderChildren(sessionId, parentId);
+  async children(sessionId: string, parent: NodeRef): Promise<FinderNodeDto[]> {
+    return api.finderChildren(sessionId, parent);
   }
-  async lookup(sessionId: string, parentId: number, name: string): Promise<FinderNodeDto | null> {
-    return api.finderLookup(sessionId, parentId, name);
+  async lookup(sessionId: string, parent: NodeRef, name: string): Promise<FinderNodeDto | null> {
+    return api.finderLookup(sessionId, parent, name);
   }
-  async mkdir(sessionId: string, parentId: number, name: string): Promise<FinderNodeDto> {
-    return api.finderMkdir(sessionId, parentId, name);
+  async mkdir(sessionId: string, parent: NodeRef, name: string): Promise<FinderNodeDto> {
+    return api.finderMkdir(sessionId, parent, name);
   }
   async create(
     sessionId: string,
-    parentId: number,
+    parent: NodeRef,
     name: string,
     body?: { data?: Uint8Array; resource?: Uint8Array; finderInfo?: Uint8Array },
   ): Promise<FinderNodeDto> {
     return api.finderCreate({
       sessionId,
-      parentId,
       name,
+      ...parentBody(parent),
       data: body?.data ? Array.from(body.data) : undefined,
       resource: body?.resource ? Array.from(body.resource) : undefined,
       finderInfo: body?.finderInfo ? bytesToB64(body.finderInfo) : undefined,
     });
   }
-  async rename(sessionId: string, id: number, name: string): Promise<void> { return api.finderRename(sessionId, id, name); }
-  async move(sessionId: string, id: number, parentId: number): Promise<void> { return api.finderMove(sessionId, id, parentId); }
-  async remove(sessionId: string, id: number): Promise<void> { return api.finderRemove(sessionId, id); }
+  async rename(sessionId: string, ref: NodeRef, name: string): Promise<void> {
+    return api.finderRename(sessionId, ref, name);
+  }
+  async move(sessionId: string, ref: NodeRef, parent: NodeRef): Promise<void> {
+    return api.finderMove(sessionId, ref, parent);
+  }
+  async remove(sessionId: string, ref: NodeRef): Promise<void> {
+    return api.finderRemove(sessionId, ref);
+  }
 
-  async readFork(sessionId: string, id: number, resource: boolean, off?: number, len?: number): Promise<Uint8Array> {
-    const q = new URLSearchParams({ session: sessionId, id: String(id), fork: resource ? 'resource' : 'data' });
+  async readFork(sessionId: string, ref: NodeRef, resource: boolean, off?: number, len?: number): Promise<Uint8Array> {
+    const q = forkQs(sessionId, ref, { fork: resource ? 'resource' : 'data' });
     if (off != null) q.set('off', String(off));
     if (len != null) q.set('len', String(len));
     const r = await fetch(`finder/fork?${q.toString()}`);
     if (!r.ok) throw new Error(`fork read: HTTP ${r.status}`);
     return new Uint8Array(await r.arrayBuffer());
   }
-  async writeFork(sessionId: string, id: number, resource: boolean, off: number, data: Uint8Array): Promise<void> {
-    const q = new URLSearchParams({ session: sessionId, id: String(id), fork: resource ? 'resource' : 'data', off: String(off) });
+  async writeFork(sessionId: string, ref: NodeRef, resource: boolean, off: number, data: Uint8Array): Promise<void> {
+    const q = forkQs(sessionId, ref, { fork: resource ? 'resource' : 'data', off: String(off) });
     const r = await fetch(`finder/fork?${q.toString()}`, { method: 'PUT', body: data });
     if (!r.ok) throw new Error(`fork write: HTTP ${r.status}`);
   }
-  async writeFinderInfo(sessionId: string, id: number, finderInfo: Uint8Array): Promise<void> {
-    return api.finderFinderInfo(sessionId, id, bytesToB64(finderInfo));
+  async writeFinderInfo(sessionId: string, ref: NodeRef, finderInfo: Uint8Array): Promise<void> {
+    return api.finderFinderInfo(sessionId, ref, bytesToB64(finderInfo));
+  }
+  async writeAttrs(sessionId: string, ref: NodeRef, patch: Record<string, boolean>): Promise<void> {
+    return api.finderAttrs(sessionId, ref, patch);
+  }
+  async resolvePath(sessionId: string, path: string): Promise<FinderNodeDto | null> {
+    try {
+      return await api.finderResolve(sessionId, path);
+    } catch {
+      return null;
+    }
+  }
+  async pathOf(sessionId: string, ref: NodeRef): Promise<string> {
+    const { path } = await api.finderPathOf(sessionId, ref);
+    return path;
   }
 
   copy(req: CrossTransferRequest, signal?: AbortSignal): AsyncIterable<OpProgress> {
@@ -62,8 +89,8 @@ export class HttpFinderAPI implements FinderAPI {
   moveAcross(req: CrossTransferRequest, signal?: AbortSignal): AsyncIterable<OpProgress> {
     return this.readJob(api.finderMoveAcross(req), signal);
   }
-  expand(sessionId: string, id: number, signal?: AbortSignal): AsyncIterable<OpProgress> {
-    return this.readJob(api.finderExpand({ sessionId, id }), signal);
+  expand(sessionId: string, ref: NodeRef, signal?: AbortSignal): AsyncIterable<OpProgress> {
+    return this.readJob(api.finderExpand({ sessionId, ...refBody(ref) }), signal);
   }
 
   openCatalog(session: FinderSessionDto) {

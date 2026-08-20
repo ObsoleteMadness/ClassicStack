@@ -53,9 +53,12 @@ func TestNetBEUIFactory_OpenerGoesLive(t *testing.T) {
 	}
 	// The NetBEUI port must program the NBF capture filter — NOT the shared EtherTalk
 	// filter, which dropped every NBF frame at the kernel so the read loop saw nothing
-	// (the reported "netbeui can't see any frames" regression).
-	if got := openedBPF.Load(); got != netbeui.BPFFilter {
-		t.Fatalf("opener called with bpf %v, want %v", got, netbeui.BPFFilter)
+	// (the reported "netbeui can't see any frames" regression) — ANDed with a
+	// self-exclusion clause for the section's configured MAC so the kernel drops this
+	// instance's own transmitted frames from the capture.
+	wantBPF := "(" + netbeui.BPFFilter + ") and not (ether src 00:aa:bb:cc:dd:ee)"
+	if got := openedBPF.Load(); got != wantBPF {
+		t.Fatalf("opener called with bpf %v, want %v", got, wantBPF)
 	}
 	if err := c.Stop(ctx); err != nil {
 		t.Fatalf("Stop: %v", err)

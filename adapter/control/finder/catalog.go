@@ -53,8 +53,12 @@ func (s *Service) pathFor(sess *Session, id uint32) (string, error) {
 	return path, nil
 }
 
-// GetNode returns one catalog node by CNID.
-func (s *Service) GetNode(sessionID string, id uint32) (Node, error) {
+func (s *Service) nodeAt(sess *Session, ffs fs.ForkFS, path, name string, isDir bool) (Node, error) {
+	return nodeFrom(sess, ffs, path, name, isDir)
+}
+
+// GetNode returns one catalog node by native ref (CNID or store path).
+func (s *Service) GetNode(sessionID string, ref NodeRef) (Node, error) {
 	sess, err := s.get(sessionID)
 	if err != nil {
 		return Node{}, err
@@ -63,7 +67,7 @@ func (s *Service) GetNode(sessionID string, id uint32) (Node, error) {
 	if err != nil {
 		return Node{}, err
 	}
-	path, err := s.pathFor(sess, id)
+	path, err := s.storePath(sess, ref)
 	if err != nil {
 		return Node{}, err
 	}
@@ -71,35 +75,16 @@ func (s *Service) GetNode(sessionID string, id uint32) (Node, error) {
 	if err != nil {
 		return Node{}, err
 	}
-	parent := uint32(1)
-	if path != "" {
-		dir := path
-		if i := strings.LastIndex(path, "/"); i >= 0 {
-			dir = path[:i]
-		} else {
-			dir = ""
-		}
-		parent = ffs.Meta().EnsureCNID(dir)
-	}
-	name := path
-	if i := strings.LastIndex(path, "/"); i >= 0 {
-		name = path[i+1:]
-	}
-	if path == "" {
-		name = sess.Volume
-		if name == "" {
-			name = sess.ServerName
-		}
-	}
-	n, err := nodeFrom(ffs, path, name, info.IsDir(), parent)
+	name := leafOf(path)
+	n, err := s.nodeAt(sess, ffs, path, name, info.IsDir())
 	if err == nil {
 		s.log.Log2(log.Debug, "finder get node", log.Str("session", sessionID), log.Str("path", path))
 	}
 	return n, err
 }
 
-// Children lists directory entries under parent CNID.
-func (s *Service) Children(sessionID string, parentID uint32) ([]Node, error) {
+// Children lists directory entries under parent.
+func (s *Service) Children(sessionID string, parent NodeRef) ([]Node, error) {
 	sess, err := s.get(sessionID)
 	if err != nil {
 		return nil, err
@@ -108,7 +93,7 @@ func (s *Service) Children(sessionID string, parentID uint32) ([]Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	path, err := s.pathFor(sess, parentID)
+	path, err := s.storePath(sess, parent)
 	if err != nil {
 		return nil, err
 	}
@@ -116,14 +101,13 @@ func (s *Service) Children(sessionID string, parentID uint32) ([]Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	pid := ffs.Meta().EnsureCNID(path)
 	out := make([]Node, 0, len(ents))
 	for _, e := range ents {
 		if hiddenListingName(ffs, e.Name()) {
 			continue
 		}
 		child := joinStore(path, e.Name())
-		n, err := nodeFromEntry(ffs, child, e, pid)
+		n, err := nodeFromEntry(sess, ffs, child, e)
 		if err != nil {
 			return nil, err
 		}
@@ -134,9 +118,7 @@ func (s *Service) Children(sessionID string, parentID uint32) ([]Node, error) {
 }
 
 // Lookup finds a named child of parent via Stat, not a full directory listing.
-// Icon\\r probes (and other one-name lookups) must not enumerate every sibling
-// over AFP.
-func (s *Service) Lookup(sessionID string, parentID uint32, name string) (Node, error) {
+func (s *Service) Lookup(sessionID string, parent NodeRef, name string) (Node, error) {
 	sess, err := s.get(sessionID)
 	if err != nil {
 		return Node{}, err
@@ -145,7 +127,7 @@ func (s *Service) Lookup(sessionID string, parentID uint32, name string) (Node, 
 	if err != nil {
 		return Node{}, err
 	}
-	parent, err := s.pathFor(sess, parentID)
+	dir, err := s.storePath(sess, parent)
 	if err != nil {
 		return Node{}, err
 	}
@@ -153,7 +135,7 @@ func (s *Service) Lookup(sessionID string, parentID uint32, name string) (Node, 
 	if name == "" || strings.Contains(name, "/") {
 		return Node{}, ErrNotFound
 	}
-	path := joinStore(parent, name)
+	path := joinStore(dir, name)
 	info, err := ffs.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -162,11 +144,41 @@ func (s *Service) Lookup(sessionID string, parentID uint32, name string) (Node, 
 		return Node{}, err
 	}
 	s.log.Log2(log.Debug, "finder lookup", log.Str("path", path), log.Str("name", name))
-	return nodeFrom(ffs, path, name, info.IsDir(), ffs.Meta().EnsureCNID(parent))
+	return nodeFrom(sess, ffs, path, name, info.IsDir())
+}
+
+// ResolvePath walks a store-relative path from the volume root to a native node.
+func (s *Service) ResolvePath(sessionID, path string) (Node, error) {
+	sess, err := s.get(sessionID)
+	if err != nil {
+		return Node{}, err
+	}
+	if sess.addressBy() == AddressPath {
+		return s.GetNode(sessionID, PathRef(strings.Trim(path, "/")))
+	}
+	ffs, err := sess.requireFS()
+	if err != nil {
+		return Node{}, err
+	}
+	path = strings.Trim(path, "/")
+	id, ok := ffs.Meta().CNID(path)
+	if !ok {
+		return Node{}, ErrNotFound
+	}
+	return s.GetNode(sessionID, CNIDRef(id))
+}
+
+// PathOf returns the store-relative path for a native ref.
+func (s *Service) PathOf(sessionID string, ref NodeRef) (string, error) {
+	sess, err := s.get(sessionID)
+	if err != nil {
+		return "", err
+	}
+	return s.storePath(sess, ref)
 }
 
 // Mkdir creates a directory.
-func (s *Service) Mkdir(sessionID string, parentID uint32, name string) (Node, error) {
+func (s *Service) Mkdir(sessionID string, parent NodeRef, name string) (Node, error) {
 	sess, err := s.get(sessionID)
 	if err != nil {
 		return Node{}, err
@@ -178,20 +190,20 @@ func (s *Service) Mkdir(sessionID string, parentID uint32, name string) (Node, e
 	if err != nil {
 		return Node{}, err
 	}
-	parent, err := s.pathFor(sess, parentID)
+	dir, err := s.storePath(sess, parent)
 	if err != nil {
 		return Node{}, err
 	}
-	path := joinStore(parent, name)
+	path := joinStore(dir, name)
 	if err := ffs.CreateDir(path); err != nil {
 		return Node{}, err
 	}
 	s.log.Log1(log.Debug, "finder mkdir", log.Str("path", path))
-	return nodeFrom(ffs, path, name, true, ffs.Meta().EnsureCNID(parent))
+	return nodeFrom(sess, ffs, path, name, true)
 }
 
 // CreateFile creates an empty file, optionally writing data and resource forks.
-func (s *Service) CreateFile(sessionID string, parentID uint32, name string, data, resource, finderInfo []byte) (Node, error) {
+func (s *Service) CreateFile(sessionID string, parent NodeRef, name string, data, resource, finderInfo []byte) (Node, error) {
 	sess, err := s.get(sessionID)
 	if err != nil {
 		return Node{}, err
@@ -203,11 +215,11 @@ func (s *Service) CreateFile(sessionID string, parentID uint32, name string, dat
 	if err != nil {
 		return Node{}, err
 	}
-	parent, err := s.pathFor(sess, parentID)
+	dir, err := s.storePath(sess, parent)
 	if err != nil {
 		return Node{}, err
 	}
-	path := joinStore(parent, name)
+	path := joinStore(dir, name)
 	f, err := ffs.CreateFile(path)
 	if err != nil {
 		return Node{}, err
@@ -231,7 +243,7 @@ func (s *Service) CreateFile(sessionID string, parentID uint32, name string, dat
 		}
 	}
 	s.log.Log1(log.Debug, "finder create file", log.Str("path", path))
-	return nodeFrom(ffs, path, name, false, ffs.Meta().EnsureCNID(parent))
+	return nodeFrom(sess, ffs, path, name, false)
 }
 
 func writeFork(ffs fs.ForkFS, path string, fork fs.ForkType, data []byte) error {
@@ -247,8 +259,15 @@ func writeFork(ffs fs.ForkFS, path string, fork fs.ForkType, data []byte) error 
 	return err
 }
 
+func rebindCNID(sess *Session, ffs fs.ForkFS, oldPath, newPath string) error {
+	if sess.addressBy() != AddressCNID {
+		return nil
+	}
+	return ffs.Meta().RebindCNID(oldPath, newPath)
+}
+
 // Rename renames a node within its parent.
-func (s *Service) Rename(sessionID string, id uint32, newName string) error {
+func (s *Service) Rename(sessionID string, ref NodeRef, newName string) error {
 	sess, err := s.get(sessionID)
 	if err != nil {
 		return err
@@ -260,24 +279,21 @@ func (s *Service) Rename(sessionID string, id uint32, newName string) error {
 	if err != nil {
 		return err
 	}
-	path, err := s.pathFor(sess, id)
+	path, err := s.storePath(sess, ref)
 	if err != nil {
 		return err
 	}
-	dir := ""
-	if i := strings.LastIndex(path, "/"); i >= 0 {
-		dir = path[:i]
-	}
+	dir := parentPathOf(path)
 	dest := joinStore(dir, newName)
 	s.log.Log2(log.Debug, "finder rename", log.Str("from", path), log.Str("to", dest))
 	if err := ffs.Rename(path, dest); err != nil {
 		return err
 	}
-	return ffs.Meta().RebindCNID(path, dest)
+	return rebindCNID(sess, ffs, path, dest)
 }
 
 // Move moves a node to a new parent directory.
-func (s *Service) Move(sessionID string, id, newParent uint32) error {
+func (s *Service) Move(sessionID string, ref, newParent NodeRef) error {
 	sess, err := s.get(sessionID)
 	if err != nil {
 		return err
@@ -289,28 +305,25 @@ func (s *Service) Move(sessionID string, id, newParent uint32) error {
 	if err != nil {
 		return err
 	}
-	path, err := s.pathFor(sess, id)
+	path, err := s.storePath(sess, ref)
 	if err != nil {
 		return err
 	}
-	parent, err := s.pathFor(sess, newParent)
+	parent, err := s.storePath(sess, newParent)
 	if err != nil {
 		return err
 	}
-	name := path
-	if i := strings.LastIndex(path, "/"); i >= 0 {
-		name = path[i+1:]
-	}
+	name := leafOf(path)
 	dest := joinStore(parent, name)
 	s.log.Log2(log.Debug, "finder move", log.Str("from", path), log.Str("to", dest))
 	if err := ffs.Rename(path, dest); err != nil {
 		return err
 	}
-	return ffs.Meta().RebindCNID(path, dest)
+	return rebindCNID(sess, ffs, path, dest)
 }
 
 // Remove deletes a node.
-func (s *Service) Remove(sessionID string, id uint32) error {
+func (s *Service) Remove(sessionID string, ref NodeRef) error {
 	sess, err := s.get(sessionID)
 	if err != nil {
 		return err
@@ -322,7 +335,7 @@ func (s *Service) Remove(sessionID string, id uint32) error {
 	if err != nil {
 		return err
 	}
-	path, err := s.pathFor(sess, id)
+	path, err := s.storePath(sess, ref)
 	if err != nil {
 		return err
 	}
@@ -330,14 +343,17 @@ func (s *Service) Remove(sessionID string, id uint32) error {
 	if err := ffs.Remove(path); err != nil {
 		return err
 	}
-	return ffs.Meta().RemoveCNID(path)
+	if sess.addressBy() == AddressCNID {
+		return ffs.Meta().RemoveCNID(path)
+	}
+	return nil
 }
 
 // ReadFork reads a slice of a data or resource fork. Like classicstack-web
 // withOpenFork, it always opens the fork first, reads, and closes when finished
 // so classic servers do not leak fork slots. A missing length reads until EOF
 // in ASP-quantum chunks instead of ForkLen + allocating the whole fork.
-func (s *Service) ReadFork(sessionID string, id uint32, resource bool, off, length int64) ([]byte, error) {
+func (s *Service) ReadFork(sessionID string, ref NodeRef, resource bool, off, length int64) ([]byte, error) {
 	sess, err := s.get(sessionID)
 	if err != nil {
 		return nil, err
@@ -346,7 +362,7 @@ func (s *Service) ReadFork(sessionID string, id uint32, resource bool, off, leng
 	if err != nil {
 		return nil, err
 	}
-	path, err := s.pathFor(sess, id)
+	path, err := s.storePath(sess, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -390,7 +406,7 @@ func (s *Service) ReadFork(sessionID string, id uint32, resource bool, off, leng
 }
 
 // WriteFork writes a slice of a data or resource fork.
-func (s *Service) WriteFork(sessionID string, id uint32, resource bool, off int64, data []byte) error {
+func (s *Service) WriteFork(sessionID string, ref NodeRef, resource bool, off int64, data []byte) error {
 	sess, err := s.get(sessionID)
 	if err != nil {
 		return err
@@ -402,7 +418,7 @@ func (s *Service) WriteFork(sessionID string, id uint32, resource bool, off int6
 	if err != nil {
 		return err
 	}
-	path, err := s.pathFor(sess, id)
+	path, err := s.storePath(sess, ref)
 	if err != nil {
 		return err
 	}
@@ -421,7 +437,7 @@ func (s *Service) WriteFork(sessionID string, id uint32, resource bool, off int6
 }
 
 // WriteFinderInfo sets the 32-byte Finder info for a node.
-func (s *Service) WriteFinderInfo(sessionID string, id uint32, info []byte) error {
+func (s *Service) WriteFinderInfo(sessionID string, ref NodeRef, info []byte) error {
 	sess, err := s.get(sessionID)
 	if err != nil {
 		return err
@@ -433,12 +449,95 @@ func (s *Service) WriteFinderInfo(sessionID string, id uint32, info []byte) erro
 	if err != nil {
 		return err
 	}
-	path, err := s.pathFor(sess, id)
+	path, err := s.storePath(sess, ref)
 	if err != nil {
 		return err
 	}
 	var fi [32]byte
 	copy(fi[:], info)
 	s.log.Log1(log.Debug, "finder write finderinfo", log.Str("path", path))
+	return ffs.WriteFinderInfo(path, fi)
+}
+
+// WriteAttrs patches boolean file flags by capability id (readonly, hidden, …).
+func (s *Service) WriteAttrs(sessionID string, ref NodeRef, patch map[string]bool) error {
+	sess, err := s.get(sessionID)
+	if err != nil {
+		return err
+	}
+	if sess.readOnly {
+		return ErrReadOnly
+	}
+	ffs, err := sess.requireFS()
+	if err != nil {
+		return err
+	}
+	path, err := s.storePath(sess, ref)
+	if err != nil {
+		return err
+	}
+	s.log.Log1(log.Debug, "finder write attrs", log.Str("path", path))
+	attr, _ := ffs.Meta().Attrs(path)
+	changed := false
+	for id, v := range patch {
+		switch id {
+		case "readonly":
+			attr.Attrs = setBit(attr.Attrs, fs.DOSReadOnly, v)
+			changed = true
+		case "hidden":
+			attr.Attrs = setBit(attr.Attrs, fs.DOSHidden, v)
+			changed = true
+		case "system":
+			attr.Attrs = setBit(attr.Attrs, fs.DOSSystem, v)
+			changed = true
+		case "archive":
+			attr.Attrs = setBit(attr.Attrs, fs.DOSArchive, v)
+			changed = true
+		case "invisible", "locked":
+			if err := patchFinderFlag(ffs, path, id, v); err != nil {
+				return err
+			}
+		}
+	}
+	if changed {
+		if err := ffs.Meta().SetAttrs(path, attr); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func setBit(bits, mask uint16, on bool) uint16 {
+	if on {
+		return bits | mask
+	}
+	return bits &^ mask
+}
+
+func patchFinderFlag(ffs fs.ForkFS, path, id string, on bool) error {
+	fi, ok, err := ffs.ReadFinderInfo(path)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		fi = [32]byte{}
+	}
+	flags := uint16(fi[8])<<8 | uint16(fi[9])
+	const kIsInvisible = 0x4000
+	const kNameLocked = 0x1000
+	bit := uint16(0)
+	switch id {
+	case "invisible":
+		bit = kIsInvisible
+	case "locked":
+		bit = kNameLocked
+	}
+	if on {
+		flags |= bit
+	} else {
+		flags &^= bit
+	}
+	fi[8] = byte(flags >> 8)
+	fi[9] = byte(flags)
 	return ffs.WriteFinderInfo(path, fi)
 }

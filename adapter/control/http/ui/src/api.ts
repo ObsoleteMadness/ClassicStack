@@ -16,6 +16,22 @@ async function errText(r: Response): Promise<string> {
   return `HTTP ${r.status}`;
 }
 
+function refQs(ref: import('classicstack-web/finder').NodeRef): Record<string, string> {
+  return typeof ref === 'string' ? { path: ref } : { id: String(ref) };
+}
+
+function parentQs(parent: import('classicstack-web/finder').NodeRef): Record<string, string> {
+  return typeof parent === 'string' ? { parentPath: parent } : { parent: String(parent) };
+}
+
+function refBody(ref: import('classicstack-web/finder').NodeRef): { id?: number; path?: string } {
+  return typeof ref === 'string' ? { path: ref } : { id: ref };
+}
+
+function parentBody(parent: import('classicstack-web/finder').NodeRef): { parentId?: number; parentPath?: string } {
+  return typeof parent === 'string' ? { parentPath: parent } : { parentId: parent };
+}
+
 export async function apiJSON<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(path, {
     ...init,
@@ -213,12 +229,17 @@ export type FinderSession = {
   allowGuest: boolean;
   uams?: string[];
   rootId?: number;
+  rootPath?: string;
   volume?: string;
   target?: string;
   transport?: string;
+  protocol?: string;
   os?: string;
   dialect?: string;
+  capabilities?: import('classicstack-web/finder').CatalogCapabilities;
 };
+
+export type FinderNode = import('classicstack-web/finder').FinderNodeDto;
 
 export type FinderMountedVolume = {
   sessionId: string;
@@ -228,7 +249,10 @@ export type FinderMountedVolume = {
   target?: string;
   transport?: string;
   rootId?: number;
+  rootPath?: string;
   mountpoint?: string;
+  protocol?: string;
+  capabilities?: import('classicstack-web/finder').CatalogCapabilities;
 };
 
 export type FinderMountInfo = {
@@ -257,25 +281,13 @@ export type FinderClientState = {
   volumes: FinderMountedVolume[];
 };
 
-export type FinderNode = {
-  id: number;
-  parentId: number;
-  name: string;
-  isDir: boolean;
-  dataBytes?: number;
-  resourceBytes?: number;
-  finderInfo?: string;
-  createDate?: number;
-  modDate?: number;
-};
-
 export type FinderOpProgress = {
   phase?: 'copying' | 'moving' | 'expanding' | 'listing';
   path?: string;
   bytesDone?: number;
   bytesTotal?: number;
   destName?: string;
-  destParentId?: number;
+  destParentId?: number | string;
   done?: boolean;
   error?: string;
 };
@@ -365,37 +377,63 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ sessionId, volume }),
     }),
-  finderNode: (session: string, id: number) =>
-    apiJSON<FinderNode>(`finder/node?session=${encodeURIComponent(session)}&id=${id}`),
-  finderChildren: (session: string, id: number) =>
-    apiJSON<FinderNode[]>(`finder/children?session=${encodeURIComponent(session)}&id=${id}`),
-  finderLookup: async (session: string, parent: number, name: string): Promise<FinderNode | null> => {
-    const q = `session=${encodeURIComponent(session)}&parent=${parent}&name=${encodeURIComponent(name)}`;
+  finderNode: (session: string, ref: import('classicstack-web/finder').NodeRef) => {
+    const q = new URLSearchParams({ session, ...refQs(ref) });
+    return apiJSON<FinderNode>(`finder/node?${q}`);
+  },
+  finderChildren: (session: string, ref: import('classicstack-web/finder').NodeRef) => {
+    const q = new URLSearchParams({ session, ...refQs(ref) });
+    return apiJSON<FinderNode[]>(`finder/children?${q}`);
+  },
+  finderLookup: async (
+    session: string,
+    parent: import('classicstack-web/finder').NodeRef,
+    name: string,
+  ): Promise<FinderNode | null> => {
+    const q = new URLSearchParams({ session, name, ...parentQs(parent) });
     const r = await fetch(`finder/lookup?${q}`);
     if (r.status === 404) return null;
     if (!r.ok) throw new ApiError(r.status, await errText(r));
     return (await r.json()) as FinderNode;
   },
-  finderMkdir: (sessionId: string, parentId: number, name: string) =>
+  finderMkdir: (sessionId: string, parent: import('classicstack-web/finder').NodeRef, name: string) =>
     apiJSON<FinderNode>('finder/mkdir', {
       method: 'POST',
-      body: JSON.stringify({ sessionId, parentId, name }),
+      body: JSON.stringify({ sessionId, name, ...parentBody(parent) }),
     }),
   finderCreate: (body: Record<string, unknown>) =>
     apiJSON<FinderNode>('finder/create', { method: 'POST', body: JSON.stringify(body) }),
-  finderRename: (sessionId: string, id: number, name: string) =>
-    apiSend('finder/rename', { method: 'POST', body: JSON.stringify({ sessionId, id, name }) }),
-  finderMove: (sessionId: string, id: number, parentId: number) =>
-    apiSend('finder/move', { method: 'POST', body: JSON.stringify({ sessionId, id, parentId }) }),
+  finderRename: (sessionId: string, ref: import('classicstack-web/finder').NodeRef, name: string) =>
+    apiSend('finder/rename', { method: 'POST', body: JSON.stringify({ sessionId, name, ...refBody(ref) }) }),
+  finderMove: (
+    sessionId: string,
+    ref: import('classicstack-web/finder').NodeRef,
+    parent: import('classicstack-web/finder').NodeRef,
+  ) =>
+    apiSend('finder/move', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId, ...refBody(ref), ...parentBody(parent) }),
+    }),
   finderMoveAcross: (body: Record<string, unknown>) =>
     fetch('finder/move', { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } }),
-  finderRemove: (sessionId: string, id: number) =>
-    apiSend('finder/remove', { method: 'POST', body: JSON.stringify({ sessionId, id }) }),
-  finderFinderInfo: (sessionId: string, id: number, finderInfo: string) =>
+  finderRemove: (sessionId: string, ref: import('classicstack-web/finder').NodeRef) =>
+    apiSend('finder/remove', { method: 'POST', body: JSON.stringify({ sessionId, ...refBody(ref) }) }),
+  finderFinderInfo: (sessionId: string, ref: import('classicstack-web/finder').NodeRef, finderInfo: string) =>
     apiSend('finder/finderinfo', {
       method: 'PUT',
-      body: JSON.stringify({ sessionId, id, finderInfo }),
+      body: JSON.stringify({ sessionId, finderInfo, ...refBody(ref) }),
     }),
+  finderAttrs: (sessionId: string, ref: import('classicstack-web/finder').NodeRef, attrs: Record<string, boolean>) =>
+    apiSend('finder/attrs', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId, attrs, ...refBody(ref) }),
+    }),
+  finderResolve: (session: string, path: string) =>
+    apiJSON<FinderNode>(`finder/resolve?session=${encodeURIComponent(session)}&path=${encodeURIComponent(path)}`),
+  finderPathOf: (session: string, ref: import('classicstack-web/finder').NodeRef) => {
+    const q = new URLSearchParams({ session, ...refQs(ref) });
+    return apiJSON<{ path: string }>(`finder/path?${q}`);
+  },
   finderMountStatus: () => apiJSON<FinderMountStatus>('finder/mount'),
   finderMount: (body: Record<string, unknown>) =>
     apiJSON<FinderMountInfo>('finder/mount', { method: 'POST', body: JSON.stringify(body) }),

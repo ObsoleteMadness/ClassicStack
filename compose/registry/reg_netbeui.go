@@ -32,9 +32,12 @@ func init() {
 		// no [Router] membership — that lands when the mini-router joins compose). A
 		// nil opener yields the inert-but-configured form.
 		iface := ctx.Model.EffectiveInterfaceFor(sec)
-		open := nicLinkOpener(ctx, sec, iface, netbeui.BPFFilter)
 		// An empty section mac inherits the bound interface's hw_address so NBF frames
-		// carry a real Ethernet source (else they go out as 00:00:00:00:00:00).
-		return netbeui.NewInstanceFromOpener(sec, open, sectionMACFor(ctx, sec, iface), logger)
+		// carry a real Ethernet source (else they go out as 00:00:00:00:00:00). The
+		// resolved mac also excludes this instance's own transmitted frames from the
+		// capture at the kernel (nicLinkOpener).
+		mac := sectionMACFor(ctx, sec, iface)
+		open := nicLinkOpener(ctx, sec, iface, netbeui.BPFFilter, mac)
+		return netbeui.NewInstanceFromOpener(sec, open, mac, logger)
 	})
 }

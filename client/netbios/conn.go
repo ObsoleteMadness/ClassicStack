@@ -36,6 +36,7 @@ const (
 	ethHdrLen     = 14
 	etherTypeIPX  = 0x8137
 	ipxNetBIOSTyp = nb.IPXTypeNetBIOS // 0x14 — IPX type-20 NetBIOS broadcast/forwarding
+	ipxPEPTyp     = nb.IPXTypePEP     // 0x04 — PEP, the type a DIRECTED NMPI datagram uses
 )
 
 // llcNetBIOS is the 802.2 LLC UI header for NBF (DSAP=SSAP=0xF0, control=0x03) — the
@@ -43,8 +44,8 @@ const (
 var llcNetBIOS = [3]byte{0xF0, 0xF0, 0x03}
 
 // nbDatagramSocket is the IPX socket NB-IPX datagrams (NMPI mailslot sends) ride
-// (0x0553), matching the server's netbios.NBIPXDatagramSocket.
-var nbDatagramSocket = [2]byte{0x05, 0x53}
+// (0x0553) — the single core definition, shared with the server's session engine.
+var nbDatagramSocket = nb.NBIPXDatagramSocket
 
 // broadcastMAC is the Ethernet broadcast address; on Ethernet the IPX broadcast node is
 // all-ones, so an NBIPX broadcast datagram frames to it.
@@ -108,10 +109,10 @@ func (c *Conn) Protocol() Protocol { return c.proto }
 func (c *Conn) SendMailslot(mailslotName string, dst nb.Name, body []byte, broadcast bool) error {
 	payload := mailslotproto.Write{Name: mailslotName, Body: body}.Marshal()
 	dtracef("%s mailslot %s → %s (%d bytes, broadcast=%t)", c.proto, mailslotName, dst.String(), len(payload), broadcast)
-	switch c.proto {
-	case NBF:
+	switch {
+	case c.proto == NBF:
 		return c.sendNBF(dst, payload, broadcast)
-	case NBIPX:
+	case ipxFamily(c.proto):
 		return c.sendNBIPX(dst, payload, broadcast)
 	default:
 		return fmt.Errorf("netbios: carrier %q cannot send datagrams", c.proto)
@@ -147,10 +148,9 @@ func (c *Conn) sendNBF(dst nb.Name, payload []byte, broadcast bool) error {
 // The NameType marks a workgroup (group name) versus a machine, matching the server's
 // nmpiNameType. Mirrors core/service/netbios/nbipx.go emitDatagram.
 func (c *Conn) sendNBIPX(dst nb.Name, payload []byte, broadcast bool) error {
-	_ = broadcast // NBIPX datagrams are always broadcast to the segment (type-20 forwarding).
 	body := nb.EncodeNMPIPacket(&nb.NMPIPacket{
 		Opcode:        nb.NMPIOpMailslotSend,
-		NameType:      nmpiNameType(dst),
+		NameType:      nmpiNameType(dst, broadcast),
 		RequestedName: dst,
 		SourceName:    c.srcName,
 		Payload:       payload,
@@ -170,10 +170,18 @@ func (c *Conn) sendNBIPX(dst nb.Name, payload []byte, broadcast bool) error {
 	return c.writeEther(broadcastMAC, etherTypeIPX, ipxBytes)
 }
 
-// nmpiNameType maps a NetBIOS name to the NMPI name-type byte (workgroup for a group
-// name, machine otherwise), mirroring the server's nmpiNameType.
-func nmpiNameType(name nb.Name) uint8 {
-	if name.Type() == nb.NameTypeGroup {
+// nmpiNameType is the NMPI name-type byte stamped on an outbound MailslotSend.
+//
+// It is the FAN-OUT of the datagram that picks the value, not the name's suffix: every
+// golden browser datagram addressed to the whole workgroup carries NMPINameTypeWorkgroup
+// (0x02) even though its RequestedName is <workgroup><00>, a suffix indistinguishable
+// from a machine name — spec/captures/nwlink-win98.pcap frames 26-40 and
+// nbipx-win98.pcap frames 16/48/58 all read "fc 02" ahead of "WORKGROUP      \x00". Only
+// the master's UNICAST answer back to one station uses NMPINameTypeMachine (0x01)
+// (nbipx-win98.pcap frame 60, nwlink-win98.pcap frame 41). A group suffix still forces
+// the workgroup type, so the NBF-shaped names a caller may pass are typed correctly too.
+func nmpiNameType(name nb.Name, broadcast bool) uint8 {
+	if broadcast || name.Type() == nb.NameTypeGroup {
 		return nb.NMPINameTypeWorkgroup
 	}
 	return nb.NMPINameTypeMachine

@@ -47,8 +47,11 @@ type FrameSender interface {
 }
 
 // ethernetMaxIField is the NBF payload the engine advertises in SESSION_CONFIRM:
-// the Ethernet MTU (1500) minus LLC/NBF overhead, matching the legacy transport.
-const ethernetMaxIField uint16 = 1464
+// the Ethernet MTU (1500) minus LLC/NBF overhead. The value is
+// core/protocol/netbeui.MaxIField — shared with the NBF CALLER in client/smb, which
+// fragments its requests at exactly this boundary and advertises it right back in
+// SESSION_INITIALIZE. It used to be restated as a literal on each side.
+const ethernetMaxIField = nbf.MaxIField
 
 // circuitKey identifies a virtual circuit by peer MAC plus the local session
 // number we assigned it — the same (MAC, localNum) tuple the NBF session header

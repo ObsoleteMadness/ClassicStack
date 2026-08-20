@@ -60,7 +60,7 @@ func newWiredDirectIPX(t *testing.T) (*Service, *ipxrouter.Router, *recordingIPX
 // the router on the direct-SMB socket, from the test client endpoint.
 func directIPXDatagram(smb []byte) *ipxproto.Datagram {
 	return &ipxproto.Datagram{
-		Type:    ipxPEPType,
+		Type:    ipxproto.TypePEP,
 		DstNet:  ipxrouter.DefaultNetwork,
 		DstNode: testRouterNode,
 		DstSock: DirectSMBSocket,
@@ -106,7 +106,7 @@ func TestDirectIPX_NegotiateAllocatesCID(t *testing.T) {
 		t.Fatalf("response command = %#x, want NEGOTIATE", h.Command)
 	}
 	cid := bp.LE16(resp[smbCIDOffset : smbCIDOffset+2])
-	if cid == 0 || cid == cidReservedHi {
+	if cid == 0 || cid == protocol.ConnectionlessCIDReserved {
 		t.Fatalf("response CID = %#x, want a non-reserved server-assigned id", cid)
 	}
 }
@@ -162,8 +162,15 @@ func TestDirectIPX_EchoMultiResponse(t *testing.T) {
 // arriving on ingress is dropped — only requests are dispatched.
 func TestDirectIPX_ResponseIngressDropped(t *testing.T) {
 	_, r, port := newWiredDirectIPX(t)
+	// Re-encode the NEGOTIATE header with SMB_FLAGS_REPLY set, so it arrives looking
+	// like a server response rather than a request.
 	msg := negotiateMsg()
-	msg[smbFlagsOffset] |= smbReplyFlag // mark as a response
+	h, err := protocol.DecodeHeader(msg)
+	if err != nil {
+		t.Fatalf("DecodeHeader: %v", err)
+	}
+	h.Flags |= protocol.FlagReply
+	copy(msg, h.Encode(nil))
 	r.Inbound(directIPXDatagram(msg))
 	if len(port.sent) != 0 {
 		t.Fatalf("a response on ingress produced %d datagrams, want 0", len(port.sent))

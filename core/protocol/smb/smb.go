@@ -287,6 +287,7 @@ func CapabilityNames(caps uint32) []string {
 // WCT=13, NT LM 0.12 → WCT=17.
 const (
 	DialectPCNetwork1 = "PC NETWORK PROGRAM 1.0"      // the core protocol
+	DialectXenixCore  = "XENIX CORE"                  // core protocol, XENIX flavour
 	DialectMSNet103   = "MICROSOFT NETWORKS 1.03"     // MS-NET 1.03
 	DialectMSNet30    = "MICROSOFT NETWORKS 3.0"      // DOS LANMAN 1.0
 	DialectLANMAN10   = "LANMAN1.0"                   // LAN Manager 1.0
@@ -320,7 +321,7 @@ func dialectFamily(name string) DialectFamily {
 	case DialectMSNet30, DialectLANMAN10, DialectLM12X002, DialectDOSLM12,
 		DialectDOSLANMAN2, DialectLANMAN21, DialectWfW311:
 		return DialectFamilyLanMan
-	case DialectPCNetwork1, DialectMSNet103, DialectPCLAN10:
+	case DialectPCNetwork1, DialectXenixCore, DialectMSNet103, DialectPCLAN10:
 		return DialectFamilyCore
 	default:
 		return DialectFamilyCore
@@ -354,6 +355,14 @@ func dialectRank(name string) int {
 		return 30
 	case DialectMSNet103:
 		return 20
+	case DialectXenixCore:
+		// Core family, ranked just above PC NETWORK PROGRAM 1.0. A real OS/2 LAN
+		// Requester offers it second in its list — golden capture
+		// spec/captures/nbf-os2-win98.pcap frame 100: PC NETWORK PROGRAM 1.0,
+		// XENIX CORE, LANMAN1.0, LM1.2X002, LANMAN2.1. Without a rank it scored 0 and
+		// was never selectable, so an OS/2 client offering ONLY the two core dialects
+		// would have been answered DialectIndex 0xFFFF ("nothing in common").
+		return 15
 	case DialectPCNetwork1, DialectPCLAN10:
 		return 10
 	default:
@@ -460,3 +469,179 @@ func (h Header) SequenceNumber() uint16 {
 
 // IsResponse reports whether the SMB_FLAGS_REPLY bit is set.
 func (h Header) IsResponse() bool { return h.Flags&FlagReply != 0 }
+
+// --- raw-message header accessors ---
+//
+// A transport frequently needs two or three header fields out of a message it is
+// only relaying (the command byte to spot NEGOTIATE/ECHO, the FLAGS reply bit to
+// tell a request from a response, the MID to correlate a reply with the request in
+// flight) and has no reason to decode the whole Header. Both the direct-hosted-IPX
+// CLIENT (client/smb/ipx.go) and the SERVER's DirectIPX (core/service/smb/
+// directipx.go) did exactly that, each against its OWN private copy of the offsets
+// — the same drift that left SequenceNumber unwritten on the client. These
+// accessors are the single definition; a message shorter than the field reads 0
+// (or false), so a truncated buffer never panics.
+
+// WordCountOffset is the offset of the WordCount (WCT) byte: immediately after the
+// 32-byte header, i.e. the first body byte ([MS-CIFS] §2.2.3.2).
+const WordCountOffset = HeaderLen
+
+// HasProtocolID reports whether msg starts with the "\xffSMB" protocol identifier
+// and is at least a whole header long — the "is this an SMB message at all" test a
+// datagram transport applies before dispatching.
+func HasProtocolID(msg []byte) bool {
+	if len(msg) < HeaderLen {
+		return false
+	}
+	return msg[0] == Protocol[0] && msg[1] == Protocol[1] && msg[2] == Protocol[2] && msg[3] == Protocol[3]
+}
+
+// MessageCommand returns the Command byte (offset 4) of a raw SMB message.
+func MessageCommand(msg []byte) uint8 {
+	if len(msg) <= offCommand {
+		return 0
+	}
+	return msg[offCommand]
+}
+
+// MessageStatus returns the Status field (offset 5, NTSTATUS or DOS class/code) of
+// a raw SMB message.
+func MessageStatus(msg []byte) uint32 {
+	if len(msg) < offStatus+4 {
+		return 0
+	}
+	return bp.LE32(msg[offStatus : offStatus+4])
+}
+
+// MessageFlags returns the Flags byte (offset 9) of a raw SMB message.
+func MessageFlags(msg []byte) uint8 {
+	if len(msg) <= offFlags {
+		return 0
+	}
+	return msg[offFlags]
+}
+
+// IsResponseMessage reports whether a raw SMB message carries SMB_FLAGS_REPLY —
+// i.e. it is a server response rather than a client request.
+func IsResponseMessage(msg []byte) bool {
+	return MessageFlags(msg)&FlagReply != 0
+}
+
+// MessageMID returns the MID (multiplex id, offset 30) of a raw SMB message. A
+// connectionless transport correlates a response to the request in flight by
+// (Command, MID).
+func MessageMID(msg []byte) uint16 {
+	if len(msg) < offMID+2 {
+		return 0
+	}
+	return bp.LE16(msg[offMID : offMID+2])
+}
+
+// --- connectionless (direct-hosted IPX) header helpers ---
+//
+// On a connectionless transport the 8-byte SecurityFeatures field is NOT a signature:
+// it carries Key(4) | CID(2) | SequenceNumber(2) ([MS-CIFS] §2.2.3.1). Both the
+// direct-hosted-IPX client (client/smb/ipx.go) and the server's DirectIPX
+// (core/service/smb/directipx.go) read and write those two words, so the accessors
+// live HERE rather than being hand-poked at literal byte offsets on each side — the
+// two used to keep private copies of the offsets and drifted (the client never wrote
+// SequenceNumber at all).
+const (
+	// ConnectionlessCIDOffset is the CID word's offset in the SMB header.
+	ConnectionlessCIDOffset = offSecurity + 4 // 18
+	// ConnectionlessSeqOffset is the SequenceNumber word's offset.
+	ConnectionlessSeqOffset = offSequenceNumber // 20
+)
+
+// ConnectionlessCIDReserved is the reserved high Connection ID (0xFFFF). Together with
+// 0x0000 it bookends the allocatable range: the server allocates from 1 and wraps
+// before this value, and neither end treats a reserved CID a peer echoed as a real
+// circuit id. Both sides kept their own copy (the server's cidReservedHi, a bare
+// literal on the client).
+const ConnectionlessCIDReserved uint16 = 0xFFFF
+
+// FirstSequenceNumber is the SequenceNumber a client puts on its FIRST connectionless
+// request. ERRATA: it is 1, not 0 — golden capture spec/captures/nwlink-win98.pcap
+// frame 16 (a real NWLink redirector's NEGOTIATE) carries SequenceNumber 1 with CID 0,
+// and it increments per request from there.
+const FirstSequenceNumber uint16 = 1
+
+// StampConnectionless writes the CID and SequenceNumber words into an SMB message's
+// SecurityFeatures field. A message shorter than the header is left untouched.
+func StampConnectionless(msg []byte, cid, seq uint16) {
+	if len(msg) < HeaderLen {
+		return
+	}
+	msg[ConnectionlessCIDOffset] = byte(cid)
+	msg[ConnectionlessCIDOffset+1] = byte(cid >> 8)
+	msg[ConnectionlessSeqOffset] = byte(seq)
+	msg[ConnectionlessSeqOffset+1] = byte(seq >> 8)
+}
+
+// ConnectionlessCID reads the CID word from an SMB message (0 when too short).
+func ConnectionlessCID(msg []byte) uint16 {
+	if len(msg) < HeaderLen {
+		return 0
+	}
+	return uint16(msg[ConnectionlessCIDOffset]) | uint16(msg[ConnectionlessCIDOffset+1])<<8
+}
+
+// ConnectionlessSequence reads the SequenceNumber word from an SMB message (0 when
+// too short).
+func ConnectionlessSequence(msg []byte) uint16 {
+	if len(msg) < HeaderLen {
+		return 0
+	}
+	return uint16(msg[ConnectionlessSeqOffset]) | uint16(msg[ConnectionlessSeqOffset+1])<<8
+}
+
+// NameTrailerLen is the length of the direct-hosted-IPX NEGOTIATE name trailer: two
+// 16-byte NetBIOS names (core/protocol/netbios.NameLength each, restated here as a
+// plain length so this package stays free of a netbios import).
+const NameTrailerLen = 2 * 16
+
+// AppendNameTrailer appends the direct-hosted-SMB-over-IPX NEGOTIATE name trailer —
+// [SOURCE][DESTINATION], 16 bytes each — to an SMB_COM_NEGOTIATE message.
+//
+// ERRATA. Direct-hosted SMB over IPX has NO NetBIOS session layer, so nothing before
+// NEGOTIATE ever names the machine being addressed; the names ride in the NEGOTIATE
+// datagram itself, AFTER the SMB message and OUTSIDE ByteCount. Golden capture
+// spec/captures/nwlink-win98.pcap frame 16: BCC is 0x0077 = 119 and covers only the
+// dialect list, ending at the NUL after "NT LM 0.12", yet the IPX datagram runs 32
+// bytes further and carries "WIN98-IPX-1    \x00" (the source, NameTypeWorkstation)
+// followed by "WIN98-IPX-2    \x20" (the destination, NameTypeFileServer). The trailer
+// is on NEGOTIATE ONLY — golden frames 18/20/22/24 (SESSION_SETUP+TREE_CONNECT,
+// TRANS, ECHO, TREE_DISCONNECT) all end at their byte area, because by then the
+// server-assigned CID identifies the circuit.
+//
+// Name order is [SOURCE][DESTINATION], the same order as the NBIPX SESSION_INITIALIZE
+// name pair. Without the trailer a Win98 direct-hosted server answers NEGOTIATE with
+// ERRSRV/18 — it has no way to tell which of its names the datagram is for.
+func AppendNameTrailer(msg []byte, source, destination [16]byte) []byte {
+	out := append(msg, source[:]...)
+	return append(out, destination[:]...)
+}
+
+// SplitNameTrailer splits a direct-hosted-IPX NEGOTIATE datagram into the SMB message
+// and the [SOURCE][DESTINATION] names the sender appended (see AppendNameTrailer). It
+// reports false when the datagram carries no trailer, in which case msg is returned
+// unchanged — a peer that omits it still gets its NEGOTIATE parsed.
+func SplitNameTrailer(datagram []byte) (msg []byte, source, destination [16]byte, ok bool) {
+	// The trailer starts where the SMB message ends, which WCT and BCC give exactly:
+	// header + WordCount byte + words + ByteCount word + byte area. Trusting the
+	// datagram length instead would mistake a long byte area for a trailer.
+	if len(datagram) < HeaderLen+1 {
+		return datagram, source, destination, false
+	}
+	bccOff := HeaderLen + 1 + 2*int(datagram[HeaderLen])
+	if len(datagram) < bccOff+2 {
+		return datagram, source, destination, false
+	}
+	end := bccOff + 2 + int(bp.LE16(datagram[bccOff:bccOff+2]))
+	if end > len(datagram) || len(datagram)-end < NameTrailerLen {
+		return datagram, source, destination, false
+	}
+	copy(source[:], datagram[end:end+16])
+	copy(destination[:], datagram[end+16:end+NameTrailerLen])
+	return datagram[:end], source, destination, true
+}

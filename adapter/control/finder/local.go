@@ -7,6 +7,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/afp"
+	"github.com/ObsoleteMadness/ClassicStack/core/service/browser"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/etherdfs"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/ncp"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/smb"
@@ -176,5 +177,21 @@ func (s *Service) etherdfs() *etherdfs.Service {
 		return nil
 	}
 	v, _ := c.(*etherdfs.Service)
+	return v
+}
+
+// browser returns the live NetBIOS browser service, or nil when this build has no
+// Browser component (no `browser`/`all` tag) or the runtime has not built one. Used
+// by the outbound NBIPX/NBF client (link.go) to share the server's already-observed
+// browse list instead of running its own independent discovery.
+func (s *Service) browser() *browser.Service {
+	if s.src == nil {
+		return nil
+	}
+	c := s.src.Component(browser.Name)
+	if c == nil {
+		return nil
+	}
+	v, _ := c.(*browser.Service)
 	return v
 }

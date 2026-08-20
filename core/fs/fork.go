@@ -124,6 +124,11 @@ func newAppleDoubleForkEngine(base FileSystem, sidecar func(string) string) *app
 	return &appleDoubleForkEngine{fs: base, sidecar: sidecar}
 }
 
+// ForkCapabilities reports that AppleDouble stores resource forks, Finder info, and comments.
+func (*appleDoubleForkEngine) ForkCapabilities() ForkCapability {
+	return ForkCapability{ResourceFork: true, FinderInfo: true, Comment: true}
+}
+
 func splitPath(path string) (dir, base string) {
 	i := strings.LastIndexByte(path, '/')
 	if i < 0 {

@@ -9,6 +9,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 	ipxport "github.com/ObsoleteMadness/ClassicStack/core/port/ipx"
 	ipxproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx"
+	ncpproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ncp"
 )
 
 // ipx.go is the NCP-over-IPX CLIENT transport: the client mirror of the server's
@@ -34,34 +35,12 @@ import (
 // unless the caller pins one explicitly. The initial broadcast goes out in the pinned or
 // default frame type; a server answering any framing is then matched.
 
-// ncpSocket is the IPX socket the NCP file service listens on (0x0451), matching the
-// server's core/protocol/ncp.NCPSocket.
-var ncpSocket = [2]byte{0x04, 0x51}
-
-// ipxNCPType is the IPX packet type NCP rides (17 = NCP), matching the server transport.
-const ipxNCPType uint8 = 0x11
-
-// broadcastNode is the IPX broadcast node (all-ones); on Ethernet the IPX node IS the
-// MAC, so a broadcast node yields a broadcast destination MAC (core/router/ipx).
-var broadcastNode = [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
-
-// NCP reply-header offsets the transport reads for correlation (ncp.go ReplyHeader):
-// type(2 BE) at 0, sequence at 2, conn-low at 3, task at 4, conn-high at 5.
-const (
-	ncpTypeOffset = 0
-	ncpSeqOffset  = 2
-	ncpConnLow    = 3
-	ncpConnHigh   = 5
-)
-
-// ncpTypeReply is the NCP reply request-type (TypeReply 0x3333) a server→client packet
-// carries; the transport only delivers packets of this type (and the create-connection
-// echo, 0x1111) as replies. Matching core/protocol/ncp.TypeReply.
-const (
-	ncpTypeReply         uint16 = 0x3333
-	ncpTypeCreateConnRep uint16 = 0x1111
-	ncpTypePositiveAck   uint16 = 0x9999 // "request being processed" keep-alive; skipped
-)
+// The NCP socket (0x0451), the IPX packet type NCP rides (17), the broadcast node and
+// the request-type verbs all come from the protocol ring — the SAME definitions the
+// server transport (core/service/ncp/overipx.go) uses. This file used to restate every
+// one of them as a private literal, including a hand-written copy of the reply-header
+// field offsets that core/protocol/ncp.ParseReply already decodes.
+var ncpSocket = ncpproto.NCPSocket
 
 // ipxRequestTimeout bounds how long the client waits for a reply datagram before
 // giving up on one Send. A bounded wait avoids a hang on a lost datagram; the session
@@ -191,11 +170,12 @@ func DialIPXResolved(fl link.FrameLink, srcMAC [6]byte, srv ServerAddr, pinned b
 // Send transmits one NCP request as an IPX datagram and returns the matching reply. The
 // destination is the learned server node (broadcast on the first, pre-attach request).
 func (t *ipxTransport) Send(req []byte) ([]byte, error) {
-	if len(req) < 6 {
-		return nil, fmt.Errorf("ncp/ipx: request shorter than an NCP header")
+	reqHdr, err := ncpproto.UnmarshalRequest(req)
+	if err != nil {
+		return nil, fmt.Errorf("ncp/ipx: %w", err)
 	}
-	reqSeq := req[ncpSeqOffset]
-	reqConn := uint16(req[ncpConnLow]) | uint16(req[ncpConnHigh])<<8
+	reqSeq := reqHdr.SequenceNumber
+	reqConn := reqHdr.ConnectionNumber()
 
 	t.mu.Lock()
 	// Layer-2 destination (Ethernet) and layer-3 destination (IPX header) are DISTINCT
@@ -203,8 +183,8 @@ func (t *ipxTransport) Send(req []byte) ([]byte, error) {
 	// (which may live on its internal network), but the frame is sent to the L2 next
 	// hop — the router's cable MAC we saw the reply come from. Before the server is
 	// learned both are broadcast.
-	dstMAC := broadcastNode
-	dstNode := broadcastNode
+	dstMAC := ipxproto.BroadcastNode
+	dstNode := ipxproto.BroadcastNode
 	dstNet := t.srcNet
 	if t.haveServer {
 		dstMAC = t.serverMAC
@@ -237,7 +217,7 @@ func (t *ipxTransport) Send(req []byte) ([]byte, error) {
 	}()
 
 	d := &ipxproto.Datagram{
-		Type:    ipxNCPType,
+		Type:    ipxproto.TypeNCP,
 		DstNet:  dstNet,
 		DstNode: dstNode,
 		DstSock: ncpSocket,
@@ -305,25 +285,27 @@ func (t *ipxTransport) readLoop() {
 		var srcMAC [6]byte
 		copy(srcMAC[:], frame[6:12])
 		d, err := ipxproto.Decode(payload)
-		if err != nil || d.Type != ipxNCPType {
+		if err != nil || d.Type != ipxproto.TypeNCP {
 			continue
 		}
 		msg := d.Payload
-		if len(msg) < 8 {
-			continue // shorter than an NCP reply header
-		}
 		if d.DstSock != ncpSocket || d.DstNode != t.srcMAC {
 			continue
 		}
-		typ := uint16(msg[ncpTypeOffset])<<8 | uint16(msg[ncpTypeOffset+1])
-		if typ == ncpTypePositiveAck {
+		rep, err := ncpproto.ParseReply(msg)
+		if err != nil {
+			continue // shorter than an NCP reply header
+		}
+		if rep.Type == ncpproto.TypePositiveAck {
 			continue // "request being processed" keep-alive: keep waiting
 		}
-		if typ != ncpTypeReply && typ != ncpTypeCreateConnRep {
-			continue // not a reply (another client's request, or our own echo)
+		// Only a reply (or the create-connection echo) is ours; anything else is
+		// another client's request, or our own echo.
+		if rep.Type != ncpproto.TypeReply && rep.Type != ncpproto.TypeCreateConnection {
+			continue
 		}
-		respSeq := msg[ncpSeqOffset]
-		respConn := uint16(msg[ncpConnLow]) | uint16(msg[ncpConnHigh])<<8
+		respSeq := rep.SequenceNumber
+		respConn := rep.Connection
 
 		t.mu.Lock()
 		// Correlate against the request in flight. Ordinarily the reply's (sequence,

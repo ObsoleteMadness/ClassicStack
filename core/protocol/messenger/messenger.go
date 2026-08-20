@@ -31,12 +31,25 @@ package messenger
 
 import "errors"
 
-// Message-type byte for the single-block messenger datagram ([MS-MSRP] §2.2.2).
-const (
-	// TypeSingleBlock is the one-datagram "net send" / WinPopup message: a sender,
-	// a recipient, and the text, all in one mailslot write.
-	TypeSingleBlock uint8 = 0x01
-)
+// ERRATA — the single-block "net send" body carries NO message-type byte.
+//
+// This package used to prepend/require a TypeSingleBlock = 0x01 byte, citing
+// [MS-MSRP] §2.2.2 — a document ClassicStack does not actually ship, so the value
+// was never checked against anything. The wire disagrees: in
+// spec/captures/nbipx-win98.pcap frames 228/229 (`net send` to the workgroup) and
+// 241/242 (a directed one), the mailslot Data is exactly three NUL-terminated OEM
+// strings and nothing else:
+//
+//	"WIN98USER\0" "WORKGROUP\0" "HELLO WORLD\0"   (Data Count 32, Data Offset 88)
+//
+// The 0x42 byte that sits between the Transaction Name and the data is SMB_COM_-
+// TRANSACTION *padding* (Wireshark: "Padding: 42"), not a message type — reading it
+// as one is what made this look like a type-byte protocol.
+//
+// Consequence of the old form: Unmarshal rejected every real Win98 pop-up at its
+// first byte (ErrFrame), so HandleMailslot dropped it silently and no "net send"
+// was ever logged or surfaced in the UI; and Marshal prepended a 0x01 that a real
+// receiver would have read as the first character of the originator's name.
 
 // ErrFrame indicates a buffer that is not a well-formed single-block messenger
 // datagram (too short, wrong type, or missing the name terminators).
@@ -55,11 +68,10 @@ type Message struct {
 	Text string
 }
 
-// Marshal renders the single-block messenger datagram: the type byte followed by
-// From, To, and Text as NUL-terminated OEM strings.
+// Marshal renders the single-block messenger datagram: From, To, and Text as
+// NUL-terminated OEM strings, with no leading type byte (see the ERRATA above).
 func (m Message) Marshal() []byte {
-	out := make([]byte, 0, 1+len(m.From)+len(m.To)+len(m.Text)+3)
-	out = append(out, TypeSingleBlock)
+	out := make([]byte, 0, len(m.From)+len(m.To)+len(m.Text)+3)
 	out = append(out, m.From...)
 	out = append(out, 0)
 	out = append(out, m.To...)
@@ -69,16 +81,16 @@ func (m Message) Marshal() []byte {
 	return out
 }
 
-// Unmarshal parses a single-block messenger datagram. A buffer that is not a
-// single-block message (wrong/absent type byte) or whose name fields are not
-// NUL-terminated returns ErrFrame. A missing terminator on the final Text field is
-// tolerated (some senders omit it), the remainder being taken as the text.
+// Unmarshal parses a single-block messenger datagram: From, To, Text as
+// NUL-terminated OEM strings, with no leading type byte (see the ERRATA above). A
+// buffer whose From/To fields are not NUL-terminated returns ErrFrame. A missing
+// terminator on the final Text field is tolerated (some senders omit it), the
+// remainder being taken as the text.
 func Unmarshal(b []byte) (*Message, error) {
-	if len(b) < 1 || b[0] != TypeSingleBlock {
+	if len(b) < 1 {
 		return nil, ErrFrame
 	}
-	rest := b[1:]
-	from, rest, ok := takeCString(rest)
+	from, rest, ok := takeCString(b)
 	if !ok {
 		return nil, ErrFrame
 	}

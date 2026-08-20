@@ -115,6 +115,36 @@ const (
 // of an RFC 1002 / SMB-Direct session packet.
 const MaxSessionPayload = 0xFFFFFF
 
+// SessionHeaderLen is the fixed 4-byte RFC 1002 session-packet header: a 1-byte
+// message type then a 3-byte (24-bit) big-endian length.
+const SessionHeaderLen = 4
+
+// PutSessionHeader writes the 4-byte session header (type + 24-bit big-endian
+// length) into dst, which must be at least SessionHeaderLen long. It is the
+// streaming form of SessionPacket.Encode, for the TCP framers on both sides
+// (adapter/smbtcp and client/smb) which write the header and the payload as
+// separate writes and must not copy the message to frame it.
+func PutSessionHeader(dst []byte, typ SessionPacketType, length int) {
+	if len(dst) < SessionHeaderLen {
+		return
+	}
+	dst[0] = byte(typ)
+	dst[1] = byte(length >> 16)
+	dst[2] = byte(length >> 8)
+	dst[3] = byte(length)
+}
+
+// ParseSessionHeader reads a 4-byte session header, returning the message type and
+// the 24-bit payload length that follows it. It is the streaming counterpart of
+// DecodeSessionPacket: a reader consumes SessionHeaderLen bytes, then reads exactly
+// length payload bytes. Returns ErrShortSession when b is too short.
+func ParseSessionHeader(b []byte) (SessionPacketType, int, error) {
+	if len(b) < SessionHeaderLen {
+		return 0, 0, ErrShortSession
+	}
+	return SessionPacketType(b[0]), int(b[1])<<16 | int(b[2])<<8 | int(b[3]), nil
+}
+
 // SessionPacket represents an RFC 1002 / MS-SMB2 Direct TCP session packet: a
 // 1-byte type, a 3-byte (24-bit, big-endian) length, then the payload.
 type SessionPacket struct {

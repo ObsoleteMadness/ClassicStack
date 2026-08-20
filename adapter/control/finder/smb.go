@@ -28,14 +28,27 @@ func (s *Service) discoverSMB(req DiscoverRequest) ([]VolumeInfo, error) {
 	}
 
 	wantNBF, wantIPX, wantTCP := smbScanFlags(req.Transport)
+	cfg := s.clientConfig()
 	opts := browse.Options{
 		Device:    spec.Name,
 		Kind:      spec.Kind,
 		Window:    smbBrowseWindow,
 		Workgroup: workgroup,
+		Station:   s.clientName(),
 		Trace: func(line string) {
 			s.log.Log1(log.Debug, "finder smb scan", log.Str("trace", line))
 		},
+	}
+	// The browse sweep opens its own raw links (one per carrier) rather than riding
+	// openerFor's, so [Client] capture has to be threaded in explicitly or the
+	// discovery half of an SMB scan — the solicit/FindMaster/GetBackupList exchange
+	// that decides whether a master browser is found at all — never reaches the
+	// operator's capture file.
+	if path := strings.TrimSpace(cfg.Capture); path != "" {
+		opts.CapturePath = path
+		if n := cfg.CaptureSnaplen; n > 0 {
+			opts.CaptureSnaplen = uint32(n)
+		}
 	}
 
 	var (
@@ -105,6 +118,36 @@ func (s *Service) identityWorkgroup() string {
 		return ""
 	}
 	return strings.TrimSpace(m.Identity.Workgroup)
+}
+
+// identityHostname returns the shared server identity's hostname (§4-bis), for the
+// outbound NetBIOS session carriers' calling name (link.go's openerFor) — a caller
+// running as part of the ClassicStack server presents this identity instead of a
+// throwaway MAC-derived name.
+func (s *Service) identityHostname() string {
+	ms, ok := s.src.(modelSource)
+	if !ok || ms == nil {
+		return ""
+	}
+	m := ms.Model()
+	if m == nil {
+		return ""
+	}
+	return strings.TrimSpace(m.Identity.Hostname)
+}
+
+// clientName is the outbound client's own presented name: the configured [Client]
+// name when set, else the server's shared Identity.Hostname — one identity for the
+// whole box by default. Used for the NetBIOS session carriers' calling name AND the
+// browse/discovery station name (link.go's openerFor, smb.go's discoverSMB), so a
+// name set (or left to default) here shows up consistently everywhere the client
+// presents itself, instead of only on the final session dial. Empty when neither is
+// configured, leaving each carrier's own MAC-derived fallback in place.
+func (s *Service) clientName() string {
+	if name := strings.TrimSpace(s.clientConfig().Name); name != "" {
+		return name
+	}
+	return s.identityHostname()
 }
 
 // smbScanFlags picks which SMB families to probe. Empty / unknown transport means

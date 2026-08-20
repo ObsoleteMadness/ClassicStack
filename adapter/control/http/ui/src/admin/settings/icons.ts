@@ -1,21 +1,14 @@
 import {
-  Globe,
-  HardDrive,
   Folder,
-  Layers,
+  Globe,
   Monitor,
-  Network,
-  Router,
-  Server,
-  Settings,
   Share2,
   Shield,
   Terminal,
-  Usb,
   Users,
-  Wifi,
   type IconNode,
 } from 'lucide';
+import { settingsBitmapIcons } from 'classicstack-web/ui/settings-icons';
 
 function svg(icon: IconNode, size = 18): string {
   const inner = icon
@@ -31,21 +24,8 @@ function svg(icon: IconNode, size = 18): string {
 }
 
 export const settingsIcons = {
-  general: svg(Settings),
-  bridge: svg(HardDrive),
-  tashtalk: svg(Usb),
-  ltoudp: svg(Wifi),
-  ethertalk: svg(Network),
-  ipx: svg(Layers),
-  netbeui: svg(Share2),
-  netbios: svg(Monitor),
-  router: svg(Router),
+  ...settingsBitmapIcons,
   users: svg(Users),
-  afp: svg(Server),
-  smb: svg(Share2),
-  ncp: svg(Server),
-  etherdfs: svg(HardDrive),
-  netboot: svg(Network),
   macip: svg(Globe),
   ipxgw: svg(Globe),
   web: svg(Monitor),

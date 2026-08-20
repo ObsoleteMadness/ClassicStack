@@ -56,29 +56,13 @@ const Name = "NetBEUI"
 // NBF frame at the kernel (the reported "netbeui can't see any frames" regression).
 const BPFFilter = "llc"
 
-const ethHdrLen = 14
-
-// llcNetBIOS is the 802.2 LLC UI header for NetBIOS Frames: DSAP=SSAP=0xF0,
-// control=0x03 (UI). Inbound, the control byte's low two bits being 11 marks a
-// U-frame; 0x03 specifically is UI.
-var llcNetBIOS = [3]byte{0xF0, 0xF0, 0x03}
-
-// LLC unnumbered/supervisory control values used by the NBF Type-2 session
-// machine (ISO 8802-2 / IBM SC30-3587 §5). Command frames carry SSAP 0xF0
-// (C/R bit clear); our responses carry SSAP 0xF1 (C/R bit set).
-const (
-	llcCtrlSABME = 0x7F // Set Async Balanced Mode Extended, P=1
-	llcCtrlDISC  = 0x43 // Disconnect, P=0
-	llcCtrlDISCP = 0x53 // Disconnect, P=1
-	llcCtrlUAF   = 0x73 // Unnumbered Acknowledgment, F=1
-	llcCtrlRR    = 0x01 // Receive Ready S-frame (ctrl0)
-	llcCtrlREJ   = 0x09 // Reject S-frame (ctrl0): retransmit from N(R)
-	llcCtrlRNR   = 0x05 // Receive Not Ready S-frame (ctrl0): peer busy
-	llcSSAPResp  = 0xF1 // SSAP with C/R = response
-	llcSSAPCmd   = 0xF0 // SSAP with C/R = command
-	llcDSAP      = 0xF0 // NetBIOS DSAP
-	ethMinFrame  = 60   // pad outbound frames to the 802.3 minimum
-)
+// The 802.2 LLC framing this port speaks — SAP values, control-field constants,
+// frame geometry and the frame ENCODERS — lives in core/protocol/netbeui (llc.go),
+// shared with the NBF CALLER in client/smb. Both sides used to keep private copies
+// of the same literals and hand-roll the same Ethernet+LLC layout; they must agree
+// byte for byte, so the definitions are single-sourced there. Only the LLC2 state
+// machine below (sequence numbers, T1/N2 recovery) is this port's own.
+const ethHdrLen = nbf.EthernetHeaderLen
 
 // llcT1 is the LLC2 reply timer (ISO 8802-2 §7.5.8 T1): how long a sent
 // I-frame may sit unacknowledged before we checkpoint-poll the peer with an
@@ -121,7 +105,7 @@ func (c *llcConn) ackLocked(nr uint8) {
 		return
 	}
 	va := c.unacked[0].nS
-	if (nr-va)&0x7F > (c.nS-va)&0x7F {
+	if (nr-va)&nbf.LLCSeqMask > (c.nS-va)&nbf.LLCSeqMask {
 		return // N(R) outside the transmit window — ignore
 	}
 	for len(c.unacked) > 0 && c.unacked[0].nS != nr {
@@ -153,7 +137,7 @@ func (c *llcConn) retransmitCopiesLocked() [][]byte {
 	for _, u := range c.unacked {
 		cp := make([]byte, len(u.raw))
 		copy(cp, u.raw)
-		cp[17] = c.nR << 1 // refresh N(R), P=0
+		cp[nbf.LLCCtrl1Offset] = c.nR << 1 // refresh N(R), P=0
 		out = append(out, cp)
 	}
 	return out
@@ -230,7 +214,7 @@ func (p *Port) onFrame(frame link.Frame) {
 	// Require the NetBIOS DSAP and SSAP (ignoring the C/R bit): DSAP 0xF0,
 	// SSAP 0xF0/0xF1. This admits UI, SABME, DISC, UA, RR and I-frames while
 	// dropping IPX (0xE0) and SNAP (0xAA) that the "llc" BPF filter also passes.
-	if body[0] != llcDSAP || body[1]&0xFE != llcDSAP {
+	if !nbf.IsNetBIOSLLC(body) {
 		return
 	}
 
@@ -242,9 +226,9 @@ func (p *Port) onFrame(frame link.Frame) {
 	// --- U-frames (control low two bits = 11): 3-byte LLC ---
 	if ctrl&0x03 == 0x03 {
 		switch ctrl {
-		case llcCtrlSABME:
+		case nbf.LLCCtrlSABME:
 			p.handleSABME(srcMAC, dstMAC)
-		case llcCtrlDISC, llcCtrlDISCP:
+		case nbf.LLCCtrlDISC, nbf.LLCCtrlDISCP:
 			p.handleDISC(srcMAC, dstMAC)
 		default: // UI (0x03) and any other U-frame: connectionless NBF body.
 			p.deliverNBF(srcMAC, dstMAC, body[3:])
@@ -274,13 +258,13 @@ func (p *Port) onFrame(frame link.Frame) {
 		nr := ctrl1 >> 1
 		pf := ctrl1&0x01 != 0
 		isCommand := body[1]&0x01 == 0
-		sFunc := ctrl & 0x0F
+		sFunc := ctrl & nbf.LLCCtrlSFuncMask
 
 		conn.mu.Lock()
 		conn.ackLocked(nr)
 		conn.t1Tries = 0 // any S-frame proves the peer is alive
 		var retransmits [][]byte
-		if sFunc == llcCtrlREJ || (sFunc == llcCtrlRR && pf) {
+		if sFunc == nbf.LLCCtrlREJ || (sFunc == nbf.LLCCtrlRR && pf) {
 			retransmits = conn.retransmitCopiesLocked()
 			if len(retransmits) > 0 {
 				p.armT1Locked(srcMAC, conn) // recovery in flight — keep the timer running
@@ -310,7 +294,7 @@ func (p *Port) onFrame(frame link.Frame) {
 		}
 		remoteNS := ctrl >> 1
 		conn.mu.Lock()
-		conn.nR = (remoteNS + 1) & 0x7F
+		conn.nR = (remoteNS + 1) & nbf.LLCSeqMask
 		conn.ackLocked(ctrl1 >> 1)
 		conn.mu.Unlock()
 		if ctrl1&0x01 != 0 { // peer polled — acknowledge
@@ -473,14 +457,7 @@ func (p *Port) Send(dstMAC [6]byte, frame *nbf.Frame) error {
 // sendUI transmits body as an 802.3 LLC UI frame. The 802.3 length field covers
 // the 3-byte LLC header + NBF body.
 func (p *Port) sendUI(dstMAC [6]byte, body []byte) error {
-	payloadLen := len(llcNetBIOS) + len(body)
-	out := make([]byte, ethHdrLen+payloadLen)
-	copy(out[0:6], dstMAC[:])
-	copy(out[6:12], p.srcMAC[:])
-	out[12], out[13] = byte(payloadLen>>8), byte(payloadLen)
-	copy(out[14:17], llcNetBIOS[:])
-	copy(out[17:], body)
-	return p.Port.Send(padTo(out, ethMinFrame))
+	return p.Port.Send(nbf.EncodeUIFrame(dstMAC, p.srcMAC, body))
 }
 
 // sendIFrame transmits body as an LLC Type-2 I-frame using the connection's
@@ -488,22 +465,10 @@ func (p *Port) sendUI(dstMAC [6]byte, body []byte) error {
 // recovery until the peer's N(R) acknowledges it (the T1 timer polls while
 // anything is outstanding).
 func (p *Port) sendIFrame(dstMAC [6]byte, body []byte, conn *llcConn) error {
-	const llcLen = 4
-	payloadLen := llcLen + len(body)
-	out := make([]byte, ethHdrLen+payloadLen)
-	copy(out[0:6], dstMAC[:])
-	copy(out[6:12], p.srcMAC[:])
-	out[12], out[13] = byte(payloadLen>>8), byte(payloadLen)
-	out[14] = llcDSAP
-	out[15] = llcSSAPCmd
-	copy(out[18:], body)
-	out = padTo(out, ethMinFrame)
-
 	conn.mu.Lock()
 	nS, nR := conn.nS, conn.nR
-	conn.nS = (conn.nS + 1) & 0x7F
-	out[16] = nS << 1 // I-frame ctrl0: N(S)<<1, low bit 0
-	out[17] = nR << 1 // I-frame ctrl1: N(R)<<1, P bit 0
+	conn.nS = (conn.nS + 1) & nbf.LLCSeqMask
+	out := nbf.EncodeIFrame(dstMAC, p.srcMAC, nS, nR, false, body)
 	conn.unacked = append(conn.unacked, unackedIFrame{nS: nS, raw: out})
 	p.armT1Locked(dstMAC, conn)
 	conn.mu.Unlock()
@@ -514,14 +479,7 @@ func (p *Port) sendIFrame(dstMAC [6]byte, body []byte, conn *llcConn) error {
 // sendUA transmits a 3-byte LLC UA (F=1) response to dstMAC, acknowledging a
 // SABME (connection open) or DISC (connection close).
 func (p *Port) sendUA(dstMAC [6]byte) error {
-	out := make([]byte, ethHdrLen+3)
-	copy(out[0:6], dstMAC[:])
-	copy(out[6:12], p.srcMAC[:])
-	out[12], out[13] = 0x00, 0x03 // 802.3 length = 3 (LLC only)
-	out[14] = llcDSAP
-	out[15] = llcSSAPResp
-	out[16] = llcCtrlUAF
-	return p.Port.Send(padTo(out, ethMinFrame))
+	return p.Port.Send(nbf.EncodeUFrame(dstMAC, p.srcMAC, nbf.LLCSSAPResponse, nbf.LLCCtrlUAF))
 }
 
 // sendRR transmits a 4-byte LLC RR (Receive Ready, F=1) supervisory response to
@@ -533,37 +491,19 @@ func (p *Port) sendRR(dstMAC [6]byte) error {
 		nR = conn.nR
 		conn.mu.Unlock()
 	}
-	return p.sendS(dstMAC, llcSSAPResp, (nR<<1)|0x01) // N(R)<<1 | F=1
+	return p.sendS(dstMAC, nbf.LLCSSAPResponse, nR, true) // N(R)<<1 | F=1
 }
 
 // sendRRPoll transmits an RR command with P=1 — the T1 checkpoint poll asking
 // the peer to report its N(R) (its RR F=1 response drives retransmission).
 func (p *Port) sendRRPoll(dstMAC [6]byte, nR uint8) error {
-	return p.sendS(dstMAC, llcSSAPCmd, (nR<<1)|0x01) // N(R)<<1 | P=1
+	return p.sendS(dstMAC, nbf.LLCSSAPCommand, nR, true) // N(R)<<1 | P=1
 }
 
 // sendS transmits a 4-byte LLC RR supervisory frame with the given SSAP
-// (command/response) and ctrl1 (N(R) + P/F) bytes.
-func (p *Port) sendS(dstMAC [6]byte, ssap, ctrl1 byte) error {
-	out := make([]byte, ethHdrLen+4)
-	copy(out[0:6], dstMAC[:])
-	copy(out[6:12], p.srcMAC[:])
-	out[12], out[13] = 0x00, 0x04 // 802.3 length = 4 (LLC only)
-	out[14] = llcDSAP
-	out[15] = ssap
-	out[16] = llcCtrlRR // RR S-frame
-	out[17] = ctrl1
-	return p.Port.Send(padTo(out, ethMinFrame))
-}
-
-// padTo zero-extends out to at least n bytes (the 802.3 minimum frame size);
-// NICs and emulated adapters drop sub-60-byte runts. Only trailing bytes are
-// added — the 802.3 length field already reflects the real payload size.
-func padTo(out []byte, n int) []byte {
-	if len(out) >= n {
-		return out
-	}
-	return append(out, make([]byte, n-len(out))...)
+// (command/response), advertising nR, with the P/F bit set when pollFinal.
+func (p *Port) sendS(dstMAC [6]byte, ssap, nR uint8, pollFinal bool) error {
+	return p.Port.Send(nbf.EncodeSFrame(dstMAC, p.srcMAC, ssap, nbf.LLCCtrlRR, nR, pollFinal))
 }
 
 // SendBroadcast transmits frame to the NetBIOS functional multicast address.

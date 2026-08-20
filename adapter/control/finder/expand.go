@@ -10,6 +10,16 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
 )
 
+func expandRef(req ExpandRequest) NodeRef {
+	if req.Path != "" || req.ID.ByPath {
+		if req.ID.ByPath {
+			return req.ID
+		}
+		return PathRef(req.Path)
+	}
+	return req.ID
+}
+
 // Expand unpacks a classic Mac archive next to its parent folder on the session catalog.
 func (s *Service) Expand(ctx context.Context, req ExpandRequest, emit func(OpProgress)) error {
 	sess, ffs, err := s.sessionFS(req.SessionID)
@@ -19,7 +29,7 @@ func (s *Service) Expand(ctx context.Context, req ExpandRequest, emit func(OpPro
 	if sess.readOnly {
 		return ErrReadOnly
 	}
-	path, err := s.pathFor(sess, req.ID)
+	path, err := s.storePath(sess, expandRef(req))
 	if err != nil {
 		return err
 	}

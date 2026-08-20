@@ -45,7 +45,7 @@ const (
 )
 
 // ipxBroadcastNode is the all-ones IPX node the periodic broadcast fans to.
-var ipxBroadcastNode = [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
+var ipxBroadcastNode = ipxproto.BroadcastNode
 
 // IPXSender is the IPX datagram egress the responder drives: the core/router/ipx
 // mini-router's Send satisfies it, so the responder never imports the router.

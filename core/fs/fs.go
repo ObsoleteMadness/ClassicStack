@@ -88,6 +88,46 @@ type ListingFilter interface {
 	HiddenName(name string) bool
 }
 
+// ForkCapability reports which Mac metadata a ForkEngine actually stores.
+// nofork reports all false; AppleDouble / passthrough / hfs / ads / xattr report true.
+type ForkCapability struct {
+	ResourceFork bool
+	FinderInfo   bool
+	Comment      bool
+}
+
+// ForkFeatures is an OPTIONAL capability a ForkEngine implements to declare
+// which Mac metadata it stores. Finder assembles catalog feature caps from it.
+// An engine that does not implement it is treated as full forks (AppleDouble-like).
+type ForkFeatures interface {
+	ForkCapabilities() ForkCapability
+}
+
+// ForkEngineNamer is an OPTIONAL capability that reports the registered adapter name
+// (appledouble, nofork, ads, …) for volume identity chrome.
+type ForkEngineNamer interface {
+	ForkEngineName() string
+}
+
+// VolumeViewInfo is the wire-native name/date/attribute schema a FileSystem
+// advertises when it is not a local ClassicStack union share.
+type VolumeViewInfo struct {
+	Names         []string
+	Dates         []string
+	Attributes    []string
+	NameCase      string
+	PathFormat    string
+	MaxNameBytes  map[string]int
+	HideAttribute string
+}
+
+// VolumeView is an OPTIONAL capability on the base FileSystem for wire-native
+// catalog fields (EtherDFS short-only, SMB long+short, …). If absent, Finder
+// infers a local-share union or a protocol preset.
+type VolumeView interface {
+	CatalogView() VolumeViewInfo
+}
+
 // ForkFS is a base FileSystem paired with its two mandatory per-share engines:
 // the fork adapter (ForkEngine) and the metadata engine (MetaEngine). BuildShare
 // always assembles exactly one of each over the fork/meta-unaware base — each
@@ -548,7 +588,7 @@ func WrapBase(base FileSystem, spec ShareSpec, store metastore.Store) (ForkFS, e
 		return nil, err
 	}
 
-	return &shareFS{FileSystem: base, ForkEngine: forkEngine, codec: codec, meta: metaEngine}, nil
+	return &shareFS{FileSystem: base, ForkEngine: forkEngine, codec: codec, meta: metaEngine, forkName: spec.ForkBackend}, nil
 }
 
 // defaultMetaBackend picks the per-platform default MetaEngine backend: "xattr"
@@ -661,8 +701,9 @@ func isEmptyParam(v any) bool {
 type shareFS struct {
 	FileSystem
 	ForkEngine
-	codec FilenameCodec
-	meta  MetaEngine
+	codec    FilenameCodec
+	meta     MetaEngine
+	forkName string
 }
 
 // Rename moves a path and carries its metadata container in one call: the data
@@ -704,6 +745,26 @@ func (s *shareFS) HiddenName(name string) bool {
 		return f.HiddenName(name)
 	}
 	return false
+}
+
+// ForkCapabilities forwards the optional ForkFeatures from the fork adapter.
+// An engine that does not implement it is treated as full Mac metadata.
+func (s *shareFS) ForkCapabilities() ForkCapability {
+	if f, ok := s.ForkEngine.(ForkFeatures); ok {
+		return f.ForkCapabilities()
+	}
+	return ForkCapability{ResourceFork: true, FinderInfo: true, Comment: true}
+}
+
+// ForkEngineName is the registered adapter name selected at WrapBase.
+func (s *shareFS) ForkEngineName() string { return s.forkName }
+
+// CatalogView forwards VolumeView from the base FileSystem when present.
+func (s *shareFS) CatalogView() (VolumeViewInfo, bool) {
+	if v, ok := s.FileSystem.(VolumeView); ok {
+		return v.CatalogView(), true
+	}
+	return VolumeViewInfo{}, false
 }
 
 // ShortName and MediumName derive a per-directory short/medium name for the
@@ -797,6 +858,11 @@ func (noForkAdapter) ForkLen(path string, fork ForkType) (int64, error) {
 func (noForkAdapter) ReadFinderInfo(path string) (info [32]byte, ok bool, err error) {
 	_ = path
 	return [32]byte{}, false, nil
+}
+
+// ForkCapabilities reports that nofork stores no Mac metadata.
+func (noForkAdapter) ForkCapabilities() ForkCapability {
+	return ForkCapability{}
 }
 
 func (noForkAdapter) WriteFinderInfo(path string, info [32]byte) error {

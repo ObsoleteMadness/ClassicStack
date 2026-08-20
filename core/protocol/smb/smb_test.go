@@ -2,6 +2,7 @@ package smb
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
@@ -117,5 +118,121 @@ func TestCapabilityNames(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("got %v, want %v", got, want)
 		}
+	}
+}
+
+// TestCaptureReplay_OS2DialectNegotiation replays the dialect list a real OS/2 LAN
+// Requester offers (golden capture spec/captures/nbf-os2-win98.pcap frame 100) and
+// pins that we select what the OS/2 SERVER selected from the identical list in the
+// same capture — index 4, LANMAN2.1, LanMan response family (frame 125).
+//
+// Two things this guards. First, XENIX CORE: it appears SECOND in every OS/2 list and
+// had no rank, so it scored 0 and could never be selected; a client offering only the
+// core dialects would have been told 0xFFFF ("nothing in common"). Second, the
+// selection itself — Win98 answers this same list with index 2 (LANMAN1.0, frame 102),
+// evidently not recognising the OS/2 spellings of LM1.2X002 / LANMAN2.1. We do
+// recognise them, so we match the OS/2 server rather than Win98's narrower table.
+func TestCaptureReplay_OS2DialectNegotiation(t *testing.T) {
+	// Frame 100, in wire order.
+	os2 := []string{
+		DialectPCNetwork1,
+		DialectXenixCore,
+		DialectLANMAN10,
+		DialectLM12X002,
+		DialectLANMAN21,
+	}
+	idx, name, family := SelectDialect(os2)
+	if idx != 4 || name != DialectLANMAN21 {
+		t.Errorf("SelectDialect = %d/%q, want 4/%q (the OS/2 server's choice, frame 125)",
+			idx, name, DialectLANMAN21)
+	}
+	if family != DialectFamilyLanMan {
+		t.Errorf("family = %v, want DialectFamilyLanMan (WCT=13 response)", family)
+	}
+
+	// XENIX CORE must be selectable on its own, in the core family.
+	idx, name, family = SelectDialect([]string{DialectXenixCore})
+	if idx != 0 || name != DialectXenixCore {
+		t.Errorf("XENIX-CORE-only = %d/%q, want 0/%q", idx, name, DialectXenixCore)
+	}
+	if family != DialectFamilyCore {
+		t.Errorf("XENIX CORE family = %v, want DialectFamilyCore (WCT=1 response)", family)
+	}
+}
+
+// goldenNegotiateTrailer is the 32-byte name trailer a real NWLink redirector appends
+// to its direct-hosted-IPX NEGOTIATE — golden capture spec/captures/nwlink-win98.pcap
+// frame 16, the bytes after the 119-byte dialect area. Source WIN98-IPX-1<00>
+// (workstation) then destination WIN98-IPX-2<20> (file server).
+var goldenNegotiateTrailer = []byte{
+	'W', 'I', 'N', '9', '8', '-', 'I', 'P', 'X', '-', '1', ' ', ' ', ' ', ' ', 0x00,
+	'W', 'I', 'N', '9', '8', '-', 'I', 'P', 'X', '-', '2', ' ', ' ', ' ', ' ', 0x20,
+}
+
+func TestCaptureReplay_DirectIPXNegotiateNameTrailer(t *testing.T) {
+	t.Parallel()
+	if len(goldenNegotiateTrailer) != NameTrailerLen {
+		t.Fatalf("golden trailer is %d bytes, want NameTrailerLen (%d)",
+			len(goldenNegotiateTrailer), NameTrailerLen)
+	}
+	var source, dest [16]byte
+	copy(source[:], goldenNegotiateTrailer[:16])
+	copy(dest[:], goldenNegotiateTrailer[16:])
+
+	// A NEGOTIATE with a 4-byte dialect area, so the split must use WCT/BCC rather
+	// than the datagram length to find where the message ends.
+	msg := append(goldenHeaderFrame14[:HeaderLen:HeaderLen], 0x00, 0x04, 0x00)
+	msg = append(msg, 0x02, 'A', 'B', 0x00)
+	msg[4] = CommandNegotiate
+
+	datagram := AppendNameTrailer(append([]byte(nil), msg...), source, dest)
+	if !bytes.Equal(datagram[len(msg):], goldenNegotiateTrailer) {
+		t.Fatalf("appended trailer not byte-identical to golden:\n got % x\nwant % x",
+			datagram[len(msg):], goldenNegotiateTrailer)
+	}
+
+	gotMsg, gotSrc, gotDst, ok := SplitNameTrailer(datagram)
+	if !ok {
+		t.Fatal("SplitNameTrailer reported no trailer on a datagram carrying one")
+	}
+	if !bytes.Equal(gotMsg, msg) {
+		t.Errorf("split message = % x, want % x", gotMsg, msg)
+	}
+	if gotSrc != source || gotDst != dest {
+		t.Errorf("split names = %q/%q, want %q/%q", gotSrc, gotDst, source, dest)
+	}
+}
+
+func TestSplitNameTrailerAbsent(t *testing.T) {
+	t.Parallel()
+	// Golden frames 18/20/22/24 carry NO trailer: the message must come back whole.
+	msg := append(goldenHeaderFrame14[:HeaderLen:HeaderLen], 0x00, 0x02, 0x00, 0xAA, 0xBB)
+	got, src, dst, ok := SplitNameTrailer(msg)
+	if ok {
+		t.Errorf("SplitNameTrailer = true on a trailer-less message (names %q/%q)", src, dst)
+	}
+	if !bytes.Equal(got, msg) {
+		t.Errorf("message = % x, want it returned unchanged (% x)", got, msg)
+	}
+}
+
+func TestDOSErrStatusNaming(t *testing.T) {
+	t.Parallel()
+	// The live Win98 direct-hosted-IPX refusal: header Status 0x00120002 with Flags2
+	// NT-status clear = ERRSRV(2)/18, NOT an NTSTATUS (0x00120002's severity bits say
+	// "success", which is why it read as nonsense before this was decoded per-reply).
+	e := &ErrStatus{Command: CommandNegotiate, Status: 0x00120002, DOS: true}
+	class, code := e.ErrorClass()
+	if class != ErrClassSrv || code != ErrSrvUnknownName {
+		t.Fatalf("ErrorClass = %d/%d, want %d/%d (ERRSRV/18)",
+			class, code, ErrClassSrv, ErrSrvUnknownName)
+	}
+	if got, want := e.Error(), "ERRSRV/unknown-name (2/18)"; !strings.Contains(got, want) {
+		t.Errorf("Error() = %q, want it to contain %q", got, want)
+	}
+	// An NT-status reply keeps the raw hex form.
+	nt := &ErrStatus{Command: CommandNegotiate, Status: 0xC000006D}
+	if got, want := nt.Error(), "0xC000006D"; !strings.Contains(got, want) {
+		t.Errorf("NTSTATUS Error() = %q, want it to contain %q", got, want)
 	}
 }

@@ -56,32 +56,25 @@ func nbftracef(format string, args ...any) {
 //
 // Ring: CLIENT.
 
-// NBF 802.2 LLC constants (mirror core/port/netbeui): DSAP/SSAP 0xF0 (NetBIOS), the
-// SSAP C/R bit distinguishing command (0xF0) from response (0xF1), and the LLC control
-// values the Type-2 machine uses.
-const (
-	nbfLLCDSAP    = 0xF0 // NetBIOS DSAP
-	nbfLLCSSAPCmd = 0xF0 // SSAP with C/R = command
-	nbfLLCSSAPRsp = 0xF1 // SSAP with C/R = response
-	nbfLLCUI      = 0x03 // Unnumbered Information control (connectionless)
-	nbfLLCSABME   = 0x7F // Set Async Balanced Mode Extended, P=1
-	nbfLLCDISCP   = 0x53 // Disconnect, P=1
-	nbfLLCUAF     = 0x73 // Unnumbered Acknowledgment, F=1
-	nbfLLCRR      = 0x01 // Receive Ready S-frame (ctrl0)
-	nbfEthHdrLen  = 14
-	nbfEthMin     = 60
-)
+// The 802.2 LLC constants and frame encoders this caller uses — DSAP/SSAP 0xF0
+// (NetBIOS), the C/R split between command (0xF0) and response (0xF1), the Type-2
+// control values, and the Ethernet+LLC layout itself — live in core/protocol/netbeui
+// (llc.go), shared with the RESPONDER in core/port/netbeui. The two used to keep
+// private copies of the same literals and hand-roll the same framing; they must match
+// byte for byte or the peer's LLC2 machine desynchronises, so there is one definition.
+const nbfEthHdrLen = nbfproto.EthernetHeaderLen
 
 // nbfBPF is the kernel capture filter for the NBF carrier: libpcap's "llc" primitive
 // (all 802.2 LLC frames), matching core/port/netbeui.BPFFilter. The read loop
 // re-validates the NetBIOS DSAP/SSAP so IPX (0xE0) / SNAP (0xAA) LLC frames are dropped.
 const nbfBPF = "llc"
 
-// nbfMaxIField is the largest NBF payload one I-frame carries: the Ethernet MTU (1500)
-// less the 4-byte extended LLC header, matching the server's ethernetMaxIField (1464). A
-// larger SMB request is fragmented across DATA_FIRST_MIDDLE frames with DATA_ONLY_LAST
-// closing it.
-const nbfMaxIField = 1464
+// nbfMaxIField is the largest NBF payload one I-frame carries (the Ethernet MTU less
+// LLC/NBF overhead). A larger SMB request is fragmented across DATA_FIRST_MIDDLE frames
+// with DATA_ONLY_LAST closing it. It is the SAME constant the responder advertises in
+// SESSION_CONFIRM (core/protocol/netbeui.MaxIField) — the two sides must agree or one
+// truncates the other's message.
+const nbfMaxIField = int(nbfproto.MaxIField)
 
 // nbfMaxResponse is the reassembling transport's response ceiling (the session's own
 // negotiated buffer governs in practice).
@@ -111,6 +104,23 @@ type nbfTransport struct {
 	localNum   uint8 // our NetBIOS session number
 	remoteNum  uint8 // the server's NetBIOS session number (from NAME_RECOGNIZED / SESSION_CONFIRM)
 
+	// Establishment correlators (IBM SC30-3587 §5.6.18 Table 5-28, §5.6.12). The CALL
+	// is a correlated three-step exchange, not three independent frames:
+	//
+	//	NAME_QUERY      (us)     RspCorrelator  = callCorrelator
+	//	NAME_RECOGNIZED (server) XmitCorrelator = callCorrelator (echoed)
+	//	                         RspCorrelator  = peerCorrelator (server-generated)
+	//	SESSION_INITIALIZE (us)  XmitCorrelator = peerCorrelator (echoed back)
+	//	                         RspCorrelator  = callCorrelator (correlates SESSION_CONFIRM)
+	//
+	// Golden capture spec/captures/nbf-win98.pcap frames 67/68/73 carry 0x0009 /
+	// 0x0009+0x0007 / 0x0007+0x0009 respectively. We used to send zero in every one of
+	// these fields; WIN98-NBF-1 tolerates that, but the spec makes the echo mandatory
+	// and a stricter responder (NT 3.51 / OS-2 LAN Server) has no way to match our
+	// SESSION_INITIALIZE to the NAME_RECOGNIZED that invited it.
+	callCorrelator uint16 // ours, generated for the CALL
+	peerCorrelator uint16 // the server's, learned from NAME_RECOGNIZED
+
 	// LLC2 caller sequence state (mod-128, extended control field). nS is our next
 	// send sequence N(S); nR is the next expected server N(S) (the N(R) we advertise).
 	nS uint8
@@ -135,16 +145,36 @@ type nbfTransport struct {
 	closed bool
 }
 
+// DialNBFOpts carries optional per-Dial overrides for NBF establishment.
+type DialNBFOpts struct {
+	// CallingName, when non-empty, overrides the MAC-derived NetBIOS calling name
+	// (nbipxCallingName). See DialNBIPXOpts.CallingName — same rationale, shared
+	// with the NB-IPX carrier so a caller running as part of the ClassicStack
+	// server presents one identity regardless of which carrier it dials over.
+	// NBF has no KnownServer equivalent: LLC2's SABME connect needs the peer's MAC,
+	// which only NAME_QUERY's reply teaches us, so the locate cannot be skipped.
+	CallingName string
+}
+
 // DialNBF builds an SMB-over-NBF client transport over the pcap FrameLink fl and runs
 // the full caller flow to serverName (the \\SERVER label). srcMAC is the virtual
 // station's MAC (RandomMAC() by default). It returns an error if any phase does not
 // complete within the timeout.
 func DialNBF(fl link.FrameLink, srcMAC [6]byte, serverName string) (Transport, error) {
+	return DialNBFWithOpts(fl, srcMAC, serverName, DialNBFOpts{})
+}
+
+// DialNBFWithOpts is DialNBF with DialNBFOpts overrides.
+func DialNBFWithOpts(fl link.FrameLink, srcMAC [6]byte, serverName string, opts DialNBFOpts) (Transport, error) {
+	callingName := opts.CallingName
+	if callingName == "" {
+		callingName = nbipxCallingName(srcMAC)
+	}
 	t := &nbfTransport{
 		fl:           fl,
 		srcMAC:       srcMAC,
 		calledName:   nb.NewName(serverName, nb.NameTypeFileServer),
-		callingName:  nb.NewName(nbipxCallingName(srcMAC), nb.NameTypeWorkstation),
+		callingName:  nb.NewName(callingName, nb.NameTypeWorkstation),
 		localNum:     nbfClientSessionNum,
 		recognizedCh: make(chan uint8, 1),
 		uaCh:         make(chan struct{}, 1),
@@ -361,9 +391,24 @@ func (t *nbfTransport) sendSMB(req []byte, localNum, remoteNum uint8) error {
 // sendNameQuery broadcasts a CALL NAME_QUERY for the server name carrying our local
 // session number in Data2's low byte (spec §5.6.8: a CALL sets Local Session No. != 0).
 func (t *nbfTransport) sendNameQuery() error {
+	t.mu.Lock()
+	if t.callCorrelator == 0 {
+		// Non-zero and stable for the whole CALL: the server echoes it back in the
+		// NAME_RECOGNIZED's Transmit Correlator, and we reuse it as the
+		// SESSION_INITIALIZE's Response Correlator so the SESSION_CONFIRM correlates.
+		t.respCorrelator++
+		if t.respCorrelator == 0 {
+			t.respCorrelator = 1
+		}
+		t.callCorrelator = t.respCorrelator
+	}
+	corr := t.callCorrelator
+	t.mu.Unlock()
+
 	f := &nbfproto.Frame{
-		Command: nbfproto.CmdNameQuery,
-		Data2:   uint16(t.localNum), // low byte = local session number (a CALL, not a locate)
+		Command:       nbfproto.CmdNameQuery,
+		Data2:         uint16(t.localNum), // low byte = local session number (a CALL, not a locate)
+		RspCorrelator: corr,
 	}
 	copy(f.DestinationName[:], t.calledName[:])
 	copy(f.SourceName[:], t.callingName[:])
@@ -372,7 +417,7 @@ func (t *nbfTransport) sendNameQuery() error {
 
 // sendSABME sends a Type-2 SABME (P=1) to the server MAC to open the LLC2 connection.
 func (t *nbfTransport) sendSABME() error {
-	return t.sendU(nbfLLCSABME)
+	return t.sendU(nbfproto.LLCCtrlSABME)
 }
 
 // SESSION_INITIALIZE / SESSION_CONFIRM Data1 option flags (IBM SC30-3587 Table 5-28;
@@ -391,7 +436,7 @@ const (
 // SESSION_CONFIRM (Data2). It bounds a single received I-field; the MS caller advertises
 // 1482. We advertise our own max I-field so the server never sends a segment we cannot
 // hold in one frame.
-const nbfMaxRecvSize = nbfMaxIField
+const nbfMaxRecvSize = nbfproto.MaxIField
 
 // sendSessionInitialize sends SESSION_INITIALIZE as an LLC2 I-frame WITH THE POLL BIT SET
 // (frame 210 is "I P"): the server checkpoints on the poll and answers SESSION_CONFIRM.
@@ -400,13 +445,18 @@ const nbfMaxRecvSize = nbfMaxIField
 func (t *nbfTransport) sendSessionInitialize() error {
 	t.mu.Lock()
 	remoteNum, localNum := t.remoteNum, t.localNum
+	xmitCorr, rspCorr := t.peerCorrelator, t.callCorrelator
 	t.mu.Unlock()
 	f := &nbfproto.Frame{
-		Command:      nbfproto.CmdSessionInitialize,
-		Data1:        nbfInitFlags,
-		Data2:        nbfMaxRecvSize,
-		DestNumber:   remoteNum,
-		SourceNumber: localNum,
+		Command: nbfproto.CmdSessionInitialize,
+		Data1:   nbfInitFlags,
+		Data2:   nbfMaxRecvSize,
+		// Echo the NAME_RECOGNIZED's Response Correlator, and offer our own so the
+		// SESSION_CONFIRM correlates back (§5.6.18; golden frame 73 = 0x0007/0x0009).
+		XmitCorrelator: xmitCorr,
+		RspCorrelator:  rspCorr,
+		DestNumber:     remoteNum,
+		SourceNumber:   localNum,
 	}
 	body, err := f.Encode()
 	if err != nil {
@@ -457,25 +507,12 @@ func (t *nbfTransport) dstMAC() [6]byte {
 // sendUIRaw writes an NBF body as an 802.3 LLC UI frame (3-byte LLC: DSAP 0xF0, SSAP
 // 0xF0, control UI). The 802.3 length field covers the LLC header + body.
 func (t *nbfTransport) sendUIRaw(dstMAC [6]byte, body []byte) error {
-	payloadLen := 3 + len(body)
-	out := make([]byte, nbfEthHdrLen+payloadLen)
-	copy(out[0:6], dstMAC[:])
-	copy(out[6:12], t.srcMAC[:])
-	out[12], out[13] = byte(payloadLen>>8), byte(payloadLen)
-	out[14], out[15], out[16] = nbfLLCDSAP, nbfLLCSSAPCmd, nbfLLCUI
-	copy(out[17:], body)
-	return t.fl.Write(nbfPad(out))
+	return t.fl.Write(nbfproto.EncodeUIFrame(dstMAC, t.srcMAC, body))
 }
 
 // sendU writes a 3-byte LLC unnumbered command frame (SABME/DISC) to the server MAC.
 func (t *nbfTransport) sendU(ctrl byte) error {
-	dst := t.dstMAC()
-	out := make([]byte, nbfEthHdrLen+3)
-	copy(out[0:6], dst[:])
-	copy(out[6:12], t.srcMAC[:])
-	out[12], out[13] = 0x00, 0x03
-	out[14], out[15], out[16] = nbfLLCDSAP, nbfLLCSSAPCmd, ctrl
-	return t.fl.Write(nbfPad(out))
+	return t.fl.Write(nbfproto.EncodeUFrame(t.dstMAC(), t.srcMAC, nbfproto.LLCSSAPCommand, ctrl))
 }
 
 // sendIFrame writes an NBF session body as an LLC2 I-frame with the current N(S)/N(R)
@@ -495,43 +532,19 @@ func (t *nbfTransport) sendIFramePoll(body []byte) error {
 // poll sets bit 0 of the second control byte.
 func (t *nbfTransport) sendIFrameCtl(body []byte, poll bool) error {
 	dst := t.dstMAC()
-	const llcLen = 4
-	payloadLen := llcLen + len(body)
-	out := make([]byte, nbfEthHdrLen+payloadLen)
-	copy(out[0:6], dst[:])
-	copy(out[6:12], t.srcMAC[:])
-	out[12], out[13] = byte(payloadLen>>8), byte(payloadLen)
-	out[14], out[15] = nbfLLCDSAP, nbfLLCSSAPCmd
-	copy(out[18:], body)
-
 	t.mu.Lock()
 	nS, nR := t.nS, t.nR
-	t.nS = (t.nS + 1) & 0x7F
+	t.nS = (t.nS + 1) & nbfproto.LLCSeqMask
 	t.mu.Unlock()
-	out[16] = nS << 1 // I-frame ctrl0: N(S)<<1, low bit 0
-	out[17] = nR << 1 // I-frame ctrl1: N(R)<<1
-	if poll {
-		out[17] |= 0x01 // P=1
-	}
-	return t.fl.Write(nbfPad(out))
+	return t.fl.Write(nbfproto.EncodeIFrame(dst, t.srcMAC, nS, nR, poll, body))
 }
 
 // sendRRPoll writes a 4-byte LLC RR COMMAND with the Poll bit set, advertising our
 // current N(R). The caller sends this right after UA (frame 208) to prompt the server's
 // RR-final, opening the LLC2 send window before the SESSION_INITIALIZE I-frame flows.
 func (t *nbfTransport) sendRRPoll() error {
-	dst := t.dstMAC()
-	t.mu.Lock()
-	nR := t.nR
-	t.mu.Unlock()
-	out := make([]byte, nbfEthHdrLen+4)
-	copy(out[0:6], dst[:])
-	copy(out[6:12], t.srcMAC[:])
-	out[12], out[13] = 0x00, 0x04
-	out[14], out[15] = nbfLLCDSAP, nbfLLCSSAPCmd // SSAP command (C/R = command) for a poll
-	out[16] = nbfLLCRR
-	out[17] = (nR << 1) | 0x01 // N(R)<<1 | P=1
-	return t.fl.Write(nbfPad(out))
+	// SSAP command (C/R = command) for a poll; ctrl1 = N(R)<<1 | P=1.
+	return t.fl.Write(t.encodeRR(nbfproto.LLCSSAPCommand, true))
 }
 
 // sendRR writes a 4-byte LLC RR COMMAND (P=0) advertising our current N(R),
@@ -548,18 +561,9 @@ func (t *nbfTransport) sendRRPoll() error {
 // reply was never delivered — "no response within 5s". (Our own responder tolerated the
 // stray F-bit, so the e2e never caught it.)
 func (t *nbfTransport) sendRR() error {
-	dst := t.dstMAC()
-	t.mu.Lock()
-	nR := t.nR
-	t.mu.Unlock()
-	out := make([]byte, nbfEthHdrLen+4)
-	copy(out[0:6], dst[:])
-	copy(out[6:12], t.srcMAC[:])
-	out[12], out[13] = 0x00, 0x04
-	out[14], out[15] = nbfLLCDSAP, nbfLLCSSAPCmd // SSAP command (C/R = command)
-	out[16] = nbfLLCRR
-	out[17] = nR << 1 // N(R)<<1, P=0 — a plain ack, not a checkpoint response
-	return t.fl.Write(nbfPad(out))
+	// SSAP command (C/R = command); ctrl1 = N(R)<<1, P=0 — a plain ack, not a
+	// checkpoint response.
+	return t.fl.Write(t.encodeRR(nbfproto.LLCSSAPCommand, false))
 }
 
 // sendRRFinal writes a 4-byte LLC RR RESPONSE with the Final bit set, advertising our
@@ -568,18 +572,18 @@ func (t *nbfTransport) sendRR() error {
 // request and blocks on this response before sending the reply data (live capture, frame
 // 16).
 func (t *nbfTransport) sendRRFinal() error {
+	// SSAP response (C/R = response); ctrl1 = N(R)<<1 | F=1.
+	return t.fl.Write(t.encodeRR(nbfproto.LLCSSAPResponse, true))
+}
+
+// encodeRR builds an RR supervisory frame to the (learned) server MAC advertising our
+// current N(R), as a command or a response, with the P/F bit per pollFinal.
+func (t *nbfTransport) encodeRR(ssap uint8, pollFinal bool) []byte {
 	dst := t.dstMAC()
 	t.mu.Lock()
 	nR := t.nR
 	t.mu.Unlock()
-	out := make([]byte, nbfEthHdrLen+4)
-	copy(out[0:6], dst[:])
-	copy(out[6:12], t.srcMAC[:])
-	out[12], out[13] = 0x00, 0x04
-	out[14], out[15] = nbfLLCDSAP, nbfLLCSSAPRsp // SSAP response (C/R = response)
-	out[16] = nbfLLCRR
-	out[17] = (nR << 1) | 0x01 // N(R)<<1 | F=1
-	return t.fl.Write(nbfPad(out))
+	return nbfproto.EncodeSFrame(dst, t.srcMAC, ssap, nbfproto.LLCCtrlRR, nR, pollFinal)
 }
 
 // --- inbound path ---
@@ -612,7 +616,7 @@ func (t *nbfTransport) handleFrame(frame []byte) {
 	}
 	body := frame[nbfEthHdrLen:]
 	// NetBIOS DSAP 0xF0, SSAP 0xF0/0xF1 (ignore C/R bit); drop IPX/SNAP LLC.
-	if body[0] != nbfLLCDSAP || body[1]&0xFE != nbfLLCDSAP {
+	if !nbfproto.IsNetBIOSLLC(body) {
 		return
 	}
 	var dstMAC, srcMAC [6]byte
@@ -622,9 +626,9 @@ func (t *nbfTransport) handleFrame(frame []byte) {
 
 	// U-frames (control low two bits = 11): 3-byte LLC. We only care about UA (the
 	// answer to our SABME) and UI (connectionless NBF, e.g. NAME_RECOGNIZED).
-	if ctrl&0x03 == 0x03 {
+	if ctrl&nbfproto.LLCCtrlUMask == nbfproto.LLCCtrlUMask {
 		switch ctrl {
-		case nbfLLCUAF:
+		case nbfproto.LLCCtrlUAF:
 			t.handleUA(srcMAC, dstMAC)
 		default: // UI and other U-frames: connectionless NBF body.
 			t.deliverNBF(srcMAC, body[3:])
@@ -638,12 +642,12 @@ func (t *nbfTransport) handleFrame(frame []byte) {
 	// S-frames (control low two bits = 01): RR/RNR/REJ. In the extended (mod-128) control
 	// field the P/F bit and N(R) live in the SECOND control byte (body[3]); the SSAP C/R
 	// bit (body[1]) distinguishes a command from a response.
-	if ctrl&0x03 == 0x01 {
+	if ctrl&nbfproto.LLCCtrlUMask == nbfproto.LLCCtrlSMask {
 		if dstMAC != t.srcMAC {
 			return
 		}
-		isCommand := body[1] == nbfLLCSSAPCmd // 0xF0 command vs 0xF1 response
-		pollFinal := body[3]&0x01 != 0
+		isCommand := body[1] == nbfproto.LLCSSAPCommand // 0xF0 command vs 0xF1 response
+		pollFinal := body[3]&nbfproto.LLCPollFinal != 0
 		// An RR COMMAND with the Poll bit set is the peer checkpointing US: it wants an RR
 		// RESPONSE carrying our N(R) with the Final bit set before it will proceed. Ground
 		// truth (live /tmp/live.pcap, WIN98 → us, frame 16): after acking our NEGOTIATE
@@ -669,7 +673,7 @@ func (t *nbfTransport) handleFrame(frame []byte) {
 	// connection. Advance N(R) to ack it, deliver, then acknowledge at the LLC layer. If
 	// the inbound I-frame set the Poll bit (body[3] bit 0), the peer is checkpointing us
 	// and REQUIRES an RR-response-final; otherwise a plain RR-command ack suffices.
-	if ctrl&0x01 == 0 {
+	if ctrl&nbfproto.LLCCtrlIMask == 0 {
 		if dstMAC != t.srcMAC {
 			return
 		}
@@ -681,12 +685,12 @@ func (t *nbfTransport) handleFrame(frame []byte) {
 			nbftracef("dropping inbound SESSION_INITIALIZE (own I-frame echo)")
 			return
 		}
-		poll := body[3]&0x01 != 0
+		poll := body[3]&nbfproto.LLCPollFinal != 0
 		remoteNS := ctrl >> 1
 		t.mu.Lock()
 		expected := t.nR
 		if remoteNS == t.nR {
-			t.nR = (remoteNS + 1) & 0x7F
+			t.nR = (remoteNS + 1) & nbfproto.LLCSeqMask
 		}
 		t.mu.Unlock()
 		// A retransmit of a frame we already consumed (the server's LLC2 T1 checkpoint
@@ -773,6 +777,9 @@ func (t *nbfTransport) handleNameRecognized(srcMAC [6]byte, f *nbfproto.Frame) {
 		t.serverMAC = srcMAC
 		t.haveServer = true
 	}
+	// Keep the server's Response Correlator: our SESSION_INITIALIZE must echo it in
+	// its Transmit Correlator so the responder can match the two (§5.6.18).
+	t.peerCorrelator = f.RspCorrelator
 	t.mu.Unlock()
 	if remoteNum == 0 {
 		return // a FIND.NAME/locate answer with no session number: not our CALL answer
@@ -847,14 +854,6 @@ func (t *nbfTransport) handleData(f *nbfproto.Frame, last bool) {
 	case <-t.stop:
 	default:
 	}
-}
-
-// nbfPad zero-extends out to the 802.3 minimum frame size (NICs drop sub-60-byte runts).
-func nbfPad(out []byte) []byte {
-	if len(out) >= nbfEthMin {
-		return out
-	}
-	return append(out, make([]byte, nbfEthMin-len(out))...)
 }
 
 // Close tears down the read loop and closes the link. It does not send DISC/SESSION_END:

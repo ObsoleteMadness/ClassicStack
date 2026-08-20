@@ -182,24 +182,37 @@ func (s *Service) localElectionFrame() proto.Election {
 	return proto.Election{
 		Version:    proto.ElectionVersion,
 		Criteria:   proto.ElectionCriteriaMaster,
-		Uptime:     s.uptimeSecs(),
+		Uptime:     s.uptimeMillis(),
 		ServerName: s.server,
 	}
 }
 
-// uptimeSecs is our browser uptime in seconds (the election tie-breaker), never 0.
-func (s *Service) uptimeSecs() uint32 {
+// uptimeMillis is our browser uptime in MILLISECONDS (the election tie-breaker
+// applied after criteria), never 0.
+//
+// [MS-BRWS] §2.2.17 defines the RequestElection Uptime field in milliseconds, and a
+// real peer honours that: in captures/ipx.pcap (2026-08-19) WIN98-1 booted at t≈68s
+// and advertised 76786 at t=144.6s — its true elapsed time, encoded as ms. This used
+// to divide by time.Second, so ClassicStack advertised 159 at 159s of uptime — a
+// 1000x under-report that lost the uptime tie-break to any peer that had been up
+// more than a second.
+func (s *Service) uptimeMillis() uint32 {
 	s.mu.Lock()
 	started := s.started
 	s.mu.Unlock()
 	if started.IsZero() {
 		return 1
 	}
-	secs := uint32(s.now().Sub(started) / time.Second)
-	if secs == 0 {
+	ms := s.now().Sub(started) / time.Millisecond
+	if ms <= 0 {
 		return 1
 	}
-	return secs
+	// A browser up longer than ~49.7 days saturates the 32-bit field rather than
+	// wrapping to a near-zero uptime that would forfeit the tie-break.
+	if ms > time.Duration(^uint32(0)) {
+		return ^uint32(0)
+	}
+	return uint32(ms)
 }
 
 // startElection launches the election transmit loop if one is not already running.
@@ -229,9 +242,30 @@ func (s *Service) stopElection() {
 	}
 }
 
+// electionSettleFactor scales the potential-browser backoff into the quiet period
+// runElection waits, after its transmit burst, before claiming the master role.
+//
+// The burst alone is not a decision window: four transmissions at the master
+// backoff complete in ~300ms, but a real Win9x potential browser waits its OWN
+// (much longer) backoff before contesting. In captures/ipx.pcap (2026-08-19)
+// ClassicStack requested an election at t=159.097s, declared itself Local Master at
+// t=159.407s, and only then — at t=161.657s, 2.5s later — did WIN98-1 answer with
+// stronger criteria. Declaring inside the burst meant we "won" every election by
+// closing it before the peer was allowed to speak, then got demoted on the late
+// reply: the two flapped between Local Master indefinitely and neither browse list
+// ever settled.
+//
+// The factor is calibrated against a real browser's own election: in
+// spec/captures/nbf-win98.pcap WIN98-NBF-1 transmits four RequestElection frames
+// ~1s apart (t=16.23/17.23/18.24/19.24) and only announces Local Master at t=23.43
+// — a 4.19s quiet period after its last transmission. potential-backoff x12 (4.8s
+// with the defaults) covers that with margin, and still scales down with an
+// injected electionDelay so tests stay fast.
+const electionSettleFactor = 12
+
 // runElection retransmits the election frame up to three more times at the role
-// backoff; if uncontested (not cancelled by a winning peer) it declares us local
-// master and emits a local-master announcement.
+// backoff, then waits out the settle period; if still uncontested (not cancelled by
+// a winning peer) it declares us local master and emits a local-master announcement.
 func (s *Service) runElection(ctx context.Context, gen uint64, delay time.Duration) {
 	for range 3 {
 		select {
@@ -240,6 +274,14 @@ func (s *Service) runElection(ctx context.Context, gen uint64, delay time.Durati
 		case <-time.After(delay):
 		}
 		_ = s.emitElection(s.localElectionFrame())
+	}
+
+	// Stay open for a slow peer's contest. handleElection cancels ctx the moment a
+	// stronger candidate is heard, so losing here costs nothing but the wait.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(s.electionDelay(RolePotential) * electionSettleFactor):
 	}
 
 	s.mu.Lock()

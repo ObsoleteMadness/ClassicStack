@@ -23,8 +23,8 @@ func (s *Service) sessionFS(id string) (*Session, fs.ForkFS, error) {
 	return sess, ffs, nil
 }
 
-func (s *Service) destPath(sess *Session, parentID uint32, name string) (string, error) {
-	parent, err := s.pathFor(sess, parentID)
+func (s *Service) destPath(sess *Session, parent NodeRef, name string) (string, error) {
+	parentPath, err := s.storePath(sess, parent)
 	if err != nil {
 		return "", err
 	}
@@ -32,10 +32,10 @@ func (s *Service) destPath(sess *Session, parentID uint32, name string) (string,
 	if name == "" || strings.Contains(name, "/") {
 		return "", fmt.Errorf("finder: invalid dest name %q", name)
 	}
-	return joinStore(parent, name), nil
+	return joinStore(parentPath, name), nil
 }
 
-func (s *Service) removeIfReplace(sess *Session, parentID uint32, name string, replace bool) error {
+func (s *Service) removeIfReplace(sess *Session, parent NodeRef, name string, replace bool) error {
 	if !replace {
 		return nil
 	}
@@ -46,11 +46,11 @@ func (s *Service) removeIfReplace(sess *Session, parentID uint32, name string, r
 	if err != nil {
 		return err
 	}
-	parent, err := s.pathFor(sess, parentID)
+	dir, err := s.storePath(sess, parent)
 	if err != nil {
 		return err
 	}
-	path := joinStore(parent, name)
+	path := joinStore(dir, name)
 	info, err := ffs.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -77,7 +77,7 @@ func (s *Service) Copy(ctx context.Context, req TransferRequest, emit func(OpPro
 	if dstSess.readOnly {
 		return ErrReadOnly
 	}
-	srcPath, err := s.pathFor(srcSess, req.SrcID)
+	srcPath, err := s.storePath(srcSess, req.SrcID)
 	if err != nil {
 		return err
 	}
@@ -126,7 +126,7 @@ func (s *Service) MoveAcross(ctx context.Context, req TransferRequest, emit func
 	if dstSess.readOnly || srcSess.readOnly {
 		return ErrReadOnly
 	}
-	srcPath, err := s.pathFor(srcSess, req.SrcID)
+	srcPath, err := s.storePath(srcSess, req.SrcID)
 	if err != nil {
 		return err
 	}
@@ -167,7 +167,7 @@ func (s *Service) moveWithinSession(ctx context.Context, req TransferRequest, em
 	if sess.readOnly {
 		return ErrReadOnly
 	}
-	srcPath, err := s.pathFor(sess, req.SrcID)
+	srcPath, err := s.storePath(sess, req.SrcID)
 	if err != nil {
 		return err
 	}

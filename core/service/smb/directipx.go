@@ -28,34 +28,27 @@ import (
 
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 	ipxproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx"
+	nbproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbios"
+	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/smb"
 )
 
 // DirectSMBSocket is the IPX socket SMB direct-hosting listens on (0x0550). Compose
-// registers the transport as the core/router/ipx SocketHandler for this socket.
-var DirectSMBSocket = [2]byte{0x05, 0x50}
+// registers the transport as the core/router/ipx SocketHandler for this socket. The
+// value is the shared NB-IPX server socket (core/protocol/netbios): direct-hosted SMB
+// and the NB-IPX name claim use the same well-known socket, and the direct-hosted
+// CLIENT (client/smb/ipx.go) addresses it from the same definition.
+var DirectSMBSocket = nbproto.NBIPXServerSocket
 
-// ipxPEPType is the IPX packet-type (4, Packet Exchange Protocol) direct-hosted SMB
-// rides, matching the legacy transport and NBIPX session traffic.
-const ipxPEPType uint8 = 0x04
-
-// SMB header offsets used by the connectionless framing ([MS-CIFS] §2.2.3.1): the
-// command byte, the FLAGS byte (high bit = response), and the CID / SequenceNumber
-// inside the SecurityFeatures field.
+// SMB header fields the connectionless framing reads and writes ([MS-CIFS] §2.2.3.1)
+// come from core/protocol/smb — the command byte (MessageCommand), the FLAGS reply
+// bit (IsResponseMessage), the WCT offset (WordCountOffset) and the CID /
+// SequenceNumber inside SecurityFeatures (ConnectionlessCIDOffset /
+// StampConnectionless). They used to be private copies HERE and in the client, and
+// the two drifted — the client never wrote SequenceNumber at all.
 const (
-	smbCmdOffset      = 4  // Command
-	smbFlagsOffset    = 9  // FLAGS (bit 0x80 = SMB_FLAGS_REPLY)
-	smbCIDOffset      = 18 // SecurityFeatures: Connection ID (USHORT, LE)
-	smbSeqOffset      = 20 // SecurityFeatures: SequenceNumber (USHORT, LE)
-	smbReplyFlag      = 0x80
-	smbCmdNegotiate   = 0x72
-	smbCmdEcho        = 0x2b
-	smbStatusOffset   = 5  // NTStatus (ULONG, LE) — 0 == success
-	smbWordCountStart = 32 // WCT immediately after the 32-byte header
+	smbCIDOffset      = protocol.ConnectionlessCIDOffset
+	smbWordCountStart = protocol.WordCountOffset
 )
-
-// cidReservedHi is the reserved high CID value (0xFFFF); 0x0000 is also reserved,
-// so allocation starts at 1 and wraps before 0xFFFF.
-const cidReservedHi = 0xFFFF
 
 // directIPXClientLabel formats a remote IPX node as the "xx:xx:xx:xx:xx:xx.0550"
 // client label the management view groups sessions under (the .0550 socket suffix
@@ -130,19 +123,27 @@ func (s *Service) NewDirectIPX(sender DirectIPXSender) *DirectIPX {
 // it through the endpoint's circuit, and sends the response back stamped with the
 // CID and the request's SequenceNumber.
 func (t *DirectIPX) HandleDatagram(d *ipxproto.Datagram) {
-	if d == nil || d.Type != ipxPEPType {
+	if d == nil || d.Type != ipxproto.TypePEP {
 		return
 	}
 	msg := d.Payload
-	if len(msg) < smbWordCountStart || string(msg[:4]) != "\xffSMB" {
+	if !protocol.HasProtocolID(msg) {
 		return
 	}
 	// Drop SMB responses arriving on ingress — only requests are dispatched.
-	if len(msg) > smbFlagsOffset && msg[smbFlagsOffset]&smbReplyFlag != 0 {
+	if protocol.IsResponseMessage(msg) {
 		return
 	}
 
-	allocate := msg[smbCmdOffset] == smbCmdNegotiate
+	allocate := protocol.MessageCommand(msg) == protocol.CommandNegotiate
+	if allocate {
+		// A real NWLink redirector appends [SOURCE][DESTINATION] NetBIOS names after
+		// the NEGOTIATE message, outside ByteCount — the only naming this
+		// session-layer-less transport has (see protocol.AppendNameTrailer). Strip it
+		// so the command core sees a plain SMB message; the endpoint address, not the
+		// name, keys the circuit, so the names are informational here.
+		msg, _, _, _ = protocol.SplitNameTrailer(msg)
+	}
 	conn, cid := t.connFor(d.SrcNet, d.SrcNode, allocate)
 
 	resp := conn.ServeMessage(msg)
@@ -216,7 +217,7 @@ func (t *DirectIPX) pushResponse(key directIPXEndpoint, frame []byte) {
 		bp.PutLE16(payload[smbCIDOffset:smbCIDOffset+2], cid)
 	}
 	_ = sender.Send(&ipxproto.Datagram{
-		Type:    ipxPEPType,
+		Type:    ipxproto.TypePEP,
 		DstNet:  key.net,
 		DstNode: key.node,
 		DstSock: DirectSMBSocket,
@@ -230,7 +231,7 @@ func (t *DirectIPX) pushResponse(key directIPXEndpoint, frame []byte) {
 func (t *DirectIPX) allocCIDLocked() uint16 {
 	cid := t.nextCID
 	t.nextCID++
-	if t.nextCID == cidReservedHi {
+	if t.nextCID == protocol.ConnectionlessCIDReserved {
 		t.nextCID = 1
 	}
 	return cid
@@ -245,7 +246,7 @@ func (t *DirectIPX) sendResponse(in *ipxproto.Datagram, resp, req []byte, cid ui
 	payload := append([]byte(nil), resp...)
 	stampConnectionless(payload, req, cid)
 	_ = t.sender.Send(&ipxproto.Datagram{
-		Type:    ipxPEPType,
+		Type:    ipxproto.TypePEP,
 		DstNet:  in.SrcNet,
 		DstNode: in.SrcNode,
 		DstSock: in.SrcSock,
@@ -279,11 +280,11 @@ func stampConnectionless(resp, req []byte, cid uint16) {
 	if len(resp) < smbWordCountStart || len(req) < smbWordCountStart {
 		return
 	}
-	if reqCID := bp.LE16(req[smbCIDOffset : smbCIDOffset+2]); reqCID != 0 && reqCID != cidReservedHi {
+	if reqCID := protocol.ConnectionlessCID(req); reqCID != 0 && reqCID != protocol.ConnectionlessCIDReserved {
 		cid = reqCID
 	}
-	bp.PutLE16(resp[smbCIDOffset:smbCIDOffset+2], cid)
-	copy(resp[smbSeqOffset:smbSeqOffset+2], req[smbSeqOffset:smbSeqOffset+2])
+	// Echo the request's SequenceNumber back verbatim.
+	protocol.StampConnectionless(resp, cid, protocol.ConnectionlessSequence(req))
 }
 
 // echoResponseCount returns the number of responses an SMB_COM_ECHO exchange wants
@@ -293,10 +294,10 @@ func echoResponseCount(req, resp []byte) uint16 {
 	if len(req) < smbWordCountStart+3 || len(resp) < smbWordCountStart+1 {
 		return 1
 	}
-	if req[smbCmdOffset] != smbCmdEcho || resp[smbCmdOffset] != smbCmdEcho {
+	if protocol.MessageCommand(req) != protocol.CommandEcho || protocol.MessageCommand(resp) != protocol.CommandEcho {
 		return 1
 	}
-	if len(resp) < smbStatusOffset+4 || bp.LE32(resp[smbStatusOffset:smbStatusOffset+4]) != 0 {
+	if protocol.MessageStatus(resp) != protocol.StatusSuccess {
 		return 1
 	}
 	if req[smbWordCountStart] != 1 || resp[smbWordCountStart] != 1 {

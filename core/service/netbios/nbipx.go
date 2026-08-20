@@ -44,21 +44,17 @@ var ErrNameInUse = errors.New("netbios: NB-IPX name already in use on segment")
 // restating the import path.
 type ipxDatagramType = ipxproto.Datagram
 
-// NB-IPX socket numbers. NetBIOS-over-IPX (NWLink) uses four sockets; compose
-// registers the IPXEngine as the core/router/ipx SocketHandler on each, and these
-// consts are the one source of truth for where the engine listens.
-//
-//	0x0455 — session + the type-20 NBIPX Find-name broadcast
-//	0x0550 — the NB-IPX server socket (our claim's source socket)
-//	0x0551 — NMPI name-query ("where is CLASSICSTACK?")
-//	0x0553 — NB-IPX datagram (NMPI mailslot sends: browser traffic)
-//	0x0554 — name service (alternative path some stacks use)
+// NB-IPX socket numbers, re-exported under the names compose registers the IPXEngine
+// as the core/router/ipx SocketHandler on. The VALUES live in core/protocol/netbios —
+// the client transports (client/smb, client/netbios) address the same sockets and used
+// to carry their own literal copies, so the wire numbers are defined once in the
+// protocol ring and named here.
 var (
-	NBIPXSessionSocket   = [2]byte{0x04, 0x55}
-	NBIPXServerSocket    = [2]byte{0x05, 0x50}
-	NBIPXNameQuerySocket = [2]byte{0x05, 0x51}
-	NBIPXDatagramSocket  = [2]byte{0x05, 0x53}
-	NBIPXNameSocket      = [2]byte{0x05, 0x54}
+	NBIPXSessionSocket   = protocol.NBIPXSessionSocket
+	NBIPXServerSocket    = protocol.NBIPXServerSocket
+	NBIPXNameQuerySocket = protocol.NBIPXNameQuerySocket
+	NBIPXDatagramSocket  = protocol.NBIPXDatagramSocket
+	NBIPXNameSocket      = protocol.NBIPXNameSocket
 )
 
 // DatagramSender is the IPX datagram egress the NBIPX engine drives: fill source
@@ -257,21 +253,13 @@ func (e *ipxSessionEngine) handlePEP(d *ipxproto.Datagram) {
 		// exists) is a NetBIOS session request; anything else is an SMB message on an
 		// open circuit. (ERRATA captures/ipx.pcap: there is no distinct SESSION.INIT
 		// stream type — establishment rides DATA with the 0xFFFF sentinel.)
-		if hdr.DestConnID == nbipxUnassignedConnID {
+		if hdr.DestConnID == protocol.NBIPXUnassignedConnID {
 			e.handleSessionRequest(d, hdr)
 			return
 		}
 		e.handleData(d, hdr)
 	}
 }
-
-// nbipxUnassignedConnID is the DestConnID sentinel a client puts in its NetBIOS
-// session-request DATA frame before the server has assigned a connection id.
-const nbipxUnassignedConnID uint16 = 0xFFFF
-
-// nbipxSessionRequestNameLen is the two 16-byte NetBIOS names (called + calling)
-// that prefix a session-request / session-accept DATA payload on the wire.
-const nbipxSessionRequestNameLen = 2 * protocol.NameLength
 
 // keyFor builds the circuit key from an inbound datagram + its session header. The
 // remote's SourceConnID identifies the circuit within the peer's address.
@@ -285,19 +273,32 @@ func keyFor(d *ipxproto.Datagram, hdr *protocol.NBIPXSessionHeader) ipxCircuitKe
 // a local connection ID, opens the circuit keyed by the peer's address +
 // SourceConnID, and replies with a DATA frame that assigns our ID (SourceConnID) and
 // echoes the client's (DestConnID), swapping the two names (the wire's session-accept
-// form: [calling || called || trailer]). A repeated request for a still-unused
-// circuit re-accepts with the same local ID (idempotent retransmit handling). A
-// request that collides with a circuit that has already carried data is a reconnect:
-// the old circuit is torn down and a fresh one accepted (clients reuse SourceConnID
-// 0x0001 across Dial, and Close does not send SESSION_END).
+// form: [calling || called || trailer]). A request whose called-name is not one of
+// ours is ignored (same rule as Find-name): a broadcast SESSION_INITIALIZE for a
+// neighbour must not be stolen. A repeated request for a still-unused circuit
+// re-accepts with the same local ID (idempotent retransmit handling). A request that
+// collides with a circuit that has already carried data is a reconnect: the old
+// circuit is torn down and a fresh one accepted (clients reuse SourceConnID 0x0001
+// across Dial, and Close does not send SESSION_END).
 func (e *ipxSessionEngine) handleSessionRequest(d *ipxproto.Datagram, hdr *protocol.NBIPXSessionHeader) {
-	if len(d.Payload) < protocol.NBIPXSessionHeaderLen+nbipxSessionRequestNameLen {
+	if len(d.Payload) < protocol.NBIPXSessionHeaderLen {
 		return
 	}
-	names := d.Payload[protocol.NBIPXSessionHeaderLen : protocol.NBIPXSessionHeaderLen+nbipxSessionRequestNameLen]
-	called := names[:protocol.NameLength]
-	calling := names[protocol.NameLength:]
-	trailer := d.Payload[protocol.NBIPXSessionHeaderLen+nbipxSessionRequestNameLen:]
+	// [SOURCE][DESTINATION][trailer] — see the ERRATA on protocol.NBIPXSessionRequest
+	// for why the order is the caller first and what inverting it cost.
+	req, err := protocol.DecodeSessionRequest(d.Payload[protocol.NBIPXSessionHeaderLen:])
+	if err != nil {
+		return
+	}
+
+	// A SESSION_INITIALIZE names the *called* server in its DESTINATION slot. An
+	// in-process Finder client on this same pcap station used to have its WIN98-1
+	// call accepted here (we ignored the called name), so NetShareEnum ran against
+	// CLASSICSTACK and returned only IPC$ (captures/ipx.pcap frames 768–781).
+	if !e.ownsName(req.Destination) {
+		e.logf("NBIPX session-request ignored (not our name) " + req.Destination.String())
+		return
+	}
 
 	key := keyFor(d, hdr)
 	e.mu.Lock()
@@ -327,12 +328,10 @@ func (e *ipxSessionEngine) handleSessionRequest(d *ipxproto.Datagram, hdr *proto
 		stale.Close()
 	}
 
-	// Session-accept payload: swap the called/calling names, preserve the trailer.
-	accept := make([]byte, 0, nbipxSessionRequestNameLen+len(trailer))
-	accept = append(accept, calling...)
-	accept = append(accept, called...)
-	accept = append(accept, trailer...)
-	e.sendSessionAccept(d, hdr, localID, sendSeq, recvSeq, accept)
+	// Session-accept payload: swap the pair so WE are the source again — [our called
+	// name][the caller's name] — preserving the trailer verbatim (golden capture
+	// frame 66).
+	e.sendSessionAccept(d, hdr, localID, sendSeq, recvSeq, req.Accept().Encode())
 	e.logf("NBIPX circuit established")
 }
 
@@ -524,12 +523,12 @@ func (e *ipxSessionEngine) sendControl(in *ipxproto.Datagram, inHdr *protocol.NB
 	e.send(in, protocol.EncodeSessionHeader(h), "session-control")
 }
 
-// nbipxMaxFrameData is the most message data one DATA frame carries: an Ethernet II
-// payload (1500) less the IPX header (30) and the NB-IPX session header (18). A
-// response larger than this is fragmented across frames via TotalDataLen/Offset/
-// DataLen with EOM set only on the last — the receive side of the same scheme
-// handleData's c.frag path already reassembles.
-const nbipxMaxFrameData = 1500 - 30 - protocol.NBIPXSessionHeaderLen
+// nbipxMaxFrameData is the most message data one DATA frame carries. A response
+// larger than this is fragmented across frames via TotalDataLen/Offset/DataLen with
+// EOM set only on the last — the receive side of the same scheme handleData's c.frag
+// path already reassembles. The boundary is shared with the NB-IPX client transport
+// (client/smb/nbipx.go), so it is defined once in the protocol ring.
+const nbipxMaxFrameData = protocol.NBIPXMaxFrameData
 
 // nbipxRecvWindow is the receive window we advertise in the BytesReceived field
 // of every session frame we send: BytesReceived = RecvSeq + window, the highest
@@ -683,8 +682,9 @@ func (e *ipxSessionEngine) send(in *ipxproto.Datagram, body []byte, reason strin
 }
 
 // ipxBroadcastNode is the IPX node-ID broadcast address (all-ones); a browser
-// group datagram fans to it. Defined locally so the engine needs no router import.
-var ipxBroadcastNode = [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
+// group datagram fans to it. The value lives in the IPX protocol codec, which every
+// IPX-carried transport (and the client mirrors) shares.
+var ipxBroadcastNode = ipxproto.BroadcastNode
 
 // handleNMPIPayload decodes an NMPI packet on the name-query (0x0551) or datagram
 // (0x0553) socket and dispatches it, reporting true when it consumed the datagram.
@@ -1019,6 +1019,13 @@ func (e *ipxSessionEngine) emitDatagram(d Datagram) error {
 		if r.Socket != ([2]byte{}) {
 			out.DstSock = r.Socket
 		}
+		// A DIRECTED answer switches IPX packet type: the fan-out half of a browser
+		// exchange is type 20 (NetBIOS broadcast/forwarding, so routers propagate it),
+		// but the master's unicast reply to the one station that asked goes out as type
+		// 4 (PEP) — golden spec/captures/nbipx-win98.pcap frame 60 and
+		// nwlink-win98.pcap frame 41, both "Get Backup List Response" on socket 0x0553.
+		// It needs no broadcast forwarding, so it does not claim the type that requests it.
+		out.Type = protocol.IPXTypePEP
 	}
 	return e.sender.Send(out)
 }

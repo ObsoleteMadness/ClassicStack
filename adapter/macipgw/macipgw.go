@@ -122,7 +122,9 @@ func New(cfg Config, ownsIP func(macip.IPv4) bool, log *slog.Logger) (*Egress, e
 			return nil, fmt.Errorf("macipgw: open %s: %w", cfg.Interface, err)
 		}
 		if ff, ok := fl.(link.FilterableLink); ok && ipNet != nil {
-			if err := ff.SetFilter(macipBPFFilter(ipNet, cfg.DHCPRelay)); err != nil {
+			var macArr [6]byte
+			copy(macArr[:], mac)
+			if err := ff.SetFilter(macipBPFFilter(ipNet, cfg.DHCPRelay, macArr)); err != nil {
 				log.Warn("macipgw: BPF filter rejected; capturing unfiltered", "err", err)
 			}
 		}
@@ -357,10 +359,16 @@ func toIPv4(ip net.IP) macip.IPv4 {
 
 // macipBPFFilter is the kernel-side capture filter for the IP-side link: ARP plus
 // subnet-destined IP, and DHCP replies (UDP dst 68) when relaying. Mirrors the legacy
-// macipBPFFilter.
-func macipBPFFilter(ipNet *net.IPNet, dhcpMode bool) string {
+// macipBPFFilter. mac (the gateway's own IP-side Ethernet address, cfg.HostMAC) is folded
+// in via pcap.ExcludeSelf so the kernel drops this gateway's own transmitted frames
+// instead of relying solely on etherIPLink's software self-check (readLoop's ourMAC
+// comparison, kept as a fallback for when the kernel filter is rejected).
+func macipBPFFilter(ipNet *net.IPNet, dhcpMode bool, mac [6]byte) string {
+	var base string
 	if dhcpMode {
-		return "(arp) or (ip) or (udp dst port 68)"
+		base = "(arp) or (ip) or (udp dst port 68)"
+	} else {
+		base = fmt.Sprintf("(arp) or (dst net %s)", ipNet.String())
 	}
-	return fmt.Sprintf("(arp) or (dst net %s)", ipNet.String())
+	return pcap.ExcludeSelf(base, mac)
 }

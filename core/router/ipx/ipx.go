@@ -24,7 +24,7 @@ import (
 
 // BroadcastNode is the IPX node-ID broadcast address (all-ones), used for SAP, RIP, and
 // NetBIOS-over-IPX name claims.
-var BroadcastNode = [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
+var BroadcastNode = protocol.BroadcastNode
 
 // InternalNode is the node ID of the server on its internal network. NetWare's internal
 // network always hosts the server at node 00-00-00-00-00-01 (mars_nwe nwserv.c: node

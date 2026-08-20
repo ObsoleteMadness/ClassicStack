@@ -24,11 +24,32 @@ import (
 // third-party client enumerates a legacy segment by embedding this package rather than
 // re-deriving the browser wire format.
 
-// browseGroupName is the NetBIOS destination a browser AnnouncementRequest / announcement
-// targets: the workgroup group name at the browser suffix. The AnnouncementRequest is
-// broadcast to every browser on the segment, so the exact workgroup label is not
-// load-bearing for soliciting a re-announce; "*" with the group suffix reaches all.
+// browseGroupName is the NetBIOS destination an NBF browser AnnouncementRequest /
+// announcement targets: the workgroup group name at the browser suffix. Over NBF the
+// AnnouncementRequest is broadcast to every browser on the segment, so the exact
+// workgroup label is not load-bearing for soliciting a re-announce; "*" with the group
+// suffix reaches all. The IPX datagram plane does NOT accept this name — see
+// Conn.browseFanoutName.
 var browseGroupName = nb.NewName("*", nb.NameTypeGroup)
+
+// browseFanoutName is the destination NetBIOS name a browser datagram fans out to on
+// this carrier.
+//
+// NBF keeps the wildcard group name above. The NWLink IPX datagram plane does not: every
+// golden fan-out browser datagram on socket 0x0553 — host announcement, local-master
+// announcement, AnnouncementRequest, election, GetBackupList request — is addressed to
+// <workgroup><00>, the workgroup name each station registers at the workstation suffix
+// (spec/captures/nbipx-win98.pcap frames 16/19/48/58, nwlink-win98.pcap frames
+// 1/7/13/26-40; the "Check name WORKGROUP<00>" registrations are frames 2/9/11/14).
+// Neither "*"<1E> nor <workgroup><1D> is ever seen there, and neither draws an answer
+// from a live Win98/NT segment: a sweep sending them saw zero replies from four active
+// NBIPX stations, which is why an NBIPX browse came back empty while NBF worked.
+func (c *Conn) browseFanoutName(workgroup string) nb.Name {
+	if ipxFamily(c.proto) {
+		return nb.NewName(workgroupOrDefault(workgroup), nb.NameTypeWorkstation)
+	}
+	return browseGroupName
+}
 
 // Host is one discovered NetBIOS host: where it was seen (which carrier + protocol
 // address), what it announced (name, OS/browser versions, comment), and its browser role.
@@ -50,8 +71,8 @@ type Host struct {
 // solicits rather than only sniffing, a short window catches the active machines instead
 // of waiting for each host's periodic (~12-minute) timer — the difference between an
 // active "net view" and a passive listener.
-func (c *Conn) Browse(window time.Duration) ([]Host, error) {
-	if err := c.solicit(); err != nil {
+func (c *Conn) Browse(workgroup string, window time.Duration) ([]Host, error) {
+	if err := c.solicit(workgroup); err != nil {
 		return nil, err
 	}
 	hosts := map[string]*Host{}
@@ -72,10 +93,12 @@ func (c *Conn) Browse(window time.Duration) ([]Host, error) {
 }
 
 // solicit broadcasts a browser AnnouncementRequest so every listening browser re-announces
-// itself now.
-func (c *Conn) solicit() error {
-	dtracef("%s browser AnnouncementRequest (solicit re-announce)", c.proto)
-	return c.SendMailslot(mailslotproto.NameBrowse, browseGroupName, c.announcementRequestBody(), true)
+// itself now. workgroup names the domain to fan out to ("" uses the blind default); it is
+// load-bearing on the IPX carriers, whose fan-out name is <workgroup><00>.
+func (c *Conn) solicit(workgroup string) error {
+	dst := c.browseFanoutName(workgroup)
+	dtracef("%s browser AnnouncementRequest → %s (solicit re-announce)", c.proto, dst.String())
+	return c.SendMailslot(mailslotproto.NameBrowse, dst, c.announcementRequestBody(), true)
 }
 
 // announcementRequestBody builds the browser AnnouncementRequest with our station's computer
@@ -115,10 +138,10 @@ func (c *Conn) browserDatagram(frame []byte) ([]byte, string) {
 	if len(frame) < ethHdrLen {
 		return nil, ""
 	}
-	switch c.proto {
-	case NBF:
+	switch {
+	case c.proto == NBF:
 		return c.decodeNBFDatagram(frame)
-	case NBIPX:
+	case ipxFamily(c.proto):
 		return c.decodeNBIPXDatagram(frame)
 	}
 	return nil, ""
@@ -141,15 +164,25 @@ func (c *Conn) decodeNBFDatagram(frame []byte) ([]byte, string) {
 	return f.Payload, macString(srcMAC)
 }
 
-// decodeNBIPXDatagram decodes an IPX type-20 NMPI MailslotSend frame to its mailslot
-// payload. The IPX source net.node is the printable address.
+// decodeNBIPXDatagram decodes an NMPI MailslotSend frame on the NB-IPX datagram socket
+// (0x0553) to its mailslot payload. The IPX source net.node is the printable address.
+//
+// BOTH IPX packet types are accepted, because a browser exchange uses both: the fan-out
+// half (Host/LocalMaster announcements, AnnouncementRequest, election, GetBackupList
+// request) is type 20 / IPXTypeNetBIOS broadcast, but the master's UNICAST answer comes
+// back as type 4 / IPXTypePEP — golden spec/captures/nbipx-win98.pcap frame 60 and
+// nwlink-win98.pcap frame 41 are both "Get Backup List Response", type 0x04, socket
+// 0x0553. Accepting only type 20 dropped exactly the frame that names the master, which
+// is why an NBIPX FindMaster silently returned nothing while NBF (whose reply rides the
+// same UI datagram as the request) worked. The socket check replaces the type as the
+// discriminator that keeps session/name-service IPX traffic out of the browser decode.
 func (c *Conn) decodeNBIPXDatagram(frame []byte) ([]byte, string) {
 	etherType := uint16(frame[12])<<8 | uint16(frame[13])
 	if etherType != etherTypeIPX {
 		return nil, ""
 	}
 	d, err := ipxproto.Decode(frame[ethHdrLen:])
-	if err != nil || d.Type != ipxNetBIOSTyp {
+	if err != nil || (d.Type != ipxNetBIOSTyp && d.Type != ipxPEPTyp) || d.SrcSock != nbDatagramSocket {
 		return nil, ""
 	}
 	nmpi, err := nb.DecodeNMPIPacket(d.Payload)

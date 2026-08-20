@@ -32,9 +32,12 @@ func init() {
 		// membership — that lands when the IPX mini-router itself joins compose). A
 		// nil opener (no NIC backend) yields the inert-but-configured form.
 		iface := ctx.Model.EffectiveInterfaceFor(sec)
-		open := nicLinkOpener(ctx, sec, iface, ipx.BPFFilter)
 		// An empty section mac inherits the bound interface's hw_address so IPX frames
-		// carry a real Ethernet source (else they go out as 00:00:00:00:00:00).
-		return ipx.NewInstanceFromOpener(sec, open, sectionMACFor(ctx, sec, iface), logger)
+		// carry a real Ethernet source (else they go out as 00:00:00:00:00:00). The
+		// resolved mac also excludes this instance's own transmitted frames from the
+		// capture at the kernel (nicLinkOpener).
+		mac := sectionMACFor(ctx, sec, iface)
+		open := nicLinkOpener(ctx, sec, iface, ipx.BPFFilter, mac)
+		return ipx.NewInstanceFromOpener(sec, open, mac, logger)
 	})
 }

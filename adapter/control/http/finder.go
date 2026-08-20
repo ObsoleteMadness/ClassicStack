@@ -212,13 +212,11 @@ func (s *Server) handleFinderLookup(w http.ResponseWriter, r *http.Request) {
 	if f == nil {
 		return
 	}
-	sess := r.URL.Query().Get("session")
-	parent, err := strconv.ParseUint(r.URL.Query().Get("parent"), 10, 32)
-	if err != nil || sess == "" {
-		writeJSONError(w, http.StatusBadRequest, "session and parent required")
+	sess, parent, ok := parentRefQuery(w, r)
+	if !ok {
 		return
 	}
-	n, err := f.Lookup(sess, uint32(parent), r.URL.Query().Get("name"))
+	n, err := f.Lookup(sess, parent, r.URL.Query().Get("name"))
 	if err != nil {
 		writeFinderErr(w, err)
 		return
@@ -236,15 +234,21 @@ func (s *Server) handleFinderMkdir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		SessionID string `json:"sessionId"`
-		Parent    uint32 `json:"parentId"`
-		Name      string `json:"name"`
+		SessionID  string          `json:"sessionId"`
+		Parent     json.RawMessage `json:"parentId"`
+		ParentPath *string         `json:"parentPath"`
+		Name       string          `json:"name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	n, err := f.Mkdir(req.SessionID, req.Parent, req.Name)
+	parent, err := parseBodyRef(req.Parent, req.ParentPath)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "parentId or parentPath required (not both)")
+		return
+	}
+	n, err := f.Mkdir(req.SessionID, parent, req.Name)
 	if err != nil {
 		writeFinderErr(w, err)
 		return
@@ -262,18 +266,24 @@ func (s *Server) handleFinderCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		SessionID  string `json:"sessionId"`
-		Parent     uint32 `json:"parentId"`
-		Name       string `json:"name"`
-		Data       []byte `json:"data"`
-		Resource   []byte `json:"resource"`
-		FinderInfo []byte `json:"finderInfo"`
+		SessionID  string          `json:"sessionId"`
+		Parent     json.RawMessage `json:"parentId"`
+		ParentPath *string         `json:"parentPath"`
+		Name       string          `json:"name"`
+		Data       []byte          `json:"data"`
+		Resource   []byte          `json:"resource"`
+		FinderInfo []byte          `json:"finderInfo"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	n, err := f.CreateFile(req.SessionID, req.Parent, req.Name, req.Data, req.Resource, req.FinderInfo)
+	parent, err := parseBodyRef(req.Parent, req.ParentPath)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "parentId or parentPath required (not both)")
+		return
+	}
+	n, err := f.CreateFile(req.SessionID, parent, req.Name, req.Data, req.Resource, req.FinderInfo)
 	if err != nil {
 		writeFinderErr(w, err)
 		return
@@ -291,15 +301,21 @@ func (s *Server) handleFinderRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		SessionID string `json:"sessionId"`
-		ID        uint32 `json:"id"`
-		Name      string `json:"name"`
+		SessionID string          `json:"sessionId"`
+		ID        json.RawMessage `json:"id"`
+		Path      *string         `json:"path"`
+		Name      string          `json:"name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := f.Rename(req.SessionID, req.ID, req.Name); err != nil {
+	ref, err := parseBodyRef(req.ID, req.Path)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "id or path required (not both)")
+		return
+	}
+	if err := f.Rename(req.SessionID, ref, req.Name); err != nil {
 		writeFinderErr(w, err)
 		return
 	}
@@ -328,15 +344,27 @@ func (s *Server) handleFinderMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		SessionID string `json:"sessionId"`
-		ID        uint32 `json:"id"`
-		Parent    uint32 `json:"parentId"`
+		SessionID  string          `json:"sessionId"`
+		ID         json.RawMessage `json:"id"`
+		Path       *string         `json:"path"`
+		Parent     json.RawMessage `json:"parentId"`
+		ParentPath *string         `json:"parentPath"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := f.Move(req.SessionID, req.ID, req.Parent); err != nil {
+	ref, err := parseBodyRef(req.ID, req.Path)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "id or path required (not both)")
+		return
+	}
+	parent, err := parseBodyRef(req.Parent, req.ParentPath)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "parentId or parentPath required (not both)")
+		return
+	}
+	if err := f.Move(req.SessionID, ref, parent); err != nil {
 		writeFinderErr(w, err)
 		return
 	}
@@ -467,14 +495,20 @@ func (s *Server) handleFinderRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		SessionID string `json:"sessionId"`
-		ID        uint32 `json:"id"`
+		SessionID string          `json:"sessionId"`
+		ID        json.RawMessage `json:"id"`
+		Path      *string         `json:"path"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := f.Remove(req.SessionID, req.ID); err != nil {
+	ref, err := parseBodyRef(req.ID, req.Path)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "id or path required (not both)")
+		return
+	}
+	if err := f.Remove(req.SessionID, ref); err != nil {
 		writeFinderErr(w, err)
 		return
 	}
@@ -487,10 +521,8 @@ func (s *Server) handleFinderFork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	sess := q.Get("session")
-	id, err := strconv.ParseUint(q.Get("id"), 10, 32)
-	if err != nil || sess == "" {
-		writeJSONError(w, http.StatusBadRequest, "session and id required")
+	sess, ref, ok := sessionRefQuery(w, r)
+	if !ok {
 		return
 	}
 	resource := q.Get("fork") == "resource"
@@ -499,7 +531,6 @@ func (s *Server) handleFinderFork(w http.ResponseWriter, r *http.Request) {
 		off, _ := strconv.ParseInt(q.Get("off"), 10, 64)
 		length, _ := strconv.ParseInt(q.Get("len"), 10, 64)
 		if rng := r.Header.Get("Range"); rng != "" {
-			// bytes=start-end
 			if _, rest, ok := strings.Cut(rng, "="); ok {
 				start, end, _ := strings.Cut(rest, "-")
 				off, _ = strconv.ParseInt(start, 10, 64)
@@ -510,7 +541,7 @@ func (s *Server) handleFinderFork(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		data, err := f.ReadFork(sess, uint32(id), resource, off, length)
+		data, err := f.ReadFork(sess, ref, resource, off, length)
 		if err != nil {
 			writeFinderErr(w, err)
 			return
@@ -524,7 +555,7 @@ func (s *Server) handleFinderFork(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if err := f.WriteFork(sess, uint32(id), resource, off, body); err != nil {
+		if err := f.WriteFork(sess, ref, resource, off, body); err != nil {
 			writeFinderErr(w, err)
 			return
 		}
@@ -544,19 +575,100 @@ func (s *Server) handleFinderFinderInfo(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var req struct {
-		SessionID  string `json:"sessionId"`
-		ID         uint32 `json:"id"`
-		FinderInfo []byte `json:"finderInfo"`
+		SessionID  string          `json:"sessionId"`
+		ID         json.RawMessage `json:"id"`
+		Path       *string         `json:"path"`
+		FinderInfo []byte          `json:"finderInfo"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := f.WriteFinderInfo(req.SessionID, req.ID, req.FinderInfo); err != nil {
+	ref, err := parseBodyRef(req.ID, req.Path)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "id or path required (not both)")
+		return
+	}
+	if err := f.WriteFinderInfo(req.SessionID, ref, req.FinderInfo); err != nil {
 		writeFinderErr(w, err)
 		return
 	}
 	writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleFinderAttrs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodPut {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	f := s.requireFinder(w)
+	if f == nil {
+		return
+	}
+	var req struct {
+		SessionID string          `json:"sessionId"`
+		ID        json.RawMessage `json:"id"`
+		Path      *string         `json:"path"`
+		Attrs     map[string]bool `json:"attrs"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ref, err := parseBodyRef(req.ID, req.Path)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "id or path required (not both)")
+		return
+	}
+	if err := f.WriteAttrs(req.SessionID, ref, req.Attrs); err != nil {
+		writeFinderErr(w, err)
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleFinderResolve(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	f := s.requireFinder(w)
+	if f == nil {
+		return
+	}
+	sess := r.URL.Query().Get("session")
+	path := r.URL.Query().Get("path")
+	if sess == "" {
+		writeJSONError(w, http.StatusBadRequest, "session required")
+		return
+	}
+	n, err := f.ResolvePath(sess, path)
+	if err != nil {
+		writeFinderErr(w, err)
+		return
+	}
+	writeJSON(w, n)
+}
+
+func (s *Server) handleFinderPath(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	f := s.requireFinder(w)
+	if f == nil {
+		return
+	}
+	sess, ref, ok := sessionRefQuery(w, r)
+	if !ok {
+		return
+	}
+	path, err := f.PathOf(sess, ref)
+	if err != nil {
+		writeFinderErr(w, err)
+		return
+	}
+	writeJSON(w, map[string]string{"path": path})
 }
 
 func (s *Server) handleFinderMount(w http.ResponseWriter, r *http.Request) {
@@ -594,21 +706,80 @@ func (s *Server) handleFinderMount(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func sessionNodeQuery(w http.ResponseWriter, r *http.Request) (string, uint32, bool) {
+func sessionRefQuery(w http.ResponseWriter, r *http.Request) (string, finder.NodeRef, bool) {
 	sess := r.URL.Query().Get("session")
-	raw := r.URL.Query().Get("id")
-	id, err := strconv.ParseUint(raw, 10, 32)
-	if err != nil || sess == "" {
-		writeJSONError(w, http.StatusBadRequest, "session and id required")
-		return "", 0, false
+	if sess == "" {
+		writeJSONError(w, http.StatusBadRequest, "session required")
+		return "", finder.NodeRef{}, false
 	}
-	return sess, uint32(id), true
+	q := r.URL.Query()
+	_, hasID := q["id"]
+	_, hasPath := q["path"]
+	if hasID == hasPath {
+		writeJSONError(w, http.StatusBadRequest, "id or path required (not both)")
+		return "", finder.NodeRef{}, false
+	}
+	if hasPath {
+		return sess, finder.PathRef(q.Get("path")), true
+	}
+	id, err := strconv.ParseUint(q.Get("id"), 10, 32)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid id")
+		return "", finder.NodeRef{}, false
+	}
+	return sess, finder.CNIDRef(uint32(id)), true
+}
+
+func sessionNodeQuery(w http.ResponseWriter, r *http.Request) (string, finder.NodeRef, bool) {
+	return sessionRefQuery(w, r)
+}
+
+func parentRefQuery(w http.ResponseWriter, r *http.Request) (string, finder.NodeRef, bool) {
+	sess := r.URL.Query().Get("session")
+	if sess == "" {
+		writeJSONError(w, http.StatusBadRequest, "session required")
+		return "", finder.NodeRef{}, false
+	}
+	q := r.URL.Query()
+	_, hasID := q["parent"]
+	_, hasPath := q["parentPath"]
+	if hasID == hasPath {
+		writeJSONError(w, http.StatusBadRequest, "parent or parentPath required (not both)")
+		return "", finder.NodeRef{}, false
+	}
+	if hasPath {
+		return sess, finder.PathRef(q.Get("parentPath")), true
+	}
+	id, err := strconv.ParseUint(q.Get("parent"), 10, 32)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid parent")
+		return "", finder.NodeRef{}, false
+	}
+	return sess, finder.CNIDRef(uint32(id)), true
+}
+
+func parseBodyRef(idRaw json.RawMessage, path *string) (finder.NodeRef, error) {
+	hasPath := path != nil
+	hasID := len(idRaw) > 0 && string(idRaw) != "null"
+	if hasPath == hasID {
+		return finder.NodeRef{}, finder.ErrBadRef
+	}
+	if hasPath {
+		return finder.PathRef(*path), nil
+	}
+	var id uint32
+	if err := json.Unmarshal(idRaw, &id); err != nil {
+		return finder.NodeRef{}, err
+	}
+	return finder.CNIDRef(id), nil
 }
 
 func writeFinderErr(w http.ResponseWriter, err error) {
 	code := http.StatusInternalServerError
 	if errors.Is(err, finder.ErrNotFound) {
 		code = http.StatusNotFound
+	} else if errors.Is(err, finder.ErrBadRef) {
+		code = http.StatusBadRequest
 	} else if errors.Is(err, finder.ErrReadOnly) {
 		code = http.StatusForbidden
 	} else if errors.Is(err, finder.ErrMountUnavailable) {
