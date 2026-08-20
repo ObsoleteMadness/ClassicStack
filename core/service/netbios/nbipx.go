@@ -539,8 +539,10 @@ const nbipxMaxFrameData = protocol.NBIPXMaxFrameData
 // clients ignore the field entirely. 5 mirrors NT's own advertisement (its accept
 // carries RecvSeq 1 + 5 = 6, then 7/8/9/10 as it consumes frames; ipx.pcap
 // 2026-07-10 frames 488-509). We serve every message as it arrives, so the
-// window never actually closes.
-const nbipxRecvWindow = 5
+// window never actually closes. It is the shared protocol-ring constant, so both
+// directions advertise the same edge by construction (the NB-IPX client transport
+// in client/smb/nbipx.go uses it too).
+const nbipxRecvWindow = protocol.NBIPXRecvWindow
 
 // sendData sends a reassembled response back as sequenced DATA (0x06) frames, EOM
 // on the last, allocating one SendSeq per frame from the circuit and retaining the

@@ -141,6 +141,25 @@ const (
 // with NBIPXConnFlagCONFIRM before it will send its first SMB frame.
 const NBIPXSessionAcceptRecvSeq uint16 = 1
 
+// NBIPXRecvWindow is the receive window both directions advertise in the
+// BytesReceived field: BytesReceived = RecvSeq + NBIPXRecvWindow, the highest peer
+// SendSeq we will accept plus one (the "window edge"; see the BytesReceived rule on
+// NBIPXSessionHeader). Ground truth is the NT 3.51 station in golden capture
+// spec/captures/nbipx-nt351-win98.pcap, which advertises RecvSeq+5 on every frame
+// after the handshake — its accept carries RecvSeq 1 / BytesReceived 6 (frame 160),
+// its data frames 75/80 (frame 422), its SYS|ACK probes 7/12 and 27/32. Both
+// directions of the session use it, so it lives in the protocol ring rather than in
+// a private copy per side.
+const NBIPXRecvWindow uint16 = 5
+
+// NBIPXInitRecvWindow is the BytesReceived a client advertises on its
+// SESSION_INITIALIZE, before any peer frame has been sequenced: RecvSeq (0) + 1,
+// because the only frame it will accept next is the accept itself (SendSeq 0).
+// Ground truth: nbipx-nt351-win98.pcap frames 159/170/246, RecvSeq 0 /
+// BytesReceived 1. (A Win98 peer sends 0 here and ignores the field entirely —
+// nbipx-win98.pcap frame 65 — so NT's value is the interoperable one.)
+const NBIPXInitRecvWindow uint16 = 1
+
 // NBIPXSessionHeaderLen is the wire length of NBIPXSessionHeader.
 //
 // ERRATA (captures/ipx.pcap): the on-wire session header is 18 bytes, not the 16
@@ -332,6 +351,20 @@ const (
 	NMPINameTypeWorkgroup uint8 = 0x02
 	NMPINameTypeBrowser   uint8 = 0x03
 )
+
+// NBIPXNameServiceDataStreamTypeOffset is where DecodeNameService reads DataStreamType
+// from: past the 8 WAN-router slots and the NameTypeFlag byte.
+//
+// It is exported because it is a HAZARD, not a convenience. Name-service and session
+// traffic share IPX type 4 on NBIPXSessionSocket, so a receiver must decide which it
+// holds before decoding — and on a session DATA frame this offset lands on ordinary
+// payload bytes (byte 15 after the 18-byte session header). A frame whose data happens
+// to carry NBIPXNameRecognized here parses as a perfectly valid name-service packet.
+// Classify by NBIPXNameServiceLen (a name-service packet is EXACTLY that long) before
+// calling DecodeNameService; do not let the decode result be the classifier. See the
+// ERRATA on the NB-IPX client transport's handleNameRecognized for the file-copy
+// disconnects this caused.
+const NBIPXNameServiceDataStreamTypeOffset = NBIPXWANRouterBytes + 1
 
 // NMPIPacket is the Name Management Protocol over IPX payload used by browser
 // mailslot and name-query traffic on sockets 0x0551/0x0553.

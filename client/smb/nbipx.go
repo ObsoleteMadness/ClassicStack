@@ -28,6 +28,33 @@ func nbipxtracef(format string, args ...any) {
 	nbipxTrace.Log0(log.Trace, fmt.Sprintf(format, args...))
 }
 
+// rxtracef narrates ONE inbound frame's fate in readLoop — dequeued from the link, and
+// then either handled or dropped with the reason. Unlike nbipxtracef it guards the
+// Enabled check at the call site via this method so the hot path allocates nothing when
+// tracing is off (readLoop runs per frame, thousands per second under a file copy).
+//
+// It exists to answer a question the wire capture cannot: captures/nbipx-disconnect2.pcap
+// shows the server sending the tail fragment of a 2852-byte response ten times over 4.5s
+// (frames 9091, 9093-9102, all SendSeq 3261 / offset 1440) with this transport accepting
+// none of them and acking none of them, while a byte-identical earlier tail (frame 9084)
+// was accepted normally. Frame accounting starts at t.fl.Read(), so the log distinguishes
+// "the frame never reached this transport" (delivery: the pcap handle, the uplink) from
+// "readLoop read it and a filter threw it away" (a state bug in this file).
+func (t *nbipxTransport) rxtracef(format string, args ...any) {
+	if !nbipxTrace.Enabled(log.Trace) {
+		return
+	}
+	nbipxTrace.Log0(log.Trace, fmt.Sprintf(format, args...))
+}
+
+// traceHdr renders an NB-IPX session header as one compact trace field set, in the same
+// order the wire carries them.
+func traceHdr(h *nb.NBIPXSessionHeader) string {
+	return fmt.Sprintf("cc=0x%02x type=0x%02x src=%d dst=%d sseq=%d tot=%d off=%d dlen=%d rseq=%d brcv=%d",
+		h.ConnCtrlFlag, h.DataStreamType, h.SourceConnID, h.DestConnID,
+		h.SendSeq, h.TotalDataLen, h.Offset, h.DataLen, h.RecvSeq, h.BytesReceived)
+}
+
 // nbipx.go is the SMB-over-NetBIOS-over-IPX (NWLink) CLIENT transport: the client
 // mirror of the server's core/service/netbios NB-IPX session engine. Unlike the
 // direct-hosted IPX transport (ipx.go), which rides SMB straight on IPX with no session
@@ -119,6 +146,12 @@ var nbipxInitTrailer = []byte{0xA0, 0x05, 0x25, 0x00, 0x0D, 0x00}
 // (or the accept) before giving up on a lost frame over the connectionless carrier.
 const nbipxRequestTimeout = 5 * time.Second
 
+// ErrNBIPXSessionEnded reports that the SERVER tore the virtual circuit down with a
+// SESSION_END — the circuit is gone and no further Send on this transport can succeed.
+// It is distinct from ErrTransportClosed (our own Close) so a caller can tell a
+// peer-initiated teardown from a local one and reconnect.
+var ErrNBIPXSessionEnded = errors.New("smb/nbipx: session ended by server")
+
 // nbipxEndTimeout bounds how long Close waits for SESSION_END_ACK. It is deliberately
 // short: the teardown is a courtesy to the peer (so it stops retransmitting on a dead
 // circuit), not something a caller should block on. The observed round trip is ~1ms
@@ -161,9 +194,15 @@ type nbipxTransport struct {
 	recognizedCh chan struct{} // closed-style signal: NAME_RECOGNIZED arrived
 	endAckCh     chan struct{} // closed-style signal: SESSION_END_ACK arrived
 	endAcked     bool          // guards the one-shot close of endAckCh
+	peerEndCh    chan struct{} // closed-style signal: the peer sent SESSION_END
+	peerEnded    bool          // guards the one-shot close of peerEndCh
 	respCh       chan []byte   // a fully reassembled SMB response message
 	stop         chan struct{}
 	closed       bool
+
+	// rxFrames counts every frame readLoop has taken off the link, before any
+	// filter. It is touched only by readLoop, so it needs no lock. See rxtracef.
+	rxFrames uint64
 
 	// skipLocate skips the Find-name phase in establish() — set when the caller
 	// already knows (typically via a local browser.Service that has seen the called
@@ -223,6 +262,7 @@ func DialNBIPXWithOpts(fl link.FrameLink, srcMAC [6]byte, serverName string, fra
 		acceptCh:        make(chan struct{}),
 		recognizedCh:    make(chan struct{}),
 		endAckCh:        make(chan struct{}),
+		peerEndCh:       make(chan struct{}),
 		respCh:          make(chan []byte, 2),
 		stop:            make(chan struct{}),
 		skipLocate:      opts.KnownServer,
@@ -359,6 +399,9 @@ func (t *nbipxTransport) sendInit() error {
 		TotalDataLen:   uint16(len(payload)),
 		DataLen:        uint16(len(payload)),
 		RecvSeq:        0,
+		// Window edge: the only peer frame we can accept next is the accept itself
+		// (SendSeq 0), so RecvSeq 0 + 1. See nb.NBIPXInitRecvWindow.
+		BytesReceived: nb.NBIPXInitRecvWindow,
 	}
 	// broadcast=false: unicast to the located holder, or broadcast if none.
 	return t.sendFrameTo(nb.EncodeSessionHeader(h), payload, false)
@@ -401,6 +444,10 @@ func (t *nbipxTransport) Send(req []byte) ([]byte, error) {
 		t.mu.Unlock()
 		return nil, ErrTransportClosed
 	}
+	if t.peerEnded {
+		t.mu.Unlock()
+		return nil, ErrNBIPXSessionEnded
+	}
 	if !t.established {
 		t.mu.Unlock()
 		return nil, errors.New("smb/nbipx: session not established")
@@ -431,6 +478,10 @@ func (t *nbipxTransport) Send(req []byte) ([]byte, error) {
 	select {
 	case resp := <-t.respCh:
 		return resp, nil
+	case <-t.peerEndCh:
+		// The server tore the circuit down mid-request: fail now rather than burn
+		// the full nbipxRequestTimeout waiting for a reply that cannot come.
+		return nil, ErrNBIPXSessionEnded
 	case <-time.After(nbipxRequestTimeout):
 		return nil, fmt.Errorf("smb/nbipx: no response within %s", nbipxRequestTimeout)
 	case <-t.stop:
@@ -439,8 +490,8 @@ func (t *nbipxTransport) Send(req []byte) ([]byte, error) {
 }
 
 // sendDataMessage frames req into one or more DATA frames numbered from firstSeq, EOM on
-// the last, stamping recvSeq as the cumulative ack and remoteID as the server's circuit
-// id.
+// the last, stamping recvSeq as the cumulative ack (and the matching window edge in
+// BytesReceived) and remoteID as the server's circuit id.
 func (t *nbipxTransport) sendDataMessage(req []byte, firstSeq, remoteID, recvSeq uint16) error {
 	total := uint16(len(req))
 	seq := firstSeq
@@ -464,6 +515,7 @@ func (t *nbipxTransport) sendDataMessage(req []byte, firstSeq, remoteID, recvSeq
 			Offset:         uint16(off),
 			DataLen:        uint16(n),
 			RecvSeq:        recvSeq,
+			BytesReceived:  recvSeq + nb.NBIPXRecvWindow,
 		}
 		if err := t.sendFrameTo(nb.EncodeSessionHeader(h), req[off:off+n], false); err != nil {
 			return err
@@ -517,8 +569,9 @@ func (t *nbipxTransport) sendFrameTo(header, body []byte, broadcast bool) error 
 
 // readLoop reads frames, strips the encapsulation, decodes the NB-IPX session header,
 // and drives the client state machine: it accepts the session (learning the server node
-// + connection id), reassembles DATA responses by EOM, and answers a server SYS|ACK
-// probe. It ignores frames for other circuits.
+// + connection id), reassembles DATA responses by EOM, answers any frame that requests
+// an acknowledgement (sendSystemAck), and services a peer SESSION_END (handlePeerEnd).
+// It ignores frames for other circuits.
 func (t *nbipxTransport) readLoop() {
 	for {
 		frame, err := t.fl.Read()
@@ -531,38 +584,62 @@ func (t *nbipxTransport) readLoop() {
 					continue
 				}
 			}
+			t.rxtracef("read loop exiting: %v", err)
 			return
 		}
+		// Frame accounting starts at the link, BEFORE every filter below, so a
+		// -vv trace distinguishes "the frame never reached this transport" from
+		// "this transport read it and threw it away" — see rxtracef.
+		t.rxFrames++
+		t.rxtracef("rx#%d %d bytes from link", t.rxFrames, len(frame))
+
 		payload, frameType, ok := ipxport.Strip(frame)
 		if !ok {
+			t.rxtracef("rx#%d DROP: not an IPX encapsulation", t.rxFrames)
 			continue
 		}
 		var srcMAC [6]byte
 		copy(srcMAC[:], frame[6:12]) // Ethernet source = L2 next hop to the server
 		d, err := ipxproto.Decode(payload)
-		if err != nil || d.DstSock != nbipxSessionSocket {
+		if err != nil {
+			t.rxtracef("rx#%d DROP: IPX decode (%d bytes): %v", t.rxFrames, len(payload), err)
+			continue
+		}
+		if d.DstSock != nbipxSessionSocket {
+			t.rxtracef("rx#%d DROP: socket 0x%02x%02x, want NB-IPX session", t.rxFrames, d.DstSock[0], d.DstSock[1])
 			continue
 		}
 		if d.DstNode != t.srcMAC { // not addressed to our virtual station
+			t.rxtracef("rx#%d DROP: node %s, want our station %s", t.rxFrames, macTrace(d.DstNode), macTrace(t.srcMAC))
 			continue
 		}
 		if d.Type != nb.IPXTypePEP {
+			t.rxtracef("rx#%d DROP: IPX type 0x%02x, want PEP", t.rxFrames, d.Type)
 			continue // session + name-service traffic both ride PEP (type 4)
 		}
 		if t.handleNameRecognized(d, srcMAC, frameType) {
+			t.rxtracef("rx#%d name-service reply", t.rxFrames)
 			continue
 		}
 		hdr, err := nb.DecodeSessionHeader(d.Payload)
 		if err != nil {
+			t.rxtracef("rx#%d DROP: session header (%d bytes): %v", t.rxFrames, len(d.Payload), err)
 			continue
 		}
+		t.rxtracef("rx#%d %s", t.rxFrames, traceHdr(hdr))
 		// Only frames on our circuit: the server stamps our SourceConnID as DestConnID.
 		if hdr.DestConnID != t.localConnID {
+			t.rxtracef("rx#%d DROP: DestConnID %d, our circuit is %d", t.rxFrames, hdr.DestConnID, t.localConnID)
 			continue
 		}
 		// SESSION_END_ACK (0x08) closes out our teardown — see Close.
 		if hdr.DataStreamType == nb.NBIPXSessionEndAck {
 			t.signalEndAck()
+			continue
+		}
+		// SESSION_END (0x07): the server is tearing the circuit down under us.
+		if hdr.DataStreamType == nb.NBIPXSessionEnd {
+			t.handlePeerEnd(hdr)
 			continue
 		}
 		if hdr.DataStreamType != nb.NBIPXSessionData {
@@ -575,7 +652,39 @@ func (t *nbipxTransport) readLoop() {
 // handleNameRecognized records the server node from a type-4 NAME_RECOGNIZED for
 // our called name. It returns true when the datagram was a name-service reply
 // (so the session path must not parse it as DATA).
+//
+// It must first decide whether the datagram is a name-service packet AT ALL, and that
+// cannot be left to nb.DecodeNameService: session traffic and name-service traffic share
+// IPX type 4 on one socket, and the decoder reads DataStreamType from payload byte 33 —
+// which on a session DATA frame is byte 15 of the SMB payload, arbitrary file bytes.
+// Whenever those bytes happened to be 0x02 the frame parsed as NAME_RECOGNIZED, and
+// because the embedded "name" then did not match calledName it was swallowed here with
+// `return true`, never reaching the session path.
+//
+// That was the real cause of the disconnects in captures/nbipx-disconnect.pcap and
+// nbipx-disconnect2.pcap. Being content-derived it is DETERMINISTIC, so a retransmit of
+// the same frame is swallowed every time: in disconnect2 the tail fragment of a
+// 2852-byte Read AndX response (frame 9091, payload[33] = 0x02) and all nine of the
+// server's retransmits (9093-9102) were discarded here, while a structurally identical
+// earlier tail (frame 9084, payload[33] = 0xff) went through. The circuit could not
+// recover no matter how long the server retried, and Win98 ended the session.
+//
+// Two guards, either of which is sufficient, and cheap enough to keep both:
+//   - Length: a name-service packet is EXACTLY nb.NBIPXNameServiceLen (50) bytes on the
+//     wire (ipx.len 80 in every capture we hold — spec/captures/nbipx-win98.pcap frames
+//     52/53, nbipx-disconnect2.pcap frame 8). A fragmented DATA frame is ~1430.
+//   - Phase: NAME_RECOGNIZED only answers the Find-name that precedes
+//     SESSION_INITIALIZE. Once the circuit is established nothing on it is name service.
 func (t *nbipxTransport) handleNameRecognized(d *ipxproto.Datagram, srcMAC [6]byte, frameType ipxport.FrameType) bool {
+	if len(d.Payload) != nb.NBIPXNameServiceLen {
+		return false
+	}
+	t.mu.Lock()
+	established := t.established
+	t.mu.Unlock()
+	if established {
+		return false
+	}
 	pkt, err := nb.DecodeNameService(d.Payload)
 	if err != nil || pkt.DataStreamType != nb.NBIPXNameRecognized {
 		return false
@@ -639,17 +748,34 @@ func (t *nbipxTransport) handleInbound(d *ipxproto.Datagram, hdr *nb.NBIPXSessio
 		t.haveServer = true
 	}
 
-	// A zero-data SYS frame is a control/ack (no sequence consumed): nothing to deliver.
+	ackReq := hdr.ConnCtrlFlag&nb.NBIPXConnFlagACK != 0
+
+	// A zero-data SYS frame is a control/ack (no sequence consumed): nothing to
+	// deliver. An ACK-requesting probe still has to be answered — see sendSystemAck.
 	if hdr.DataLen == 0 {
+		sendSeq, recvSeq := t.sendSeq, t.recvSeq
 		t.mu.Unlock()
+		if ackReq {
+			t.sendSystemAck(sendSeq, recvSeq)
+		}
 		return
 	}
 
 	// Sequenced data. Accept an in-order frame (SendSeq == recvSeq); advance and
 	// reassemble. The server's first data frame is SendSeq 0.
 	if hdr.SendSeq != t.recvSeq {
+		sendSeq, recvSeq := t.sendSeq, t.recvSeq
+		fragLen := len(t.frag)
 		t.mu.Unlock()
-		return // out of window — drop; the server retransmits
+		t.rxtracef("rx#%d DROP: out of window — SendSeq %d, expecting %d (frag holds %d bytes)%s",
+			t.rxFrames, hdr.SendSeq, recvSeq, fragLen, ackSuffix(ackReq))
+		// Out of window — the frame itself is dropped, but a retransmit that ASKS
+		// for an ack must still be answered, or the peer never learns which frame
+		// we are actually missing. See the deadlock described on sendSystemAck.
+		if ackReq {
+			t.sendSystemAck(sendSeq, recvSeq)
+		}
+		return
 	}
 	t.recvSeq++
 
@@ -662,7 +788,17 @@ func (t *nbipxTransport) handleInbound(d *ipxproto.Datagram, hdr *nb.NBIPXSessio
 
 	if !eom {
 		t.frag = append(t.frag, body...)
+		sendSeq, recvSeq := t.sendSeq, t.recvSeq
+		fragLen := len(t.frag)
 		t.mu.Unlock()
+		t.rxtracef("rx#%d fragment accepted — %d bytes at offset %d, frag now %d/%d%s",
+			t.rxFrames, len(body), hdr.Offset, fragLen, hdr.TotalDataLen, ackSuffix(ackReq))
+		// A mid-message fragment produces no reply to carry the ack, so honour an
+		// explicit request with a system frame (the server engine's handleData does
+		// the same on its side).
+		if ackReq {
+			t.sendSystemAck(sendSeq, recvSeq)
+		}
 		return
 	}
 	var msg []byte
@@ -672,18 +808,83 @@ func (t *nbipxTransport) handleInbound(d *ipxproto.Datagram, hdr *nb.NBIPXSessio
 	} else {
 		msg = append([]byte(nil), body...)
 	}
+	sendSeq, recvSeq := t.sendSeq, t.recvSeq
 	t.mu.Unlock()
+
+	t.rxtracef("rx#%d EOM — message complete, %d bytes (declared %d)%s",
+		t.rxFrames, len(msg), hdr.TotalDataLen, ackSuffix(ackReq))
+
+	// The completed message wakes Send, whose next request piggybacks the ack — but
+	// that is the CALLER's next request, which may be seconds away or never (the SMB
+	// layer may be done). An explicit request cannot wait on it.
+	if ackReq {
+		t.sendSystemAck(sendSeq, recvSeq)
+	}
 
 	select {
 	case t.respCh <- msg:
 	case <-t.stop:
 	default:
+		// respCh is buffered and drained by Send; landing here means a completed
+		// message was thrown away because nobody was waiting for it.
+		t.rxtracef("rx#%d WARN: dropped a complete %d-byte message — no receiver", t.rxFrames, len(msg))
 	}
 }
 
-// Close tears down the read loop and closes the link. It does not send SESSION_END: the
-// session layer's Close already issues TREE_DISCONNECT/LOGOFF, and the server ages out
-// an idle circuit; a best-effort end frame is not worth blocking Close on.
+// ackSuffix renders whether the frame just traced asked for an acknowledgement, so a
+// trace line shows in one place both what we did with the frame and whether we owed the
+// peer a reply for it.
+func ackSuffix(ackReq bool) string {
+	if ackReq {
+		return " [ack requested → acking]"
+	}
+	return ""
+}
+
+// sendSystemAck answers a peer frame that set the ACK-required bit (0x40) with a
+// zero-data SYS frame carrying our current counters. Per the sequencing ERRATA on
+// nb.NBIPXSessionHeader a zero-data control frame consumes NO sequence number, so it
+// carries our unchanged sendSeq and the unchanged cumulative recvSeq; acking a probe
+// as consumed reads as a protocol error.
+//
+// This transport used to acknowledge only implicitly, by piggybacking RecvSeq on the
+// next outbound request, and had no explicit-ack path at all — over the whole of
+// captures/nbipx-disconnect.pcap (2026-08-20, Win98 server, 2510 client data frames)
+// it sent zero SYS acks where the server sent 2507. That is fatal, not merely
+// impolite: at frame 7841 the EOM tail of a 2852-byte Read AndX response was lost,
+// so nothing completed, so no request went out to carry a piggybacked ack, so the
+// server's nine ACK-required retransmits (frames 7842-7851, 500ms apart) went
+// unanswered and it killed the circuit with SESSION_END. Worse, the retransmits were
+// of the frame we ALREADY had, and dropping them silently at the window check meant
+// the server could never learn we were missing the NEXT one — the circuit could not
+// have recovered however long it retried. Three earlier stalls in the same capture
+// (frames 222, 339-365, 2520) survived only because the application happened to emit
+// another SMB request before the retry limit.
+func (t *nbipxTransport) sendSystemAck(sendSeq, recvSeq uint16) {
+	t.mu.Lock()
+	remoteID := t.remoteConnID
+	t.mu.Unlock()
+
+	h := &nb.NBIPXSessionHeader{
+		ConnCtrlFlag:   nb.NBIPXConnFlagSYS,
+		DataStreamType: nb.NBIPXSessionData,
+		SourceConnID:   t.localConnID,
+		DestConnID:     remoteID,
+		SendSeq:        sendSeq, // control frames consume no sequence number
+		RecvSeq:        recvSeq,
+		BytesReceived:  recvSeq + nb.NBIPXRecvWindow,
+	}
+	nbipxtracef("SYS ack (RecvSeq %d, window edge %d)", recvSeq, recvSeq+nb.NBIPXRecvWindow)
+	if err := t.sendFrameTo(nb.EncodeSessionHeader(h), nil, false); err != nil {
+		nbipxtracef("SYS ack failed: %v", err)
+	}
+}
+
+// Close tears down the read loop and closes the link, sending a best-effort
+// SESSION_END on an established circuit first (see endSession for why skipping it is
+// not free). A circuit the PEER already ended is skipped: handlePeerEnd has answered
+// its SESSION_END and cleared established, and ending an already-dead circuit would
+// only put a stray frame on the wire.
 func (t *nbipxTransport) Close() error {
 	t.mu.Lock()
 	if t.closed {
@@ -691,7 +892,7 @@ func (t *nbipxTransport) Close() error {
 		return nil
 	}
 	t.closed = true // no further Sends; the read loop keeps running for the END_ACK
-	established := t.established
+	established := t.established && !t.peerEnded
 	t.mu.Unlock()
 
 	if established {
@@ -724,6 +925,7 @@ func (t *nbipxTransport) endSession() {
 		DestConnID:     t.remoteConnID,
 		SendSeq:        t.sendSeq, // SESSION_END consumes a sequence number
 		RecvSeq:        t.recvSeq,
+		BytesReceived:  t.recvSeq + nb.NBIPXRecvWindow,
 	}
 	t.sendSeq++
 	t.mu.Unlock()
@@ -748,6 +950,55 @@ func (t *nbipxTransport) signalEndAck() {
 	ch := t.endAckCh
 	t.mu.Unlock()
 	if !already && ch != nil {
+		close(ch)
+	}
+}
+
+// handlePeerEnd services a server-initiated SESSION_END (0x07): answer it with
+// SESSION_END_ACK (SYS 0x80, 0x08) as the golden Win98↔Win98 teardown does
+// (spec/captures/nbipx-win98.pcap frames 78/80), then mark the circuit dead so a
+// blocked or subsequent Send fails immediately instead of talking to a peer that has
+// already forgotten us.
+//
+// SESSION_END consumes a sequence number (ERRATA on nb.NBIPXSessionHeader: WfW's
+// SESSION_END at seq 5 was answered by NT with RecvSeq 6), so the end-ack acknowledges
+// it as consumed — unlike a zero-data probe.
+//
+// Ignoring the inbound end (readLoop's non-DATA types were all dropped) left the
+// transport believing an established circuit was still up: in
+// captures/nbipx-disconnect.pcap the SMB layer kept issuing requests into the dead
+// session at frames 7855/7856/7859/7860, one per nbipxRequestTimeout, each a
+// guaranteed 5s stall. The SESSION_END_ACK that capture does show (frame 7854) came
+// from IPX net 3 — ClassicStack's own server-side NBIPX service answering on the same
+// station — not from this transport.
+func (t *nbipxTransport) handlePeerEnd(hdr *nb.NBIPXSessionHeader) {
+	t.mu.Lock()
+	if t.peerEnded {
+		t.mu.Unlock()
+		return // already torn down; a retransmitted end still gets the ack below
+	}
+	t.peerEnded = true
+	t.established = false
+	recvSeq := hdr.SendSeq + 1 // the END consumes the peer's sequence number
+	t.recvSeq = recvSeq
+	sendSeq, remoteID := t.sendSeq, t.remoteConnID
+	ch := t.peerEndCh
+	t.mu.Unlock()
+
+	nbipxtracef("peer SESSION_END (circuit %d) — answering END_ACK, circuit dead", remoteID)
+	h := &nb.NBIPXSessionHeader{
+		ConnCtrlFlag:   nb.NBIPXConnFlagSYS,
+		DataStreamType: nb.NBIPXSessionEndAck,
+		SourceConnID:   t.localConnID,
+		DestConnID:     remoteID,
+		SendSeq:        sendSeq,
+		RecvSeq:        recvSeq,
+		BytesReceived:  recvSeq + nb.NBIPXRecvWindow,
+	}
+	if err := t.sendFrameTo(nb.EncodeSessionHeader(h), nil, false); err != nil {
+		nbipxtracef("SESSION_END_ACK failed: %v", err)
+	}
+	if ch != nil {
 		close(ch)
 	}
 }
