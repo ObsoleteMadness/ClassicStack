@@ -528,5 +528,6 @@ original license. Remember, though I'm not a lawyer and this is not legal advise
 
 ## Additional docs
 
+- Operator / developer manual: [docs/manual.md](docs/manual.md)
 - High-level runtime map: [ARCHITECTURE.md](ARCHITECTURE.md)
 - Protocol notes: [spec](spec)
