@@ -105,7 +105,7 @@ name = 'br-lan'
 kind = 'bridge'
 default = true
 backend = 'pcap'
-device = 'en0'
+device = 'bridge1'
 
 [[ipx]]
 iface = 'br-lan'
@@ -144,7 +144,6 @@ name = 'SMB_Share'
 description = 'Test share'
 fs_type = 'local_fs'
 path = './dist/Sample Volume'
-allowed_users = ['Guest']
 
 [[tashtalk]]
 enabled = true
