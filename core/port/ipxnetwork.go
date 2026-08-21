@@ -3,7 +3,8 @@ package port
 // IPXNetworkFields is the IPX network-number configuration an IPX port or
 // MacIPX (IPXGW) gateway embeds. The same TOML key (ipx_network) is used on both.
 type IPXNetworkFields struct {
-	IPXNetwork uint32 `toml:"ipx_network,omitempty" display:"IPX network" desc:"IPX network number (decimal). On an IPX port: this segment (0 = local/unknown). On MacIPX: announced to clients (0 = 0x10). Set both to the same value when they share a segment." default:"0" example:"16" capability:"ipx_network"`
+	// Keep the tag under 255 bytes: TinyGo rejects longer struct tags (tinygo-gate).
+	IPXNetwork uint32 `toml:"ipx_network,omitempty" display:"IPX network" desc:"IPX network number (decimal). IPX port: this segment (0 = local/unknown). MacIPX: announced to clients (0 = 0x10). Match them on a shared segment." default:"0" example:"16" capability:"ipx_network"`
 }
 
 // IPXNetworkProvider is the capability a section implements when it carries an

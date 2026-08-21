@@ -8,5 +8,6 @@ type SerialFields struct {
 	// TashTalk needs to throttle the 1 Mbit/s host link while it clocks a LocalTalk
 	// frame out at 230.4 kbaud; without it the adapter's receive buffer overruns and
 	// frames are lost. Only turn it off for a cable/adapter with no CTS line wired.
-	NoFlowControl bool `toml:"no_flow_control,omitempty" display:"Disable RTS/CTS" desc:"Disable RTS/CTS hardware flow control. Leave off: TashTalk needs flow control to avoid dropped frames. Only enable for an adapter with no CTS line wired." default:"false" example:"false" capability:"serial"`
+	// Keep the tag under 255 bytes: TinyGo rejects longer struct tags (tinygo-gate).
+	NoFlowControl bool `toml:"no_flow_control,omitempty" display:"Disable RTS/CTS" desc:"Disable RTS/CTS flow control. Leave off: TashTalk needs it to avoid dropped frames. Only enable for an adapter with no CTS line wired." default:"false" example:"false" capability:"serial"`
 }
