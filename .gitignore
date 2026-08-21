@@ -11,6 +11,14 @@
 # Locally built command binaries (extensionless on Unix)
 /classicstack
 /classicstackd
+/csclient
+/csmount
+
+# macOS Finder metadata
+.DS_Store
+
+# Local run logs (client.log, server logs)
+*.log
 
 # Test binary, built with `go test -c`
 *.test

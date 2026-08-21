@@ -18,7 +18,7 @@ runs:
     - name: Checkout ClassicStack-web
       id: web_ref
       continue-on-error: true
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         repository: ${{ inputs.web-repository }}
         ref: ${{ inputs.web-ref }}
@@ -27,18 +27,21 @@ runs:
 
     - name: Checkout ClassicStack-web (default branch)
       if: steps.web_ref.outcome != 'success'
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         repository: ${{ inputs.web-repository }}
         path: third_party/classicstack-web
         persist-credentials: false
 
     - name: Setup Node
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v7
       with:
-        node-version: "20"
+        node-version: "22"
         cache: npm
-        cache-dependency-path: adapter/control/http/ui/package-lock.json
+        # spa.sh installs in both trees, so key the cache off both lockfiles.
+        cache-dependency-path: |
+          adapter/control/http/ui/package-lock.json
+          third_party/classicstack-web/package-lock.json
 
     - name: Build SPA
       shell: bash
