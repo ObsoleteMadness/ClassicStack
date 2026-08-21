@@ -2,7 +2,6 @@ package control
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
@@ -32,8 +31,10 @@ type Plane interface {
 	AddInstance(ctx context.Context, owner string, section config.NamedSection) error
 	RemoveInstance(ctx context.Context, owner, key, instanceName string) error
 	// SetWellKnown updates a well-known Model field (Identity, Router, Logging, HTTP,
-	// Client, FUSE) outside the registered Sections map.
-	SetWellKnown(ctx context.Context, key string, section json.RawMessage) error
+	// Client, FUSE) outside the registered Sections map. section is the opaque
+	// encoded body (JSON at the HTTP adapter); core passes it through without
+	// decoding, so the codec stays an adapter concern (§1).
+	SetWellKnown(ctx context.Context, key string, section []byte) error
 	Save(ctx context.Context) (revision string, err error)
 	// MarshalConfig serialises the live (masked) model through the configured codec —
 	// the on-disk form (TOML/UCI) — so a front-end can offer a faithful "download
@@ -208,8 +209,10 @@ type Supervisor interface {
 	SetInterface(ctx context.Context, iface config.InterfaceSection) error
 	RemoveInterface(ctx context.Context, name string) error
 	// SetWellKnown updates a well-known Model field (Identity, Router, Logging, HTTP,
-	// Client, FUSE) outside the registered Sections map.
-	SetWellKnown(ctx context.Context, key string, section json.RawMessage) error
+	// Client, FUSE) outside the registered Sections map. section is the opaque
+	// encoded body (JSON at the HTTP adapter); core passes it through without
+	// decoding, so the codec stays an adapter concern (§1).
+	SetWellKnown(ctx context.Context, key string, section []byte) error
 	ListFSTypes() []string
 	// ReplaceModel installs a new config model as the live source of truth and
 	// reconciles the running component set (stop → swap → rebuild → start). Used by
@@ -538,7 +541,7 @@ func (p *plane) RemoveInterface(ctx context.Context, name string) error {
 	return nil
 }
 
-func (p *plane) SetWellKnown(ctx context.Context, key string, section json.RawMessage) error {
+func (p *plane) SetWellKnown(ctx context.Context, key string, section []byte) error {
 	if err := p.sup.SetWellKnown(ctx, key, section); err != nil {
 		p.logger.Log2(log.Error, "control: set well-known failed",
 			log.Str("key", key), log.Str("err", err.Error()))

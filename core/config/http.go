@@ -1,8 +1,9 @@
 package config
 
 import (
-	"fmt"
+	"errors"
 	"net"
+	"strconv"
 	"strings"
 )
 
@@ -47,7 +48,7 @@ func (s HTTPSection) ListenAddr() string {
 // Validate checks the listen address is a host:port pair (empty Addr uses :1984).
 func (s HTTPSection) Validate() error {
 	if _, _, err := net.SplitHostPort(s.ListenAddr()); err != nil {
-		return fmt.Errorf("http: invalid listen address %q", s.Addr)
+		return errors.New("http: invalid listen address " + strconv.Quote(s.Addr))
 	}
 	return nil
 }

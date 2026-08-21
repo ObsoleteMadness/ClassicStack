@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/ObsoleteMadness/ClassicStack/core/archive"
+	"github.com/ObsoleteMadness/ClassicStack/adapter/archive"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
 )

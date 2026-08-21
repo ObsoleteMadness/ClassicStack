@@ -80,7 +80,7 @@ func (s *fakeSupervisor) RemoveInterface(_ context.Context, name string) error {
 	}
 	return nil
 }
-func (s *fakeSupervisor) SetWellKnown(_ context.Context, key string, section json.RawMessage) error {
+func (s *fakeSupervisor) SetWellKnown(_ context.Context, key string, section []byte) error {
 	if s.model == nil {
 		return nil
 	}

@@ -1,8 +1,9 @@
 package config
 
 import (
-	"fmt"
+	"errors"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -508,7 +509,7 @@ func (s LoggingSection) Validate() error {
 	case "", "trace", "debug", "info", "warn", "warning", "error":
 		return nil
 	default:
-		return fmt.Errorf("config: unknown log level %q (want trace, debug, info, warn, error)", s.Level)
+		return errors.New("config: unknown log level " + strconv.Quote(s.Level) + " (want trace, debug, info, warn, error)")
 	}
 }
 
@@ -541,12 +542,12 @@ func (s RouterSection) Clone() RouterSection {
 func (s RouterSection) Validate() error {
 	for _, r := range s.DefaultZone {
 		if r < 0x20 || r == 0x7f {
-			return fmt.Errorf("config: router default_zone contains an illegal character")
+			return errors.New("config: router default_zone contains an illegal character")
 		}
 	}
 	for _, name := range s.Members {
 		if strings.TrimSpace(name) == "" {
-			return fmt.Errorf("config: router members must not contain an empty name")
+			return errors.New("config: router members must not contain an empty name")
 		}
 	}
 	return nil
@@ -678,13 +679,13 @@ func (s InterfaceSection) Clone() InterfaceSection {
 // Validate checks the interface has a name and a known kind.
 func (s InterfaceSection) Validate() error {
 	if strings.TrimSpace(s.Name) == "" {
-		return fmt.Errorf("config: interface name is required")
+		return errors.New("config: interface name is required")
 	}
 	switch strings.ToLower(strings.TrimSpace(s.Kind)) {
 	case "", IfaceKindNIC, IfaceKindSerial, IfaceKindWifi, IfaceKindBridge, IfaceKindMulticast:
 		return nil
 	default:
-		return fmt.Errorf("config: unknown interface kind %q", s.Kind)
+		return errors.New("config: unknown interface kind " + strconv.Quote(s.Kind))
 	}
 }
 

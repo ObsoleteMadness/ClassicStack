@@ -1,5 +1,10 @@
 // Package archive expands classic Mac transfer wrappers (ZIP, MacBinary, BinHex)
 // into a neutral file tree suitable for writing through fs.ForkFS.
+//
+// It lives in the adapter ring, not core: the ZIP path pulls archive/zip and its
+// compress/flate dependency, which reach reflect and encoding/binary — both barred
+// from core by the dependency rule (§1). adapter/zipfs keeps the same dependency
+// out of core for the same reason. The sole consumer is adapter/control/finder.
 package archive
 
 import (

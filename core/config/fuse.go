@@ -1,7 +1,7 @@
 package config
 
 import (
-	"fmt"
+	"errors"
 	"strings"
 	"time"
 )
@@ -49,7 +49,7 @@ func (s FUSESection) MountTimeout() time.Duration {
 // Validate checks the timeout.
 func (s FUSESection) Validate() error {
 	if s.MountTimeoutSeconds < 0 {
-		return fmt.Errorf("fuse: mount_timeout_seconds must be >= 0")
+		return errors.New("fuse: mount_timeout_seconds must be >= 0")
 	}
 	return nil
 }
@@ -118,10 +118,10 @@ func (s *FUSEVolumeSection) Unmask(prev Section) Section {
 // Validate requires a remote URI and a mountpoint.
 func (s *FUSEVolumeSection) Validate() error {
 	if strings.TrimSpace(s.Remote) == "" {
-		return fmt.Errorf("fuse volume: remote path is required")
+		return errors.New("fuse volume: remote path is required")
 	}
 	if strings.TrimSpace(s.Mountpoint) == "" {
-		return fmt.Errorf("fuse volume: mountpoint is required")
+		return errors.New("fuse volume: mountpoint is required")
 	}
 	return nil
 }

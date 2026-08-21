@@ -1,7 +1,8 @@
 package config
 
 import (
-	"fmt"
+	"errors"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -130,7 +131,7 @@ func (s ClientSection) EnabledServices() []string {
 // Validate checks service names and idle minutes.
 func (s ClientSection) Validate() error {
 	if s.MaxIdleMinutes < 0 {
-		return fmt.Errorf("client: max_idle_minutes must be >= 0")
+		return errors.New("client: max_idle_minutes must be >= 0")
 	}
 	for _, svc := range s.Services {
 		name := strings.ToLower(strings.TrimSpace(svc))
@@ -138,7 +139,7 @@ func (s ClientSection) Validate() error {
 			continue
 		}
 		if !isClientService(name) {
-			return fmt.Errorf("client: unknown service %q (want afp, smb, ncp, etherdfs)", svc)
+			return errors.New("client: unknown service " + strconv.Quote(svc) + " (want afp, smb, ncp, etherdfs)")
 		}
 	}
 	return nil

@@ -880,7 +880,7 @@ func (s *Supervisor) SetIdentityStamper(fn func(c component.Component, m *config
 // Client, FUSE) that lives outside the registered Sections map. The proposed value is
 // validated against a cloned model before it is committed, then dependent components
 // are reconfigured or restarted so the change goes live without a full ReplaceModel.
-func (s *Supervisor) SetWellKnown(ctx context.Context, key string, raw json.RawMessage) error {
+func (s *Supervisor) SetWellKnown(ctx context.Context, key string, raw []byte) error {
 	s.mu.Lock()
 	clone := s.model.Clone()
 	if err := applyWellKnown(clone, key, raw); err != nil {
