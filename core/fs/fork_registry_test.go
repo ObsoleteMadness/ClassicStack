@@ -29,11 +29,19 @@ func TestForkAdapterRegistry_BuiltinsResolve(t *testing.T) {
 	}
 
 	// "native" is a per-OS alias (windows→ads, darwin→hfs, linux→xattr — fork_native.go).
-	// It must always RESOLVE (never "unknown fork backend"); whether it then succeeds or
-	// errors over this memfs base is platform-dependent (xattr succeeds over any base;
-	// ads/hfs need a host-backed NTFS/HFS volume), so we only assert it is registered.
-	if _, err := forkAdapterByName("native", ShareSpec{}, base); err != nil && err.Error() == "fs: unknown fork backend" {
-		t.Fatal("forkAdapterByName(native): not registered (unknown fork backend)")
+	// Where the alias targets an engine core registers itself (ads, xattr) it must
+	// RESOLVE (never "unknown fork backend"); whether it then succeeds or errors over
+	// this memfs base is platform-dependent (xattr succeeds over any base; ads needs a
+	// host-backed NTFS volume), so we only assert it is registered.
+	//
+	// On darwin the target is "hfs", which does host syscalls and therefore lives in the
+	// adapter ring (adapter/fork/hfs) and self-registers via a blank import. core/fs must
+	// not import an adapter (dependency rule §1), so from this test the alias is
+	// legitimately unresolved — assert only that core-registered targets resolve.
+	if _, coreRegistered := forkAdapters[nativeForkTarget]; coreRegistered {
+		if _, err := forkAdapterByName("native", ShareSpec{}, base); err != nil && err.Error() == "fs: unknown fork backend" {
+			t.Fatalf("forkAdapterByName(native → %q): not registered (unknown fork backend)", nativeForkTarget)
+		}
 	}
 
 	// Case-insensitive (the registry lower-cases names).

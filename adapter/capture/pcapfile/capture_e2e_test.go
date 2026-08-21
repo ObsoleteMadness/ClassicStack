@@ -51,9 +51,15 @@ func TestCaptureDecorator_NonPcapLink_WritesValidPcap(t *testing.T) {
 		t.Fatalf("Read: %v", err)
 	}
 
-	// Closing the decorator closes the sink (flushing the file).
+	// The decorator does NOT own the sink: capture-sink lifetime belongs to the
+	// registry (see captureLink.Close in core/link), which flushes and closes sinks
+	// on shutdown so a port restart cannot truncate a file another port still holds.
+	// Closing the sink here is what flushes the buffered records to disk.
 	if err := capLink.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("sink Close: %v", err)
 	}
 
 	f, err := os.Open(path)
