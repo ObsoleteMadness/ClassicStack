@@ -59,7 +59,10 @@ jobs:
       - name: Setup TinyGo
         uses: acifani/setup-tinygo@v2
         with:
-          tinygo-version: "0.41.0"
+          # 0.41.0 cannot assemble a goroot from a Go 1.26 stdlib — it fails with
+          # "package internal/strconv is not in std", which 1.26 introduced. The
+          # runner resolves to 1.26 despite go.mod pinning 1.25.12, so track 0.41.1.
+          tinygo-version: "0.41.1"
 
       - name: Run TinyGo amd64 build gates
         shell: bash
