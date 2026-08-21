@@ -108,11 +108,16 @@ func Run(ctx context.Context, args []string, v Version) error {
 	configPath := fs.String("config", DefaultConfigPath, "path to the config file (TOML, or UCI for an /etc/config path or *.uci file)")
 	httpAddr := fs.String("http", "", "override [http] listen address (empty = server.toml, default :1984)")
 	showVersion := fs.Bool("version", false, "print version information and exit")
+	listIfaces := fs.Bool("list-ifaces", false, "list the capturable pcap NICs (the names an [EtherTalk]/[MacIP]/... interface accepts) and exit")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *showVersion {
 		fmt.Printf("classicstack %s\ncommit: %s\nbuilt: %s\ngo: %s\n", v.Version, v.Commit, v.Date, gort.Version())
+		return nil
+	}
+	if *listIfaces {
+		printInterfaces(os.Stdout)
 		return nil
 	}
 
@@ -280,12 +285,19 @@ func Run(ctx context.Context, args []string, v Version) error {
 
 // relaunchProcess starts a fresh ClassicStack with the same CLI args and exits the
 // current process. Used when the web admin requests a stack restart.
-func relaunchProcess(args []string) error {
+//
+// It replays os.Args[1:] rather than the args parameter passed to Run: args is
+// the reconstructed flag-only slice used for the initial parse (e.g. just
+// "-config <path>"), but the process may have actually been invoked with a
+// leading subcommand (classicstackd's "run -config <path>"). Relaunching with
+// args would drop that subcommand and make classicstackd's dispatcher reject
+// the relaunch as an unknown command, so os.Args is what must be replayed.
+func relaunchProcess(_ []string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(exe, args...)
+	cmd := exec.Command(exe, os.Args[1:]...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -351,6 +363,35 @@ var serialOpener registry.SerialOpener = func(device string, params registry.Ser
 		Baud:          params.Baud,
 		NoFlowControl: params.NoFlowControl,
 	})
+}
+
+// printInterfaces writes the host's capturable pcap NICs to w — the -list-ifaces output
+// for classicstack itself, in the same shape client/link.PrintInterfaces gives the file/
+// probe clients (a raw device Name, its Description, and any bound IP addresses) so a
+// user picks the same device string for a server config's interface as for a client -iface.
+func printInterfaces(w io.Writer) {
+	devs, err := pcap.ListDevices()
+	if err != nil {
+		fmt.Fprintf(w, "cannot list interfaces: %v\n", err)
+		fmt.Fprintln(w, "(raw-Ethernet transports need a build with the 'pcap' tag and Npcap/libpcap installed)")
+		return
+	}
+	if len(devs) == 0 {
+		fmt.Fprintln(w, "no capturable interfaces found")
+		return
+	}
+	fmt.Fprintln(w, "Interfaces:")
+	for _, d := range devs {
+		desc := d.Description
+		if desc == "" {
+			desc = "(no description)"
+		}
+		fmt.Fprintf(w, "  %s\n      %s", d.Name, desc)
+		if len(d.Addresses) > 0 {
+			fmt.Fprintf(w, " [%s]", strings.Join(d.Addresses, ", "))
+		}
+		fmt.Fprintln(w)
+	}
 }
 
 // interfaceEnumerator lists the host NICs for the control plane's ListInterfaces (the

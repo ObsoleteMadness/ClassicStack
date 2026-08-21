@@ -42,16 +42,39 @@ Doom running over MacIPX over AppleTalk over LtOUDP through Snow, back to IPX on
 
 ## Build
 
+Clone with submodules — the web UI lives in one
+([ClassicStack-web](https://github.com/ObsoleteMadness/ClassicStack-web), see
+[Web UI submodule](#web-ui-submodule)):
+
+~~~bash
+git clone --recurse-submodules https://github.com/ObsoleteMadness/ClassicStack.git
+# already cloned without it:
+git submodule update --init --recursive
+~~~
+
 Requirements:
 
 - Go 1.23+
+- Node 20+ if you build the web UI (`-tags webui` or `all`)
 - Npcap on Windows for pcap mode: https://npcap.com/#download
 - libpcap on Linux/macOS for pcap mode. On macOS, `/dev/bpf*` is root-only unless you install Wireshark's **ChmodBPF** (adds your user to `access_bpf`; log out and back in) or run ClassicStack with `sudo`. Wi‑Fi access points drop Ethernet frames not sourced from the NIC's own MAC — leave `hw_address` empty so the server and Finder client both use the host MAC. Many consumer APs also filter non-IP ethertypes (AppleTalk, IPX, NetBEUI); a wired NIC or an AP that bridges those frames is required for remote clients.
+ - winfsp/macfuse/fuse if you'd like to mount volumes. 
 
 Build default binary (all optional protocol hooks enabled):
 
 ~~~bash
 go build -tags all -o classicstack ./cmd/classicstack
+~~~
+
+Build every desktop command at once (server, daemon, `csmount`, and the
+diagnostic tools) into `./bin`, with the full desktop tag set —
+`all,pcap,netboot,fuse` on macOS/Linux, minus `fuse` on Windows:
+
+~~~bash
+make build-local
+# or a subset / a different output directory:
+./scripts/build-local.sh classicstack csmount
+BIN_DIR=/tmp/cs ./scripts/build-local.sh
 ~~~
 
 Build with a custom protocol tag set:
@@ -317,6 +340,35 @@ filter. **Save** on the Sharing tab writes `server.toml` (numbered backups).
 The same management operations are exposed by the transport-agnostic
 `pkg/control` API.
 
+### Web UI submodule
+
+The Finder UI is shared source, not a published package:
+[ClassicStack-web](https://github.com/ObsoleteMadness/ClassicStack-web) is a git
+submodule at `third_party/classicstack-web`, and Vite and `tsc` alias
+`classicstack-web/*` into that tree's `src/*`. The same modules build this SPA
+and the standalone LocalTalk PWA, over two implementations of one `FinderHost`
+interface — Go speaks AFP/SMB/NCP/EtherDFS here; the PWA speaks AFP in the
+browser over TashTalk.
+
+~~~bash
+# Populate it (first clone, or after a clone without --recurse-submodules):
+git submodule update --init --recursive
+
+# Update to the latest upstream main and record the new pin:
+git submodule update --remote third_party/classicstack-web
+git add third_party/classicstack-web && git commit -m "chore: bump ClassicStack-web"
+
+# Move an existing checkout to the commit this branch pins (after a pull):
+git submodule update --recursive
+
+# Build the SPA against whatever the above resolved:
+make spa
+~~~
+
+To develop against a local ClassicStack-web checkout without touching the pin,
+point `make spa` at it: `WEB_DIR=../ClassicStack-web make spa`. Full resolution
+order is in [third_party/README.md](third_party/README.md).
+
 ## File client — mount and browse remote shares
 
 ClassicStack is not only a server. It ships a **file client** that connects *out* to
@@ -395,7 +447,7 @@ files into the mount instead.
 the server — AFP maps Invisible→hidden, System→system, WriteInhibit→read-only; SMB
 uses the server's FileAttributes and timestamps directly.
 
-List pcap device names with `classicstack -list-pcap-devices` (or `csmount -list-ifaces`).
+List pcap device names with `classicstack -list-ifaces` (or `csmount -list-ifaces`).
 
 ### csfs (cross-platform CLI)
 
@@ -466,12 +518,34 @@ classicstackd install -config ~/Library/Application\ Support/ClassicStack/server
 classicstackd uninstall   # unload + remove the LaunchAgent
 ~~~
 
+### macOS menu bar app — `ClassicStack.app`
+
+`make app-darwin` builds `dist/ClassicStack.app`: a menu-bar-only app (no Dock
+icon) bundling `classicstackd` with a status item (`cmd/classicstack-tray`).
+Opening it starts ClassicStack if it isn't already running (config and logs
+under `~/Library/Application Support/ClassicStack`) and shows:
+
+- **Status** — Running / Stopped / "complete setup via Open Interface"
+- **Open Interface** — opens the web admin UI in your default browser
+- **Restart ClassicStack** / **Shutdown ClassicStack** — once an admin
+  password is set (via the web UI's first-run setup), these prompt for it
+  once and remember it in the login Keychain
+- **Quit** — closes the menu bar app; ClassicStack keeps running (use Shutdown to stop it)
+
+This is a local/manual build, unsigned, and not part of CI release packaging.
+
 ## Useful commands
+
+Every cmd binary (the server, the daemon/service wrappers, `csfs`/`csmount`, and the
+diagnostic tools `csecho`/`csnbp`/`csgetzones`/`csipxping`/`csncpinfo`/`csnetsend`/
+`csnetview`) supports `-list-ifaces` and `-version`. `classicstackd`/`classicstack-svc`
+use verb subcommands instead of top-level flags, so theirs is `classicstackd version` /
+`classicstack-svc version`.
 
 List pcap devices:
 
 ~~~powershell
-.\classicstack.exe -list-pcap-devices
+.\classicstack.exe -list-ifaces
 ~~~
 
 Print version:

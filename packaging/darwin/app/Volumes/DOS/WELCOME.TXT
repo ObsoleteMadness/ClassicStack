@@ -1,0 +1,10 @@
+Welcome to ClassicStack!
+
+This is drive E:, exported over EtherDFS for a DOS client running the
+EtherDFS TSR (no IP/TCP/NetBIOS needed, just raw Ethernet).
+
+You can edit or remove this drive, or add your own, from the web admin UI:
+click "Open Interface" in the ClassicStack menu bar item.
+
+This folder lives at:
+~/Library/Application Support/ClassicStack/Volumes/DOS

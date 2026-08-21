@@ -14,6 +14,12 @@
 /csclient
 /csmount
 
+# Local build output (make build-local / scripts/build-local.sh)
+/bin/
+
+# Local/CI packaging output (make app-darwin, scripts/ci/package-release.sh)
+/dist/
+
 # macOS Finder metadata
 .DS_Store
 

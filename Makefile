@@ -31,11 +31,12 @@ GOSEC_PKG       := github.com/securego/gosec/v2/cmd/gosec@latest
 # the CI Quality job exactly.
 GOSEC_PKGS := ./service/macip/... ./service/macgarden/... ./service/afpfs/macgarden/...
 
-.PHONY: build build-svc build-mount spa test test-race test-tags lint quality vet vuln gosec fuzz clean \
+.PHONY: build build-local build-svc build-mount app-darwin spa test test-race test-tags lint quality vet vuln gosec fuzz clean \
         harness archtest tinygo-gate
 
 # Vite SPA (Finder + admin). Required for TAGS that embed webui (all, webui).
-# Uses third_party/classicstack-web, sibling ../ClassicStack-web, or WEB_REF clone.
+# Finder UI comes from the third_party/classicstack-web submodule; WEB_DIR pins a
+# local checkout instead. Falls back to sibling ../ClassicStack-web or WEB_REF clone.
 spa:
 	bash scripts/ci/spa.sh
 
@@ -64,6 +65,13 @@ build-mount:
 ifneq ($(MOUNT_BIN),)
 	go build -tags "$(MOUNT_TAGS)" -o $(MOUNT_BIN) ./cmd/csmount
 endif
+
+# app-darwin builds ClassicStack.app: a menu-bar-only bundle wrapping
+# classicstackd and a systray status item (cmd/classicstack-tray) that
+# starts/monitors/controls it. macOS only (systray needs Cocoa); unsigned,
+# local build, not part of CI release packaging.
+app-darwin:
+	bash scripts/package-app-darwin.sh
 
 test:
 	go test -tags "$(TAGS)" ./...
@@ -126,6 +134,13 @@ archtest:
 tinygo-gate:
 	bash scripts/ci/tinygo-gate.sh
 
+# build-local builds every desktop command (main binary, daemon/service wrapper,
+# csmount and the diagnostic tools) into ./bin with the full desktop tag set
+# — all,pcap,netboot,fuse on darwin/linux, minus fuse on Windows. Unstripped,
+# for local runs; scripts/ci/build.sh remains the release path.
+build-local:
+	bash scripts/build-local.sh
+
 # --- Hardware Build Targets ---
 build-wt32eth01:
 	bash scripts/build_wt32eth01.sh
@@ -144,5 +159,5 @@ build-pico2w:
 
 clean:
 	rm -f classicstack classicstack.exe classicstackd classicstack-svc.exe csmount csmount.exe cs-tinygo.exe
-	rm -rf out dist bin/*.bin bin/*.uf2
+	rm -rf out dist bin
 
