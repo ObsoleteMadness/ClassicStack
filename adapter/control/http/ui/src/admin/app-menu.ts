@@ -12,6 +12,7 @@ export interface AppMenuHost {
   leases: { toggle: () => void; hidden: boolean };
   notify: { toggle: () => void; hidden: boolean };
   topology: { toggle: () => void; hidden: boolean };
+  openByPath: () => void;
 }
 
 /** macOS-style ClassicStack + Advanced menus in the admin header. */
@@ -60,6 +61,10 @@ export function mountAppMenu(header: HTMLElement, host: AppMenuHost): void {
         Advanced
       </button>
       <div class="app-menu__dropdown" role="menu" ${advancedOpen ? '' : 'hidden'}>
+        <button type="button" role="menuitem" data-act="open-by-path" class="app-menu__item">
+          <span class="app-menu__check"></span>Open by Path…
+        </button>
+        <hr />
         <button type="button" role="menuitemcheckbox" aria-checked="${logOpen}" data-act="show-log" class="app-menu__item">
           <span class="app-menu__check">${logOpen ? '✓' : ''}</span>Show Log
         </button>
@@ -94,6 +99,7 @@ export function mountAppMenu(header: HTMLElement, host: AppMenuHost): void {
     setMenubarOpen(wrap, null);
     if (act === 'about') host.about.open();
     if (act === 'settings') host.settings.open('general');
+    if (act === 'open-by-path') host.openByPath();
     if (act === 'show-log') host.log.toggle();
     if (act === 'sharing') host.sharing.toggle();
     if (act === 'leases') host.leases.toggle();

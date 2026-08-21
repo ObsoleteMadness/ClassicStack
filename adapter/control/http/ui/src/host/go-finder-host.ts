@@ -274,6 +274,8 @@ export class GoFinderHost implements FinderHost {
   /** Open Finder sessions keyed by sidebar endpoint id (share or FUSE mount). */
   private sessionsByEndpoint = new Map<string, FinderSession>();
   private catalogsByEndpoint = new Map<string, Catalog>();
+  /** Path-opened (or otherwise connected) servers kept in the sidebar. */
+  private pinned = new Map<string, RemoteEndpoint>();
   private mountAvailable = false;
   private capsLoaded = false;
   private mountHint = '';
@@ -486,6 +488,11 @@ export class GoFinderHost implements FinderHost {
       seen.add(ep.id);
       out.push(ep);
     }
+    for (const ep of this.pinned.values()) {
+      if (seen.has(ep.id)) continue;
+      seen.add(ep.id);
+      out.push(ep);
+    }
     for (const v of [...local, ...remote]) {
       if (seen.has(v.id)) continue;
       seen.add(v.id);
@@ -503,6 +510,28 @@ export class GoFinderHost implements FinderHost {
     return cat;
   }
 
+  /** Keep a path-opened / connected server in the sidebar after discover refreshes. */
+  private pinRemote(ep: RemoteEndpoint, title?: string): void {
+    if (ep.kind === 'local' || ep.role === 'volume') return;
+    this.pinned.set(ep.id, { ...ep, title: title || ep.title });
+  }
+
+  private connectTarget(ep: RemoteEndpoint): string {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(ep.id)) return ep.id;
+    if (ep.uri) return ep.uri;
+    return ep.id;
+  }
+
+  private applyLinkFields(body: Record<string, unknown>, ep: RemoteEndpoint): void {
+    const t = (ep.transport || '').toLowerCase();
+    if (!t) return;
+    if (t === 'ltoudp' || t === 'tashtalk' || t === 'pcap' || t === 'tcp' || t === 'tap') {
+      body.ifaceType = t;
+    } else {
+      body.transport = t;
+    }
+  }
+
   private sessionInfo(info: FinderSession, ep: RemoteEndpoint): SessionInfo {
     return {
       serverName: info.serverName || ep.title,
@@ -514,6 +543,7 @@ export class GoFinderHost implements FinderHost {
 
   async beginRemote(ep: RemoteEndpoint): Promise<SessionInfo> {
     this.pending = ep;
+    this.pinRemote(ep);
     if (isVolumeEndpoint(ep)) {
       const mounted = lookupMounted(ep, this.mounted);
       if (mounted) {
@@ -533,7 +563,12 @@ export class GoFinderHost implements FinderHost {
       return this.sessionInfo(cached, ep);
     }
     try {
-      const info = await this.finderAPI.connect?.({ kind: ep.kind, id: ep.id, target: ep.id, guest: true });
+      const info = await this.finderAPI.connect?.({
+        kind: ep.kind,
+        id: ep.id,
+        target: this.connectTarget(ep),
+        guest: true,
+      });
       if (!info) {
         return {
           serverName: ep.title,
@@ -544,6 +579,7 @@ export class GoFinderHost implements FinderHost {
       }
       this.session = info as FinderSession;
       this.sessionsByEndpoint.set(ep.id, this.session);
+      this.pinRemote(ep, this.session.serverName);
       return this.sessionInfo(this.session, ep);
     } catch {
       return {
@@ -570,8 +606,9 @@ export class GoFinderHost implements FinderHost {
     const body: Record<string, unknown> = {
       kind: ep.kind,
       id: ep.id,
-      target: ep.id,
+      target: this.connectTarget(ep),
     };
+    this.applyLinkFields(body, ep);
     if (creds.kind === 'guest') {
       body.guest = true;
     } else {
@@ -581,6 +618,7 @@ export class GoFinderHost implements FinderHost {
     const info = await this.finderAPI.connect(body as Record<string, never> & { kind: string; id: string });
     this.session = info;
     this.sessionsByEndpoint.set(ep.id, info);
+    this.pinRemote(ep, info.serverName);
     return info.volumes ?? [];
   }
 
@@ -624,7 +662,12 @@ export class GoFinderHost implements FinderHost {
     if (!this.finderAPI.connect || !this.finderAPI.openVolume) {
       throw new Error('finder backend cannot open catalogs');
     }
-    const info = await this.finderAPI.connect({ kind: ep.kind, id: ep.id, target: ep.id, guest: true });
+    const info = await this.finderAPI.connect({
+      kind: ep.kind,
+      id: ep.id,
+      target: this.connectTarget(ep),
+      guest: true,
+    });
     let opened = info;
     if (!info.rootId) {
       const vol = info.volume || info.volumes?.[0];
@@ -644,6 +687,7 @@ export class GoFinderHost implements FinderHost {
     if (epId) {
       this.catalogsByEndpoint.delete(epId);
       this.sessionsByEndpoint.delete(epId);
+      this.pinned.delete(epId);
     }
     if (id) {
       await api.finderClose(id).catch(() => undefined);
@@ -691,6 +735,7 @@ export class GoFinderHost implements FinderHost {
     }
     this.sessionsByEndpoint.delete(ep.id);
     this.catalogsByEndpoint.delete(ep.id);
+    this.pinned.delete(ep.id);
     if (this.pending?.id === ep.id) {
       this.session = null;
       this.pending = null;

@@ -3,23 +3,59 @@ package smb
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/client/trace"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	proto "github.com/ObsoleteMadness/ClassicStack/core/protocol/smb"
 )
 
-// smbTrace narrates the transport-agnostic SMB session steps (NEGOTIATE / SESSION_SETUP /
-// TREE_CONNECT) at log.Trace through the shared client/trace sink, so `csfs -v` shows the
-// SMB handshake regardless of which carrier (IPX/NBIPX/NBF/TCP) it rides.
+// smbTrace narrates SMB session steps and per-command round-trips through the shared
+// client/trace → core/log sink (same stack as AFP and the SMB server). Command lines
+// emit at log.Debug so they appear when [Logging] Level=debug / csfs -v; carrier
+// handshake chatter in ipx/nbipx/nbf stays at Trace.
 var smbTrace = trace.Logger("smb")
 
-// smbtracef narrates one SMB wire-trace line at log.Trace (no-op unless -v is on).
-func smbtracef(format string, args ...any) {
-	if !smbTrace.Enabled(log.Trace) {
-		return
+// logSMBExchange records one client→server SMB round-trip at Debug. The sink threshold
+// decides whether the line prints; callers always emit (same pattern as AFP logAFPCommand).
+func logSMBExchange(req, resp []byte, ms int64, err error, extra ...log.Field) {
+	fields := []log.Field{log.Int("ms", ms)}
+	op := "SMB"
+	if h, herr := proto.DecodeHeader(req); herr == nil {
+		op = proto.CommandName(h.Command)
+		fields = append(fields,
+			log.Str("op", op),
+			log.Int("mid", int64(h.MID)),
+			log.Int("tid", int64(h.TID)),
+			log.Int("uid", int64(h.UID)),
+		)
+	} else {
+		fields = append(fields, log.Str("op", op), log.Int("reqBytes", int64(len(req))))
 	}
-	smbTrace.Log0(log.Trace, fmt.Sprintf(format, args...))
+	if resp != nil {
+		fields = append(fields, log.Int("n", int64(len(resp))))
+		if rh, rerr := proto.DecodeHeader(resp); rerr == nil && rh.Status != proto.StatusSuccess {
+			st := &proto.ErrStatus{
+				Command: rh.Command,
+				Status:  rh.Status,
+				DOS:     rh.Flags2&proto.Flags2NTStatus == 0,
+			}
+			fields = append(fields, log.Int("status", int64(rh.Status)), log.Str("err", st.Error()))
+		}
+	}
+	if err != nil {
+		fields = append(fields, log.Str("err", err.Error()))
+	}
+	fields = append(fields, extra...)
+	smbTrace.Log(log.Debug, "command", fields...)
+}
+
+// roundTrip sends one request on the transport and logs the exchange at Debug.
+func (s *Session) roundTrip(req []byte, extra ...log.Field) ([]byte, error) {
+	start := time.Now()
+	resp, err := s.tr.Send(req)
+	logSMBExchange(req, resp, time.Since(start).Milliseconds(), err, extra...)
+	return resp, err
 }
 
 // clientMaxBuffer is the largest response this client asks the server to send in one
@@ -79,8 +115,12 @@ func (s *Session) PathInfoUnsupported() bool {
 // QUERY_PATH_INFORMATION, so the client stops issuing it for the rest of the session.
 func (s *Session) MarkPathInfoUnsupported() {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.noPathInfo {
+		return
+	}
 	s.noPathInfo = true
-	s.mu.Unlock()
+	smbTrace.Log0(log.Debug, "TRANS2 QUERY_PATH_INFORMATION unsupported; falling back to QUERY_INFORMATION")
 }
 
 // Dialect returns the SMB dialect the server selected at NEGOTIATE (e.g. "NT LM 0.12").
@@ -200,33 +240,37 @@ func OpenIPC(tr Transport, p DialParams) (*Session, error) {
 		return nil, err
 	}
 	s.builder.NextMID()
-	smbtracef("TREE_CONNECT_ANDX \\\\%s\\IPC$ (pipe)", p.ServerName)
-	resp, err := s.tr.Send(s.builder.BuildTreeConnectIPC(p.ServerName))
+	req := s.builder.BuildTreeConnectIPC(p.ServerName)
+	start := time.Now()
+	resp, err := s.tr.Send(req)
+	ms := time.Since(start).Milliseconds()
 	if err != nil {
+		logSMBExchange(req, nil, ms, err, log.Str("share", "IPC$"))
 		return nil, fmt.Errorf("smb: tree connect IPC$: %w", err)
 	}
 	tid, err := proto.ParseTreeConnect(resp)
 	if err != nil {
+		logSMBExchange(req, resp, ms, err, log.Str("share", "IPC$"))
 		return nil, fmt.Errorf("smb: tree connect IPC$: %w", err)
 	}
 	s.builder.TID = tid
-	smbtracef("TREE_CONNECT_ANDX ok — TID %d (IPC$)", tid)
+	logSMBExchange(req, resp, ms, nil, log.Str("share", "IPC$"))
 	return s, nil
 }
 
 // EnumShares runs a RAP NetShareEnum over the connected IPC$ pipe and returns the server's
 // share list. The session must have been opened with OpenIPC.
 func (s *Session) EnumShares() ([]proto.ShareInfo, error) {
-	smbtracef("NetShareEnum")
 	resp, err := s.send(func(b *proto.Builder) []byte { return b.BuildNetShareEnum() })
 	if err != nil {
 		return nil, fmt.Errorf("smb: NetShareEnum: %w", err)
 	}
 	shares, err := proto.ParseNetShareEnum(resp)
 	if err != nil {
+		smbTrace.Log1(log.Debug, "NetShareEnum parse failed", log.Str("err", err.Error()))
 		return nil, fmt.Errorf("smb: NetShareEnum: %w", err)
 	}
-	smbtracef("NetShareEnum ok — %d shares", len(shares))
+	smbTrace.Log1(log.Debug, "NetShareEnum ok", log.Int("shares", int64(len(shares))))
 	return shares, nil
 }
 
@@ -236,16 +280,16 @@ func (s *Session) EnumShares() ([]proto.ShareInfo, error) {
 // OpenIPC. This is the authoritative "net view" query: a master browser answers with every
 // server that announced to it, far more than a broadcast solicit sees.
 func (s *Session) EnumServers(serverType uint32, domain string) ([]proto.ServerInfo, error) {
-	smbtracef("NetServerEnum2 type=%#08x domain=%q", serverType, domain)
 	resp, err := s.send(func(b *proto.Builder) []byte { return b.BuildNetServerEnum2(serverType, domain) })
 	if err != nil {
 		return nil, fmt.Errorf("smb: NetServerEnum2: %w", err)
 	}
 	servers, err := proto.ParseNetServerEnum2(resp)
 	if err != nil {
+		smbTrace.Log1(log.Debug, "NetServerEnum2 parse failed", log.Str("err", err.Error()))
 		return nil, fmt.Errorf("smb: NetServerEnum2: %w", err)
 	}
-	smbtracef("NetServerEnum2 ok — %d servers", len(servers))
+	smbTrace.Log2(log.Debug, "NetServerEnum2 ok", log.Int("servers", int64(len(servers))), log.Str("domain", domain))
 	return servers, nil
 }
 
@@ -256,16 +300,20 @@ func (s *Session) negotiate() (proto.NegotiateResult, error) {
 	// by command+MID, so NEGOTIATE and SESSION_SETUP must not share a MID. NEGOTIATE
 	// still carries no UID/TID and offers the ANSI dialect list (Unicode not yet set).
 	s.builder.NextMID()
-	smbtracef("NEGOTIATE")
-	resp, err := s.tr.Send(s.builder.BuildNegotiate())
+	req := s.builder.BuildNegotiate()
+	start := time.Now()
+	resp, err := s.tr.Send(req)
+	ms := time.Since(start).Milliseconds()
 	if err != nil {
+		logSMBExchange(req, nil, ms, err)
 		return proto.NegotiateResult{}, fmt.Errorf("smb: negotiate: %w", err)
 	}
 	neg, err := proto.ParseNegotiate(resp)
 	if err != nil {
+		logSMBExchange(req, resp, ms, err)
 		return proto.NegotiateResult{}, fmt.Errorf("smb: negotiate: %w", err)
 	}
-	smbtracef("NEGOTIATE ok — dialect %q", neg.Dialect)
+	logSMBExchange(req, resp, ms, nil, log.Str("dialect", neg.Dialect))
 	return neg, nil
 }
 
@@ -288,18 +336,22 @@ func (s *Session) sessionSetup(user, password, domain string) error {
 		maxBuf = uint16(s.negMaxBuffer)
 	}
 	s.builder.NextMID()
-	smbtracef("SESSION_SETUP_ANDX user=%q", user)
-	resp, err := s.tr.Send(s.builder.BuildSessionSetup(user, password, domain, maxBuf))
+	req := s.builder.BuildSessionSetup(user, password, domain, maxBuf)
+	start := time.Now()
+	resp, err := s.tr.Send(req)
+	ms := time.Since(start).Milliseconds()
 	if err != nil {
+		logSMBExchange(req, nil, ms, err, log.Str("user", user))
 		return fmt.Errorf("smb: session setup: %w", err)
 	}
 	res, err := proto.ParseSessionSetup(resp)
 	if err != nil {
+		logSMBExchange(req, resp, ms, err, log.Str("user", user))
 		return fmt.Errorf("smb: session setup: %w", err)
 	}
 	s.builder.UID = res.UID
 	s.guest = res.Guest
-	smbtracef("SESSION_SETUP_ANDX ok — UID %d guest=%v", res.UID, res.Guest)
+	logSMBExchange(req, resp, ms, nil, log.Str("user", user), log.Bool("guest", res.Guest))
 	return nil
 }
 
@@ -310,30 +362,36 @@ func (s *Session) treeConnect(server, share string) error {
 		server = "SERVER"
 	}
 	s.builder.NextMID()
-	smbtracef("TREE_CONNECT_ANDX \\\\%s\\%s", server, share)
-	resp, err := s.tr.Send(s.builder.BuildTreeConnect(server, share))
+	req := s.builder.BuildTreeConnect(server, share)
+	unc := `\\` + server + `\` + share
+	start := time.Now()
+	resp, err := s.tr.Send(req)
+	ms := time.Since(start).Milliseconds()
 	if err != nil {
+		logSMBExchange(req, nil, ms, err, log.Str("share", unc))
 		return fmt.Errorf("smb: tree connect %q: %w", share, err)
 	}
 	tid, err := proto.ParseTreeConnect(resp)
 	if err != nil {
+		logSMBExchange(req, resp, ms, err, log.Str("share", unc))
 		return fmt.Errorf("smb: tree connect %q: %w", share, err)
 	}
 	s.builder.TID = tid
-	smbtracef("TREE_CONNECT_ANDX ok — TID %d (share mounted)", tid)
+	logSMBExchange(req, resp, ms, nil, log.Str("share", unc))
 	return nil
 }
 
 // send serialises one request/response exchange on the circuit: bump the MID, build the
 // request through fn (which sees the current builder state), send, and return the raw
 // response for the caller to parse. Holding the mutex across the whole exchange keeps
-// the request→response transport and the builder's MID consistent.
+// the request→response transport and the builder's MID consistent. Every exchange is
+// logged at Debug via logSMBExchange (same sink as AFP client commands).
 func (s *Session) send(build func(b *proto.Builder) []byte) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.builder.NextMID()
 	req := build(&s.builder)
-	return s.tr.Send(req)
+	return s.roundTrip(req)
 }
 
 // applyTransportLimits sets the session's read/write and TRANS2 caps from the transport's
@@ -368,17 +426,21 @@ func (s *Session) MaxIO() int {
 func (s *Session) Unicode() bool { return s.unicode }
 
 // Close tears down the session: TREE_DISCONNECT, LOGOFF, then close the transport. Errors
-// on the teardown messages are ignored (best-effort); the transport close is returned.
+// on the teardown messages are logged at Debug (best-effort); the transport close is returned.
 func (s *Session) Close() error {
 	s.mu.Lock()
 	if s.builder.TID != 0 {
 		s.builder.NextMID()
-		_, _ = s.tr.Send(s.builder.BuildTreeDisconnect())
+		_, _ = s.roundTrip(s.builder.BuildTreeDisconnect())
 	}
 	if s.builder.UID != 0 {
 		s.builder.NextMID()
-		_, _ = s.tr.Send(s.builder.BuildLogoff())
+		_, _ = s.roundTrip(s.builder.BuildLogoff())
 	}
 	s.mu.Unlock()
-	return s.tr.Close()
+	err := s.tr.Close()
+	if err != nil {
+		smbTrace.Log1(log.Debug, "transport close failed", log.Str("err", err.Error()))
+	}
+	return err
 }

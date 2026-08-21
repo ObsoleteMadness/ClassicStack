@@ -1,5 +1,12 @@
 import { loadPrefs, savePrefs } from 'classicstack-web/util/prefs';
-import { renderSettingsFrame, renderSettingsGroup, renderSettingsNav, type SettingsNavItem, type SettingsRow } from 'classicstack-web/ui/settings-panel';
+import {
+  renderSettingsFrame,
+  renderSettingsGroup,
+  renderSettingsNav,
+  renderSettingsPanelHeading,
+  type SettingsNavItem,
+  type SettingsRow,
+} from 'classicstack-web/ui/settings-panel';
 import { enableWindowResize } from 'classicstack-web/ui/window-resize';
 import { isCompactUi } from 'classicstack-web/ui/layout-mode';
 import type { FinderWindow } from 'classicstack-web/ui/finder-window';
@@ -62,6 +69,31 @@ const SECTION_TITLE: Record<SettingsSection, string> = {
   fuse: 'FUSE',
   logging: 'Logging',
   advanced: 'Advanced',
+};
+
+const SECTION_DESC: Record<SettingsSection, string> = {
+  general: 'Server identity and Finder preferences for this admin UI.',
+  bridge: 'Uplink interface between ClassicStack and the host network.',
+  tashtalk: 'Serial LocalTalk adapter connected through a TashTalk device.',
+  ltoudp: 'LocalTalk encapsulated in UDP multicast on the LAN.',
+  ethertalk: 'AppleTalk Phase 2 over Ethernet (DDP).',
+  ipx: 'Novell IPX transport, network numbers, and frame type.',
+  netbeui: 'NetBIOS Frames (NBF) over the LAN.',
+  netbios: 'NetBIOS name service and transport selection.',
+  router: 'AppleTalk zones and which ports join the router.',
+  users: 'Local accounts used by AFP, SMB, and NCP.',
+  afp: 'Apple Filing Protocol server and volume shares.',
+  smb: 'SMB/CIFS server and share definitions.',
+  ncp: 'NetWare Core Protocol volumes and bindery options.',
+  etherdfs: 'EtherDFS DOS network drives over Ethernet.',
+  netboot: 'AppleTalk Boot Protocol and ChainBoot for classic Macs.',
+  macip: 'IP-over-AppleTalk gateway with NAT and DHCP relay.',
+  ipxgw: 'IPX gateway for MacIPX clients on AppleTalk.',
+  web: 'Management web UI listen address and enablement.',
+  client: 'In-process LAN file client used by the Finder.',
+  fuse: 'Host mounts of remote volumes via FUSE / WinFsp.',
+  logging: 'Process-wide log verbosity.',
+  advanced: 'Edit server.toml directly and inspect registered services.',
 };
 
 const NAV: SettingsNavItem[] = [
@@ -133,6 +165,8 @@ export class ServerSettingsWindow extends HTMLElement {
   private statusEl: HTMLElement | null = null;
   private activeForm: { destroy: () => void } | null = null;
   private modalStack: Array<() => void> = [];
+  /** After the next section sync, open the share editor for this instance name. */
+  private pendingShareName: string | null = null;
 
   connectedCallback(): void {
     this.classList.add('settings-window');
@@ -152,8 +186,11 @@ export class ServerSettingsWindow extends HTMLElement {
     this.host = host;
   }
 
-  open(section: SettingsSection = 'general'): void {
+  /** Open Settings on a section; when shareName is set, open that volume/share editor. */
+  open(section: SettingsSection = 'general', shareName?: string): void {
+    [...this.modalStack].reverse().forEach((dismiss) => dismiss());
     this.section = section;
+    this.pendingShareName = shareName?.trim() || null;
     this.hidden = false;
     this.ensureShell();
     void this.refreshAll();
@@ -163,6 +200,7 @@ export class ServerSettingsWindow extends HTMLElement {
     [...this.modalStack].reverse().forEach((dismiss) => dismiss());
     this.activeForm?.destroy();
     this.activeForm = null;
+    this.pendingShareName = null;
     this.hidden = true;
     this.innerHTML = '';
     this.shellMounted = false;
@@ -245,6 +283,22 @@ export class ServerSettingsWindow extends HTMLElement {
       this.setStatus(e instanceof Error ? e.message : String(e), true);
     }
     await this.syncSection();
+    const shareName = this.pendingShareName;
+    this.pendingShareName = null;
+    if (shareName) this.openShareByName(shareName);
+  }
+
+  private openShareByName(name: string): void {
+    if (!(this.section in SHARE_KEYS)) return;
+    const meta = SHARE_KEYS[this.section as keyof typeof SHARE_KEYS];
+    const list = this.model?.Lists?.[meta.key] || [];
+    const want = name.toLowerCase();
+    const inst = list.find((i) => this.instName(i).toLowerCase() === want);
+    if (!inst) {
+      this.setStatus(`Share “${name}” not found in config.`, true);
+      return;
+    }
+    void this.openShareEditor(meta, inst, this.schema(meta.key), false);
   }
 
   private async persist(apply: () => Promise<void>): Promise<void> {
@@ -283,8 +337,15 @@ export class ServerSettingsWindow extends HTMLElement {
       b.classList.toggle('is-selected', on);
       b.setAttribute('aria-current', on ? 'page' : 'false');
     });
-    const title = this.querySelector('.settings-panel__title');
-    if (title) title.textContent = SECTION_TITLE[this.section];
+    const headingSlot = this.querySelector('.settings-panel__heading-slot');
+    if (headingSlot) {
+      const nav = NAV.find((item) => item.id === this.section);
+      headingSlot.innerHTML = renderSettingsPanelHeading({
+        title: SECTION_TITLE[this.section],
+        description: SECTION_DESC[this.section],
+        iconHtml: nav?.iconHtml,
+      });
+    }
     const content = this.querySelector('.settings-panel__content');
     if (!content || !this.statusEl) return;
     content.replaceChildren(this.statusEl);

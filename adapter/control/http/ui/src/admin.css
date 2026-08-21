@@ -1335,8 +1335,43 @@ html.compact-ui cs-tab {
   gap: 6px;
 }
 
+.prompt-overlay {
+  z-index: 100;
+}
+
 .prompt-text {
   width: 100%;
   min-height: 80px;
   font: inherit;
+}
+
+.prompt-text--single {
+  min-height: 0;
+  height: 32px;
+}
+
+.prompt-hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+
+.prompt-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.prompt-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+
+.prompt-choice:hover {
+  background: var(--bg);
 }

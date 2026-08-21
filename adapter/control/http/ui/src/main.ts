@@ -15,6 +15,7 @@ import { GoFinderHost } from './host/go-finder-host';
 import { HttpExtensionMapStore } from './fs/http-extension-map';
 import { mountFinderMenu } from './finder-menu';
 import { mountAppMenu } from './admin/app-menu';
+import { openByPath } from './open-by-path';
 import { ServerAboutDialog } from './admin/about-dialog';
 import { ServerSettingsWindow } from './admin/server-settings-window';
 import { LogWindow } from './admin/log-window';
@@ -131,9 +132,16 @@ async function main(): Promise<void> {
 
   const host = new GoFinderHost(loginDialog, alertDialog, nameConflictDialog, {
     onConfigureShare(ep) {
-      settings.open(
-        (ep.protocol?.toLowerCase() === 'smb' ? 'smb' : ep.protocol?.toLowerCase() === 'ncp' ? 'ncp' : ep.protocol?.toLowerCase() === 'etherdfs' ? 'etherdfs' : 'afp') as 'afp' | 'smb' | 'ncp' | 'etherdfs',
-      );
+      const protocol = (
+        ep.protocol?.toLowerCase() === 'smb'
+          ? 'smb'
+          : ep.protocol?.toLowerCase() === 'ncp'
+            ? 'ncp'
+            : ep.protocol?.toLowerCase() === 'etherdfs'
+              ? 'etherdfs'
+              : 'afp'
+      ) as 'afp' | 'smb' | 'ncp' | 'etherdfs';
+      settings.open(protocol, ep.title);
     },
     onEndpointInfo(model) {
       endpointInfo.open(model);
@@ -146,7 +154,18 @@ async function main(): Promise<void> {
   finder.bindResourceExplorer(resourceExplorer);
   finder.bindWinResourceExplorer(winResourceExplorer);
   finder.bindGetInfoWindow(getInfoWindow);
-  mountAppMenu(header, { settings, about, log: logWindow, sharing, leases, notify, topology });
+  mountAppMenu(header, {
+    settings,
+    about,
+    log: logWindow,
+    sharing,
+    leases,
+    notify,
+    topology,
+    openByPath: () => {
+      void openByPath(finder, host);
+    },
+  });
   mountFinderMenu(header, finder, extensionEditor);
   const bell = header.querySelector<HTMLButtonElement>('#notify-bell');
   if (bell) notify.bindBell(bell);
