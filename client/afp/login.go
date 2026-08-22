@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	aspclient "github.com/ObsoleteMadness/ClassicStack/client/asp"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	proto "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 )
@@ -15,7 +14,7 @@ import (
 // server accepts — matching core/service/afp/handlers.go:afpLogin). version selects the
 // AFP version string; empty defaults to AFPVersion21 (the classic-server baseline, and
 // a value a System 7.x server actually advertises — unlike "AFP2.2").
-func Login(sess *aspclient.Session, user, pass, version string) error {
+func Login(sess Session, user, pass, version string) error {
 	if version == "" {
 		version = proto.AFPVersion21
 	}
@@ -32,7 +31,7 @@ func Login(sess *aspclient.Session, user, pass, version string) error {
 // advertise, so the version and the UAM name must come from the server's own lists
 // verbatim (including their exact case, e.g. "Cleartxt passwrd"). It falls back to the
 // client defaults when srv is empty (GetStatus failed) or advertised nothing usable.
-func LoginNegotiated(sess *aspclient.Session, user, pass string, srv proto.ServerInfo) error {
+func LoginNegotiated(sess Session, user, pass string, srv proto.ServerInfo) error {
 	version := srv.PickVersion()
 	if version == "" {
 		version = proto.AFPVersion21 // GetStatus failed / no known version advertised
@@ -127,7 +126,7 @@ func pickCleartextUAM(srv proto.ServerInfo) (string, error) {
 
 // login sends one FPLogin command block with the chosen version/UAM/credentials and
 // maps a non-zero AFP result to an error.
-func login(sess *aspclient.Session, version, uam, user, pass string) error {
+func login(sess Session, version, uam, user, pass string) error {
 	req := proto.LoginRequest{AFPVersion: version, UAM: uam, User: user, Pass: pass}
 	_, result, err := sess.Command(req.Marshal())
 	if err != nil {

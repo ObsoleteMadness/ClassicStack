@@ -14,6 +14,7 @@ import (
 // cases enumerates every protocol×transport this harness can exercise in-process. The
 // mapping to the real transports:
 //   - afp/ddp       models AFP over LToUDP and EtherTalk (DDP payload is transport-agnostic)
+//   - afp/dsi       real client dsi.Session TCP/DSI framing over a net.Pipe
 //   - smb/direct    the message-level SMB circuit (direct-hosted family)
 //   - smb/tcp       real client TCP/NBT framing over a net.Pipe
 //   - smb/nbipx     real IPX port + NBIPX session engine over an inmem pair
@@ -26,6 +27,7 @@ var cases = []struct {
 	names fileNames
 }{
 	{"afp/ddp", afpServer, longNames},
+	{"afp/dsi", afpDSIServer, longNames},
 	{"smb/direct", smbBridgeServer, longNames},
 	{"smb/tcp", smbTCPServer, longNames},
 	{"smb/nbipx", smbNBIPXServer, longNames},

@@ -21,7 +21,6 @@ import (
 	"time"
 
 	aspclient "github.com/ObsoleteMadness/ClassicStack/client/asp"
-	"github.com/ObsoleteMadness/ClassicStack/client/atalk"
 	"github.com/ObsoleteMadness/ClassicStack/client/trace"
 	"github.com/ObsoleteMadness/ClassicStack/core/encoding"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
@@ -40,19 +39,22 @@ const pathType = proto.PathTypeLongNames
 // FS is an AFP client bound to one open volume. It satisfies fs.FileSystem and
 // fs.ForkEngine (the "passthrough" fork backend forwards to it).
 type FS struct {
-	sess  *aspclient.Session
+	sess  Session
 	volID uint16
 	name  string
 
 	// onClose, if set, runs after the session is closed (the factory sets it to close
-	// the owning DDP endpoint, so FS.Close tears the whole transport down).
+	// whatever transport-level resource outlives the Session itself — the DDP endpoint
+	// for ASP; a no-op for DSI, whose Session.Close already closes its TCP conn).
 	onClose func()
 
-	// Reconnect state: when the ASP session dies (server CloseSession / idle timeout)
-	// we OpenSession + Login + OpenVol again on the same endpoint so a long-lived
-	// mount (csmount) survives. Intentionally empty until connect() fills them.
-	ep      *atalk.Endpoint
-	sls     atalk.Addr
+	// Reconnect state: when the session dies (server CloseSession / idle timeout) we
+	// redial + Login + OpenVol again so a long-lived mount (csmount) survives. redial
+	// is transport-specific (opens a fresh ASP session on the same DDP endpoint, or
+	// dials a fresh DSI TCP connection) — set by the connect() factory so this package
+	// holds no transport-specific dial state itself. Intentionally nil until connect()
+	// fills it in.
+	redial  func() (Session, error)
 	user    string
 	pass    string
 	srvInfo proto.ServerInfo
@@ -68,7 +70,7 @@ type FS struct {
 
 // Open logs into the server over sess and opens the named volume, returning the FS. The
 // caller has already run FPLogin via Login; Open runs FPOpenVol.
-func Open(sess *aspclient.Session, volume string) (*FS, error) {
+func Open(sess Session, volume string) (*FS, error) {
 	req := proto.OpenVolRequest{
 		Bitmap:  proto.VolBitmapID | proto.VolBitmapSignature | proto.VolBitmapAttributes,
 		VolName: volume,
@@ -214,7 +216,7 @@ func (f *FS) sessCommandRetry(name, path string, maxResp int, build func(volID u
 	return body, result, err
 }
 
-func (f *FS) sessCommandOnce(name, path string, maxResp int, build func(volID uint16) []byte, extra ...log.Field) (body []byte, result int32, sess *aspclient.Session, err error) {
+func (f *FS) sessCommandOnce(name, path string, maxResp int, build func(volID uint16) []byte, extra ...log.Field) (body []byte, result int32, sess Session, err error) {
 	start := time.Now()
 	var volID uint16
 	sess, volID = f.session()
@@ -270,18 +272,18 @@ func (f *FS) sessWrite(path string, header []byte, data []byte) (body []byte, re
 	return nil, 0, aspclient.ErrSessionClosed // caller must reopen fork and retry
 }
 
-// session returns the current ASP session and volume ID under the FS lock.
-func (f *FS) session() (*aspclient.Session, uint16) {
+// session returns the current session and volume ID under the FS lock.
+func (f *FS) session() (Session, uint16) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.sess, f.volID
 }
 
-// reestablish opens a new ASP session on the existing endpoint, logs in, and re-opens
-// the volume. dead is the session that returned ErrSessionClosed; if another goroutine
-// already replaced it, this is a no-op. Intentional FS.Close sets closed and skips
-// reconnect.
-func (f *FS) reestablish(dead *aspclient.Session) error {
+// reestablish redials the transport (ASP-over-DDP or DSI-over-TCP, whichever connect()
+// configured via redial), logs in, and re-opens the volume. dead is the session that
+// returned ErrSessionClosed; if another goroutine already replaced it, this is a no-op.
+// Intentional FS.Close sets closed and skips reconnect.
+func (f *FS) reestablish(dead Session) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.closed {
@@ -296,19 +298,18 @@ func (f *FS) reestablish(dead *aspclient.Session) error {
 			// Prior reconnect failed and left sess nil; fall through to try again.
 		}
 	}
-	if f.ep == nil || f.name == "" {
+	if f.redial == nil || f.name == "" {
 		return errors.New("afp: cannot reconnect: no dial state")
 	}
 
 	if dead != nil {
-		_ = dead.Close() // unbind WSS; idempotent if already stopped
+		_ = dead.Close() // unbind WSS/close TCP conn; idempotent if already stopped
 	} else if f.sess != nil {
 		_ = f.sess.Close()
 	}
 	f.sess = nil
 
-	a := atalk.NewATP(f.ep)
-	sess, err := aspclient.Open(f.ep, a, f.sls)
+	sess, err := f.redial()
 	if err != nil {
 		return err
 	}
@@ -338,7 +339,7 @@ func (f *FS) reestablish(dead *aspclient.Session) error {
 	f.volID = vp.VolID
 	f.cache.invalidateAll()
 	afpLog.Log1(log.Debug, "session re-established", log.Str("vol", f.name))
-	// The new ASP session needs its own attention handler; the old WSS loop is gone.
+	// The new session needs its own attention handler; the old delivery path is gone.
 	sess.SetAttentionHandler(f.handleAttention)
 	return nil
 }

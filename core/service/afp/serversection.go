@@ -34,10 +34,9 @@ const (
 
 // DefaultDSITCPAddr is the conventional AFP-over-TCP (DSI) listen address (:548). Like
 // SMB's :445, it is a documented convention seeding the UI placeholder, NOT an automatic
-// default — the DSI/TCP transport binds only an EXPLICITLY configured tcp_addr. (The
-// DSI/TCP transport itself lands in a follow-up slice; until then a configured tcp_addr
-// is accepted and round-tripped but inert, the same graceful degradation as an
-// unimplemented link backend.)
+// default — the DSI/TCP transport (adapter/dsi) binds only an EXPLICITLY configured
+// tcp_addr; an empty TCPAddr leaves it inert, the same graceful degradation as a
+// disabled link backend.
 const DefaultDSITCPAddr = ":548"
 
 // ServerSection is AFP's singleton server config: the advertised identity (name/zone)
@@ -61,7 +60,7 @@ type ServerSection struct {
 	// bind every transport that was built (back-compat).
 	Transports []string `toml:"transports,omitempty" display:"Transports" desc:"ddp and/or tcp. Empty = bind every transport built into this binary." example:"ddp,tcp"`
 	// TCPAddr overrides the modern DSI/TCP (:548) listen address. Empty = do not bind
-	// DSI/TCP (no implicit :548). Inert until the DSI/TCP transport lands.
+	// DSI/TCP (no implicit :548) — see adapter/dsi and spec/21-dsi.md.
 	TCPAddr string `toml:"tcp_addr,omitempty" display:"TCP address" desc:"AFP-over-TCP (DSI) listen address. Empty = do not bind :548." example:":548"`
 	// LoginMessage is the opt-in greeting served as the AFP login message
 	// (FPGetSrvrMsg type 0): clients fetch and display it when mounting a volume.

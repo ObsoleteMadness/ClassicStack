@@ -33,6 +33,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/ObsoleteMadness/ClassicStack/adapter/dsi"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/smbtcp"
 	mailslotwire "github.com/ObsoleteMadness/ClassicStack/core/protocol/mailslot"
 	ipxrouter "github.com/ObsoleteMadness/ClassicStack/core/router/ipx"
@@ -154,6 +155,11 @@ func crossWireTransports(comps map[string]component.Component, egressOpener MacI
 	// here when SMB is present and the tcp binding is on. Direct-TCP needs only SMB
 	// (NetBIOS-less); NBT (gated by the SMB nbt binding) shares the same framing.
 	wireSMBTCP(sm, nb, comps)
+
+	// AFP-over-TCP (DSI): the AFP analogue of wireSMBTCP. A supervised adapter
+	// listener built inert in the registry; wire its AFP command handler + address
+	// here when AFP is present and the tcp binding is on.
+	wireDSI(afpService(comps), comps)
 
 	// Browse-list provider (§3-ter, M8a compose wiring): when both SMB and the browser
 	// were built, install the browser as SMB's BrowseProvider so the IPC$ \PIPE\LANMAN
@@ -559,6 +565,33 @@ func wireSMBTCP(sm *smb.Service, nb *netbios.Service, comps map[string]component
 		return // transport requested but no address configured — stay inert
 	}
 	tr.SetConsumer(smb.ConsumerAdapter{Service: sm})
+	tr.SetAddr(addr)
+}
+
+// wireDSI installs the AFP command handler and listen address on the DSI (AFP-over-TCP)
+// transport once AFP is present and its tcp binding names an explicit tcp_addr — the
+// AFP analogue of wireSMBTCP. With no AFP service, no DSI transport built (the afp tag
+// absent), the tcp binding off, or no tcp_addr configured, it stays inert.
+func wireDSI(af *afp.Service, comps map[string]component.Component) {
+	if af == nil {
+		return
+	}
+	c, ok := comps[dsi.Name]
+	if !ok {
+		return // transport not built (afp tag without the adapter, or a minimal build)
+	}
+	tr, ok := c.(*dsi.Transport)
+	if !ok {
+		return
+	}
+	if !af.Binds(afp.TransportTCP) {
+		return
+	}
+	addr := af.TCPListenAddr()
+	if addr == "" {
+		return // tcp binding requested but no tcp_addr configured — stay inert
+	}
+	tr.SetHandler(afp.HandlerAdapter{Service: af})
 	tr.SetAddr(addr)
 }
 

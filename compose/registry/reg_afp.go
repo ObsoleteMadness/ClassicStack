@@ -105,6 +105,7 @@ func init() {
 		}
 		svc.SetZone(zone)
 		svc.SetTransports(srv.Transports)
+		svc.SetTCPListenAddr(srv.TCPAddr)
 		// Opt-in login greeting: clients fetch and display it when mounting a volume
 		// (FPGetSrvrMsg type 0). Empty serves no greeting.
 		svc.SetLoginMessage(srv.LoginMessage)

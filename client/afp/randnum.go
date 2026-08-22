@@ -3,7 +3,6 @@ package afp
 import (
 	"crypto/des"
 
-	aspclient "github.com/ObsoleteMadness/ClassicStack/client/asp"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
 	proto "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 )
@@ -32,7 +31,7 @@ func randnumEncrypt(key, plain [8]byte) ([8]byte, error) {
 // loginRandnum runs FPLogin + FPLoginCont for the Randnum exchange UAM: the server
 // returns kFPAuthContinue with a session ID and 8-byte challenge; the client DES-
 // encrypts the challenge with the user's password as key and sends it in FPLoginCont.
-func loginRandnum(sess *aspclient.Session, version, uam, user, pass string) error {
+func loginRandnum(sess Session, version, uam, user, pass string) error {
 	body, result, err := sess.Command(proto.LoginRequest{
 		AFPVersion: version,
 		UAM:        uam,

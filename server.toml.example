@@ -268,10 +268,10 @@ bindings = []
 # transport bindings, and the opt-in login greeting.
 #   server_name    Chooser/NBP name (blank = identity.hostname, then "ClassicStack")
 #   zone           AppleTalk zone to advertise into (blank = router default)
-#   transports     which stacks to bind: "ddp" (classic) / "tcp" (DSI, future);
+#   transports     which stacks to bind: "ddp" (classic) / "tcp" (modern, DSI);
 #                  empty = bind all built transports
 #   tcp_addr       DSI/TCP listen address (":548"); blank = no DSI/TCP.
-#                  Inert until the DSI transport lands.
+#                  See spec/21-dsi.md.
 #   login_message  opt-in greeting clients display when mounting a volume
 #                  (FPGetSrvrMsg login message; max 199 chars; blank = none)
 # [AFP]

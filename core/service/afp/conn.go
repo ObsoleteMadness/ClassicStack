@@ -2,8 +2,8 @@ package afp
 
 // conn.go is the transport-agnostic AFP command-core seam — the AFP analogue of
 // the SMB conn.go split (§3-bis command-core / session-transport). An AFP session
-// transport (ASP-over-ATP today, DSI-over-TCP in a future adapter) carries one AFP
-// virtual circuit per logged-in client; on that circuit it hands whole AFP command
+// transport (ASP-over-ATP, or DSI-over-TCP — adapter/dsi, spec/21-dsi.md) carries one
+// AFP virtual circuit per logged-in client; on that circuit it hands whole AFP command
 // blocks to the command engine and writes the reply block back over the same
 // circuit. The transport holds no AFP knowledge and AFP holds no transport
 // knowledge: the only contract between them is "here is one AFP command block on
@@ -58,9 +58,9 @@ func (c *Conn) Close() {
 	c.afp.forks.closeAll()
 }
 
-// CommandHandler is the AFP-facing contract ANY session transport drives — ASP
-// over ATP/DDP today, DSI over TCP in a future adapter: open a circuit per session,
-// run each command block, close on teardown. The AFP Service satisfies it through
+// CommandHandler is the AFP-facing contract ANY session transport drives — ASP over
+// ATP/DDP or DSI over TCP: open a circuit per session, run each command block, close
+// on teardown. The AFP Service satisfies it through
 // NewConn/Conn. It lets a transport hold the AFP command engine behind one small
 // interface so neither side imports the other's internals (the §3-bis
 // command-core / session-transport split). GetServerInfo is the one sessionless

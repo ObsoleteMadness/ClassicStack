@@ -198,8 +198,8 @@ which AFP versions this speaks.
 |---|---|---|
 | server_name | (empty) | Chooser/NBP name. Blank = `identity.hostname`, then `"ClassicStack"`. |
 | zone | (empty) | AppleTalk zone to advertise into. Blank = router default. |
-| transports | (empty → all built) | `"ddp"` (classic, works today) and/or `"tcp"` (modern AFP-over-DSI — **accepted and round-tripped, but not yet functional**; see [protocols.md](protocols.md#afp-apple-filing-protocol)). |
-| tcp_addr | (empty) | DSI/TCP listen address (e.g. `:548`). **Inert** — has no effect until the DSI/TCP transport lands (tracked as `M7a` in `.refactor/TODO.md`). |
+| transports | (empty → all built) | `"ddp"` (classic, ASP/ATP/DDP) and/or `"tcp"` (modern, DSI — see [protocols.md](protocols.md#afp-apple-filing-protocol) and `spec/21-dsi.md`). |
+| tcp_addr | (empty) | DSI/TCP listen address (e.g. `:548`). Never binds implicitly — must be set explicitly, same posture as SMB's direct-TCP `tcp_addr`. |
 | login_message | (empty) | Opt-in greeting shown when a client mounts a volume (`FPGetSrvrMsg`, max 199 chars). |
 
 `[[afpvolumes]]` (repeated, one per exported volume):

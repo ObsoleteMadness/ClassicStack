@@ -21,7 +21,8 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/inmem"
 	clientpkg "github.com/ObsoleteMadness/ClassicStack/client"
-	_ "github.com/ObsoleteMadness/ClassicStack/client/afp" // register the afp scheme
+	clientafp "github.com/ObsoleteMadness/ClassicStack/client/afp" // also registers the afp scheme
+	clientdsi "github.com/ObsoleteMadness/ClassicStack/client/dsi"
 	clientetherdfs "github.com/ObsoleteMadness/ClassicStack/client/etherdfs"
 	clientlink "github.com/ObsoleteMadness/ClassicStack/client/link"
 	clientncp "github.com/ObsoleteMadness/ClassicStack/client/ncp"
@@ -35,7 +36,9 @@ import (
 	etherport "github.com/ObsoleteMadness/ClassicStack/core/port/etherdfs"
 	ipxport "github.com/ObsoleteMadness/ClassicStack/core/port/ipx"
 	nbfport "github.com/ObsoleteMadness/ClassicStack/core/port/netbeui"
+	afpproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 	ddp "github.com/ObsoleteMadness/ClassicStack/core/protocol/ddp"
+	dsiproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/dsi"
 	ipxproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx"
 	"github.com/ObsoleteMadness/ClassicStack/core/router"
 	ipxrouter "github.com/ObsoleteMadness/ClassicStack/core/router/ipx"
@@ -261,6 +264,124 @@ func serveNBT(c net.Conn, conn smbsvc.SessionCircuit) {
 		if _, err := c.Write(resp); err != nil {
 			return
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AFP over TCP/DSI (real client dsi.Session framing over a net.Pipe)
+// ---------------------------------------------------------------------------
+
+// afpDSIServer dials the AFP client's real DSI transport over a net.Pipe whose server
+// end runs a minimal DSI frame pump (serveDSI) feeding the genuine AFP command core —
+// so the client's DSI framing, login negotiation, and volume open are all exercised
+// against the real afp.Service, the same way smbTCPServer exercises SMB's TCP path.
+func afpDSIServer(t *testing.T) fs.ForkFS {
+	t.Helper()
+	svc, err := afpsvc.NewWithVolumes(nil, afpsvc.VolumeSpec{
+		ID: 1, Name: "Share", Share: memShare("Share"),
+	})
+	if err != nil {
+		t.Fatalf("afp NewWithVolumes: %v", err)
+	}
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() { _ = serverConn.Close(); _ = clientConn.Close() })
+
+	go serveDSI(serverConn, afpsvc.HandlerAdapter{Service: svc})
+
+	status, sess, err := clientdsi.Dial(clientConn)
+	if err != nil {
+		t.Fatalf("dsi.Dial: %v", err)
+	}
+	srvInfo, _ := afpproto.ParseServerInfo(status)
+	if err := clientafp.LoginNegotiated(sess, "", "", srvInfo); err != nil {
+		t.Fatalf("LoginNegotiated: %v", err)
+	}
+	f, err := clientafp.Open(sess, "Share")
+	if err != nil {
+		t.Fatalf("afp.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = fs.CloseFS(f) })
+
+	// The AFP client implements fs.ForkEngine natively (real OpenFork on the wire), so
+	// it takes the "passthrough" fork backend — the same one client.Connect selects by
+	// default for the afp scheme (client/afp/register.go) — rather than wrapClientFS's
+	// "appledouble" (which is for the schemes with no native fork).
+	store, err := metastore.Open("mem", "")
+	if err != nil {
+		t.Fatalf("metastore.Open: %v", err)
+	}
+	remote, err := fs.WrapBase(f, fs.ShareSpec{
+		Name: "Share", ForkBackend: "passthrough", FilenameCodec: "identity",
+	}, store)
+	if err != nil {
+		t.Fatalf("WrapBase: %v", err)
+	}
+	t.Cleanup(func() { _ = fs.CloseFS(remote) })
+	return remote
+}
+
+// serveDSI reads DSI-framed messages off c and dispatches them to handler — a minimal
+// single-connection stand-in for adapter/dsi.Transport's serve loop (unexported, so not
+// reusable directly from this package), using the same core/protocol/dsi wire codec so
+// the client's real framing is exercised end-to-end against the genuine AFP command
+// core. Mirrors serveNBT's role for the SMB/TCP case.
+func serveDSI(c net.Conn, handler afpsvc.CommandHandler) {
+	var circuit afpsvc.CommandCircuit
+	defer func() {
+		if circuit != nil {
+			circuit.Close()
+		}
+	}()
+	hdrBuf := make([]byte, dsiproto.HeaderSize)
+	for {
+		if _, err := io.ReadFull(c, hdrBuf); err != nil {
+			return
+		}
+		var h dsiproto.Header
+		if !h.Unmarshal(hdrBuf) {
+			return
+		}
+		payload := make([]byte, h.DataLen)
+		if h.DataLen > 0 {
+			if _, err := io.ReadFull(c, payload); err != nil {
+				return
+			}
+		}
+		switch h.Command {
+		case dsiproto.GetStatus:
+			writeDSIReply(c, h.RequestID, dsiproto.GetStatus, 0, handler.GetServerInfo())
+		case dsiproto.OpenSession:
+			if circuit != nil {
+				circuit.Close()
+			}
+			circuit = handler.NewConn()
+			writeDSIReply(c, h.RequestID, dsiproto.OpenSession, 0, nil)
+		case dsiproto.Command, dsiproto.Write:
+			if circuit == nil {
+				return
+			}
+			reply, result := circuit.Command(payload)
+			writeDSIReply(c, h.RequestID, h.Command, uint32(result), reply)
+		case dsiproto.CloseSession:
+			if circuit != nil {
+				circuit.Close()
+				circuit = nil
+			}
+			writeDSIReply(c, h.RequestID, dsiproto.CloseSession, 0, nil)
+			return
+		}
+	}
+}
+
+// writeDSIReply writes one DSI reply frame; the AFP result code goes in the header's
+// ErrorOffset field, matching adapter/dsi's reply contract (core/protocol/dsi).
+func writeDSIReply(c net.Conn, reqID uint16, cmd uint8, errCode uint32, data []byte) {
+	h := dsiproto.Header{Flags: dsiproto.Reply, Command: cmd, RequestID: reqID, ErrorOffset: errCode, DataLen: uint32(len(data))}
+	if _, err := c.Write(h.Marshal()); err != nil {
+		return
+	}
+	if len(data) > 0 {
+		_, _ = c.Write(data)
 	}
 }
 

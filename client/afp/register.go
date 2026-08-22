@@ -2,7 +2,6 @@ package afp
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -11,15 +10,12 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/client"
 	aspclient "github.com/ObsoleteMadness/ClassicStack/client/asp"
 	"github.com/ObsoleteMadness/ClassicStack/client/atalk"
+	dsiclient "github.com/ObsoleteMadness/ClassicStack/client/dsi"
 	clientlink "github.com/ObsoleteMadness/ClassicStack/client/link"
 	"github.com/ObsoleteMadness/ClassicStack/client/uri"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	proto "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 )
-
-// errDSINotImplemented is returned when a URI selects AFP-over-TCP. Discover lists
-// those servers (Bonjour _afpovertcp._tcp); the DSI session itself is not built yet.
-var errDSINotImplemented = errors.New("afp: AFP over TCP (DSI) is not implemented yet")
 
 // register.go plugs the AFP client into the client scheme registry. Importing this
 // package registers "afp"; client.Connect then builds an *FS and (because AFP
@@ -28,10 +24,8 @@ var errDSINotImplemented = errors.New("afp: AFP over TCP (DSI) is not implemente
 
 func init() {
 	// AFP rides DDP on the three AppleTalk segments (LToUDP multicast — the default,
-	// needs no pcap/Npcap — EtherTalk over pcap, and TashTalk serial) plus TCP as a
-	// discover/connect kind for AFP-over-DSI. Connect over TCP returns a clear
-	// "DSI is not implemented" error until that adapter exists; the CLI still
-	// rejects transports the scheme does not declare (e.g. smb over ltoudp).
+	// needs no pcap/Npcap — EtherTalk over pcap, and TashTalk serial) or DSI over TCP
+	// (-ifacetype tcp; -iface names the DSI host, conventionally :548).
 	client.RegisterClient("afp", "passthrough",
 		client.Transports{
 			Kinds:   []string{clientlink.KindLToUDP, clientlink.KindPcap, clientlink.KindTashTalk, clientlink.KindTCP},
@@ -48,48 +42,56 @@ func init() {
 // resolved from NBP (or the literal net.node) and this socket.
 const afpListeningSocket uint8 = 251
 
-// connect is the client.Factory for AFP: open the DDP transport, resolve the server
-// address (NBP entity or literal net.node), open an ASP session, log in, and open the
-// volume — returning the *FS (an fs.FileSystem + native fs.ForkEngine).
+// dsiDefaultPort is the conventional AFP-over-TCP (DSI) port a URI/opener with no
+// explicit port dials (Inside Macintosh: Networking, Ch. 9; spec/21-dsi.md).
+const dsiDefaultPort = "548"
+
+// connect is the client.Factory for AFP: dial the transport the opener selects (ASP
+// over DDP, or DSI over TCP), resolve the server, log in, and open the volume —
+// returning the *FS (an fs.FileSystem + native fs.ForkEngine).
 func connect(ctx context.Context, target uri.Target, opts client.Options) (fs.FileSystem, error) {
 	_ = ctx
-	ep, sess, sls, srvInfo, err := dialAndLogin(target, opts)
+	sess, srvInfo, redial, onClose, err := dialAndLogin(target, opts)
 	if err != nil {
 		return nil, err
 	}
 	f, err := Open(sess, target.Volume)
 	if err != nil {
 		_ = sess.Close()
-		_ = ep.Close()
+		onClose()
 		return nil, err
 	}
-	// Own the endpoint so Close tears everything down: FS.Close closes the session; wrap
-	// it to also close the endpoint. Keep dial state so a dropped ASP session can be
-	// re-established without unmounting (csmount keeps the drive mounted).
-	f.ep = ep
-	f.sls = sls
+	f.redial = redial
 	f.user = target.User
 	f.pass = target.Pass
 	f.srvInfo = srvInfo
 	f.onMessage = opts.OnServerMessage
-	f.onClose = func() { _ = ep.Close() }
+	f.onClose = onClose
 	f.installAttentionHandler()
 	f.fetchLoginMessage()
 	return f, nil
 }
 
-// dialAndLogin runs the AFP connect prologue shared by a volume mount (connect) and a
-// server-root browse (Browse): open the DDP transport, resolve the server, negotiate the
-// login from FPGetSrvrInfo, open the ASP session, and log in. It returns the endpoint,
-// the live session, the SLS address, and the parsed server info. On any failure it tears
-// down what it built and returns the error, so the caller only closes on success.
-func dialAndLogin(target uri.Target, opts client.Options) (*atalk.Endpoint, *aspclient.Session, atalk.Addr, proto.ServerInfo, error) {
+// dialAndLogin dispatches to the ASP-over-DDP or DSI-over-TCP dial path by the
+// opener's transport kind, and runs FPLogin on the resulting session. It returns the
+// live Session, the server's advertised info (for the reconnect path's re-login), a
+// redial closure that opens a fresh session on the same transport target (ASP: a new
+// session on the existing DDP endpoint; DSI: a fresh TCP dial), and an onClose closure
+// releasing whatever transport-level resource outlives the Session itself.
+func dialAndLogin(target uri.Target, opts client.Options) (Session, proto.ServerInfo, func() (Session, error), func(), error) {
 	if opts.Opener != nil && opts.Opener.Spec.Kind == clientlink.KindTCP {
-		return nil, nil, atalk.Addr{}, proto.ServerInfo{}, errDSINotImplemented
+		return dialAndLoginDSI(target, opts)
 	}
+	return dialAndLoginASP(target, opts)
+}
+
+// dialAndLoginASP runs the classic AFP connect prologue shared by a volume mount
+// (connect) and a server-root browse (Browse): open the DDP transport, resolve the
+// server, negotiate the login from FPGetSrvrInfo, open the ASP session, and log in.
+func dialAndLoginASP(target uri.Target, opts client.Options) (Session, proto.ServerInfo, func() (Session, error), func(), error) {
 	dl, err := opts.Opener.DatagramLinkDDP()
 	if err != nil {
-		return nil, nil, atalk.Addr{}, proto.ServerInfo{}, fmt.Errorf("afp: open transport: %w", err)
+		return nil, proto.ServerInfo{}, nil, nil, fmt.Errorf("afp: open transport: %w", err)
 	}
 	// The workstation asserts the opener's node; a real deployment runs an LLAP/AARP
 	// claim above the FrameLink first (the LToUDP/EtherTalk framer already carries the
@@ -99,7 +101,7 @@ func dialAndLogin(target uri.Target, opts client.Options) (*atalk.Endpoint, *asp
 	srv, err := resolveServer(ep, target.Server)
 	if err != nil {
 		_ = ep.Close()
-		return nil, nil, atalk.Addr{}, proto.ServerInfo{}, err
+		return nil, proto.ServerInfo{}, nil, nil, err
 	}
 	sls := atalk.Addr{Network: srv.Network, Node: srv.Node, Socket: afpListeningSocket}
 	if srv.Socket != 0 {
@@ -132,14 +134,62 @@ func dialAndLogin(target uri.Target, opts client.Options) (*atalk.Endpoint, *asp
 	sess, err := aspclient.Open(ep, a, sls)
 	if err != nil {
 		_ = ep.Close()
-		return nil, nil, atalk.Addr{}, proto.ServerInfo{}, err
+		return nil, proto.ServerInfo{}, nil, nil, err
 	}
 	if err := LoginNegotiated(sess, target.User, target.Pass, srvInfo); err != nil {
 		_ = sess.Close()
 		_ = ep.Close()
-		return nil, nil, atalk.Addr{}, proto.ServerInfo{}, err
+		return nil, proto.ServerInfo{}, nil, nil, err
 	}
-	return ep, sess, sls, srvInfo, nil
+
+	redial := func() (Session, error) {
+		a := atalk.NewATP(ep)
+		return aspclient.Open(ep, a, sls)
+	}
+	onClose := func() { _ = ep.Close() }
+	return sess, srvInfo, redial, onClose, nil
+}
+
+// dialAndLoginDSI runs the modern AFP-over-TCP connect prologue: dial the opener's TCP
+// target (the DSI host, conventionally :548), run DSI GetStatus + OpenSession
+// (client/dsi.Dial), negotiate the login from the returned FPGetSrvrInfo (identical
+// negotiation to the ASP path — LoginNegotiated does not care which transport it runs
+// over), and log in. There is no NBP/SLS resolution: the TCP target IS the address.
+func dialAndLoginDSI(target uri.Target, opts client.Options) (Session, proto.ServerInfo, func() (Session, error), func(), error) {
+	redial := func() (Session, error) {
+		conn, err := opts.Opener.Dial(dsiDefaultPort)
+		if err != nil {
+			return nil, fmt.Errorf("afp: dial DSI: %w", err)
+		}
+		_, sess, err := dsiclient.Dial(conn)
+		if err != nil {
+			return nil, err
+		}
+		return sess, nil
+	}
+
+	conn, err := opts.Opener.Dial(dsiDefaultPort)
+	if err != nil {
+		return nil, proto.ServerInfo{}, nil, nil, fmt.Errorf("afp: dial DSI: %w", err)
+	}
+	status, sess, err := dsiclient.Dial(conn)
+	if err != nil {
+		return nil, proto.ServerInfo{}, nil, nil, fmt.Errorf("afp: open DSI session: %w", err)
+	}
+	srvInfo, _ := proto.ParseServerInfo(status)
+	if atalk.Verbose() {
+		fmt.Fprintf(os.Stderr, "[afp] server %q (DSI) machine=%q versions=%v uams=%v\n",
+			srvInfo.ServerName, srvInfo.MachineType, srvInfo.AFPVersions, srvInfo.UAMs)
+	}
+
+	if err := LoginNegotiated(sess, target.User, target.Pass, srvInfo); err != nil {
+		_ = sess.Close()
+		return nil, proto.ServerInfo{}, nil, nil, err
+	}
+
+	// DSI has no separate endpoint object to close (Session.Close already closes the
+	// TCP connection), unlike ASP's DDP endpoint that outlives any one session.
+	return sess, srvInfo, redial, func() {}, nil
 }
 
 // resolveServer turns the URI server field into an AppleTalk address. A literal

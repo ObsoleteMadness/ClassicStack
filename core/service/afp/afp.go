@@ -119,6 +119,7 @@ type Service struct {
 	names      NameRegistrar                // NBP name-info service; AFP registers serverName:AFPServer@zone here (nil = no NBP in this build)
 	zone       string                       // advertised AppleTalk zone (NBP registration); "" = router default
 	transports []string                     // bound transport tokens (ddp/tcp); empty = bind-all (back-compat)
+	tcpAddr    string                       // explicit DSI/TCP listen address from the server section; "" = do not bind
 	resolver   func() ([]VolumeSpec, error) // re-resolves the desired volume set from the model; set at wire time for hot-apply
 	busFor     func(fs.ShareSpec) bus.Bus   // resolves the shared FS-mutation bus for a share's host path (§10d); nil = isolated
 	reactor    *share.Reactor               // §10d coordination consumer; subscribes to same-path buses on Start
@@ -264,15 +265,54 @@ func (s *Service) SetZone(zone string) {
 	s.mu.Unlock()
 }
 
-// SetTransports records the bound transport tokens (afp.TransportDDP/TransportTCP) for
-// dashboard display. An empty list means bind-all (the back-compat default). It does
-// NOT itself gate binding — the classic DDP stack is joined via the router membership
-// and the modern DSI/TCP transport (when it lands) reads the same section — this is the
-// Describable surface so the operator sees which stacks are active.
+// SetTransports records the bound transport tokens (afp.TransportDDP/TransportTCP), both
+// for dashboard display and as the service's own declared transport intent: Binds
+// consults this list, mirroring ServerSection.Binds so the service and the section
+// agree. An empty list means bind-all (the back-compat default). The classic DDP stack
+// is joined via the router membership (reg_afp.go checks Binds(TransportDDP) before
+// calling SetRouter); the modern DSI/TCP transport is gated the same way by the compose
+// transport cross-wire (wireDSI).
 func (s *Service) SetTransports(transports []string) {
 	s.mu.Lock()
 	s.transports = append([]string(nil), transports...)
 	s.mu.Unlock()
+}
+
+// Binds reports whether transport is bound: an empty bound list binds everything (the
+// historical default), else the list must name it. Mirrors smb.Service.Binds /
+// ServerSection.Binds — the compose transport cross-wire (wireDSI) asks the SERVICE
+// this, not the section, so a single source of truth backs both the dashboard and the
+// wiring decision (§B).
+func (s *Service) Binds(transport string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.transports) == 0 {
+		return true
+	}
+	for _, t := range s.transports {
+		if t == transport {
+			return true
+		}
+	}
+	return false
+}
+
+// SetTCPListenAddr records the explicit DSI/TCP listen address from the server section
+// (§B), so the compose root reads it from the service rather than the section. Empty
+// means "do not bind" — there is no implicit :548, matching SMB's direct-TCP posture.
+// Idempotent, safe before Start.
+func (s *Service) SetTCPListenAddr(addr string) {
+	s.mu.Lock()
+	s.tcpAddr = addr
+	s.mu.Unlock()
+}
+
+// TCPListenAddr returns the explicit DSI/TCP listen address, or "" when none was
+// configured (the DSI transport then stays inert).
+func (s *Service) TCPListenAddr() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tcpAddr
 }
 
 // Kind labels the AFP component for the dashboard (component.Describable).

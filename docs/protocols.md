@@ -31,14 +31,12 @@ Advertises and accepts **AFP 1.1, 2.0, 2.1, and 2.2** (`AFPVersion 1.1` /
 `AFPVersion 2.0` / `AFPVersion 2.1` / `AFP2.2`). No AFP 3.x (UTF-8 names / 64-bit IDs) —
 this targets classic (pre-Mac OS X) clients, where those versions are what ships.
 
-Two transport stacks by design:
+Two transport stacks, simultaneously:
 
-- **Classic**: DDP → ATP → ASP → AFP — **implemented and what's actually served today.**
-- **Modern**: TCP → DSI → AFP (conventionally `:548`) — **designed for but not yet
-  implemented.** `[AFP].transports = ["tcp"]` and `tcp_addr` are accepted and
-  round-tripped in config, but nothing opens the listener yet (tracked as `M7a` in
-  `.refactor/TODO.md` — the SMB and NetBIOS equivalents, direct-TCP `:445` and NBT
-  `:139`, **are** implemented; AFP-over-TCP is the one transport that hasn't landed).
+- **Classic**: DDP → ATP → ASP → AFP — joins the AppleTalk router.
+- **Modern**: TCP → DSI → AFP (conventionally `:548`) — `[AFP].transports = ["tcp"]`
+  plus an explicit `tcp_addr` (never an implicit `:548`, matching SMB's direct-TCP
+  posture). See `spec/21-dsi.md` for the DSI wire format.
 
 CNID tracking: SQLite (needs the `sqlite` build tag) or an in-memory backend.
 AppleDouble metadata as `._name` sidecars or Netatalk-compatible `.AppleDouble/`
