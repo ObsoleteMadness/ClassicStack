@@ -536,6 +536,15 @@ A small status-item app (macOS menu bar, Windows system tray; shared logic in
 - **Quit** — closes the tray app; ClassicStack keeps running (use Shutdown to
   stop it)
 
+It also watches the control API's event stream (the same one the web admin's
+notification bell reads, `GET /subscribe?topics=log,message`) and raises a
+native notification for incoming Messenger/AFP messages and error-level log
+lines. **On Windows, clicking the notification opens the web UI** (it sets
+the toast's activation URL). **On macOS this is a visible-only banner** —
+AppleScript's `display notification` has no click-activation hook without a
+signed app using UNUserNotificationCenter, which this build deliberately
+avoids to stay cgo-free; click "Open Interface" instead.
+
 **macOS:** `make app-darwin` builds `dist/ClassicStack.app` — a menu-bar-only
 bundle (no Dock icon) wrapping `classicstackd`. Opening it starts ClassicStack
 if it isn't already running, provisioning a starter config with example

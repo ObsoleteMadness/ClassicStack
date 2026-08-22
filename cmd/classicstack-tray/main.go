@@ -5,19 +5,24 @@
 // is running, and offers Open Interface plus Start / Restart / Shutdown
 // against the existing web-admin control API (adapter/control/http),
 // depending on whether it's currently running. Quit only closes the tray
-// app — ClassicStack keeps running; use Shutdown to actually stop it.
+// app — ClassicStack keeps running; use Shutdown to actually stop it. It
+// also watches the control API's event stream (notify.go) and raises a
+// native notification for incoming Messenger/AFP messages and error-level
+// log lines, the same feed the web admin's notification bell reads.
 //
 // This file holds the platform-independent menu/state-machine logic. Each
 // OS supplies: startDaemon/daemonPath (launcher_*.go — how the underlying
 // process gets started), loadCredentials/saveCredentials/forgetCredentials/
 // promptCredentials/showAlert (credentials_*.go — credential storage and
 // native dialogs), trayIconPNG (icon_*.go), openInterface and recoveryHint
-// (open_*.go). On macOS this is packaged into ClassicStack.app alongside
-// classicstackd — see scripts/package-app-darwin.sh and `make app-darwin`.
-// On Windows it drives classicstack-svc.exe — see README.md.
+// (open_*.go), showNotification (notify_*.go). On macOS this is packaged
+// into ClassicStack.app alongside classicstackd — see
+// scripts/package-app-darwin.sh and `make app-darwin`. On Windows it drives
+// classicstack-svc.exe — see README.md.
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -113,6 +118,7 @@ func onReady(client *controlClient) func() {
 		}
 
 		go statusLoop(client, m, refresh)
+		go runNotifier(context.Background(), client)
 
 		go func() {
 			for {

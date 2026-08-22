@@ -6,6 +6,7 @@ require (
 	fyne.io/systray v1.12.2
 	github.com/danieljoos/wincred v1.2.3
 	github.com/fsnotify/fsnotify v1.9.0
+	github.com/go-toast/toast v0.0.0-20190211030409-01e6764cf0a4
 	github.com/google/gopacket v1.1.19
 	github.com/jacobsa/go-serial v0.0.0-20180131005756-15cf729a72d4
 	github.com/pelletier/go-toml/v2 v2.2.4
@@ -16,6 +17,7 @@ require (
 
 require (
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
+	github.com/nu7hatch/gouuid v0.0.0-20131221200532-179d4d0c4d8d // indirect
 )
 
 require (

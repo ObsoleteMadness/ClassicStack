@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,6 +13,11 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
 )
+
+// streamHTTPClient has no timeout, unlike controlClient.http (5s) — used
+// only for the long-lived SSE connection in notify.go, which would
+// otherwise get cut off mid-stream.
+var streamHTTPClient = &http.Client{}
 
 // errUnauthorized is returned by post when the control API rejects the
 // request for missing/bad HTTP Basic credentials (adapter/control/http/auth.go
@@ -146,6 +152,24 @@ func (c *controlClient) waitUntilStopped(timeout time.Duration) bool {
 
 func (c *controlClient) waitUntilRunning(timeout time.Duration) bool {
 	return c.waitUntil(timeout, func(s stackState) bool { return s != stateStopped })
+}
+
+// subscribe opens the control API's SSE event stream (adapter/control/http
+// handleSubscribe) for the topics notify.go cares about. The caller owns the
+// response body and must close it; ctx cancellation is how notify.go tears
+// down the connection.
+func (c *controlClient) subscribe(ctx context.Context) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/subscribe?topics=log,message", nil)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	user, pass := c.user, c.pass
+	c.mu.Unlock()
+	if user != "" {
+		req.SetBasicAuth(user, pass)
+	}
+	return streamHTTPClient.Do(req)
 }
 
 // restart triggers a graceful whole-process restart via
