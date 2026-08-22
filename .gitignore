@@ -20,6 +20,12 @@
 # Local/CI packaging output (make app-darwin, scripts/ci/package-release.sh)
 /dist/
 
+# Windows installer build output (packaging/windows/build.ps1 -> ISCC) and the
+# bundled vendor redistributables it stages from (see redist/README.md) — the
+# .exe half is already covered by the *.exe rule above.
+/packaging/windows/Output/
+/packaging/windows/redist/*.msi
+
 # macOS Finder metadata
 .DS_Store
 
