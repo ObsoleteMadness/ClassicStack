@@ -1,37 +1,21 @@
 name: Setup SPA
-description: Check out ClassicStack-web (Finder UI modules) and build the Vite SPA for go:embed.
-
-inputs:
-  web-repository:
-    description: ClassicStack-web GitHub repository (owner/name).
-    required: false
-    default: ObsoleteMadness/ClassicStack-web
-  web-ref:
-    description: ClassicStack-web git ref. Falls back to the default branch when missing.
-    required: false
-    default: feature/shared-finder-host
+description: Build the Vite SPA (Finder UI from the ClassicStack-web submodule) for go:embed.
 
 runs:
   using: composite
   steps:
-    # Vite aliases classicstack-web/* into this tree (see adapter/control/http/ui).
-    - name: Checkout ClassicStack-web
-      id: web_ref
-      continue-on-error: true
-      uses: actions/checkout@v7
-      with:
-        repository: ${{ inputs.web-repository }}
-        ref: ${{ inputs.web-ref }}
-        path: third_party/classicstack-web
-        persist-credentials: false
-
-    - name: Checkout ClassicStack-web (default branch)
-      if: steps.web_ref.outcome != 'success'
-      uses: actions/checkout@v7
-      with:
-        repository: ${{ inputs.web-repository }}
-        path: third_party/classicstack-web
-        persist-credentials: false
+    # The Finder UI comes from the third_party/classicstack-web submodule, which
+    # Vite aliases into this tree (see adapter/control/http/ui). Callers must
+    # check out with `submodules: recursive`; fail loudly rather than let tsc
+    # report a wall of unresolved classicstack-web/* imports.
+    - name: Check ClassicStack-web submodule
+      shell: bash
+      run: |
+        if [[ ! -f third_party/classicstack-web/src/ui/finder-window.ts ]]; then
+          echo "::error::third_party/classicstack-web is empty. Check out with 'submodules: recursive'." >&2
+          exit 1
+        fi
+        echo "spa: ClassicStack-web at $(git -C third_party/classicstack-web rev-parse --short HEAD)"
 
     - name: Setup Node
       uses: actions/setup-node@v7

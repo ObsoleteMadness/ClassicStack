@@ -1,0 +1,4 @@
+[submodule "third_party/classicstack-web"]
+	path = third_party/classicstack-web
+	url = https://github.com/ObsoleteMadness/ClassicStack-web.git
+	branch = main
