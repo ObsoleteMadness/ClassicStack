@@ -304,18 +304,25 @@ end;
 procedure ResolveVolumesPlaceholder;
 var
   ConfigFile, Contents, VolumesPath: string;
+  RawContents: AnsiString;
 begin
   ConfigFile := ExpandConstant('{commonappdata}\{#ConfigDirName}\server.toml');
   if not FileExists(ConfigFile) then
     Exit;
-  if not LoadStringFromFile(ConfigFile, Contents) then
+  // LoadStringFromFile's second parameter is `var S: AnsiString` — a var (by-ref)
+  // parameter requires an EXACT type match in Pascal, so passing the plain `string`
+  // (Unicode String, the Inno Setup 6 default) used everywhere else in this
+  // procedure is a compile-time type mismatch. Load into a dedicated AnsiString,
+  // then convert once.
+  if not LoadStringFromFile(ConfigFile, RawContents) then
     Exit;
+  Contents := String(RawContents);
   if Pos('__VOLUMES__', Contents) = 0 then
     Exit;
   VolumesPath := ExpandConstant('{commonappdata}\{#ConfigDirName}\Volumes');
   StringChangeEx(VolumesPath, '\', '/', True);
   StringChangeEx(Contents, '__VOLUMES__', VolumesPath, True);
-  SaveStringToFile(ConfigFile, Contents, False);
+  SaveStringToFile(ConfigFile, AnsiString(Contents), False);
 end;
 
 // --- Wizard/step wiring ----------------------------------------------------
