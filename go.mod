@@ -4,6 +4,7 @@ go 1.25.12
 
 require (
 	fyne.io/systray v1.12.2
+	github.com/danieljoos/wincred v1.2.3
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/google/gopacket v1.1.19
 	github.com/jacobsa/go-serial v0.0.0-20180131005756-15cf729a72d4

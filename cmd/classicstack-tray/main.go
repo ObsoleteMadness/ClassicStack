@@ -1,14 +1,20 @@
-//go:build darwin
+//go:build darwin || windows
 
-// Command classicstack-tray is the macOS menu bar app for ClassicStack: a
-// status item that reports whether the ClassicStack daemon is running, and
-// offers Open Interface plus Start / Restart / Shutdown against the existing
-// web-admin control API (adapter/control/http), depending on whether the
-// daemon is currently running. Quit only closes the menu bar app —
-// ClassicStack (and, once installed, its LaunchAgent) keeps running; use
-// Shutdown to actually stop it. It is packaged into ClassicStack.app
-// alongside the classicstackd binary it drives — see
-// scripts/package-app-darwin.sh and `make app-darwin`.
+// Command classicstack-tray is the menu bar / system tray app for
+// ClassicStack: a status item that reports whether the ClassicStack process
+// is running, and offers Open Interface plus Start / Restart / Shutdown
+// against the existing web-admin control API (adapter/control/http),
+// depending on whether it's currently running. Quit only closes the tray
+// app — ClassicStack keeps running; use Shutdown to actually stop it.
+//
+// This file holds the platform-independent menu/state-machine logic. Each
+// OS supplies: startDaemon/daemonPath (launcher_*.go — how the underlying
+// process gets started), loadCredentials/saveCredentials/forgetCredentials/
+// promptCredentials/showAlert (credentials_*.go — credential storage and
+// native dialogs), trayIconPNG (icon_*.go), openInterface and recoveryHint
+// (open_*.go). On macOS this is packaged into ClassicStack.app alongside
+// classicstackd — see scripts/package-app-darwin.sh and `make app-darwin`.
+// On Windows it drives classicstack-svc.exe — see README.md.
 package main
 
 import (
@@ -16,7 +22,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"time"
 
 	"fyne.io/systray"
@@ -143,8 +148,7 @@ func start(client *controlClient) {
 		return
 	}
 	if !client.waitUntilRunning(actionTimeout) {
-		showAlert("ClassicStack", "ClassicStack was started but isn't answering yet — check "+
-			"~/Library/Application Support/ClassicStack/classicstackd.log")
+		showAlert("ClassicStack", "ClassicStack was started but isn't answering yet — "+recoveryHint())
 	}
 }
 
@@ -156,9 +160,7 @@ func stop(client *controlClient, verb string) {
 		return
 	}
 	if !client.waitUntilStopped(actionTimeout) {
-		showAlert("ClassicStack", "ClassicStack did not stop — something may be relaunching it "+
-			"(e.g. a classicstackd LaunchAgent with KeepAlive). Check "+
-			"~/Library/Application Support/ClassicStack/classicstackd.log and `launchctl list | grep classicstack`.")
+		showAlert("ClassicStack", "ClassicStack did not stop — something may be relaunching it. "+recoveryHint())
 	}
 }
 
@@ -223,12 +225,6 @@ func performAction(client *controlClient, verb string, action func() error) bool
 		fmt.Fprintf(os.Stderr, "classicstack-tray: %v\n", err)
 	}
 	return true
-}
-
-func openInterface(baseURL string) {
-	if err := exec.Command("open", baseURL).Start(); err != nil { // #nosec G204 -- fixed "open" + our own control base URL, not attacker input
-		fmt.Fprintf(os.Stderr, "classicstack-tray: opening %s failed: %v\n", baseURL, err)
-	}
 }
 
 func onExit() {}

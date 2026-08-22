@@ -2,7 +2,7 @@
 #
 # A missing/empty config already boots fine on ClassicStack's built-in
 # defaults (every compiled-in service starts, just with zero shares) — this
-# template only adds three example shares so a fresh install has something to
+# template only adds four example shares so a fresh install has something to
 # actually connect to. The placeholder token below (see launcher.go) is
 # substituted by classicstack-tray at first run with the real path to the
 # copy of this bundle's Volumes folder it provisions under

@@ -518,21 +518,39 @@ classicstackd install -config ~/Library/Application\ Support/ClassicStack/server
 classicstackd uninstall   # unload + remove the LaunchAgent
 ~~~
 
-### macOS menu bar app — `ClassicStack.app`
+### Menu bar / system tray app — `cmd/classicstack-tray`
 
-`make app-darwin` builds `dist/ClassicStack.app`: a menu-bar-only app (no Dock
-icon) bundling `classicstackd` with a status item (`cmd/classicstack-tray`).
-Opening it starts ClassicStack if it isn't already running (config and logs
-under `~/Library/Application Support/ClassicStack`) and shows:
+A small status-item app (macOS menu bar, Windows system tray; shared logic in
+`cmd/classicstack-tray/*.go`, platform-specific pieces in the `_darwin`/
+`_windows` files) that shows:
 
 - **Status** — Running / Stopped / "complete setup via Open Interface"
 - **Open Interface** — opens the web admin UI in your default browser
-- **Restart ClassicStack** / **Shutdown ClassicStack** — once an admin
-  password is set (via the web UI's first-run setup), these prompt for it
-  once and remember it in the login Keychain
-- **Quit** — closes the menu bar app; ClassicStack keeps running (use Shutdown to stop it)
+- **Start ClassicStack** — shown only when stopped
+- **Restart ClassicStack** / **Shutdown ClassicStack** — shown only when
+  running; once an admin password is set (via the web UI's first-run setup),
+  these prompt for it once and remember it (macOS: login Keychain; Windows:
+  Credential Manager). Shutdown/Quit verify the process actually stopped
+  rather than trusting the HTTP response alone, since both routes act
+  asynchronously.
+- **Quit** — closes the tray app; ClassicStack keeps running (use Shutdown to
+  stop it)
 
-This is a local/manual build, unsigned, and not part of CI release packaging.
+**macOS:** `make app-darwin` builds `dist/ClassicStack.app` — a menu-bar-only
+bundle (no Dock icon) wrapping `classicstackd`. Opening it starts ClassicStack
+if it isn't already running, provisioning a starter config with example
+AFP/SMB/NCP/EtherDFS shares under `~/Library/Application Support/ClassicStack`
+on first run. Local/manual build, unsigned, not part of CI release packaging.
+
+**Windows:** `classicstack-tray.exe` drives `classicstack-svc.exe` — see
+`packaging/windows` for the installer, which can register it to start at
+sign-in. If a `ClassicStack` Windows service is already installed and
+running, the tray just monitors/controls it over the control API; otherwise
+it self-starts `classicstack-svc.exe run` directly under the signed-in user
+(no elevation), with its own config under `%LOCALAPPDATA%\ClassicStack`.
+Installing/uninstalling the actual Windows service remains the separate,
+elevated `classicstack-svc.exe install`/`uninstall` step documented above —
+the tray doesn't perform elevated actions itself.
 
 ## Useful commands
 
