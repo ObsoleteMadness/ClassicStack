@@ -31,7 +31,7 @@ GOSEC_PKG       := github.com/securego/gosec/v2/cmd/gosec@latest
 # the CI Quality job exactly.
 GOSEC_PKGS := ./service/macip/... ./service/macgarden/... ./service/afpfs/macgarden/...
 
-.PHONY: build build-local build-svc build-mount app-darwin spa test test-race test-tags lint quality vet vuln gosec fuzz clean \
+.PHONY: build build-local build-svc build-mount app-darwin installer-windows spa test test-race test-tags lint quality vet vuln gosec fuzz clean \
         harness archtest tinygo-gate
 
 # Vite SPA (Finder + admin). Required for TAGS that embed webui (all, webui).
@@ -72,6 +72,14 @@ endif
 # local build, not part of CI release packaging.
 app-darwin:
 	bash scripts/package-app-darwin.sh
+
+# installer-windows builds every Windows binary into ./bin and compiles
+# packaging/windows/ClassicStack.iss into a Setup .exe (packaging/windows/Output).
+# Windows only: needs pwsh and ISCC (Inno Setup 6, https://jrsoftware.org/isinfo.php)
+# on PATH. Not part of CI release packaging; see packaging/windows/build.ps1 and
+# packaging/windows/redist/README.md (bundled Npcap/WinFsp installers).
+installer-windows:
+	pwsh packaging/windows/build.ps1
 
 test:
 	go test -tags "$(TAGS)" ./...

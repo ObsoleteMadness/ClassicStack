@@ -13,6 +13,7 @@ import (
 	"golang.org/x/sys/windows/svc/eventlog"
 	"golang.org/x/sys/windows/svc/mgr"
 
+	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/buildinfo"
 	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/cli"
 )
 
@@ -63,6 +64,7 @@ Usage:
   classicstack-svc stop                     stop the registered service
   classicstack-svc status                   report the service state
   classicstack-svc run -config <path>       run in this console (debugging)
+  classicstack-svc version                  print version information
 `)
 }
 
@@ -87,6 +89,9 @@ func dispatch(cmd string, args []string, version cli.Version) error {
 	case "run":
 		cfg, _ := configArg(args) // empty is allowed (server.toml auto-load)
 		return runService(cfg, version)
+	case "version":
+		buildinfo.Print(os.Stdout, "classicstack-svc", version.Version, version.Commit, version.Date)
+		return nil
 	case "-h", "--help", "help":
 		usage()
 		return nil
@@ -283,6 +288,19 @@ func stateString(s svc.State) string {
 // (server.toml auto-load). When not running under the SCM (console run for
 // debugging) svc.Run fails, so we fall back to running the stack directly.
 func runService(cfgPath string, version cli.Version) error {
+	// The SCM always starts services with CWD %SystemRoot%\System32 (there is
+	// no working-directory field in CreateService), so anything that resolves
+	// a relative path against the process CWD — extmap.conf's DefaultExtMapPath,
+	// [Client].log_file, etc. — would silently miss. cfgPath is already
+	// absolute (configArg ran it through filepath.Abs), so anchoring CWD to
+	// its directory makes those relative paths resolve alongside server.toml
+	// (e.g. CommonApplicationData\ClassicStack) instead of System32.
+	if cfgPath != "" {
+		if err := os.Chdir(filepath.Dir(cfgPath)); err != nil {
+			return fmt.Errorf("changing to config directory: %w", err)
+		}
+	}
+
 	h := &serviceHandler{cfgPath: cfgPath, version: version}
 
 	elog, err := eventlog.Open(serviceName)

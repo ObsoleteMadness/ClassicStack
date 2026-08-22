@@ -1,0 +1,38 @@
+# ClassicStack — starter config for the Windows installer.
+#
+# A missing/empty config already boots fine on ClassicStack's built-in
+# defaults (every compiled-in service starts, just with zero shares) — this
+# template only adds four example shares so a fresh install has something to
+# actually connect to. The __VOLUMES__ placeholder below is substituted by
+# the installer with the real path to this install's Volumes folder under
+# CommonApplicationData (normally C:/ProgramData/ClassicStack/Volumes).
+#
+# Edit or remove any of this from the web admin UI (http://localhost:1984),
+# or by hand here — see server.toml.example next to this file for the full
+# set of sections/options, including the [[interface]]/[[ethertalk]] ports
+# needed for AppleTalk/IPX/NetBEUI over Npcap.
+
+[[afpvolumes]]
+name = "Public"
+fs_type = "local_fs"
+path = "__VOLUMES__/Public"
+read_only = false
+
+[[smbshares]]
+name = "public"
+description = "Public share"
+fs_type = "local_fs"
+path = "__VOLUMES__/Public"
+read_only = false
+
+[[ncpvolumes]]
+name = "SYS"
+fs_type = "local_fs"
+path = "__VOLUMES__/SYS"
+read_only = false
+
+[[etherdfsdrives]]
+name = "E"
+fs_type = "local_fs"
+path = "__VOLUMES__/DOS"
+read_only = false
