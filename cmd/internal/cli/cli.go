@@ -24,7 +24,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	gort "runtime"
 	"strings"
 	"sync/atomic"
@@ -315,7 +314,13 @@ func relaunchProcess(_ []string) error {
 // script just points -config at the UCI file. The check is purely on the path string
 // (the file need not exist yet — a missing file still boots the default model).
 func pickCodec(configPath string) config.Codec {
-	lower := strings.ToLower(filepath.ToSlash(configPath))
+	// A manual backslash→slash replace, NOT filepath.ToSlash: ToSlash only converts
+	// the BUILD platform's own separator, so it is a no-op for a Windows-style
+	// "C:\etc\config\classicstack" path on a Linux/macOS build — this classification
+	// must work the same regardless of which platform is doing the classifying (an
+	// operator can pass a Windows-style -config path to a cross-built binary, and the
+	// test suite exercises Windows-shaped paths on every CI runner).
+	lower := strings.ToLower(strings.ReplaceAll(configPath, `\`, "/"))
 	switch {
 	case strings.HasSuffix(lower, ".uci"),
 		strings.HasSuffix(lower, ".config"),     // the repo's openwrt/files/classicstack.config

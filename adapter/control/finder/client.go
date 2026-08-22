@@ -117,7 +117,7 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 	if s.reapStop == nil {
 		s.reapStop = make(chan struct{})
-		go s.reapLoop()
+		go s.reapLoop(s.reapStop)
 	}
 	s.mu.Unlock()
 	if !cfg.Enabled {

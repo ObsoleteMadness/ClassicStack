@@ -116,7 +116,7 @@ func New(src componentSource, logger log.Logger) *Service {
 		s.idle = cfg.IdleDuration()
 	}
 	s.reapStop = make(chan struct{})
-	go s.reapLoop()
+	go s.reapLoop(s.reapStop)
 	return s
 }
 
@@ -155,12 +155,18 @@ func (s *Service) bindModelLink() {
 	}
 }
 
-func (s *Service) reapLoop() {
+// reapLoop takes stop as a parameter (rather than reading s.reapStop each iteration)
+// so it never touches the struct field again after the goroutine starts: Start/
+// shutdown() reassign s.reapStop under s.mu on restart/stop, and an unlocked read of
+// that field from this goroutine would race with those writes even though they hold
+// the lock — a channel VALUE captured once is enough, since closing it (shutdown())
+// is visible to this goroutine's local copy without re-reading the field.
+func (s *Service) reapLoop(stop chan struct{}) {
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
 	for {
 		select {
-		case <-s.reapStop:
+		case <-stop:
 			return
 		case <-t.C:
 			s.reapIdle()
