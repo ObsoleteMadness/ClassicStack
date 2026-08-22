@@ -35,7 +35,14 @@ agents or people working in parallel.
 
 ## Status
 
-- Phase 1: in progress — Group A complete (A1–A4); Group B wave 3 complete (B1/B3/B6/B7/B9)
-- Phase 2: not started
+- Phase 1: ✅ complete (harness, interfaces, placeholders, all groups A–E)
+- Phase 2: ✅ complete except **M7a** (AFP-over-TCP/DSI transport — `adapter/dsi` was never built;
+  `AFP.TCPAddr`/`transports = ["tcp"]` round-trip in config but stay inert). The cutover (M10)
+  shipped 2026-06-18: `internal/app` and the legacy `port`/`protocol`/`router`/`service`/`config`/
+  `capture`/`pkg` tree are deleted; `cmd/classicstack` runs on the new ring. Everything built since
+  cutover (the file client, the web admin SPA, the tray app, TashTalk/LToUDP LocalTalk, direct-hosted
+  SMB-over-IPX, the Windows installer, …) is feature work on top of the new architecture, not part of
+  the migration itself. See [TODO.md](TODO.md) for the per-step record — re-verified against the
+  running code on 2026-08-23.
 
 See [TODO.md](TODO.md) for per-step status.

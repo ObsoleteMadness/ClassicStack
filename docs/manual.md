@@ -1,6 +1,17 @@
+---
+title: "Full Manual"
+weight: 8
+---
+
 # ClassicStack Manual
 
 First-pass operator and developer guide. For wire-level protocol notes see [`spec/`](../spec/); for the runtime map see [`ARCHITECTURE.md`](../ARCHITECTURE.md). Configuration field detail lives in [`server.toml.example`](../server.toml.example).
+
+Focused documents split out of this manual: [quickstart.md](quickstart.md),
+[build.md](build.md) (build tags), [config.md](config.md) (full config key reference),
+[protocols.md](protocols.md) (supported protocol versions), [netboot.md](netboot.md),
+[testing.md](testing.md), and [web-ui.md](web-ui.md) (control API + `classicstack-web`
+reuse).
 
 ---
 
@@ -127,124 +138,33 @@ services          → AFP, SMB, NCP, EtherDFS, MacIP, … riding those ports
 
 Only sections whose component was compiled in are honoured; unknown sections are ignored.
 
-### Identity and logging
-
-```toml
-[identity]
-hostname = "classicstack"     # also AFP / NetBIOS computer name when those run
-workgroup = "WORKGROUP"
-description = "ClassicStack file server"
-
-[logging]
-Level = "info"                # debug | info | warn | error
-```
-
-### Router and interfaces
+The one piece worth internalising before anything else: **router membership is explicit,
+not implicit.** A port (`[[ethertalk]]`, `[[ltoudp]]`, `[[tashtalk]]`) can be `enabled`
+and still run *standalone* — its own segment, reachable, capturable — without joining
+the AppleTalk router's RTMP/ZIP and inter-port forwarding. Only ports named in
+`[router].members` actually route:
 
 ```toml
 [router]
 default_zone = "EtherTalk Network"
 members = ["EtherTalk", "LToUDP"]   # empty = no port joins (explicit-over-implicit)
-
-[[interface]]
-Name = "br-lan"
-Kind = "bridge"
-Backend = "pcap"              # pcap | tap | raw
-default = true
-# Device = "eth0"             # host NIC; Windows: \Device\NPF_{GUID}
-# hw_address = ""             # blank = NIC's own MAC (required on Wi‑Fi)
 ```
 
-Leave `hw_address` blank on Wi‑Fi: access points drop frames not sourced from the host NIC. Many consumer APs also filter non-IP ethertypes — prefer a wired NIC or an AP that bridges AppleTalk/IPX/NetBEUI.
-
-### Ports (examples)
-
-```toml
-[[ethertalk]]
-iface = "br-lan"
-enabled = true
-seed_network = 3
-seed_network_end = 5
-seed_zone = "EtherTalk Network"
-
-[[ltoudp]]
-enabled = true
-seed_network = 1
-seed_zone = "LToUDP Network"
-
-[[tashtalk]]
-enabled = false
-device = "/dev/ttyAMA0"
-baud = 1000000
-
-[[ipx]]
-iface = "br-lan"
-enabled = false
-ipx_frame_type = "ethernet_ii"   # ethernet_ii | 802.3 | 802.2
-
-[[netbeui]]
-iface = "br-lan"
-enabled = false
-```
-
-A port listed in `[router].members` joins the AppleTalk router; an enabled but unlisted AppleTalk port still comes up **standalone** (its own segment, no RTMP/ZIP forwarding).
-
-### Gateways
-
-- **`[MacIP]`** — bridge (proxy-ARP onto the LAN) or `mode = "nat"` (private subnet; prefer NAT on Wi‑Fi). See `spec/14-macip-gateway.md`.
-- **`[IPXGW]`** — MacIPX gateway on DDP socket 78; `ipx_network` should match the Ethernet IPX segment when MacIPX clients should see it. See `spec/15-macipx-gateway.md`.
-
-### File shares
-
-Array-of-tables, one entry per volume/share/drive:
-
-| Section | Protocol |
-|---|---|
-| `[[afpvolumes]]` | AFP |
-| `[[smbshares]]` | SMB |
-| `[[ncpvolumes]]` | NCP (needs enabled `[[ipx]]`) |
-| `[[etherdfsdrives]]` | EtherDFS (plus singleton `[EtherDFS]`) |
-
-Common fields: `name`, `path`, `fs_type` (`local_fs`, …), `read_only`, `allowed_users`. SMB/EtherDFS also take `meta_backend` for 8.3 names / DOS attributes / CNIDs. See `spec/16-storage-seam.md`.
-
-Optional singletons: `[AFP]`, `[NCP]`, `[EtherDFS]`, `[Netboot]`.
-
-### Web UI, in-process client, FUSE
-
-```toml
-[http]
-enabled = true
-addr = ":1984"
-
-[Client]                      # off by default — outbound LAN client + Finder backend
-enabled = false
-iface = "br-lan"
-services = ["afp", "smb", "ncp", "etherdfs"]
-max_idle_minutes = 10
-mount = false                 # allow FUSE/WinFsp host mounts from the process
-
-[FUSE]
-mount_timeout_seconds = 30
-# [[fusevolumes]]             # auto-mount at startup when Client.mount = true
-# remote = "afp://user@Server/Vol"
-# mountpoint = "/Volumes/Vol"
-```
-
-`[adminauth]` is written by first-run web setup (salted PBKDF2 hash). Leave it absent until setup completes. Prefer loopback or TLS in front of the listen address.
-
-Full commented reference: [`server.toml.example`](../server.toml.example).
+Everything else — the interface/bridge namespace, every port's fields, every service
+singleton and its shares, the web UI/client/FUSE keys — is documented section-by-section
+in **[config.md](config.md)**, generated from the same `server.toml.example` linked
+above. This manual won't repeat it.
 
 ---
 
 ## 4. Web UI (including Finder)
 
-Available in builds with `-tags webui` (included in `-tags all`). Compile the SPA with Node 20+:
-
-```bash
-make spa
-```
-
-Then open `http://127.0.0.1:1984/` (or whatever `[http].addr` / `-http` you set).
+Available in builds with `-tags webui` (included in `-tags all`); open
+`http://127.0.0.1:1984/` (or whatever `[http].addr` / `-http` you set) once running. For
+how the SPA is built (`make spa`) and how it's put together — the transport-agnostic
+`core/control.Plane` contract, its `http`/`ubus`/`inproc` adapters, and how the UI reuses
+components with the standalone LocalTalk PWA via `classicstack-web` — see
+[web-ui.md](web-ui.md). This section is the operator's tour of what's on screen.
 
 ### First run
 
@@ -283,7 +203,7 @@ Useful Finder affordances:
 
 Notifications (bell) surface AFP login/server messages and NetBIOS Messenger pop-ups when the stack receives them.
 
-The same operations are available through the transport-agnostic control API (`pkg/control` / HTTP adapter under `adapter/control/http`).
+The same operations are available through the transport-agnostic control API (`core/control.Plane`, driven here by the HTTP adapter under `adapter/control/http`) — see [web-ui.md](web-ui.md).
 
 ---
 
