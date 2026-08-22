@@ -24,7 +24,13 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
 
 	"github.com/ObsoleteMadness/ClassicStack/hardware/peripherals/lan8720a"
-	_ "github.com/ObsoleteMadness/ClassicStack/hardware/peripherals/sdcard"
+	// hardware/peripherals/sdcard is disabled here: it imports tinygo.org/x/drivers/fatfs,
+	// which does not exist in any released tinygo.org/x/drivers version, and the only real
+	// TinyGo FAT implementation found (tinygo.org/x/tinyfs/fatfs) is a cgo binding — cgo is
+	// not usable on TinyGo's baremetal ESP32/RP2040 targets. Re-enable once a genuine
+	// pure-Go (or TinyGo-cgo-capable) FAT driver backs it; until then this target has no
+	// SD-card fs_type.
+	// _ "github.com/ObsoleteMadness/ClassicStack/hardware/peripherals/sdcard"
 )
 
 const (

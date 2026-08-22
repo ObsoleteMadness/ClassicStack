@@ -17,7 +17,9 @@ require (
 
 require (
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
+	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
 	github.com/nu7hatch/gouuid v0.0.0-20131221200532-179d4d0c4d8d // indirect
+	tinygo.org/x/drivers v0.35.0 // indirect
 )
 
 require (
@@ -29,7 +31,7 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/winfsp/cgofuse v1.6.0
 	github.com/winfsp/go-winfsp v1.0.3
-	golang.org/x/exp v0.0.0-20240119083558-1b970713d09a // indirect
+	golang.org/x/exp v0.0.0-20241204233417-43b7b7cde48d // indirect
 	golang.org/x/mod v0.35.0 // indirect
 	golang.org/x/tools v0.44.0 // indirect
 	modernc.org/libc v1.61.13 // indirect

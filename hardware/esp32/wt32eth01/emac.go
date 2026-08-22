@@ -1,6 +1,6 @@
 //go:build esp32 && wt32eth01
 
-package wt32eth01
+package main
 
 /*
 #cgo LDFLAGS: -lesp_eth
