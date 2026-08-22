@@ -2,6 +2,7 @@ package ipx
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"sync"
 	"testing"
@@ -279,7 +280,7 @@ func TestReconfigureIfaceChangeNeedsRestart(t *testing.T) {
 	if err := cfg.ApplyConfig(&port.Section{SKey: Name, Iface: "eth0", IsEnabled: false}); err != nil {
 		t.Errorf("same-iface reconfigure should apply live, got %v", err)
 	}
-	if err := cfg.ApplyConfig(&port.Section{SKey: Name, Iface: "eth1", IsEnabled: true}); err != component.ErrNeedsRestart {
+	if err := cfg.ApplyConfig(&port.Section{SKey: Name, Iface: "eth1", IsEnabled: true}); !errors.Is(err, component.ErrNeedsRestart) {
 		t.Errorf("iface change err = %v, want ErrNeedsRestart", err)
 	}
 }

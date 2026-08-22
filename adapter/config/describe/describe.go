@@ -93,7 +93,7 @@ func Describe(sc config.SectionSchema) config.SectionInfo {
 // toml:"name,omitempty" supplies TOML; the Go field name is Key. toml:"-" skips.
 func FieldsOf(sec any) []config.FieldInfo {
 	v := reflect.ValueOf(sec)
-	if v.Kind() == reflect.Ptr {
+	if v.Kind() == reflect.Pointer {
 		if v.IsNil() {
 			return nil
 		}

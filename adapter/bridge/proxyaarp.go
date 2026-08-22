@@ -161,7 +161,7 @@ func (p *ProxyAARP) forward(src, dst link.FrameLink, rewrite bool, stopCh chan s
 
 		frame, err := src.Read()
 		if err != nil {
-			if err == link.ErrTimeout {
+			if errors.Is(err, link.ErrTimeout) {
 				continue
 			}
 			return // ErrClosed or terminal — exit; Stop/next Start re-establishes it
@@ -177,7 +177,7 @@ func (p *ProxyAARP) forward(src, dst link.FrameLink, rewrite bool, stopCh chan s
 			}
 		}
 		if werr := dst.Write(out); werr != nil {
-			if werr == link.ErrClosed {
+			if errors.Is(werr, link.ErrClosed) {
 				return
 			}
 			// A transient write error (timeout / dropped frame) is logged and skipped;

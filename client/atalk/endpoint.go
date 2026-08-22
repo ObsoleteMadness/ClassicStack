@@ -14,6 +14,7 @@
 package atalk
 
 import (
+	"errors"
 	"sync"
 	"time"
 
@@ -160,7 +161,7 @@ func (e *Endpoint) readLoop() {
 	for {
 		d, err := e.link.ReadDatagram()
 		if err != nil {
-			if err == link.ErrTimeout {
+			if errors.Is(err, link.ErrTimeout) {
 				select {
 				case <-e.done:
 					return

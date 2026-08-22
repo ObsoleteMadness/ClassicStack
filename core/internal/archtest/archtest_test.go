@@ -2,6 +2,7 @@ package archtest
 
 import (
 	"encoding/json"
+	"errors"
 	"os/exec"
 	"strings"
 	"testing"
@@ -47,7 +48,8 @@ func TestCoreImportGraph(t *testing.T) {
 	cmd := exec.Command("go", "list", "-deps", "-json", "github.com/ObsoleteMadness/ClassicStack/core/...")
 	out, err := cmd.Output()
 	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
+		ee := &exec.ExitError{}
+		if errors.As(err, &ee) {
 			t.Fatalf("go list failed: %v\nstderr:\n%s", err, ee.Stderr)
 		}
 		t.Fatalf("go list failed: %v", err)

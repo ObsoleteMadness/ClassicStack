@@ -2,6 +2,7 @@ package aarp
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -75,19 +76,19 @@ func TestEncodeWireLayout(t *testing.T) {
 func TestDecodeRejectsNonEtherTalk(t *testing.T) {
 	good := Probe(mac(1, 2, 3, 4, 5, 6), ProtoAddr{Network: 1, Node: 2}).Encode(nil)
 
-	if _, err := Decode(good[:packetLen-1]); err != ErrShortAARP {
+	if _, err := Decode(good[:packetLen-1]); !errors.Is(err, ErrShortAARP) {
 		t.Fatalf("short err = %v, want ErrShortAARP", err)
 	}
 
 	badHW := append([]byte(nil), good...)
 	badHW[1] = 0x06 // hardware type != Ethernet(1)
-	if _, err := Decode(badHW); err != ErrBadAARP {
+	if _, err := Decode(badHW); !errors.Is(err, ErrBadAARP) {
 		t.Fatalf("bad-hwtype err = %v, want ErrBadAARP", err)
 	}
 
 	badLen := append([]byte(nil), good...)
 	badLen[4] = 0x08 // hardware addr len != 6
-	if _, err := Decode(badLen); err != ErrBadAARP {
+	if _, err := Decode(badLen); !errors.Is(err, ErrBadAARP) {
 		t.Fatalf("bad-hwlen err = %v, want ErrBadAARP", err)
 	}
 }

@@ -2,6 +2,7 @@ package fuse
 
 import (
 	"bytes"
+	"errors"
 	iofs "io/fs"
 	"os"
 	"testing"
@@ -117,7 +118,7 @@ func TestSidecarModeHidesNativeXattrs(t *testing.T) {
 	if len(names) != 0 {
 		t.Errorf("sidecar mode advertised xattrs: %v", names)
 	}
-	if _, err := a.Getxattr("/doc", xattrAppleFinderInfo); err != errNoAttr {
+	if _, err := a.Getxattr("/doc", xattrAppleFinderInfo); !errors.Is(err, errNoAttr) {
 		t.Errorf("Getxattr: got %v, want errNoAttr", err)
 	}
 }

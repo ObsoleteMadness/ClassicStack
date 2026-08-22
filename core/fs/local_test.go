@@ -51,7 +51,7 @@ func TestLocalFSRoundTrip(t *testing.T) {
 		t.Fatalf("OpenFile: %v", err)
 	}
 	got := make([]byte, len(want))
-	if _, err := rf.ReadAt(got, 0); err != nil && err != io.EOF {
+	if _, err := rf.ReadAt(got, 0); err != nil && !errors.Is(err, io.EOF) {
 		t.Fatalf("ReadAt: %v", err)
 	}
 	rf.Close()

@@ -72,7 +72,7 @@ func (p *scriptPeer) readInto() {
 	for {
 		frame, err := p.fl.Read()
 		if err != nil {
-			if err == link.ErrTimeout {
+			if errors.Is(err, link.ErrTimeout) {
 				continue
 			}
 			close(p.in)

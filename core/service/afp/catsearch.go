@@ -1,6 +1,8 @@
 package afp
 
 import (
+	"errors"
+
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 )
@@ -95,7 +97,7 @@ func (s *Service) afpCatSearch(a *afpSession, block []byte) ([]byte, int32) {
 
 	results, next, err := searcher.CatSearch(crit, cursor)
 	if err != nil {
-		if err == fs.ErrCatSearchUnsupported {
+		if errors.Is(err, fs.ErrCatSearchUnsupported) {
 			return nil, afpErrCallNotSuppt
 		}
 		return nil, afpErrMiscErr

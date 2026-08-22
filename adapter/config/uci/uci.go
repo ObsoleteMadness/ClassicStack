@@ -143,7 +143,7 @@ func sortStrings(s []string) {
 
 func (c *Codec) marshalSection(buf *bytes.Buffer, typeName, name string, sec any) error {
 	v := reflect.ValueOf(sec)
-	if v.Kind() == reflect.Ptr {
+	if v.Kind() == reflect.Pointer {
 		v = v.Elem()
 	}
 	if v.Kind() != reflect.Struct {
@@ -151,9 +151,9 @@ func (c *Codec) marshalSection(buf *bytes.Buffer, typeName, name string, sec any
 	}
 
 	if name != "" {
-		buf.WriteString(fmt.Sprintf("config %s '%s'\n", typeName, name))
+		fmt.Fprintf(buf, "config %s '%s'\n", typeName, name)
 	} else {
-		buf.WriteString(fmt.Sprintf("config %s\n", typeName))
+		fmt.Fprintf(buf, "config %s\n", typeName)
 	}
 
 	marshalStructFields(buf, v)
@@ -195,21 +195,21 @@ func marshalStructFields(buf *bytes.Buffer, v reflect.Value) {
 		}
 		switch fVal.Kind() {
 		case reflect.String:
-			buf.WriteString(fmt.Sprintf("\toption %s '%s'\n", key, escapeQuote(fVal.String())))
+			fmt.Fprintf(buf, "\toption %s '%s'\n", key, escapeQuote(fVal.String()))
 		case reflect.Bool:
 			valStr := "0"
 			if fVal.Bool() {
 				valStr = "1"
 			}
-			buf.WriteString(fmt.Sprintf("\toption %s '%s'\n", key, valStr))
+			fmt.Fprintf(buf, "\toption %s '%s'\n", key, valStr)
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			buf.WriteString(fmt.Sprintf("\toption %s '%d'\n", key, fVal.Int()))
+			fmt.Fprintf(buf, "\toption %s '%d'\n", key, fVal.Int())
 		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			buf.WriteString(fmt.Sprintf("\toption %s '%d'\n", key, fVal.Uint()))
+			fmt.Fprintf(buf, "\toption %s '%d'\n", key, fVal.Uint())
 		case reflect.Slice:
 			if fVal.Type().Elem().Kind() == reflect.String {
 				for j := 0; j < fVal.Len(); j++ {
-					buf.WriteString(fmt.Sprintf("\tlist %s '%s'\n", key, escapeQuote(fVal.Index(j).String())))
+					fmt.Fprintf(buf, "\tlist %s '%s'\n", key, escapeQuote(fVal.Index(j).String()))
 				}
 			}
 		}
@@ -331,7 +331,7 @@ func applyInstanceName(sec config.Section, blockName string) {
 		return
 	}
 	v := reflect.ValueOf(sec)
-	if v.Kind() == reflect.Ptr {
+	if v.Kind() == reflect.Pointer {
 		v = v.Elem()
 	}
 	if v.Kind() != reflect.Struct {
@@ -444,17 +444,18 @@ func tokenize(line string) []string {
 				current.WriteRune(r)
 			}
 		} else {
-			if r == '\'' || r == '"' {
+			switch r {
+			case '\'', '"':
 				inQuote = true
 				quoted = true
 				quoteChar = r
-			} else if r == ' ' || r == '\t' {
+			case ' ', '\t':
 				if current.Len() > 0 || quoted {
 					tokens = append(tokens, current.String())
 					current.Reset()
 					quoted = false
 				}
-			} else {
+			default:
 				current.WriteRune(r)
 			}
 		}
@@ -467,7 +468,7 @@ func tokenize(line string) []string {
 
 func unmarshalStruct(sec uciSection, dest any) error {
 	v := reflect.ValueOf(dest)
-	if v.Kind() != reflect.Ptr || v.Elem().Kind() != reflect.Struct {
+	if v.Kind() != reflect.Pointer || v.Elem().Kind() != reflect.Struct {
 		return fmt.Errorf("dest must be a pointer to a struct")
 	}
 	return unmarshalStructFields(sec, v.Elem())

@@ -2,6 +2,7 @@ package netbios
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -34,11 +35,11 @@ func TestSessionPacketRoundTrip(t *testing.T) {
 
 func TestDecodeSessionPacketErrors(t *testing.T) {
 	t.Parallel()
-	if _, err := DecodeSessionPacket([]byte{0x00, 0x00}); err != ErrShortSession {
+	if _, err := DecodeSessionPacket([]byte{0x00, 0x00}); !errors.Is(err, ErrShortSession) {
 		t.Errorf("short: err = %v, want ErrShortSession", err)
 	}
 	// Header claims 100 bytes but only the 4-byte header is present.
-	if _, err := DecodeSessionPacket([]byte{0x00, 0x00, 0x00, 0x64}); err != ErrTruncated {
+	if _, err := DecodeSessionPacket([]byte{0x00, 0x00, 0x00, 0x64}); !errors.Is(err, ErrTruncated) {
 		t.Errorf("truncated: err = %v, want ErrTruncated", err)
 	}
 }

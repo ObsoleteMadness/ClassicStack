@@ -3,6 +3,7 @@ package macipgw
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -158,7 +159,7 @@ func (l *etherIPLink) readLoop() {
 
 		data, err := l.link.Read()
 		if err != nil {
-			if err == link.ErrClosed {
+			if errors.Is(err, link.ErrClosed) {
 				return
 			}
 			// ErrTimeout and transient read errors: keep looping (unless stopping).

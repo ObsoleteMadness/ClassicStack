@@ -440,7 +440,7 @@ func (e dirEntry) Type() stdfs.FileMode {
 	return 0
 }
 func (e dirEntry) Info() (stdfs.FileInfo, error) {
-	return fileInfo{name: e.name, dir: e.dir, size: e.size, attrs: e.attrs, modTime: e.modTime, create: e.create}, nil
+	return fileInfo(e), nil
 }
 
 // fileInfo is a minimal fs.FileInfo. SMB timestamps are not surfaced by the client's

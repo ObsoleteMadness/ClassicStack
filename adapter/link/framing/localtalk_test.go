@@ -1,6 +1,7 @@
 package framing
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/inmem"
@@ -156,7 +157,7 @@ func TestLocalTalk_SkipsControlFrames(t *testing.T) {
 func TestLocalTalk_ShortFrameRejected(t *testing.T) {
 	framer := &LocalTalk{}
 	dl := framer.mustLink(t)
-	if _, err := dl.decode([]byte{0x01, 0x02}); err != ErrShortLLAP {
+	if _, err := dl.decode([]byte{0x01, 0x02}); !errors.Is(err, ErrShortLLAP) {
 		t.Fatalf("decode of 2-byte frame = %v, want ErrShortLLAP", err)
 	}
 }

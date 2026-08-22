@@ -178,7 +178,7 @@ func (s *Service) ApplyConfig(section any) error {
 			name = nameFor()
 		}
 		s.SetServerName(name)
-		wasEnabled := s.Port.Enabled()
+		wasEnabled := s.Enabled()
 		if err := s.Port.ApplyConfig(srv.PortSection()); err != nil {
 			return err
 		}

@@ -11,10 +11,10 @@ import (
 )
 
 func TestPlaceholdersSatisfyInterfaces(t *testing.T) {
-	var _ FileSystem = newMemFS(ShareSpec{})
-	var _ ForkEngine = NewNullForkEngine()
-	var _ NameEngine = NewPassthroughNameEngine()
-	var _ FilenameCodec = NewIdentityFilenameCodec()
+	var _ = newMemFS(ShareSpec{})
+	var _ = NewNullForkEngine()
+	var _ = NewPassthroughNameEngine()
+	var _ = NewIdentityFilenameCodec()
 
 	share, err := BuildShare(ShareSpec{FSType: "memfs"}, nil)
 	if err != nil {
@@ -100,19 +100,19 @@ func TestReadOnlyMemFSEnforcesAndPreservesCapabilities(t *testing.T) {
 	if !ro.Capabilities().ReadOnly {
 		t.Fatal("read-only memfs did not report ReadOnly capability")
 	}
-	if err := ro.CreateDir("d"); err != fs.ErrPermission {
+	if err := ro.CreateDir("d"); !errors.Is(err, fs.ErrPermission) {
 		t.Fatalf("CreateDir on RO = %v, want ErrPermission", err)
 	}
-	if _, err := ro.CreateFile("f"); err != fs.ErrPermission {
+	if _, err := ro.CreateFile("f"); !errors.Is(err, fs.ErrPermission) {
 		t.Fatalf("CreateFile on RO = %v, want ErrPermission", err)
 	}
-	if _, err := ro.OpenFile("f", os.O_RDWR); err != fs.ErrPermission {
+	if _, err := ro.OpenFile("f", os.O_RDWR); !errors.Is(err, fs.ErrPermission) {
 		t.Fatalf("OpenFile(O_RDWR) on RO = %v, want ErrPermission", err)
 	}
-	if err := ro.Remove("f"); err != fs.ErrPermission {
+	if err := ro.Remove("f"); !errors.Is(err, fs.ErrPermission) {
 		t.Fatalf("Remove on RO = %v, want ErrPermission", err)
 	}
-	if err := ro.Rename("a", "b"); err != fs.ErrPermission {
+	if err := ro.Rename("a", "b"); !errors.Is(err, fs.ErrPermission) {
 		t.Fatalf("Rename on RO = %v, want ErrPermission", err)
 	}
 

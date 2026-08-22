@@ -10,6 +10,7 @@ package runport
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -216,7 +217,7 @@ func (p *Port) readLoop(dl link.DatagramLink, stopCh chan struct{}, rtr router.R
 
 		dg, err := dl.ReadDatagram()
 		if err != nil {
-			if err == link.ErrTimeout {
+			if errors.Is(err, link.ErrTimeout) {
 				continue
 			}
 			// ErrClosed or any other terminal error ends the loop. On Stop the

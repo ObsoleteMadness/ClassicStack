@@ -1,6 +1,7 @@
 package link
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -163,7 +164,7 @@ func drainFrames(t *testing.T, l FrameLink) []Frame {
 	var out []Frame
 	for {
 		f, err := l.Read()
-		if err == ErrTimeout {
+		if errors.Is(err, ErrTimeout) {
 			return out
 		}
 		if err != nil {

@@ -1052,7 +1052,7 @@ func (s *Supervisor) reconcileInterfaceRefsLocked(ctx context.Context, name stri
 		// the namespace's default. Match either so a default-interface edit reaches its
 		// inheritors.
 		ref := ip.Interface().Name
-		if ref != name && !(ref == "" && s.model.DefaultInterface().Name == name) {
+		if ref != name && (ref != "" || s.model.DefaultInterface().Name != name) {
 			continue
 		}
 		if err := s.reconfigureLocked(ctx, compName, sec); err != nil {

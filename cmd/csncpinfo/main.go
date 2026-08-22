@@ -16,6 +16,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -127,7 +128,7 @@ func run() error {
 	for time.Now().Before(deadline) {
 		frame, err := fl.Read()
 		if err != nil {
-			if err == link.ErrTimeout {
+			if errors.Is(err, link.ErrTimeout) {
 				continue
 			}
 			break

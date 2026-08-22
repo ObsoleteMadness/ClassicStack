@@ -1,6 +1,7 @@
 package netbios
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -80,7 +81,7 @@ func (c *Conn) Browse(workgroup string, window time.Duration) ([]Host, error) {
 	for time.Now().Before(deadline) {
 		frame, err := c.fl.Read()
 		if err != nil {
-			if err == corelink.ErrTimeout {
+			if errors.Is(err, corelink.ErrTimeout) {
 				continue
 			}
 			break

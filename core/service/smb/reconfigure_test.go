@@ -1,6 +1,7 @@
 package smb
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
@@ -95,7 +96,7 @@ func TestApplyConfigReconcilesFromResolver(t *testing.T) {
 // the supervisor's rebuild path.
 func TestApplyConfigNoResolverNeedsRestart(t *testing.T) {
 	svc := New(nil)
-	if err := svc.ApplyConfig(nil); err != component.ErrNeedsRestart {
+	if err := svc.ApplyConfig(nil); !errors.Is(err, component.ErrNeedsRestart) {
 		t.Fatalf("ApplyConfig err = %v, want ErrNeedsRestart", err)
 	}
 }

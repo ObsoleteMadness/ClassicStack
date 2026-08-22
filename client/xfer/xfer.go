@@ -251,10 +251,10 @@ func copyForkCtx(ctx context.Context, srcFS, dstFS fs.ForkFS, src, dst string, f
 				onBytes(int64(n))
 			}
 		}
-		if rerr == io.EOF || (rerr == nil && n == 0) {
+		if errors.Is(rerr, io.EOF) || (rerr == nil && n == 0) {
 			break
 		}
-		if rerr != nil && rerr != io.EOF {
+		if rerr != nil && !errors.Is(rerr, io.EOF) {
 			return rerr
 		}
 	}

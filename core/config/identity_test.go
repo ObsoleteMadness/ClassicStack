@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // TestIdentityValidateBaseline: the always-on baseline accepts a normal hostname (and
 // an empty one — a consumer defaults it) but rejects path/control characters.
@@ -13,7 +16,7 @@ func TestIdentityValidateBaseline(t *testing.T) {
 	}
 	bad := []string{"bad/name", "bad\\name", "ctrl\x01", "tab\there"}
 	for _, h := range bad {
-		if err := (Identity{Hostname: h}).Validate(); err != ErrHostnameInvalid {
+		if err := (Identity{Hostname: h}).Validate(); !errors.Is(err, ErrHostnameInvalid) {
 			t.Errorf("Validate(%q) = %v, want ErrHostnameInvalid", h, err)
 		}
 	}
@@ -27,7 +30,7 @@ func TestIdentityNetBIOSConstraintWhenEnabled(t *testing.T) {
 	if err := long.Validate(); err != nil {
 		t.Fatalf("baseline Validate should accept a long hostname (SMB :445 / AFP-only): %v", err)
 	}
-	if err := long.ValidateForNetBIOS(); err != ErrHostnameTooLongForNetBIOS {
+	if err := long.ValidateForNetBIOS(); !errors.Is(err, ErrHostnameTooLongForNetBIOS) {
 		t.Fatalf("ValidateForNetBIOS(long) = %v, want ErrHostnameTooLongForNetBIOS", err)
 	}
 

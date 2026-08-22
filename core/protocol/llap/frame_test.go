@@ -1,6 +1,7 @@
 package llap
 
 import (
+	"errors"
 	"testing"
 )
 
@@ -33,7 +34,7 @@ func TestEnqAckShape(t *testing.T) {
 
 // TestDecodeControlShort proves a runt frame is rejected.
 func TestDecodeControlShort(t *testing.T) {
-	if _, err := DecodeControl([]byte{0x01, 0x02}); err != ErrShortLLAP {
+	if _, err := DecodeControl([]byte{0x01, 0x02}); !errors.Is(err, ErrShortLLAP) {
 		t.Fatalf("DecodeControl(runt) err = %v, want ErrShortLLAP", err)
 	}
 	if _, _, _, ok := Header([]byte{0x01}); ok {

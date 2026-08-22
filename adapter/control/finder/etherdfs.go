@@ -1,6 +1,7 @@
 package finder
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -47,7 +48,7 @@ func (s *Service) discoverEtherDFS(req DiscoverRequest) ([]VolumeInfo, error) {
 	for time.Now().Before(deadline) {
 		frame, err := fl.Read()
 		if err != nil {
-			if err == link.ErrTimeout {
+			if errors.Is(err, link.ErrTimeout) {
 				continue
 			}
 			break

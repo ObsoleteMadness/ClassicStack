@@ -2,6 +2,7 @@ package metastore
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -88,7 +89,7 @@ func TestGetReturnsCopy(t *testing.T) {
 }
 
 func TestOpenUnknownKind(t *testing.T) {
-	if _, err := Open("nope", ""); err != ErrUnknownKind {
+	if _, err := Open("nope", ""); !errors.Is(err, ErrUnknownKind) {
 		t.Fatalf("Open unknown kind: want ErrUnknownKind, got %v", err)
 	}
 	if _, err := Open("mem", ""); err != nil {
@@ -101,7 +102,7 @@ func TestCorruptSnapshot(t *testing.T) {
 	if err := os.WriteFile(path, []byte("not-a-snapshot"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewMem(path); err != ErrCorruptSnapshot {
+	if _, err := NewMem(path); !errors.Is(err, ErrCorruptSnapshot) {
 		t.Fatalf("want ErrCorruptSnapshot, got %v", err)
 	}
 }

@@ -1,6 +1,7 @@
 package afp
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
@@ -100,7 +101,7 @@ func TestApplyConfigNoResolverNeedsRestart(t *testing.T) {
 	svc := New(nil)
 	if err := svc.ApplyConfig(nil); err == nil {
 		t.Fatal("ApplyConfig with no resolver should report a need-restart")
-	} else if err != component.ErrNeedsRestart {
+	} else if !errors.Is(err, component.ErrNeedsRestart) {
 		t.Fatalf("ApplyConfig err = %v, want ErrNeedsRestart", err)
 	}
 }

@@ -1,6 +1,9 @@
 package pap
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestHeaderRoundTrip(t *testing.T) {
 	t.Parallel()
@@ -30,7 +33,7 @@ func TestParseBadFunction(t *testing.T) {
 	t.Parallel()
 	// Function code 0x00 is below the known range.
 	h, err := ParseHeader(0x12000000)
-	if err != ErrBadFunction {
+	if !errors.Is(err, ErrBadFunction) {
 		t.Fatalf("err = %v, want ErrBadFunction", err)
 	}
 	// Header is still populated so tolerant callers can inspect it.

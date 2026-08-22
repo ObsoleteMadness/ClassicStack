@@ -2,6 +2,7 @@ package ipx
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -71,13 +72,13 @@ func TestEncodeDisabledChecksum(t *testing.T) {
 
 func TestDecodeErrors(t *testing.T) {
 	t.Parallel()
-	if _, err := Decode(make([]byte, HeaderLen-1)); err != ErrShort {
+	if _, err := Decode(make([]byte, HeaderLen-1)); !errors.Is(err, ErrShort) {
 		t.Errorf("short: err = %v, want ErrShort", err)
 	}
 	// Length field claims 100 bytes but buffer is only a header.
 	b := make([]byte, HeaderLen)
 	b[2], b[3] = 0x00, 0x64
-	if _, err := Decode(b); err != ErrBadLength {
+	if _, err := Decode(b); !errors.Is(err, ErrBadLength) {
 		t.Errorf("truncated: err = %v, want ErrBadLength", err)
 	}
 }

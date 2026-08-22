@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"testing"
 )
 
@@ -86,7 +87,7 @@ func TestParseCredential(t *testing.T) {
 		{c.SaltHex(), "qq"},   // non-hex hash
 		{c.SaltHex(), "ab"},   // wrong-length hash
 	} {
-		if _, err := ParseCredential(tc.salt, tc.hash); err != ErrBadCredentialRecord {
+		if _, err := ParseCredential(tc.salt, tc.hash); !errors.Is(err, ErrBadCredentialRecord) {
 			t.Fatalf("ParseCredential(%q,%q) err=%v, want ErrBadCredentialRecord", tc.salt, tc.hash, err)
 		}
 	}

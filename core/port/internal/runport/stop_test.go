@@ -2,6 +2,7 @@ package runport
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -62,7 +63,7 @@ func TestStopHonoursCloseDeadline(t *testing.T) {
 	if err == nil {
 		t.Fatal("Stop = nil, want context deadline error")
 	}
-	if err != context.DeadlineExceeded {
+	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Stop err = %v, want context.DeadlineExceeded", err)
 	}
 

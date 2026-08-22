@@ -156,7 +156,7 @@ func TestNBF_CallEstablishesCircuit(t *testing.T) {
 // produces no NAME_RECOGNIZED.
 func TestNBF_CallForForeignNameIgnored(t *testing.T) {
 	_, r, port, _ := newWiredEngine(t)
-	foreign := protocol.NewName("SOMEONELSE", protocol.NameTypeFileServer)
+	foreign := protocol.NewName("SOMEONES", protocol.NameTypeFileServer)
 	nq := &nbf.Frame{Command: nbf.CmdNameQuery, Data2: 5}
 	copy(nq.DestinationName[:], foreign[:])
 	r.Inbound([6]byte{0x02}, nbf.NetBIOSMulticastMAC, nq)

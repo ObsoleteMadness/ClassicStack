@@ -1,6 +1,7 @@
 package framing
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/inmem"
@@ -80,7 +81,7 @@ func TestDecode_SkipsNonAppleTalk(t *testing.T) {
 	frame = append(frame, 0x00, 0x00, 0x00, 0x80, 0xF3) // AARP SNAP PID
 	frame = append(frame, make([]byte, 18)...)          // filler payload
 
-	if _, err := decode(frame); err != ErrNotAppleTalk {
+	if _, err := decode(frame); !errors.Is(err, ErrNotAppleTalk) {
 		t.Fatalf("decode of AARP frame: got %v, want ErrNotAppleTalk", err)
 	}
 }

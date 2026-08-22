@@ -1,6 +1,7 @@
 package finder
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -79,7 +80,7 @@ func TestReapIdleKeepsMountedVolume(t *testing.T) {
 	if _, err := svc.get("keep"); err != nil {
 		t.Fatalf("mounted session reaped: %v", err)
 	}
-	if _, err := svc.get("drop"); err != ErrNotFound {
+	if _, err := svc.get("drop"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("idle login err = %v, want ErrNotFound", err)
 	}
 }

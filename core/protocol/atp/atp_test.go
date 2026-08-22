@@ -2,6 +2,7 @@ package atp
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 	"time"
 )
@@ -45,7 +46,7 @@ func TestEncodeAppends(t *testing.T) {
 
 func TestDecodeShort(t *testing.T) {
 	t.Parallel()
-	if _, err := Decode(make([]byte, HeaderSize-1)); err != ErrShort {
+	if _, err := Decode(make([]byte, HeaderSize-1)); !errors.Is(err, ErrShort) {
 		t.Fatalf("Decode(short) err = %v, want ErrShort", err)
 	}
 }

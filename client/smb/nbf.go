@@ -1,6 +1,7 @@
 package smb
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -595,7 +596,7 @@ func (t *nbfTransport) readLoop() {
 	for {
 		frame, err := t.fl.Read()
 		if err != nil {
-			if err == link.ErrTimeout {
+			if errors.Is(err, link.ErrTimeout) {
 				select {
 				case <-t.stop:
 					return

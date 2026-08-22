@@ -10,6 +10,7 @@ package afp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -160,7 +161,7 @@ func TestSendMessage_AttentionThenFetch(t *testing.T) {
 func TestSendMessage_UnknownSession(t *testing.T) {
 	svc, r := newRunningService(t)
 	login(t, svc, r)
-	if err := svc.SendMessage(99, "x"); err != ErrNoSuchSession {
+	if err := svc.SendMessage(99, "x"); !errors.Is(err, ErrNoSuchSession) {
 		t.Fatalf("SendMessage(99) = %v, want ErrNoSuchSession", err)
 	}
 }

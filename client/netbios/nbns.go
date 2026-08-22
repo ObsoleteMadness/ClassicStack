@@ -2,6 +2,7 @@ package netbios
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -77,7 +78,8 @@ func nbnsQuery(src net.IP, name nb.Name, window time.Duration) ([]NBNSAnswer, er
 	for {
 		n, addr, err := pc.ReadFromUDP(buf)
 		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			var ne net.Error
+			if errors.As(err, &ne) {
 				break
 			}
 			if len(seen) > 0 {

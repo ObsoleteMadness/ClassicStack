@@ -1,6 +1,7 @@
 package afp
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -80,7 +81,8 @@ func discoverTCP(src net.IP, window time.Duration) ([]TCPServer, error) {
 	for {
 		n, _, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			var ne net.Error
+			if errors.As(err, &ne) {
 				break
 			}
 			if acc.empty() {

@@ -172,7 +172,7 @@ func startDaemon() error {
 	cmd := exec.Command(daemon, "start", "-config", cfgPath, "-pidfile", pidFile, "-log", logFile) // #nosec G204 -- fixed args + bundled binary path, no attacker input
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("classicstackd start: %v: %s", err, string(out))
+		return fmt.Errorf("classicstackd start: %w: %s", err, string(out))
 	}
 	return nil
 }

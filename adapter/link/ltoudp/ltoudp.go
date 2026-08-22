@@ -158,7 +158,8 @@ func (l *frameLink) Read() (link.Frame, error) {
 		_ = conn.SetReadDeadline(time.Now().Add(l.readTimeout))
 		n, _, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			var ne net.Error
+			if errors.As(err, &ne) {
 				return nil, link.ErrTimeout
 			}
 			l.mu.RLock()

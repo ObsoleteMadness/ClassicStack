@@ -54,7 +54,7 @@ func saveCredentials(user, pass string) error {
 	cmd := exec.Command("security", "add-generic-password", // #nosec G204 -- fixed args + our own JSON blob, no attacker input
 		"-s", keychainService, "-a", keychainAccount, "-w", string(blob), "-U")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("saving credentials to Keychain: %v: %s", err, string(out))
+		return fmt.Errorf("saving credentials to Keychain: %w: %s", err, string(out))
 	}
 	return nil
 }

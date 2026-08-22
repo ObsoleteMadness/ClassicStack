@@ -1,6 +1,7 @@
 package fs
 
 import (
+	"errors"
 	"testing"
 )
 
@@ -104,7 +105,7 @@ func TestWalkCatSearch_ParentScope(t *testing.T) {
 func TestShareFS_CatSearchUnsupported(t *testing.T) {
 	s := &shareFS{FileSystem: nonSearchingFS{}, ForkEngine: NewNullForkEngine()}
 	_, _, err := s.CatSearch(CatSearchCriteria{}, nil)
-	if err != ErrCatSearchUnsupported {
+	if !errors.Is(err, ErrCatSearchUnsupported) {
 		t.Fatalf("CatSearch err = %v, want ErrCatSearchUnsupported", err)
 	}
 }

@@ -2,6 +2,7 @@ package macipx
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -16,7 +17,7 @@ func TestDecodeFrameOpcodeSplit(t *testing.T) {
 	if !bytes.Equal(rest, []byte{0xAA, 0xBB}) {
 		t.Errorf("rest = %x, want aabb", rest)
 	}
-	if _, _, err := DecodeFrame(nil); err != ErrEmptyFrame {
+	if _, _, err := DecodeFrame(nil); !errors.Is(err, ErrEmptyFrame) {
 		t.Errorf("empty frame err = %v, want ErrEmptyFrame", err)
 	}
 }
@@ -77,7 +78,7 @@ func TestDecodeListenMultiEntry(t *testing.T) {
 	if entries[0].Socket != [2]byte{0x04, 0x56} || entries[1].Socket != [2]byte{0xDE, 0xAD} {
 		t.Errorf("sockets = %x %x, want 0456 dead", entries[0].Socket, entries[1].Socket)
 	}
-	if _, err := DecodeListen([]byte{0x01, 0x02, 0x03}); err != ErrListenAlign {
+	if _, err := DecodeListen([]byte{0x01, 0x02, 0x03}); !errors.Is(err, ErrListenAlign) {
 		t.Errorf("misaligned listen err = %v, want ErrListenAlign", err)
 	}
 }

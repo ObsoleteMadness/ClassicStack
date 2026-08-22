@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -313,7 +314,7 @@ func discoverNCP(cfg config) int {
 	for time.Now().Before(deadline) {
 		frame, err := fl.Read()
 		if err != nil {
-			if err == link.ErrTimeout {
+			if errors.Is(err, link.ErrTimeout) {
 				continue
 			}
 			break
@@ -416,7 +417,7 @@ func discoverEtherDFS(cfg config) int {
 	for time.Now().Before(deadline) {
 		frame, err := fl.Read()
 		if err != nil {
-			if err == link.ErrTimeout {
+			if errors.Is(err, link.ErrTimeout) {
 				continue
 			}
 			break

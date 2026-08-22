@@ -2,6 +2,7 @@ package ethertalk
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"sync"
 	"testing"
@@ -257,7 +258,7 @@ func TestReconfigureIfaceChangeNeedsRestart(t *testing.T) {
 		t.Errorf("same-iface reconfigure should apply live, got %v", err)
 	}
 	// Different iface → structural, must request restart.
-	if err := cfg.ApplyConfig(&port.Section{SKey: Name, Iface: "eth1", IsEnabled: true}); err != component.ErrNeedsRestart {
+	if err := cfg.ApplyConfig(&port.Section{SKey: Name, Iface: "eth1", IsEnabled: true}); !errors.Is(err, component.ErrNeedsRestart) {
 		t.Errorf("iface change err = %v, want ErrNeedsRestart", err)
 	}
 }

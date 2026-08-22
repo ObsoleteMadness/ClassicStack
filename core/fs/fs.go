@@ -715,14 +715,14 @@ func (s *shareFS) Rename(old, new string) error {
 	if err := s.FileSystem.Rename(old, new); err != nil {
 		return err
 	}
-	return s.ForkEngine.MoveMetadata(old, new)
+	return s.MoveMetadata(old, new)
 }
 
 // Remove deletes a path and its metadata container in one call, metadata first so
 // a failure leaves the data fork in place to retry against (§9). The ForkEngine owns
 // which container(s) to drop.
 func (s *shareFS) Remove(path string) error {
-	if err := s.ForkEngine.DeleteMetadata(path); err != nil {
+	if err := s.DeleteMetadata(path); err != nil {
 		return err
 	}
 	return s.FileSystem.Remove(path)

@@ -5,6 +5,7 @@ package zipfs
 import (
 	"archive/zip"
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -56,7 +57,7 @@ func TestZipFSRoundTrip(t *testing.T) {
 		t.Fatalf("OpenFile: %v", err)
 	}
 	got := make([]byte, len(want))
-	if _, err := rf.ReadAt(got, 0); err != nil && err != io.EOF {
+	if _, err := rf.ReadAt(got, 0); err != nil && !errors.Is(err, io.EOF) {
 		t.Fatalf("ReadAt: %v", err)
 	}
 	rf.Close()
@@ -126,7 +127,7 @@ func TestZipFSPersistsAcrossReopen(t *testing.T) {
 		t.Fatalf("reopen OpenFile: %v", err)
 	}
 	got := make([]byte, len(want))
-	if _, err := rf.ReadAt(got, 0); err != nil && err != io.EOF {
+	if _, err := rf.ReadAt(got, 0); err != nil && !errors.Is(err, io.EOF) {
 		t.Fatalf("reopen ReadAt: %v", err)
 	}
 	rf.Close()
@@ -170,20 +171,20 @@ func TestZipFSReadOnly(t *testing.T) {
 		t.Fatalf("OpenFile ro read: %v", err)
 	}
 	got := make([]byte, 7)
-	if _, err := rf.ReadAt(got, 0); err != nil && err != io.EOF {
+	if _, err := rf.ReadAt(got, 0); err != nil && !errors.Is(err, io.EOF) {
 		t.Fatalf("ReadAt ro: %v", err)
 	}
 	rf.Close()
 	if string(got) != "read me" {
 		t.Fatalf("ro read mismatch: got %q", got)
 	}
-	if _, err := z.CreateFile("nope.txt"); err != ErrReadOnly {
+	if _, err := z.CreateFile("nope.txt"); !errors.Is(err, ErrReadOnly) {
 		t.Fatalf("CreateFile ro err = %v, want ErrReadOnly", err)
 	}
-	if err := z.CreateDir("nope"); err != ErrReadOnly {
+	if err := z.CreateDir("nope"); !errors.Is(err, ErrReadOnly) {
 		t.Fatalf("CreateDir ro err = %v, want ErrReadOnly", err)
 	}
-	if err := z.Remove("hello.txt"); err != ErrReadOnly {
+	if err := z.Remove("hello.txt"); !errors.Is(err, ErrReadOnly) {
 		t.Fatalf("Remove ro err = %v, want ErrReadOnly", err)
 	}
 }
@@ -261,7 +262,7 @@ func TestZipFSStreamingReadOffsets(t *testing.T) {
 	check := func(off int64, n int) {
 		got := make([]byte, n)
 		r, err := rf.ReadAt(got, off)
-		if err != nil && err != io.EOF {
+		if err != nil && !errors.Is(err, io.EOF) {
 			t.Fatalf("ReadAt(%d,%d): %v", off, n, err)
 		}
 		if !bytes.Equal(got[:r], payload[off:off+int64(r)]) {

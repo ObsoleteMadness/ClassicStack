@@ -2,6 +2,7 @@ package finder
 
 import (
 	"context"
+	"errors"
 	"os"
 	"runtime"
 	"testing"
@@ -66,11 +67,11 @@ func TestPrepareMountpointCreatesElsewhere(t *testing.T) {
 func TestMountRejectsLocal(t *testing.T) {
 	svc := New(nil, nil)
 	_, err := svc.Mount(t.Context(), MountRequest{Kind: KindLocal, ID: "local:afp:HD", Volume: "HD", Mountpoint: t.TempDir()})
-	if err != ErrLocalMount && err != ErrMountUnavailable {
+	if !errors.Is(err, ErrLocalMount) && !errors.Is(err, ErrMountUnavailable) {
 		t.Fatalf("err = %v", err)
 	}
 	_, err = svc.Mount(t.Context(), MountRequest{Kind: KindAFP, ID: "local:afp:HD", Volume: "HD", Mountpoint: t.TempDir()})
-	if err != ErrLocalMount && err != ErrMountUnavailable {
+	if !errors.Is(err, ErrLocalMount) && !errors.Is(err, ErrMountUnavailable) {
 		t.Fatalf("local id err = %v", err)
 	}
 }

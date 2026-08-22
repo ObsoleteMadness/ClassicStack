@@ -333,8 +333,8 @@ func (s *Service) mountFS(ctx context.Context, req MountRequest) (kind, volume, 
 	browseHasFS := browse != nil && browse.FS != nil
 	reuseSkip := ""
 	if browse != nil && !sessionVolumeMatches(browse, volume) {
-		switch {
-		case browse.FS == nil:
+		switch browse.FS {
+		case nil:
 			reuseSkip = "browse_session_has_no_open_volume"
 		default:
 			reuseSkip = "volume_mismatch"

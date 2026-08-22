@@ -1,6 +1,9 @@
 package uri
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestParse(t *testing.T) {
 	tests := []struct {
@@ -124,7 +127,7 @@ func TestParseErrors(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Parse(tc.in)
-			if err != tc.want {
+			if !errors.Is(err, tc.want) {
 				t.Errorf("Parse(%q) error = %v, want %v", tc.in, err, tc.want)
 			}
 		})

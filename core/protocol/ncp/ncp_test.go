@@ -2,6 +2,7 @@ package ncp
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -44,7 +45,7 @@ func TestUnmarshalRequest_CreateConnectionHasNoFunction(t *testing.T) {
 }
 
 func TestUnmarshalRequest_Short(t *testing.T) {
-	if _, err := UnmarshalRequest([]byte{0x22, 0x22}); err != ErrShort {
+	if _, err := UnmarshalRequest([]byte{0x22, 0x22}); !errors.Is(err, ErrShort) {
 		t.Errorf("err = %v, want ErrShort", err)
 	}
 }

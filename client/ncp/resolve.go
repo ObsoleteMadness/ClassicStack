@@ -1,6 +1,7 @@
 package ncp
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -65,7 +66,7 @@ func resolveServer(fl link.FrameLink, srcMAC [6]byte, serverName string, frameTy
 	for time.Now().Before(deadline) {
 		frame, err := fl.Read()
 		if err != nil {
-			if err == link.ErrTimeout {
+			if errors.Is(err, link.ErrTimeout) {
 				continue
 			}
 			return ServerAddr{}, fmt.Errorf("ncp: SAP resolve read: %w", err)

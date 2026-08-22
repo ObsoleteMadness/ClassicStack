@@ -2,6 +2,7 @@ package ddp
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -79,7 +80,7 @@ func TestEncodeAppendsToDst(t *testing.T) {
 }
 
 func TestDecodeErrors(t *testing.T) {
-	if _, err := Decode([]byte{0x00}); err != ErrShort {
+	if _, err := Decode([]byte{0x00}); !errors.Is(err, ErrShort) {
 		t.Fatalf("short buffer: want ErrShort, got %v", err)
 	}
 
@@ -87,12 +88,12 @@ func TestDecodeErrors(t *testing.T) {
 
 	bad := append([]byte(nil), enc...)
 	bad[0] |= 0xC0 // set the reserved high bits → invalid long header
-	if _, err := Decode(bad); err != ErrBadHeader {
+	if _, err := Decode(bad); !errors.Is(err, ErrBadHeader) {
 		t.Fatalf("bad header bits: want ErrBadHeader, got %v", err)
 	}
 
 	short := enc[:len(enc)-1] // length field now disagrees with buffer length
-	if _, err := Decode(short); err != ErrBadLength {
+	if _, err := Decode(short); !errors.Is(err, ErrBadLength) {
 		t.Fatalf("length mismatch: want ErrBadLength, got %v", err)
 	}
 }
@@ -100,7 +101,7 @@ func TestDecodeErrors(t *testing.T) {
 func TestEncodeTooLong(t *testing.T) {
 	d := sample()
 	d.Data = make([]byte, MaxDataLength+1)
-	if _, err := d.Encode(nil); err != ErrTooLong {
+	if _, err := d.Encode(nil); !errors.Is(err, ErrTooLong) {
 		t.Fatalf("oversized data: want ErrTooLong, got %v", err)
 	}
 }
@@ -117,7 +118,7 @@ func TestChecksumVerified(t *testing.T) {
 		t.Fatalf("valid checksum should decode: %v", err)
 	}
 	enc[len(enc)-1] ^= 0xFF // corrupt the payload
-	if _, err := Decode(enc); err != ErrBadLength {
+	if _, err := Decode(enc); !errors.Is(err, ErrBadLength) {
 		t.Fatalf("corrupt payload under checksum: want ErrBadLength, got %v", err)
 	}
 }

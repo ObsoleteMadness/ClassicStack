@@ -463,7 +463,7 @@ func (e dirEntry) Type() stdfs.FileMode {
 	return 0
 }
 func (e dirEntry) Info() (stdfs.FileInfo, error) {
-	return fileInfo{name: e.name, dir: e.dir, size: e.size}, nil
+	return fileInfo(e), nil
 }
 
 type fileInfo struct {

@@ -2,6 +2,7 @@ package diag
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -65,11 +66,11 @@ func TestResponseRoundTrip(t *testing.T) {
 
 func TestUnmarshalResponseShort(t *testing.T) {
 	t.Parallel()
-	if _, err := UnmarshalResponse(nil); err != ErrShort {
+	if _, err := UnmarshalResponse(nil); !errors.Is(err, ErrShort) {
 		t.Fatalf("want ErrShort for empty, got %v", err)
 	}
 	// count says 2 but only one type byte follows.
-	if _, err := UnmarshalResponse([]byte{0x02, CompIPX}); err != ErrShort {
+	if _, err := UnmarshalResponse([]byte{0x02, CompIPX}); !errors.Is(err, ErrShort) {
 		t.Fatalf("want ErrShort for truncated, got %v", err)
 	}
 }

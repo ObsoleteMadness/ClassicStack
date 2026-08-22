@@ -2,6 +2,7 @@ package smb
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -83,12 +84,12 @@ func TestSequenceNumber(t *testing.T) {
 
 func TestDecodeHeaderErrors(t *testing.T) {
 	t.Parallel()
-	if _, err := DecodeHeader(make([]byte, HeaderLen-1)); err != ErrShort {
+	if _, err := DecodeHeader(make([]byte, HeaderLen-1)); !errors.Is(err, ErrShort) {
 		t.Errorf("short: err = %v, want ErrShort", err)
 	}
 	bad := make([]byte, HeaderLen)
 	bad[0] = 0xEE // wrong magic
-	if _, err := DecodeHeader(bad); err != ErrBadProtocol {
+	if _, err := DecodeHeader(bad); !errors.Is(err, ErrBadProtocol) {
 		t.Errorf("bad protocol: err = %v, want ErrBadProtocol", err)
 	}
 }

@@ -14,6 +14,7 @@ package frameport
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -150,7 +151,7 @@ func (p *Port) readLoop(fl link.FrameLink, stopCh chan struct{}) {
 
 		frame, err := fl.Read()
 		if err != nil {
-			if err == link.ErrTimeout {
+			if errors.Is(err, link.ErrTimeout) {
 				continue
 			}
 			return // ErrClosed or terminal error

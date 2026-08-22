@@ -20,6 +20,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -201,7 +202,7 @@ func awaitReply(fl link.FrameLink, srcMAC [6]byte, timeout time.Duration) (*ipxp
 	for time.Now().Before(deadline) {
 		frame, err := fl.Read()
 		if err != nil {
-			if err == link.ErrTimeout {
+			if errors.Is(err, link.ErrTimeout) {
 				continue
 			}
 			return nil, false

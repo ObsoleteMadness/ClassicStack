@@ -1,6 +1,7 @@
 package local
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -94,10 +95,10 @@ func TestStoreGuest(t *testing.T) {
 	if s.HasUsers() {
 		t.Fatal("HasUsers must ignore Guest")
 	}
-	if err := s.SetUser(auth.GuestName, "pw"); err != auth.ErrGuestImmutable {
+	if err := s.SetUser(auth.GuestName, "pw"); !errors.Is(err, auth.ErrGuestImmutable) {
 		t.Fatalf("SetUser(Guest) = %v, want ErrGuestImmutable", err)
 	}
-	if err := s.RemoveUser(auth.GuestName); err != auth.ErrGuestImmutable {
+	if err := s.RemoveUser(auth.GuestName); !errors.Is(err, auth.ErrGuestImmutable) {
 		t.Fatalf("RemoveUser(Guest) = %v, want ErrGuestImmutable", err)
 	}
 	if mustAuth(t, s, auth.GuestName, "pw") {
@@ -133,16 +134,16 @@ func TestStoreGuest(t *testing.T) {
 
 func TestStoreErrors(t *testing.T) {
 	s, _ := tempStore(t)
-	if err := s.SetUser("", "pw"); err != auth.ErrEmptyUsername {
+	if err := s.SetUser("", "pw"); !errors.Is(err, auth.ErrEmptyUsername) {
 		t.Fatalf("empty username err=%v", err)
 	}
-	if err := s.SetUser("bob", ""); err != auth.ErrEmptyPassword {
+	if err := s.SetUser("bob", ""); !errors.Is(err, auth.ErrEmptyPassword) {
 		t.Fatalf("empty password err=%v", err)
 	}
-	if err := s.SetDisabled("ghost", true); err != auth.ErrNoSuchUser {
+	if err := s.SetDisabled("ghost", true); !errors.Is(err, auth.ErrNoSuchUser) {
 		t.Fatalf("disable-unknown err=%v", err)
 	}
-	if err := s.RemoveUser("ghost"); err != auth.ErrNoSuchUser {
+	if err := s.RemoveUser("ghost"); !errors.Is(err, auth.ErrNoSuchUser) {
 		t.Fatalf("remove-unknown err=%v", err)
 	}
 }
@@ -191,7 +192,7 @@ func TestStoreMalformedFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("# comment\n\nalice:onlytwofields\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Open(path); err != ErrMalformedFile {
+	if _, err := Open(path); !errors.Is(err, ErrMalformedFile) {
 		t.Fatalf("Open malformed err=%v, want ErrMalformedFile", err)
 	}
 }

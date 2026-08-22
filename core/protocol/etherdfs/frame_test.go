@@ -2,6 +2,7 @@ package etherdfs
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -49,7 +50,7 @@ func TestFrameRoundTrip(t *testing.T) {
 func TestParseFrameRejectsWrongEtherType(t *testing.T) {
 	b := makeFrame(t, false, nil)
 	b[12], b[13] = 0x08, 0x00 // IPv4
-	if _, err := ParseFrame(b); err != ErrEtherType {
+	if _, err := ParseFrame(b); !errors.Is(err, ErrEtherType) {
 		t.Fatalf("err = %v, want ErrEtherType", err)
 	}
 }
@@ -57,7 +58,7 @@ func TestParseFrameRejectsWrongEtherType(t *testing.T) {
 func TestParseFrameRejectsWrongVersion(t *testing.T) {
 	b := makeFrame(t, false, nil)
 	b[offVersion] = (b[offVersion] & cksFlag) | 0x03 // version 3
-	if _, err := ParseFrame(b); err != ErrVersion {
+	if _, err := ParseFrame(b); !errors.Is(err, ErrVersion) {
 		t.Fatalf("err = %v, want ErrVersion", err)
 	}
 }
@@ -66,13 +67,13 @@ func TestParseFrameRejectsBadChecksum(t *testing.T) {
 	b := makeFrame(t, true, []byte("hello"))
 	// Corrupt a payload byte after the checksum was computed.
 	b[headerEnd]++
-	if _, err := ParseFrame(b); err != ErrChecksum {
+	if _, err := ParseFrame(b); !errors.Is(err, ErrChecksum) {
 		t.Fatalf("err = %v, want ErrChecksum", err)
 	}
 }
 
 func TestParseFrameShort(t *testing.T) {
-	if _, err := ParseFrame(make([]byte, MinFrameLen-1)); err != ErrShort {
+	if _, err := ParseFrame(make([]byte, MinFrameLen-1)); !errors.Is(err, ErrShort) {
 		t.Fatalf("err = %v, want ErrShort", err)
 	}
 }
@@ -220,7 +221,7 @@ func TestDecodeRequests(t *testing.T) {
 	if want := `\ETHERDFS\ETHERDFS.TXT`; spopn.Path != want {
 		t.Errorf("DecodeOpenRequest (captured SPOPNFIL) Path = %q, want %q", spopn.Path, want)
 	}
-	if _, err := DecodeReadRequest([]byte{1, 2, 3}); err != ErrBadRequest {
+	if _, err := DecodeReadRequest([]byte{1, 2, 3}); !errors.Is(err, ErrBadRequest) {
 		t.Errorf("short read request err = %v, want ErrBadRequest", err)
 	}
 }

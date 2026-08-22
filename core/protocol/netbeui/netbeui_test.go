@@ -2,6 +2,7 @@ package netbeui
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -94,13 +95,13 @@ func TestSessionFrameRoundTrip(t *testing.T) {
 
 func TestDecodeErrors(t *testing.T) {
 	t.Parallel()
-	if _, err := Decode(make([]byte, commonPrefixLen-1)); err != ErrShortFrame {
+	if _, err := Decode(make([]byte, commonPrefixLen-1)); !errors.Is(err, ErrShortFrame) {
 		t.Errorf("short prefix: err = %v, want ErrShortFrame", err)
 	}
 	// Valid length but wrong delimiter.
 	bad := make([]byte, NonSessionHeaderLength)
 	bad[2], bad[3] = 0x00, 0x00 // delimiter zero
-	if _, err := Decode(bad); err != ErrBadDelimiter {
+	if _, err := Decode(bad); !errors.Is(err, ErrBadDelimiter) {
 		t.Errorf("bad delimiter: err = %v, want ErrBadDelimiter", err)
 	}
 }

@@ -13,6 +13,7 @@ package ncp
 // handle's base joined with the relative path, both resolved through the codec.
 
 import (
+	"errors"
 	"io"
 	"os"
 	"strings"
@@ -192,7 +193,7 @@ func (cn *Conn) readFile(args []byte) ([]byte, error) {
 	}
 	buf := make([]byte, want)
 	n, err := f.ReadAt(buf, off)
-	if err != nil && err != io.EOF {
+	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
 	pad := 0
