@@ -23,6 +23,7 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/pcap"
 	clientlink "github.com/ObsoleteMadness/ClassicStack/client/link"
+	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/buildinfo"
 	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/csconnect"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 	ipxport "github.com/ObsoleteMadness/ClassicStack/core/port/ipx"
@@ -31,6 +32,14 @@ import (
 )
 
 var broadcastMAC = [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
+
+// Build metadata injected at link time via -ldflags
+// -X main.BuildVersion=... -X main.BuildCommit=... -X main.BuildDate=...
+var (
+	BuildVersion = "0.0.0-dev"
+	BuildCommit  = "unknown"
+	BuildDate    = "unknown"
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -48,8 +57,14 @@ func run() error {
 		frameType = flag.String("frametype", "", "IPX Ethernet encapsulation: ethernet_ii | 802.3 | 802.2 (default ethernet_ii)")
 		macFlag   = flag.String("mac", "", "source MAC for our virtual station (default: random locally-administered)")
 		listIf    = flag.Bool("list-ifaces", false, "list the capturable pcap NICs (the names -iface accepts) and exit")
+		version   = flag.Bool("version", false, "print version information and exit")
 	)
 	flag.Parse()
+
+	if *version {
+		buildinfo.Print(os.Stdout, "csncpinfo", BuildVersion, BuildCommit, BuildDate)
+		return nil
+	}
 
 	if *listIf {
 		clientlink.PrintInterfaces(os.Stdout)

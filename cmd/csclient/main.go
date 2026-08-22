@@ -30,6 +30,7 @@ import (
 	"strings"
 
 	"github.com/ObsoleteMadness/ClassicStack/client/trace"
+	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/buildinfo"
 	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/csconnect"
 
 	// Register the client schemes. Each blank import plugs a scheme into the registry.
@@ -37,6 +38,14 @@ import (
 	_ "github.com/ObsoleteMadness/ClassicStack/client/etherdfs"
 	_ "github.com/ObsoleteMadness/ClassicStack/client/ncp"
 	_ "github.com/ObsoleteMadness/ClassicStack/client/smb"
+)
+
+// Build metadata injected at link time via -ldflags
+// -X main.BuildVersion=... -X main.BuildCommit=... -X main.BuildDate=...
+var (
+	BuildVersion = "0.0.0-dev"
+	BuildCommit  = "unknown"
+	BuildDate    = "unknown"
 )
 
 func main() {
@@ -53,6 +62,10 @@ func run(args []string) int {
 	// direct-IPX, NBIPX, NBF, NCP, EtherDFS) — one shared verbose toggle on the core/log
 	// library, rendered to stderr.
 	trace.SetVerbose(cfg.Verbose)
+	if cfg.Version {
+		buildinfo.Print(os.Stdout, "csfs", BuildVersion, BuildCommit, BuildDate)
+		return 0
+	}
 	if cfg.ListIfaces {
 		csconnect.PrintInterfaces(os.Stdout)
 		return 0
@@ -119,6 +132,7 @@ Flags:
   -fork       host fork container: appledouble | applesingle | macbinary | derez | native | nofork
   -v          verbose: print the client wire-trace (NBP/ATP/ASP) to stderr
   -list-ifaces  list the capturable pcap NICs (the names -iface accepts) and exit
+  -version      print version information and exit
 
 URI grammar:
   <scheme>://[[user][:pass]@]<server>[,<transport>]/<volume>[/<path>]

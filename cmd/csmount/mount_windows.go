@@ -49,6 +49,7 @@ Flags:
               -1 is infinite (also enables kernel data caching).
   -v          verbose: NBP + AFP wire-trace + WinFsp Behaviour* call names to stderr (ATP off)
   -list-ifaces  list the capturable pcap NICs (the names -iface accepts) and exit
+  -version      print version information and exit
 
 Examples:
   csmount -ifacetype tcp afp://server/Volume X:

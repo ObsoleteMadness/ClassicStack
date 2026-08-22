@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/buildinfo"
 	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/cli"
 )
 
@@ -52,6 +53,7 @@ Usage:
   classicstackd run    -config <path>                             run in the foreground
   classicstackd install -config <path> [-log <p>]                 macOS: login item (LaunchAgent)
   classicstackd uninstall                                         macOS: remove the LaunchAgent
+  classicstackd version                                           print version information
 `)
 }
 
@@ -70,6 +72,9 @@ func dispatch(cmd string, args []string, version cli.Version) error {
 		return cmdInstall(args)
 	case "uninstall", "remove":
 		return cmdUninstall(args)
+	case "version":
+		buildinfo.Print(os.Stdout, "classicstackd", version.Version, version.Commit, version.Date)
+		return nil
 	case "-h", "--help", "help":
 		usage()
 		return nil

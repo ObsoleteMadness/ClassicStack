@@ -25,11 +25,20 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/client/atalk"
 	"github.com/ObsoleteMadness/ClassicStack/client/trace"
 	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/atlink"
+	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/buildinfo"
 )
 
 // broadcastNode is the DDP node id every node on the segment receives; with no known
 // router address, csgetzones broadcasts the request and answers come from any router.
 const broadcastNode = 0xFF
+
+// Build metadata injected at link time via -ldflags
+// -X main.BuildVersion=... -X main.BuildCommit=... -X main.BuildDate=...
+var (
+	BuildVersion = "0.0.0-dev"
+	BuildCommit  = "unknown"
+	BuildDate    = "unknown"
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -47,10 +56,16 @@ func run() error {
 		local   = flag.Bool("local", false, "GetLocalZones: only zones on our own network")
 		myZone  = flag.Bool("my", false, "GetMyZone: just the responding router's own zone")
 		verbose = flag.Bool("v", false, "verbose wire trace to stderr")
+		version = flag.Bool("version", false, "print version information and exit")
 	)
 	at := atlink.Flags(flag.CommandLine)
 	flag.Parse()
 	trace.SetVerbose(*verbose)
+
+	if *version {
+		buildinfo.Print(os.Stdout, "csgetzones", BuildVersion, BuildCommit, BuildDate)
+		return nil
+	}
 
 	if at.ListIface {
 		atlink.PrintInterfaces(os.Stdout)

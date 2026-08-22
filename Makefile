@@ -76,8 +76,9 @@ app-darwin:
 # installer-windows builds every Windows binary into ./bin and compiles
 # packaging/windows/ClassicStack.iss into a Setup .exe (packaging/windows/Output).
 # Windows only: needs pwsh and ISCC (Inno Setup 6, https://jrsoftware.org/isinfo.php)
-# on PATH. Not part of CI release packaging; see packaging/windows/build.ps1 and
-# packaging/windows/redist/README.md (bundled Npcap/WinFsp installers).
+# on PATH. Also built in CI (installer-windows job in pr-ci.yml/release-main.yml,
+# uploaded/attached unsigned — no bundled Npcap/WinFsp there); see
+# packaging/windows/build.ps1 and packaging/windows/redist/README.md.
 installer-windows:
 	pwsh packaging/windows/build.ps1
 

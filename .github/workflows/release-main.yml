@@ -163,6 +163,43 @@ jobs:
           BUILD_VARIANT: ${{ matrix.variant }}
         run: ${{ matrix.package_script }}
 
+  installer-windows:
+    name: Build Windows Installer (ISCC)
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Setup SPA
+        uses: ./.github/actions/setup-spa
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          if (-not (Get-Command ISCC.exe -ErrorAction SilentlyContinue)) {
+            throw "ISCC.exe not found on PATH after installing Inno Setup"
+          }
+
+      - name: Build installer (bin + ISCC)
+        shell: pwsh
+        run: pwsh packaging/windows/build.ps1 -Version ${{ needs.version.outputs.build_version }}
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: classicstack-windows-installer
+          path: packaging/windows/Output/ClassicStack-Setup-*.exe
+          if-no-files-found: error
+
   build-embedded:
     name: Build And Package Embedded (TinyGo)
     needs: version
@@ -243,6 +280,7 @@ jobs:
       - version
       - build
       - build-embedded
+      - installer-windows
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -261,3 +299,4 @@ jobs:
           files: |
             release-artifacts/**/*.zip
             release-artifacts/**/*.tar.gz
+            release-artifacts/**/*.exe

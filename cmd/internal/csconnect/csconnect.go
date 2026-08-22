@@ -32,6 +32,7 @@ type Config struct {
 	FrameType  string // IPX Ethernet encapsulation: ethernet_ii | 802.3 | 802.2 (empty = learn)
 	Verbose    bool   // -v: print client wire-trace (NBP/ATP/ASP) to stderr
 	ListIfaces bool   // -list-ifaces: print capturable pcap NICs and exit (no target needed)
+	Version    bool   // -version: print version information and exit (no target needed)
 	// CacheMs is WinFsp FileInfoTimeout in milliseconds (-cache-ms). Used by csmount;
 	// other clients ignore it. -1 means infinite. CacheMsSet is false until the flag appears.
 	CacheMs    int
@@ -61,6 +62,13 @@ func ParseGlobalFlags(args []string) (Config, []string, error) {
 		// takes no value and may sit anywhere among the flags (and needs no target URI).
 		if base, _, _ := strings.Cut(name, "="); base == "list-ifaces" {
 			cfg.ListIfaces = true
+			i++
+			continue
+		}
+		// -version is a boolean too: print version information and exit, so it takes no
+		// value and may sit anywhere among the flags (and needs no target URI).
+		if base, _, _ := strings.Cut(name, "="); base == "version" {
+			cfg.Version = true
 			i++
 			continue
 		}

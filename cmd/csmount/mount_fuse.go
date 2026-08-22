@@ -48,6 +48,7 @@ Flags:
               on Linux.
   -v          verbose: NBP + AFP wire-trace + FUSE op names to stderr (ATP off)
   -list-ifaces  list the capturable pcap NICs (the names -iface accepts) and exit
+  -version      print version information and exit
 
 Examples:
   csmount -ifacetype tcp afp://server/Volume /Volumes/Classic

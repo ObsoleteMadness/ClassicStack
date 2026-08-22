@@ -26,7 +26,16 @@ import (
 	clientlink "github.com/ObsoleteMadness/ClassicStack/client/link"
 	"github.com/ObsoleteMadness/ClassicStack/client/netbios"
 	"github.com/ObsoleteMadness/ClassicStack/client/trace"
+	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/buildinfo"
 	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/csconnect"
+)
+
+// Build metadata injected at link time via -ldflags
+// -X main.BuildVersion=... -X main.BuildCommit=... -X main.BuildDate=...
+var (
+	BuildVersion = "0.0.0-dev"
+	BuildCommit  = "unknown"
+	BuildDate    = "unknown"
 )
 
 func main() {
@@ -46,10 +55,16 @@ func run() error {
 		macFlag   = flag.String("mac", "", "source MAC for our virtual station (default: random locally-administered)")
 		verbose   = flag.Bool("v", false, "verbose wire trace to stderr")
 		listIf    = flag.Bool("list-ifaces", false, "list the capturable pcap NICs (the names -iface accepts) and exit")
+		version   = flag.Bool("version", false, "print version information and exit")
 	)
 	flag.Usage = usage
 	flag.Parse()
 	trace.SetVerbose(*verbose)
+
+	if *version {
+		buildinfo.Print(os.Stdout, "csnetsend", BuildVersion, BuildCommit, BuildDate)
+		return nil
+	}
 
 	if *listIf {
 		clientlink.PrintInterfaces(os.Stdout)

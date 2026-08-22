@@ -28,10 +28,19 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/pcap"
 	clientlink "github.com/ObsoleteMadness/ClassicStack/client/link"
+	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/buildinfo"
 	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/csconnect"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 	ipxproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx/diag"
+)
+
+// Build metadata injected at link time via -ldflags
+// -X main.BuildVersion=... -X main.BuildCommit=... -X main.BuildDate=...
+var (
+	BuildVersion = "0.0.0-dev"
+	BuildCommit  = "unknown"
+	BuildDate    = "unknown"
 )
 
 // etherTypeIPX is the Ethernet II type for IPX; ethHdrLen is the Ethernet II header
@@ -61,8 +70,14 @@ func run() error {
 		wait    = flag.Duration("interval", 500*time.Millisecond, "delay between requests")
 		macFlag = flag.String("mac", "", "source MAC for our virtual station (default: random locally-administered)")
 		listIf  = flag.Bool("list-ifaces", false, "list the capturable pcap NICs (the names -iface accepts) and exit")
+		version = flag.Bool("version", false, "print version information and exit")
 	)
 	flag.Parse()
+
+	if *version {
+		buildinfo.Print(os.Stdout, "csipxping", BuildVersion, BuildCommit, BuildDate)
+		return nil
+	}
 
 	if *listIf {
 		clientlink.PrintInterfaces(os.Stdout)

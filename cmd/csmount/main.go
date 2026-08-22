@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/ObsoleteMadness/ClassicStack/client/trace"
+	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/buildinfo"
 	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/csconnect"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 
@@ -28,6 +29,14 @@ import (
 	_ "github.com/ObsoleteMadness/ClassicStack/client/etherdfs"
 	_ "github.com/ObsoleteMadness/ClassicStack/client/ncp"
 	_ "github.com/ObsoleteMadness/ClassicStack/client/smb"
+)
+
+// Build metadata injected at link time via -ldflags
+// -X main.BuildVersion=... -X main.BuildCommit=... -X main.BuildDate=...
+var (
+	BuildVersion = "0.0.0-dev"
+	BuildCommit  = "unknown"
+	BuildDate    = "unknown"
 )
 
 func main() { os.Exit(run(os.Args[1:])) }
@@ -42,6 +51,11 @@ func run(args []string) int {
 	trace.SetScope("atp", false)
 	if cfg.Verbose {
 		traceMount(os.Stderr)
+	}
+
+	if cfg.Version {
+		buildinfo.Print(os.Stdout, "csmount", BuildVersion, BuildCommit, BuildDate)
+		return 0
 	}
 
 	if cfg.ListIfaces {

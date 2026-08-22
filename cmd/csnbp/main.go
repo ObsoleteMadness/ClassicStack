@@ -27,6 +27,15 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/client/atalk"
 	"github.com/ObsoleteMadness/ClassicStack/client/trace"
 	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/atlink"
+	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/buildinfo"
+)
+
+// Build metadata injected at link time via -ldflags
+// -X main.BuildVersion=... -X main.BuildCommit=... -X main.BuildDate=...
+var (
+	BuildVersion = "0.0.0-dev"
+	BuildCommit  = "unknown"
+	BuildDate    = "unknown"
 )
 
 func main() {
@@ -42,11 +51,17 @@ func run() error {
 		srcNode = flag.Uint("src", 0x01, "our LocalTalk source node (1..254)")
 		timeout = flag.Duration("timeout", 2*time.Second, "how long to collect replies")
 		verbose = flag.Bool("v", false, "verbose wire trace to stderr")
+		version = flag.Bool("version", false, "print version information and exit")
 	)
 	at := atlink.Flags(flag.CommandLine)
 	flag.Usage = usage
 	flag.Parse()
 	trace.SetVerbose(*verbose)
+
+	if *version {
+		buildinfo.Print(os.Stdout, "csnbp", BuildVersion, BuildCommit, BuildDate)
+		return nil
+	}
 
 	if at.ListIface {
 		atlink.PrintInterfaces(os.Stdout)

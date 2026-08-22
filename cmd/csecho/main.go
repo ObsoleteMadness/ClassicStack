@@ -23,6 +23,15 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/client/atalk"
 	"github.com/ObsoleteMadness/ClassicStack/client/trace"
 	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/atlink"
+	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/buildinfo"
+)
+
+// Build metadata injected at link time via -ldflags
+// -X main.BuildVersion=... -X main.BuildCommit=... -X main.BuildDate=...
+var (
+	BuildVersion = "0.0.0-dev"
+	BuildCommit  = "unknown"
+	BuildDate    = "unknown"
 )
 
 func main() {
@@ -41,10 +50,16 @@ func run() error {
 		timeout = flag.Duration("timeout", 2*time.Second, "per-request reply timeout")
 		payload = flag.String("data", "ClassicStack csecho", "echo payload string")
 		verbose = flag.Bool("v", false, "verbose wire trace to stderr")
+		version = flag.Bool("version", false, "print version information and exit")
 	)
 	at := atlink.Flags(flag.CommandLine)
 	flag.Parse()
 	trace.SetVerbose(*verbose)
+
+	if *version {
+		buildinfo.Print(os.Stdout, "csecho", BuildVersion, BuildCommit, BuildDate)
+		return nil
+	}
 
 	if at.ListIface {
 		atlink.PrintInterfaces(os.Stdout)
