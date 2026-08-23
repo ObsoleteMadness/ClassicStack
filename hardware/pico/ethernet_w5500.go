@@ -1,4 +1,4 @@
-//go:build pico
+//go:build pico || pico2
 
 package main
 
@@ -21,7 +21,7 @@ const (
 
 func OpenW5500Ethernet() (link.FrameLink, error) {
 	println("Initializing SPI1 for W5500...")
-	spi := &machine.SPI1
+	spi := machine.SPI1
 	err := spi.Configure(machine.SPIConfig{
 		Frequency: 16000000, // 16MHz SPI speed for W5500
 		Mode:      0,

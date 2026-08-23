@@ -76,10 +76,11 @@ func (d *Driver) Init() error {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	// Verify we can communicate with the PHY by reading its ID
+	// Verify we can communicate with the PHY by reading its ID (both halves --
+	// a dead/unwired MDIO bus reads all-ones or all-zeros on every register).
 	id1 := d.readReg(RegPHY1)
 	id2 := d.readReg(RegPHY2)
-	if id1 == 0xFFFF || id1 == 0x0000 {
+	if id1 == 0xFFFF || id1 == 0x0000 || id2 == 0xFFFF || id2 == 0x0000 {
 		return errors.New("lan8720a: failed to communicate with PHY")
 	}
 

@@ -1,4 +1,4 @@
-//go:build pico && picow
+//go:build (pico || pico2) && picow
 
 package main
 

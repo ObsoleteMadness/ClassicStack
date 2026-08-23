@@ -1,4 +1,4 @@
-//go:build pico
+//go:build pico || pico2
 
 package main
 

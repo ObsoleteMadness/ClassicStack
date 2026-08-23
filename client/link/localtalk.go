@@ -1,3 +1,9 @@
+//go:build !tinygo
+
+// LToUDP needs a real multicast UDP socket (golang.org/x/net/ipv4, via
+// adapter/link/ltoudp), which TinyGo's baremetal targets don't implement (see
+// localtalk_tinygo.go for the stub those targets get instead).
+
 package link
 
 import (

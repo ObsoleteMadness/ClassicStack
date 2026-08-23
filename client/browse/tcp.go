@@ -83,19 +83,7 @@ func ipv4ForDevice(device string) net.IP {
 			}
 		}
 	}
-	ifi, err := net.InterfaceByName(device)
-	if err != nil {
-		return nil
-	}
-	addrs, err := ifi.Addrs()
-	if err != nil {
-		return nil
-	}
-	var dotted []string
-	for _, a := range addrs {
-		dotted = append(dotted, a.String())
-	}
-	return firstIPv4(dotted)
+	return osInterfaceIPv4(device)
 }
 
 func firstIPv4(addrs []string) net.IP {

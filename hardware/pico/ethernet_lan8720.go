@@ -1,9 +1,8 @@
-//go:build pico
+//go:build pico || pico2
 
 package main
 
 import (
-	"errors"
 	"machine"
 	"time"
 

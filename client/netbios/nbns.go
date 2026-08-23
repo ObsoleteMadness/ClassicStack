@@ -1,3 +1,13 @@
+//go:build !tinygo
+
+// nbns.go is the NBT name-service (UDP 137) client used to find the TCP/IP master
+// browser. A "net view" over TCP/IP locates <workgroup><1D> via a broadcast NBNS
+// query, then asks that host for the browse list over SMB-over-TCP. This is the
+// datagram half; client/browse.EnumerateTCP runs the session half.
+//
+// It needs a real UDP socket (net.ListenUDP), which TinyGo's baremetal targets
+// don't implement -- see nbns_tinygo.go for the stub those targets get instead.
+
 package netbios
 
 import (
@@ -12,11 +22,6 @@ import (
 	nb "github.com/ObsoleteMadness/ClassicStack/core/protocol/netbios"
 )
 
-// nbns.go is the NBT name-service (UDP 137) client used to find the TCP/IP master
-// browser. A "net view" over TCP/IP locates <workgroup><1D> via a broadcast NBNS
-// query, then asks that host for the browse list over SMB-over-TCP. This is the
-// datagram half; client/browse.EnumerateTCP runs the session half.
-
 const (
 	nbnsPort        = 137
 	nbnsTypeNB      = 0x0020 // NB resource record (RFC 1002)
@@ -26,13 +31,6 @@ const (
 	nbnsRDataLen    = 6 // NB flags (2) + IPv4 (4)
 	nbnsEncodedName = 34
 )
-
-// NBNSAnswer is one unique-name mapping returned by a name-service query: the
-// NetBIOS name (trimmed) and the IPv4 that registered it.
-type NBNSAnswer struct {
-	Name string
-	IP   net.IP
-}
 
 // LookupMasterBrowser broadcasts an NBNS query for <workgroup><1D> from src (the
 // IPv4 bound on the browse NIC) and returns the IPv4s that answered within window.

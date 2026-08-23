@@ -1,4 +1,4 @@
-//go:build pico
+//go:build pico || pico2
 
 package main
 
@@ -92,7 +92,7 @@ func main() {
 	hostinfo.SetBoardInfo("Pi Pico", ethType, "arm")
 
 	// 2. Initialize the LAN8720A PHY (only if configured)
-	var phyDriver *lan8720a.Device
+	var phyDriver *lan8720a.Driver
 	if ethernetController == "lan8720" {
 		println("Initializing LAN8720A PHY...")
 		phyDriver = lan8720a.New(machine.Pin(ETH_MDC), machine.Pin(ETH_MDIO), machine.NoPin, 1)

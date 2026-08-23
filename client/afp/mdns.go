@@ -1,3 +1,9 @@
+//go:build !tinygo
+
+// mDNS/Bonjour discovery needs a real multicast UDP socket (golang.org/x/net/ipv4)
+// and net.Interface.Addrs()/net.InterfaceByName, neither of which TinyGo's baremetal
+// targets implement (see mdns_tinygo.go for the stub those targets get instead).
+
 package afp
 
 import (
@@ -13,10 +19,6 @@ import (
 	clientlink "github.com/ObsoleteMadness/ClassicStack/client/link"
 )
 
-// DSIPort is the well-known AFP-over-TCP (DSI) port. Servers advertise it via
-// Bonjour as _afpovertcp._tcp.local. (RFC 6762 / Apple AFP over TCP).
-const DSIPort = 548
-
 const (
 	mdnsGroup       = "224.0.0.251"
 	mdnsPort        = 5353
@@ -24,15 +26,6 @@ const (
 	classQU         = 0x8000 // RFC 6762 unicast-response bit on a question class
 	mdnsDefaultWait = 2 * time.Second
 )
-
-// TCPServer is one AFP-over-TCP server learned from mDNS (Bonjour), not from NBP.
-// Host is an IPv4 when the response carried an A record, otherwise the SRV target
-// hostname. Port is 548 when the advertisement omitted SRV.
-type TCPServer struct {
-	Name string // instance label (the Chooser-style server name)
-	Host string // IPv4 or hostname to dial
-	Port uint16
-}
 
 // DiscoverTCP browses _afpovertcp._tcp.local via multicast DNS from device's IPv4
 // (or the wildcard address when device has none). Replies are requested unicast
