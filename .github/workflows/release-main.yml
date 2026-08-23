@@ -1,8 +1,13 @@
 name: Release On Main
 
+# Only ever runs from a version tag (vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rcN,
+# e.g. v1.0.0-rc1) -- pushing to main no longer auto-cuts a "dev-<sha>" prerelease.
+# scripts/ci/compute-release-metadata.sh enforces this too (fails closed if the
+# triggering ref isn't a matching tag), so a workflow_dispatch run picked from a
+# branch fails fast rather than publishing a release. PR builds still produce
+# downloadable workflow artifacts (see pr-ci.yml) without needing a tag.
 on:
   push:
-    branches: [main]
     tags: ['v*']
   workflow_dispatch:
 
