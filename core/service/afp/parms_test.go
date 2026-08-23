@@ -76,7 +76,6 @@ func TestFileDirParams_FullFileBitmap(t *testing.T) {
 	if got := bp.BE32(block[off:]); got != 0 { // RsrcForkLen (no resource fork written)
 		t.Errorf("RsrcForkLen = %d, want 0", got)
 	}
-	off += 4
 
 	// Name fields resolve through their offsets into the variable area.
 	if name, _, ok := pString(block, longOff); !ok || string(name) != "doc.txt" {

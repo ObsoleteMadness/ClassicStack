@@ -131,7 +131,7 @@ func (s *Service) afpMoveAndRename(a *afpSession, block []byte) ([]byte, int32) 
 	}
 
 	// The final leaf name: the new name if supplied, else the source's own name.
-	newStore := srcStore
+	var newStore string
 	if req.NewName != "" {
 		newStore, err = vol.ResolvePath(dstParent, req.NewName, req.NewPathType)
 	} else {

@@ -121,7 +121,7 @@ func walkFields(v reflect.Value, embedCap string, out *[]config.FieldInfo) {
 		}
 		// Anonymous embed: recurse; inherit capability from the embed type name when set.
 		if sf.Anonymous && fv.Kind() == reflect.Struct && (tomlTag == "" || strings.Split(tomlTag, ",")[0] == "") {
-			cap := embedCap
+			var cap string
 			if c := sf.Tag.Get("capability"); c != "" {
 				cap = c
 			} else {

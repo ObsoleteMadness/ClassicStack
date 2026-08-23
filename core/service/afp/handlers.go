@@ -112,9 +112,11 @@ func (s *Service) serverInfoBlock() []byte {
 	out = bp.AppendBE16(out, uint16(uamsOff))
 	out = bp.AppendBE16(out, 0) // icon/mask offset — none
 	out = bp.AppendBE16(out, info.Flags)
-	out = putPString(out, []byte(info.ServerName))
-	// out now ends before the even-boundary pad; jump to machineOff (the pad
+	// putPString is called for its side effect (writing ServerName's pascal-string
+	// bytes into b's backing array via append) — its returned slice header is
+	// immediately superseded below, since out now jumps to machineOff (the pad
 	// bytes between are already zero from the make).
+	putPString(out, []byte(info.ServerName))
 	out = b[:machineOff]
 	out = putPString(out, []byte(info.MachineType))
 	out = append(out, byte(len(info.AFPVersions)))

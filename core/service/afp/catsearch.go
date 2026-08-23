@@ -231,7 +231,6 @@ func (v *Volume) decodeCatSearchCriteria(reqBitmap uint32, specs []byte) (fs.Cat
 			return crit, afpErrParamErr
 		}
 		nameOffsetPos = int(bp.BE16(spec1[off : off+2]))
-		off += 2
 		crit.MatchName = true
 		crit.Partial = reqBitmap&catSearchBitPartialName != 0
 	}
