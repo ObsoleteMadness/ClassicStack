@@ -32,7 +32,7 @@ func getCPULoad() float64 {
 	if err != nil {
 		return 0
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	if !scanner.Scan() {
@@ -96,7 +96,7 @@ func getMemoryInfo() (total uint64, free uint64) {
 	if err != nil {
 		return 0, 0
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {

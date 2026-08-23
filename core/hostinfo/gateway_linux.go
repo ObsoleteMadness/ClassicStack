@@ -17,7 +17,7 @@ func defaultGateway() (net.IP, error) {
 	if err != nil {
 		return nil, ErrNoDefaultGateway
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	sc := bufio.NewScanner(f)
 	first := true
