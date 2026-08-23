@@ -1,6 +1,6 @@
 module github.com/ObsoleteMadness/ClassicStack
 
-go 1.25.12
+go 1.25.13
 
 require (
 	fyne.io/systray v1.12.2
@@ -10,8 +10,8 @@ require (
 	github.com/google/gopacket v1.1.19
 	github.com/jacobsa/go-serial v0.0.0-20180131005756-15cf729a72d4
 	github.com/pelletier/go-toml/v2 v2.2.4
-	golang.org/x/net v0.55.0
-	golang.org/x/sys v0.45.0
+	golang.org/x/net v0.56.0
+	golang.org/x/sys v0.46.0
 	modernc.org/sqlite v1.35.0
 )
 
