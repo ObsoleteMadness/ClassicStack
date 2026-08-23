@@ -73,11 +73,11 @@ func TestNamespace_GenDirBaseInitSearchAndSearch(t *testing.T) {
 	_, cn := newTestService(t)
 	seedLongNameFile(t, cn, "Quarterly Report.txt")
 
-	// Generate a dir base at the volume root (OS/2 namespace), empty path.
-	root := hpathHandle(0) // handle 0 = the root the DOS path uses... but we need a base.
-	// Use a DOS dir handle bound to the root first, then gen-base from it.
+	// Generate a dir base at the volume root (OS/2 namespace), empty path. Handle 0
+	// (the root the DOS path uses) isn't itself a valid base — use a DOS dir handle
+	// bound to the root first, then gen-base from that.
 	dh := cn.c.AllocDir(mustVol(t, cn), "")
-	root = hpathHandle(dh)
+	root := hpathHandle(dh)
 	genArgs := append([]byte{ncpproto.NameOS2, ncpproto.NameOS2, 0}, root...)
 	completion, body := cn.ServeRequest(nsReq(ncpproto.NSGenDirBase, genArgs))
 	if completion != ncpproto.CompletionSuccess || len(body) < 9 {

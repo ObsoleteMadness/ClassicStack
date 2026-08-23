@@ -75,6 +75,3 @@ func (s *Service) storePath(sess *Session, ref NodeRef) (string, error) {
 	return s.pathFor(sess, ref.ID)
 }
 
-func (s *Service) parentRef(sess *Session, parent NodeRef) (string, error) {
-	return s.storePath(sess, parent)
-}

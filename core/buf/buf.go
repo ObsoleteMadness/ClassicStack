@@ -1,3 +1,5 @@
+//go:build !tinygo
+
 // Package buf holds per-target buffer-size constants implementing the §1
 // allocation discipline. This file carries the default (desktop/server) sizes;
 // buf_tinygo.go overrides them with smaller values on embedded targets.
@@ -6,9 +8,6 @@
 // real call site needs to size a buffer against the target, so the embedded
 // build stays auditable. Code should reference these consts rather than
 // hard-coding sizes (CLAUDE.md).
-//
-//go:build !tinygo
-
 package buf
 
 const (

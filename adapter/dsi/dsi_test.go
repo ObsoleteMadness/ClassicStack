@@ -1,6 +1,7 @@
 package dsi
 
 import (
+	"context"
 	"net"
 	"testing"
 	"time"
@@ -45,7 +46,7 @@ func dialAndListen(t *testing.T, handler afp.CommandHandler) (net.Conn, *Transpo
 	tr.listener = l
 	tr.running = true
 	go tr.acceptLoop(l)
-	t.Cleanup(func() { _ = tr.Stop(nil) })
+	t.Cleanup(func() { _ = tr.Stop(context.Background()) })
 
 	conn, err := net.Dial("tcp", l.Addr().String())
 	if err != nil {

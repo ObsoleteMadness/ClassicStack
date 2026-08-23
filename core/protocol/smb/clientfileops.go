@@ -10,6 +10,7 @@
 //
 // Reference: [MS-CIFS] §2.2.4.41 (OPEN_ANDX), §2.2.4.42 (READ_ANDX),
 // §2.2.4.43 (WRITE_ANDX), §2.2.4.5 (CLOSE), §2.2.6.2 (FIND_FIRST2).
+
 package smb
 
 import (

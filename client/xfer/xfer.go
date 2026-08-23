@@ -134,12 +134,8 @@ func fileTransferTotal(srcFS fs.ForkFS, src string) int64 {
 	return total
 }
 
-// copyDir recurses: create dst, copy every child, then carry the directory's own
+// copyDirCtx recurses: create dst, copy every child, then carry the directory's own
 // metadata (Finder info / DOS attrs) last.
-func copyDir(srcFS, dstFS fs.ForkFS, src, dst string) error {
-	return copyDirCtx(context.Background(), srcFS, dstFS, src, dst, nil)
-}
-
 func copyDirCtx(ctx context.Context, srcFS, dstFS fs.ForkFS, src, dst string, progress func(Progress)) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -173,11 +169,7 @@ func copyDirCtx(ctx context.Context, srcFS, dstFS fs.ForkFS, src, dst string, pr
 	return nil
 }
 
-// copyFile copies one file's data fork, then its resource fork and metadata.
-func copyFile(srcFS, dstFS fs.ForkFS, src, dst string) error {
-	return copyFileCtx(context.Background(), srcFS, dstFS, src, dst, nil)
-}
-
+// copyFileCtx copies one file's data fork, then its resource fork and metadata.
 func copyFileCtx(ctx context.Context, srcFS, dstFS fs.ForkFS, src, dst string, progress func(Progress)) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -201,12 +193,8 @@ func copyFileCtx(ctx context.Context, srcFS, dstFS fs.ForkFS, src, dst string, p
 	return nil
 }
 
-// copyFork streams one fork from src to dst. createData creates the destination file
-// (data fork); the resource fork opens the already-created file's resource fork.
-func copyFork(srcFS, dstFS fs.ForkFS, src, dst string, fork fs.ForkType, createData bool) error {
-	return copyForkCtx(context.Background(), srcFS, dstFS, src, dst, fork, createData, nil)
-}
-
+// copyForkCtx streams one fork from src to dst. createData creates the destination
+// file (data fork); the resource fork opens the already-created file's resource fork.
 func copyForkCtx(ctx context.Context, srcFS, dstFS fs.ForkFS, src, dst string, fork fs.ForkType, createData bool, onBytes func(int64)) error {
 	var (
 		in  fs.File

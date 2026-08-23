@@ -1,3 +1,9 @@
+// Package hostinfo is pcap-free host/NIC introspection: the routing-table-accurate
+// primary interface/device (primary.go, primary_interfaces.go), the default gateway
+// (gateway*.go, one file per OS), embedded board/build metadata (this file), and a
+// best-effort "first up NIC" fallback (diagnostics_*.go) for platforms or targets
+// (TinyGo) that don't support the primary-interface detection path — see
+// primary_interfaces_tinygo.go.
 package hostinfo
 
 import (

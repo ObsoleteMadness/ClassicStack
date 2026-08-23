@@ -376,8 +376,11 @@ func (l *frameLink) Close() error {
 	// drivers hang until the write completes. Wait briefly, then force the close.
 	writeDone := make(chan struct{})
 	go func() {
-		l.writeMu.Lock()
-		l.writeMu.Unlock()
+		// Intentional empty critical section: this is a "wait for writeMu to be
+		// free" barrier, not a bug — SA2001 doesn't know the point is the
+		// Lock/Unlock pair itself, not any work done while held.
+		l.writeMu.Lock()   //nolint:staticcheck
+		l.writeMu.Unlock() //nolint:staticcheck
 		close(writeDone)
 	}()
 	select {

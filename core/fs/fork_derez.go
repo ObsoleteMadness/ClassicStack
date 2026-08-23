@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Based on macresrources by Elliot Nunn
 // SPDX-License-Identifier: MIT
+
 package fs
 
 import (

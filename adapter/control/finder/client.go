@@ -57,17 +57,6 @@ func (s *Service) clientEnabled() bool {
 	return s.clientConfig().Enabled
 }
 
-func (s *Service) serviceAllowed(kind string) bool {
-	if !s.clientConfigured() {
-		return true
-	}
-	cfg := s.clientConfig()
-	if !cfg.Enabled {
-		return false
-	}
-	return cfg.AllowsService(kind)
-}
-
 func (s *Service) mountAllowed() bool {
 	if !s.clientConfigured() {
 		return true

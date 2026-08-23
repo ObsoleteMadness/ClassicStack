@@ -364,9 +364,8 @@ func leU32(b []byte) uint32 {
 	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
 }
 
-// appendLE16/appendLE32 mirror the protocol package's little-endian appenders for
-// the name-space reply fields.
-func appendLE16(dst []byte, v uint16) []byte { return append(dst, byte(v), byte(v>>8)) }
+// appendLE32 mirrors the protocol package's little-endian appender for the
+// name-space reply fields.
 func appendLE32(dst []byte, v uint32) []byte {
 	return append(dst, byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
 }

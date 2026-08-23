@@ -26,7 +26,11 @@ type Adapter struct {
 	uid, gid    uint32
 	handles     *handleTable
 	log         log.Logger
-	onInit      func()
+	// onInit is set and called only by host.go, which needs the real fuse&&cgo
+	// build tags to compile — golangci-lint's configured -tags all (no fuse, no
+	// cgo) only ever sees host_stub.go, so `unused` flags this field as dead in
+	// that configuration even though the real build uses it.
+	onInit func() //nolint:unused
 
 	xattrForkMu sync.Mutex
 	xattrFork   *xattrForkEntry // cached OpenFork for sequential getxattr reads

@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Based on Netboot code by Elliot Nunn
 // SPDX-License-Identifier: MIT
+
 package netboot
 
 import (

@@ -27,13 +27,6 @@ import (
 	proto "github.com/ObsoleteMadness/ClassicStack/core/protocol/etherdfs"
 )
 
-// ethHdrLen is the Ethernet II header length (dst6 + src6 + type2). EtherDFS frames
-// carry the EtherType in that header and the EtherDFS header/body after it, but the
-// codec (proto.Frame.Encode / proto.ParseFrame) operates on the WHOLE Ethernet frame
-// (it reads/writes the MACs and EtherType itself), so this transport hands complete
-// frames to the link.
-const ethHdrLen = 14
-
 // broadcastMAC is the Ethernet broadcast address the discovery probe targets.
 var broadcastMAC = [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
 

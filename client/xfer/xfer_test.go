@@ -3,6 +3,8 @@ package xfer
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"os"
 	"testing"
 
@@ -59,8 +61,8 @@ func readAll(t *testing.T, sh fs.ForkFS, path string) []byte {
 	info, _ := f.Stat()
 	buf := make([]byte, info.Size())
 	if len(buf) > 0 {
-		if _, err := f.ReadAt(buf, 0); err != nil && err.Error() != "EOF" {
-			// io.EOF at the exact end is fine
+		if _, err := f.ReadAt(buf, 0); err != nil && !errors.Is(err, io.EOF) {
+			t.Fatalf("ReadAt %s: %v", path, err)
 		}
 	}
 	return buf

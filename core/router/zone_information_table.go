@@ -2,6 +2,7 @@
 // and the router/ZIP service query. Re-expressed for the core ring — it uses
 // core/encoding for MacRoman case-folding and carries no logging or port deps.
 // (Behaviour mirrors the legacy router.ZoneInformationTable.)
+
 package router
 
 import (

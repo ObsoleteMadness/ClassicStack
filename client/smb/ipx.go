@@ -518,7 +518,3 @@ func (t *ipxTransport) Close() error {
 	t.mu.Unlock()
 	return t.fl.Close()
 }
-
-// errIPXNoMAC is returned when the client cannot resolve its own NIC MAC (needed as the
-// IPX source node).
-var errIPXNoMAC = errors.New("smb/ipx: cannot resolve source MAC for the pcap device")

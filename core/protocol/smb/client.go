@@ -16,6 +16,7 @@
 // Ring: CORE (stdlib only, reflection-free; LE codecs from core/binaryprimitives).
 //
 // Reference: [MS-CIFS] §2.2.4 (per-command request/response formats).
+
 package smb
 
 import (

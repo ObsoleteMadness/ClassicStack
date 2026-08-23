@@ -57,20 +57,6 @@ func (f *fakeRouter) reset() {
 	f.mu.Unlock()
 }
 
-// routedByFunc returns the ATP function code of the routed datagrams, filtered to
-// server-initiated ASP frames. Helper for tests asserting aspDataWrite/TRel emission.
-func (f *fakeRouter) routedControls() []uint8 {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	out := make([]uint8, 0, len(f.routed))
-	for _, d := range f.routed {
-		if h, err := atp.Decode(d.Data); err == nil {
-			out = append(out, h.Control)
-		}
-	}
-	return out
-}
-
 // fakePort is a minimal RoutedPort; Reply ignores it, so the methods are stubs.
 type fakePort struct{ router.RoutedPort }
 

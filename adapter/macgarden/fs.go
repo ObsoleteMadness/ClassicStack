@@ -1,6 +1,6 @@
 //go:build macgarden || all
 
-// This file implements a read-only core/fs FileSystem backend that exposes
+// Package macgarden implements a read-only core/fs FileSystem backend that exposes
 // macintoshgarden.org as a virtual volume tree (Apps/, Games/, search/). It registers
 // itself into the core/fs factory registry under the "macgarden" fs_type and is gated
 // behind the `macgarden` build tag, so a build without the tag never links the scraper

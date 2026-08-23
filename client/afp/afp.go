@@ -290,12 +290,11 @@ func (f *FS) reestablish(dead Session) error {
 		return aspclient.ErrSessionClosed
 	}
 	if f.sess != dead {
-		// Another caller already reconnected (or cleared sess on failure).
+		// Another caller already reconnected (or cleared sess on failure). If
+		// f.sess is nil here, a prior reconnect failed and left it nil (dead != nil
+		// but no longer current) — fall through and try again rather than return.
 		if f.sess != nil {
 			return nil
-		}
-		if dead != nil {
-			// Prior reconnect failed and left sess nil; fall through to try again.
 		}
 	}
 	if f.redial == nil || f.name == "" {

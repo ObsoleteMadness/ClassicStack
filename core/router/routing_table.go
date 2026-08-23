@@ -3,6 +3,7 @@
 // Worst→removed, and withdraws a port's routes immediately on Detach (§3). It
 // holds RoutedPort (not the legacy port.Port) and logs through core/log; the key
 // is hand-built (no fmt) to stay reflection-free (§1).
+
 package router
 
 import (

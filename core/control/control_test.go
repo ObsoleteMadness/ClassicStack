@@ -480,7 +480,6 @@ func (s *auditSink) hasMsg(msg string) bool {
 
 type parseCodec struct {
 	unmarshalErr error
-	data         []byte
 }
 
 func (c parseCodec) Marshal(*config.Model) ([]byte, error) { return []byte("ok"), nil }

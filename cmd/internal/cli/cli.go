@@ -275,7 +275,13 @@ func Run(ctx context.Context, args []string, v Version) error {
 		fmt.Fprintln(os.Stderr, "classicstack: shutdown complete")
 	}
 	if restartRequested.Load() {
-		if err := relaunchProcess(args); err != nil {
+		// relaunchProcess's only successful path ends in os.Exit(0), which never
+		// returns to here — staticcheck doesn't model that, so it sees every
+		// reachable return as an error and flags this as "always true" (SA4023).
+		// It IS always true in practice, but for the right reason: relaunchProcess
+		// only returns AT ALL on the two genuine failure paths (os.Executable,
+		// cmd.Start).
+		if err := relaunchProcess(args); err != nil { //nolint:staticcheck // see comment above
 			return fmt.Errorf("restart: %w", err)
 		}
 	}
@@ -291,6 +297,11 @@ func Run(ctx context.Context, args []string, v Version) error {
 // leading subcommand (classicstackd's "run -config <path>"). Relaunching with
 // args would drop that subcommand and make classicstackd's dispatcher reject
 // the relaunch as an unknown command, so os.Args is what must be replayed.
+//
+//nolint:staticcheck // SA4023: every reachable return here IS a genuine error;
+// the only non-error path ends in os.Exit(0), which staticcheck doesn't model as
+// non-returning, so it (correctly, if confusingly) notes the caller's err != nil
+// check is always true given how this function is actually implemented.
 func relaunchProcess(_ []string) error {
 	exe, err := os.Executable()
 	if err != nil {

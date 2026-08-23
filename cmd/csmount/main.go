@@ -82,10 +82,13 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, "csmount: connect:", err)
 		return 1
 	}
-	defer fs.CloseFS(remote)
+	defer func() { _ = fs.CloseFS(remote) }()
 
-	m, err := mountAt(remote, mountpoint, target.Volume, cfg)
-	if err != nil {
+	// mountAt's build-without-fuse stub always returns a non-nil error (FUSE not
+	// compiled in), which staticcheck flags as "always true" (SA4023) since it
+	// only sees that variant here — the real fuse+cgo build genuinely mounts.
+	m, err := mountAt(remote, mountpoint, target.Volume, cfg) //nolint:staticcheck // see comment above
+	if err != nil {                                           //nolint:staticcheck // see comment above
 		fmt.Fprintln(os.Stderr, "csmount: mount:", err)
 		return 1
 	}

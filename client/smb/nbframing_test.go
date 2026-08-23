@@ -62,17 +62,6 @@ func (l *captureLink) inject(f []byte) {
 	}
 }
 
-// firstWrite returns the first captured frame, or fails if none was written.
-func (l *captureLink) firstWrite(t *testing.T) []byte {
-	t.Helper()
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if len(l.written) == 0 {
-		t.Fatal("transport wrote no frame")
-	}
-	return l.written[0]
-}
-
 // testMAC is a fixed virtual-station MAC so the derived NetBIOS calling name is stable.
 var testMAC = [6]byte{0x02, 0x11, 0x22, 0x33, 0x44, 0x55}
 
