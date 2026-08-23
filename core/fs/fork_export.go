@@ -568,7 +568,7 @@ func (derezExport) apply(native ForkEngine, dataPath string, kind exportKind, da
 			if err != nil {
 				return err
 			}
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 			return f.Truncate(0)
 		}
 		res, err := macresources.ParseRez(data)
@@ -692,7 +692,7 @@ func readEntireFork(native ForkEngine, path string, fork ForkType) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
 		return nil, err
@@ -713,7 +713,7 @@ func writeEntireFork(native ForkEngine, path string, fork ForkType, data []byte)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := f.Truncate(0); err != nil {
 		return err
 	}

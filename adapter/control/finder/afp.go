@@ -92,7 +92,7 @@ func (s *Service) lookupAFPDDP(spec clientlink.Spec) ([]VolumeInfo, error) {
 		return nil, err
 	}
 	ep := atalk.NewEndpoint(dl, atalk.Addr{Network: opener.Net, Node: opener.Node})
-	defer ep.Close()
+	defer func() { _ = ep.Close() }()
 	ents, err := ep.LookupAllZones("=", atalk.AFPServerType, afpBrowseWindow)
 	if err != nil {
 		return nil, err

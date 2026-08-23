@@ -30,7 +30,7 @@ func (s *Service) discoverNCP(req DiscoverRequest) ([]VolumeInfo, error) {
 		s.log.Log1(log.Debug, "finder ncp sap scan", log.Str("err", err.Error()))
 		return nil, err
 	}
-	defer fl.Close()
+	defer func() { _ = fl.Close() }()
 
 	srcMAC := opener.MAC
 	if srcMAC == ([6]byte{}) {

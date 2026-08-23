@@ -22,7 +22,7 @@ func runREPL(cfg config, rawURI string) int {
 	if err != nil {
 		return fail(err)
 	}
-	defer fs.CloseFS(remote)
+	defer func() { _ = fs.CloseFS(remote) }()
 
 	cwd := target.Path // start at the URI's path (usually the volume root)
 	fmt.Printf("connected to %s — type 'help' for commands, 'quit' to exit\n", target.Redacted())

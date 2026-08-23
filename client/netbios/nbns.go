@@ -59,7 +59,7 @@ func nbnsQuery(src net.IP, name nb.Name, window time.Duration) ([]NBNSAnswer, er
 	if err != nil {
 		return nil, fmt.Errorf("netbios: listen NBNS: %w", err)
 	}
-	defer pc.Close()
+	defer func() { _ = pc.Close() }()
 	if err := setBroadcast(pc); err != nil {
 		dtracef("NBNS SO_BROADCAST: %v", err)
 	}

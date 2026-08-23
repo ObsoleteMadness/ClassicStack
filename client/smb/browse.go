@@ -54,7 +54,7 @@ func EnumServers(opener *clientlink.Opener, masterName, workgroup, user, pass st
 		_ = tr.Close()
 		return nil, err
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	servers, err := sess.EnumServers(protocol.ServerTypeAll, workgroup)
 	if err != nil {
@@ -95,7 +95,7 @@ func Browse(target uri.Target, opts client.Options) (ServerListing, error) {
 		_ = tr.Close()
 		return ServerListing{}, err
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	shares, err := sess.EnumShares()
 	if err != nil {

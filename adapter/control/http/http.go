@@ -1150,7 +1150,7 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			b, _ := json.Marshal(ev)
-			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Topic(), b)
+			_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Topic(), b)
 			flusher.Flush()
 		}
 	}
@@ -1207,7 +1207,7 @@ func (c *AdapterClient) post(path string, body any) error {
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
 		return errForStatus(res.StatusCode, res.Status)
 	}
@@ -1225,7 +1225,7 @@ func (c *AdapterClient) getJSON(path string, dest any) error {
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
 		return errForStatus(res.StatusCode, res.Status)
 	}
@@ -1254,7 +1254,7 @@ func (c *AdapterClient) Status() ([]control.Unit, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP error: %s", res.Status)
 	}
@@ -1269,7 +1269,7 @@ func (c *AdapterClient) HostInfo() (hostinfo.HostInfo, error) {
 	if err != nil {
 		return hostinfo.HostInfo{}, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
 		return hostinfo.HostInfo{}, fmt.Errorf("HTTP error: %s", res.Status)
 	}
@@ -1331,7 +1331,7 @@ func (c *AdapterClient) SaveExtMap(path, content string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
 		return "", errForStatus(res.StatusCode, res.Status)
 	}
@@ -1363,7 +1363,7 @@ func (c *AdapterClient) ListFSTypes() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP error: %s", res.Status)
 	}
@@ -1415,7 +1415,7 @@ func (c *AdapterClient) Setup(user, password string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
 		return "", errForStatus(res.StatusCode, res.Status)
 	}
@@ -1435,7 +1435,7 @@ func (c *AdapterClient) SetupRequired() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	return res.StatusCode == http.StatusConflict, nil
 }
 
@@ -1446,7 +1446,7 @@ func (c *AdapterClient) Save(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
 		return "", errForStatus(res.StatusCode, res.Status)
 	}
@@ -1631,7 +1631,7 @@ func (c *AdapterClient) Subscribe(topics ...string) (<-chan bus.Event, func(), e
 
 	go func() {
 		defer close(outCh)
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 		scanner := bufio.NewScanner(res.Body)
 
 		var eventType string

@@ -59,7 +59,7 @@ func discoverTCP(src net.IP, window time.Duration) ([]TCPServer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("afp: mDNS listen: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	pc := ipv4.NewPacketConn(conn)
 	_ = pc.SetTTL(255)

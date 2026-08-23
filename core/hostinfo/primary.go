@@ -34,7 +34,7 @@ func PrimaryIP() (net.IP, error) {
 	if err != nil {
 		return nil, ErrNoPrimaryInterface
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	ua, ok := conn.LocalAddr().(*net.UDPAddr)
 	if !ok || ua.IP == nil || ua.IP.IsUnspecified() {
 		return nil, ErrNoPrimaryInterface

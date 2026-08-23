@@ -393,25 +393,25 @@ var serialOpener registry.SerialOpener = func(device string, params registry.Ser
 func printInterfaces(w io.Writer) {
 	devs, err := pcap.ListDevices()
 	if err != nil {
-		fmt.Fprintf(w, "cannot list interfaces: %v\n", err)
-		fmt.Fprintln(w, "(raw-Ethernet transports need a build with the 'pcap' tag and Npcap/libpcap installed)")
+		_, _ = fmt.Fprintf(w, "cannot list interfaces: %v\n", err)
+		_, _ = fmt.Fprintln(w, "(raw-Ethernet transports need a build with the 'pcap' tag and Npcap/libpcap installed)")
 		return
 	}
 	if len(devs) == 0 {
-		fmt.Fprintln(w, "no capturable interfaces found")
+		_, _ = fmt.Fprintln(w, "no capturable interfaces found")
 		return
 	}
-	fmt.Fprintln(w, "Interfaces:")
+	_, _ = fmt.Fprintln(w, "Interfaces:")
 	for _, d := range devs {
 		desc := d.Description
 		if desc == "" {
 			desc = "(no description)"
 		}
-		fmt.Fprintf(w, "  %s\n      %s", d.Name, desc)
+		_, _ = fmt.Fprintf(w, "  %s\n      %s", d.Name, desc)
 		if len(d.Addresses) > 0 {
-			fmt.Fprintf(w, " [%s]", strings.Join(d.Addresses, ", "))
+			_, _ = fmt.Fprintf(w, " [%s]", strings.Join(d.Addresses, ", "))
 		}
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 	}
 }
 

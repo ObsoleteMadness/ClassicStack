@@ -208,7 +208,7 @@ func copyForkCtx(ctx context.Context, srcFS, dstFS fs.ForkFS, src, dst string, f
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 
 	var out fs.File
 	if fork == fs.DataFork && createData {
@@ -221,7 +221,7 @@ func copyForkCtx(ctx context.Context, srcFS, dstFS fs.ForkFS, src, dst string, f
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	buf := make([]byte, copyBufSize)
 	var off int64

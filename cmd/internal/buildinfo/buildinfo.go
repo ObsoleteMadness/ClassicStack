@@ -15,5 +15,5 @@ import (
 // cmd/internal/cli.Run has printed for classicstack/classicstackd/classicstack-svc since
 // -version was added there.
 func Print(w io.Writer, tool, version, commit, date string) {
-	fmt.Fprintf(w, "%s %s\ncommit: %s\nbuilt: %s\ngo: %s\n", tool, version, commit, date, runtime.Version())
+	_, _ = fmt.Fprintf(w, "%s %s\ncommit: %s\nbuilt: %s\ngo: %s\n", tool, version, commit, date, runtime.Version())
 }

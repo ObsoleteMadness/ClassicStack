@@ -209,7 +209,7 @@ func (z *zipFS) scanArchive() error {
 		}
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	for _, ze := range r.File {
 		name := normalize(ze.Name)
 		if name == "" {
@@ -326,7 +326,7 @@ func (z *zipFS) stageExisting(name string) (*stagedFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer af.Close() // #nosec G104 -- deferred best-effort close of a read-only archive handle
+	defer func() { _ = af.Close() }() // #nosec G104 -- deferred best-effort close of a read-only archive handle
 	ze := findMember(r, name)
 	if ze == nil {
 		return z.stageNew(name)
@@ -335,7 +335,7 @@ func (z *zipFS) stageExisting(name string) (*stagedFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rc.Close() // #nosec G104 -- deferred best-effort close of a read-only member reader
+	defer func() { _ = rc.Close() }() // #nosec G104 -- deferred best-effort close of a read-only member reader
 	tf, err := os.CreateTemp(filepath.Dir(z.path), ".zipfs-stage-*")
 	if err != nil {
 		return nil, err
@@ -389,7 +389,7 @@ func (z *zipFS) flushLocked() error {
 	var srcFile *os.File
 	if r, af, err := z.openReader(); err == nil {
 		srcReader, srcFile = r, af
-		defer srcFile.Close()
+		defer func() { _ = srcFile.Close() }()
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -503,7 +503,7 @@ func (z *zipFS) writeStagedMember(w *zip.Writer, name string) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 	_, err = io.Copy(fw, in)
 	return err
 }

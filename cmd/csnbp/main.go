@@ -86,7 +86,7 @@ func run() error {
 		return err
 	}
 	ep := atalk.NewEndpoint(dl, atalk.Addr{Network: uint16(*network), Node: uint8(*srcNode)})
-	defer ep.Close()
+	defer func() { _ = ep.Close() }()
 
 	fmt.Printf("looking up %s:%s@%s ...\n", orWildcard(obj, "="), orWildcard(typ, "="), orWildcard(zone, "*"))
 	ents, err := ep.LookupTimeout(obj, typ, zone, *timeout)

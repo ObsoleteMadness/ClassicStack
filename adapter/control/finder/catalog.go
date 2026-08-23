@@ -251,7 +251,7 @@ func writeFork(ffs fs.ForkFS, path string, fork fs.ForkType, data []byte) error 
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := f.Truncate(int64(len(data))); err != nil {
 		return err
 	}
@@ -374,7 +374,7 @@ func (s *Service) ReadFork(sessionID string, ref NodeRef, resource bool, off, le
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var data []byte
 	if length > 0 {
@@ -430,7 +430,7 @@ func (s *Service) WriteFork(sessionID string, ref NodeRef, resource bool, off in
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	_, err = f.WriteAt(data, off)
 	s.log.Log2(log.Debug, "finder write fork", log.Str("path", path), log.Int("n", int64(len(data))))
 	return err

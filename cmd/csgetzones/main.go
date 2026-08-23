@@ -91,7 +91,7 @@ func run() error {
 		return err
 	}
 	ep := atalk.NewEndpoint(dl, atalk.Addr{Network: uint16(*network), Node: uint8(*srcNode)})
-	defer ep.Close()
+	defer func() { _ = ep.Close() }()
 
 	dst := atalk.Addr{Network: uint16(*network), Node: uint8(*dstNode)}
 	zones, err := atalk.NewATP(ep).GetZoneList(dst, query, *timeout)

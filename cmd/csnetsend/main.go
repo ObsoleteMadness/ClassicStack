@@ -113,7 +113,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	if err := conn.SendMessage(target.Name, netbios.Message{From: *from, To: target.Name.String(), Text: *text}); err != nil {
 		return fmt.Errorf("send: %w", err)

@@ -184,7 +184,7 @@ func (e *macBinaryForkEngine) readAll(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
 		return nil, err
@@ -208,7 +208,7 @@ func (e *macBinaryForkEngine) writeAll(path string, b []byte) error {
 			return err
 		}
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := f.Truncate(0); err != nil {
 		return err
 	}

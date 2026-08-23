@@ -71,24 +71,24 @@ func DefaultInterface() (Interface, error) {
 func PrintInterfaces(w io.Writer) {
 	ifaces, err := ListInterfaces()
 	if err != nil {
-		fmt.Fprintf(w, "cannot list interfaces: %v\n", err)
-		fmt.Fprintln(w, "(raw-Ethernet transports need a build with the 'pcap' tag and Npcap/libpcap installed)")
+		_, _ = fmt.Fprintf(w, "cannot list interfaces: %v\n", err)
+		_, _ = fmt.Fprintln(w, "(raw-Ethernet transports need a build with the 'pcap' tag and Npcap/libpcap installed)")
 		return
 	}
 	if len(ifaces) == 0 {
-		fmt.Fprintln(w, "no capturable interfaces found")
+		_, _ = fmt.Fprintln(w, "no capturable interfaces found")
 		return
 	}
-	fmt.Fprintln(w, "Interfaces (pass the DEVICE to -iface):")
+	_, _ = fmt.Fprintln(w, "Interfaces (pass the DEVICE to -iface):")
 	for _, ifi := range ifaces {
 		desc := ifi.Description
 		if desc == "" {
 			desc = "(no description)"
 		}
-		fmt.Fprintf(w, "  %s\n      %s", ifi.Name, desc)
+		_, _ = fmt.Fprintf(w, "  %s\n      %s", ifi.Name, desc)
 		if len(ifi.Addresses) > 0 {
-			fmt.Fprintf(w, " [%s]", strings.Join(ifi.Addresses, ", "))
+			_, _ = fmt.Fprintf(w, " [%s]", strings.Join(ifi.Addresses, ", "))
 		}
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 	}
 }

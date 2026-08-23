@@ -43,5 +43,5 @@ func trace(format string, args ...any) {
 	}
 	traceMu.Lock()
 	defer traceMu.Unlock()
-	fmt.Fprintf(w, format+"\n", args...)
+	_, _ = fmt.Fprintf(w, format+"\n", args...)
 }

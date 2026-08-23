@@ -63,7 +63,7 @@ func discoverAFP(cfg config) int {
 			return
 		}
 		ep := atalk.NewEndpoint(dl, atalk.Addr{Network: opener.Net, Node: opener.Node})
-		defer ep.Close()
+		defer func() { _ = ep.Close() }()
 		ents, err := ep.LookupAllZones("=", atalk.AFPServerType, 2*time.Second)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  (%s NBP: %v)\n", k, err)
@@ -274,7 +274,7 @@ func discoverNCP(cfg config) int {
 	if err != nil {
 		return fail(fmt.Errorf("open transport: %w", err))
 	}
-	defer fl.Close()
+	defer func() { _ = fl.Close() }()
 
 	srcMAC := opener.MAC
 	if srcMAC == ([6]byte{}) {
@@ -392,7 +392,7 @@ func discoverEtherDFS(cfg config) int {
 	if err != nil {
 		return fail(fmt.Errorf("open transport: %w", err))
 	}
-	defer fl.Close()
+	defer func() { _ = fl.Close() }()
 
 	srcMAC := opener.MAC
 	if srcMAC == ([6]byte{}) {

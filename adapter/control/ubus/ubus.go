@@ -437,7 +437,7 @@ func (c *AdapterClient) call(method string, params any, dest any) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	paramBytes, _ := json.Marshal(params)
 	req := Request{Method: method, Params: paramBytes, ID: 1}
@@ -694,7 +694,7 @@ func (c *AdapterClient) Subscribe(topics ...string) (<-chan bus.Event, func(), e
 
 	go func() {
 		defer close(outCh)
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		for {
 			select {
 			case <-ctx.Done():

@@ -136,7 +136,7 @@ func readWholeFork(ffs fs.ForkFS, path string, fork fs.ForkType) ([]byte, error)
 			if err != nil {
 				return nil, err
 			}
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 			info, err := f.Stat()
 			if err != nil {
 				return nil, err
@@ -155,7 +155,7 @@ func readWholeFork(ffs fs.ForkFS, path string, fork fs.ForkType) ([]byte, error)
 			return nil, err
 		}
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	buf := make([]byte, n)
 	off := int64(0)
 	for off < n {

@@ -79,7 +79,7 @@ func (s *store) Range(prefix []byte, fn func(k, v []byte) bool) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var k, v []byte
 		if err := rows.Scan(&k, &v); err != nil {
