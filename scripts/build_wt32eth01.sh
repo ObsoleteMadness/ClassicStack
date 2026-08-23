@@ -1,6 +1,56 @@
 #!/bin/bash
 set -e
 
+# hardware/esp32/wt32eth01/{emac,wifi}.go cgo directly against ESP-IDF's C
+# headers (esp_eth.h, esp_wifi.h, esp_netif.h, driver/gpio.h, ...) and link
+# against its component static libraries (-lesp_eth -lesp_wifi -lesp_netif
+# -lesp_event). CI installs the SDK via espressif/install-esp-idf-action,
+# which exports IDF_PATH; when it's set, point cgo at the component include
+# directories those files touch.
+#
+# KNOWN GAP (not fixed by this script): this still is not expected to fully
+# build. ESP-IDF's headers #include a project-generated sdkconfig.h (the
+# CONFIG_* macros idf.py derives from a project's sdkconfig), and the
+# -lesp_eth/-lesp_wifi/... libraries only exist after a real `idf.py build`
+# of a matching component project -- ESP-IDF does not ship them as generic
+# prebuilt/linkable artifacts. Neither exists here, so the build is expected
+# to fail past the header stage (or at link time) until that's addressed,
+# most likely by generating both from a companion ESP-IDF component project
+# (or by moving this driver onto TinyGo's own supported ESP32 networking
+# path -- the "espradio" package -- instead of raw cgo against ESP-IDF).
+# CI treats this build as continue-on-error for exactly this reason.
+if [[ -n "${IDF_PATH:-}" ]]; then
+  idf_includes=(
+    "$IDF_PATH/components/esp_common/include"
+    "$IDF_PATH/components/esp_eth/include"
+    "$IDF_PATH/components/esp_wifi/include"
+    "$IDF_PATH/components/esp_netif/include"
+    "$IDF_PATH/components/esp_event/include"
+    "$IDF_PATH/components/esp_hw_support/include"
+    "$IDF_PATH/components/esp_system/include"
+    "$IDF_PATH/components/esp_timer/include"
+    "$IDF_PATH/components/driver/include"
+    "$IDF_PATH/components/hal/include"
+    "$IDF_PATH/components/hal/esp32/include"
+    "$IDF_PATH/components/soc/include"
+    "$IDF_PATH/components/soc/esp32/include"
+    "$IDF_PATH/components/esp_rom/include"
+    "$IDF_PATH/components/esp_rom/esp32/include"
+    "$IDF_PATH/components/freertos/FreeRTOS-Kernel/include"
+    "$IDF_PATH/components/freertos/esp_additions/include"
+    "$IDF_PATH/components/newlib/platform_include"
+    "$IDF_PATH/components/lwip/include"
+    "$IDF_PATH/components/lwip/lwip/src/include"
+    "$IDF_PATH/components/xtensa/include"
+    "$IDF_PATH/components/xtensa/esp32/include"
+  )
+  cgo_cflags=""
+  for dir in "${idf_includes[@]}"; do
+    [[ -d "$dir" ]] && cgo_cflags="$cgo_cflags -I$dir"
+  done
+  export CGO_CFLAGS="$cgo_cflags"
+fi
+
 echo "Building ClassicStack for WT32-ETH01 (ESP32)..."
 mkdir -p bin
 GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
