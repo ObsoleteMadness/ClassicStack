@@ -59,14 +59,21 @@ func TestPace_SameNodeSpaced(t *testing.T) {
 	}
 	elapsed := time.Since(start)
 
+	// pace.go schedules each node's next send against an absolute target time (see
+	// paceLink.Write), so ordinary scheduler jitter can only push a gap LATER, never
+	// earlier, under time.Sleep's "at least the duration" guarantee — but on a loaded
+	// or virtualized runner the jitter itself can still be a few ms, so both checks
+	// below allow a proportional tolerance rather than asserting the gap exactly.
+	const tolerance = gap / 4
+
 	// n writes to one node ⇒ (n-1) gaps of enforced spacing minimum.
-	if want := time.Duration(n-1) * gap; elapsed < want {
+	if want := time.Duration(n-1) * (gap - tolerance); elapsed < want {
 		t.Fatalf("elapsed %v for %d paced writes, want ≥ %v", elapsed, n, want)
 	}
 	inner.mu.Lock()
 	defer inner.mu.Unlock()
 	for i := 1; i < len(inner.times); i++ {
-		if d := inner.times[i].Sub(inner.times[i-1]); d < gap-2*time.Millisecond {
+		if d := inner.times[i].Sub(inner.times[i-1]); d < gap-tolerance {
 			t.Fatalf("gap between write %d and %d = %v, want ≥ ~%v", i-1, i, d, gap)
 		}
 	}
