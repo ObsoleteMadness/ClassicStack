@@ -79,7 +79,7 @@ func run() error {
 		return err
 	}
 	ep := atalk.NewEndpoint(dl, atalk.Addr{Network: uint16(*network), Node: uint8(*srcNode)})
-	defer ep.Close()
+	defer func() { _ = ep.Close() }()
 
 	dst := atalk.Addr{Network: uint16(*network), Node: uint8(*dstNode)}
 	replies := 0
@@ -99,7 +99,10 @@ func run() error {
 	}
 
 	if replies == 0 {
-		os.Exit(1)
+		// Explicit Close before Exit: os.Exit skips deferred calls, and this is the
+		// one path out of run() that doesn't return to main's own cleanup.
+		_ = ep.Close()
+		os.Exit(1) //nolint:gocritic // already closed explicitly above
 	}
 	return nil
 }

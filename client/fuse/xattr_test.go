@@ -84,7 +84,7 @@ func TestAppleResourceForkPositionedWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetxattrP: %v", err)
 	}
-	want := append(chunk1, chunk2...)
+	want := append(chunk1, chunk2...) //nolint:gocritic // chunk1 is a fresh 4-byte literal (no spare cap to alias) and isn't read again
 	if !bytes.Equal(got, want) {
 		t.Errorf("got %q, want %q", got, want)
 	}

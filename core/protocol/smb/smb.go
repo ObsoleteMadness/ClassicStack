@@ -618,8 +618,8 @@ const NameTrailerLen = 2 * 16
 // name pair. Without the trailer a Win98 direct-hosted server answers NEGOTIATE with
 // ERRSRV/18 — it has no way to tell which of its names the datagram is for.
 func AppendNameTrailer(msg []byte, source, destination [16]byte) []byte {
-	out := append(msg, source[:]...)
-	return append(out, destination[:]...)
+	msg = append(msg, source[:]...)
+	return append(msg, destination[:]...)
 }
 
 // SplitNameTrailer splits a direct-hosted-IPX NEGOTIATE datagram into the SMB message

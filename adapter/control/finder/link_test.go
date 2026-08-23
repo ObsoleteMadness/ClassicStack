@@ -96,7 +96,7 @@ func bridgeEn0() config.InterfaceSection {
 
 func TestResolveLink_usesConfiguredPcapForAFP(t *testing.T) {
 	svc := New(nil, nil)
-	svc.SetLinkConfig(func() config.InterfaceSection { return bridgeEn0() })
+	svc.SetLinkConfig(bridgeEn0)
 	got, err := svc.resolveLink(KindAFP, "", "", "", uri.Target{})
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +108,7 @@ func TestResolveLink_usesConfiguredPcapForAFP(t *testing.T) {
 
 func TestResolveLink_usesConfiguredPcapForSMB(t *testing.T) {
 	svc := New(nil, nil)
-	svc.SetLinkConfig(func() config.InterfaceSection { return bridgeEn0() })
+	svc.SetLinkConfig(bridgeEn0)
 	got, err := svc.resolveLink(KindSMB, "", "", "", uri.Target{})
 	if err != nil {
 		t.Fatal(err)
@@ -120,7 +120,7 @@ func TestResolveLink_usesConfiguredPcapForSMB(t *testing.T) {
 
 func TestResolveLink_explicitRequestWins(t *testing.T) {
 	svc := New(nil, nil)
-	svc.SetLinkConfig(func() config.InterfaceSection { return bridgeEn0() })
+	svc.SetLinkConfig(bridgeEn0)
 	got, err := svc.resolveLink(KindAFP, clientlink.KindLToUDP, "", "", uri.Target{})
 	if err != nil {
 		t.Fatal(err)
@@ -135,7 +135,7 @@ func TestResolveLink_explicitRequestWins(t *testing.T) {
 
 func TestResolveLink_explicitIfaceWins(t *testing.T) {
 	svc := New(nil, nil)
-	svc.SetLinkConfig(func() config.InterfaceSection { return bridgeEn0() })
+	svc.SetLinkConfig(bridgeEn0)
 	got, err := svc.resolveLink(KindSMB, "", "en1", "", uri.Target{})
 	if err != nil {
 		t.Fatal(err)
@@ -198,7 +198,7 @@ func TestResolveLink_serialDoesNotForceSMB(t *testing.T) {
 
 func TestResolveLink_uriTransportWins(t *testing.T) {
 	svc := New(nil, nil)
-	svc.SetLinkConfig(func() config.InterfaceSection { return bridgeEn0() })
+	svc.SetLinkConfig(bridgeEn0)
 	got, err := svc.resolveLink(KindAFP, "", "", "", uri.Target{Transport: clientlink.KindLToUDP})
 	if err != nil {
 		t.Fatal(err)
@@ -210,7 +210,7 @@ func TestResolveLink_uriTransportWins(t *testing.T) {
 
 func TestResolveLink_smbURICarrierNBF(t *testing.T) {
 	svc := New(nil, nil)
-	svc.SetLinkConfig(func() config.InterfaceSection { return bridgeEn0() })
+	svc.SetLinkConfig(bridgeEn0)
 	got, err := svc.resolveLink(KindSMB, "", "", "", uri.Target{Scheme: KindSMB, Server: "FOO", Transport: "nbf"})
 	if err != nil {
 		t.Fatal(err)
@@ -222,7 +222,7 @@ func TestResolveLink_smbURICarrierNBF(t *testing.T) {
 
 func TestResolveLink_smbURITCPUsesServer(t *testing.T) {
 	svc := New(nil, nil)
-	svc.SetLinkConfig(func() config.InterfaceSection { return bridgeEn0() })
+	svc.SetLinkConfig(bridgeEn0)
 	got, err := svc.resolveLink(KindSMB, "", "", "", uri.Target{Scheme: KindSMB, Server: "192.168.0.10", Transport: clientlink.KindTCP})
 	if err != nil {
 		t.Fatal(err)

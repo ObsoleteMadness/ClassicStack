@@ -182,7 +182,7 @@ func TestCaptureReplay_DirectIPXNegotiateNameTrailer(t *testing.T) {
 
 	// A NEGOTIATE with a 4-byte dialect area, so the split must use WCT/BCC rather
 	// than the datagram length to find where the message ends.
-	msg := append(goldenHeaderFrame14[:HeaderLen:HeaderLen], 0x00, 0x04, 0x00)
+	msg := append(goldenHeaderFrame14[:HeaderLen:HeaderLen], 0x00, 0x04, 0x00) //nolint:gocritic // the 3-index slice caps capacity at HeaderLen, so append always reallocates rather than touching goldenHeaderFrame14's backing array
 	msg = append(msg, 0x02, 'A', 'B', 0x00)
 	msg[4] = CommandNegotiate
 
@@ -207,7 +207,7 @@ func TestCaptureReplay_DirectIPXNegotiateNameTrailer(t *testing.T) {
 func TestSplitNameTrailerAbsent(t *testing.T) {
 	t.Parallel()
 	// Golden frames 18/20/22/24 carry NO trailer: the message must come back whole.
-	msg := append(goldenHeaderFrame14[:HeaderLen:HeaderLen], 0x00, 0x02, 0x00, 0xAA, 0xBB)
+	msg := append(goldenHeaderFrame14[:HeaderLen:HeaderLen], 0x00, 0x02, 0x00, 0xAA, 0xBB) //nolint:gocritic // the 3-index slice caps capacity at HeaderLen, so append always reallocates rather than touching goldenHeaderFrame14's backing array
 	got, src, dst, ok := SplitNameTrailer(msg)
 	if ok {
 		t.Errorf("SplitNameTrailer = true on a trailer-less message (names %q/%q)", src, dst)

@@ -156,18 +156,14 @@ func paceOpener(sec *port.Section, defMs int, base func() (link.FrameLink, error
 // ltoudpOpen is the LToUDP transport open seam, swappable in tests so the factory's
 // live-wiring (LiveAddr binding, per-Start reopen) can be exercised without binding a
 // real socket. Production points it at the pure-Go ltoudp adapter.
-var ltoudpOpen = func(cfg ltoudp.Config) (link.FrameLink, error) {
-	return ltoudp.Open(cfg)
-}
+var ltoudpOpen = ltoudp.Open
 
 // tashtalkFrame wraps an open serial byte stream in the TashTalk FrameLink. It is the
 // SerialFramer the serial-opener dispatch pairs with the injected serial opener; a
 // var so tests can stand in a fake framer. Production points it at tashtalk.NewStream.
 // It takes the port's logger so the framer can narrate the serial write/read path;
 // tests substitute it with a stand-in that ignores the logger.
-var tashtalkFrame = func(s io.ReadWriteCloser, logger log.Logger) (link.FrameLink, error) {
-	return tashtalk.NewStreamLogged(s, logger)
-}
+var tashtalkFrame = tashtalk.NewStreamLogged
 
 // tashtalkFramerFor adapts the logger-aware tashtalkFrame to the shared
 // SerialFramer signature (which carries no logger) by binding logger in a closure.

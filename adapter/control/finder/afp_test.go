@@ -128,7 +128,7 @@ func TestAFPTCPVolumeURI(t *testing.T) {
 
 func TestResolveLink_afpURITCPUsesServer(t *testing.T) {
 	svc := New(nil, nil)
-	svc.SetLinkConfig(func() config.InterfaceSection { return bridgeEn0() })
+	svc.SetLinkConfig(bridgeEn0)
 	got, err := svc.resolveLink(KindAFP, "", "", "", uri.Target{Scheme: KindAFP, Server: "192.168.1.9", Transport: clientlink.KindTCP})
 	if err != nil {
 		t.Fatal(err)
@@ -140,7 +140,7 @@ func TestResolveLink_afpURITCPUsesServer(t *testing.T) {
 
 func TestResolveLink_afpURIPcapKeepsDevice(t *testing.T) {
 	svc := New(nil, nil)
-	svc.SetLinkConfig(func() config.InterfaceSection { return bridgeEn0() })
+	svc.SetLinkConfig(bridgeEn0)
 	got, err := svc.resolveLink(KindAFP, "", "", "", uri.Target{Transport: clientlink.KindPcap})
 	if err != nil {
 		t.Fatal(err)

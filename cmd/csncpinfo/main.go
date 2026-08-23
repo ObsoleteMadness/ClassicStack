@@ -109,7 +109,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("open %s: %w", ifaceName, err)
 	}
-	defer fl.Close()
+	defer func() { _ = fl.Close() }()
 	if f, ok := fl.(link.FilterableLink); ok {
 		_ = f.SetFilter("ipx or (ether proto 0x8137)")
 	}
@@ -157,7 +157,10 @@ func run() error {
 
 	fmt.Printf("\n%d file server(s) found\n", len(seen))
 	if len(seen) == 0 {
-		os.Exit(1)
+		// Explicit Close before Exit: os.Exit skips deferred calls, and this is the
+		// one path out of run() that doesn't return to main's own cleanup.
+		_ = fl.Close()
+		os.Exit(1) //nolint:gocritic // already closed explicitly above
 	}
 	return nil
 }

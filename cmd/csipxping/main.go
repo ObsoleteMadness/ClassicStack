@@ -116,7 +116,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("open %s: %w", ifaceName, err)
 	}
-	defer fl.Close()
+	defer func() { _ = fl.Close() }()
 
 	// Narrow the capture to IPX frames if the link supports a kernel filter; harmless
 	// (best-effort) otherwise — the read loop filters again by socket/type anyway.
@@ -151,7 +151,10 @@ func run() error {
 	}
 	fmt.Printf("%d requests sent, %d replies, %d%% loss\n", *count, replies, loss)
 	if replies == 0 {
-		os.Exit(1)
+		// Explicit Close before Exit: os.Exit skips deferred calls, and this is the
+		// one path out of run() that doesn't return to main's own cleanup.
+		_ = fl.Close()
+		os.Exit(1) //nolint:gocritic // already closed explicitly above
 	}
 	return nil
 }

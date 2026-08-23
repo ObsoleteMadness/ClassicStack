@@ -803,7 +803,7 @@ func (t *nbipxTransport) handleInbound(d *ipxproto.Datagram, hdr *nb.NBIPXSessio
 	}
 	var msg []byte
 	if len(t.frag) > 0 {
-		msg = append(t.frag, body...)
+		msg = append(t.frag, body...) //nolint:gocritic // t.frag is nilled on the next line, so aliasing its backing array is harmless
 		t.frag = nil
 	} else {
 		msg = append([]byte(nil), body...)

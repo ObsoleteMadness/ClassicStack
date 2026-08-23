@@ -68,7 +68,7 @@ func TestParseProtocol(t *testing.T) {
 	// "ipx" is accepted: direct-hosted SMB has no NetBIOS SESSION layer, but its BROWSER
 	// datagrams ride the very same NMPI plane on socket 0x0553 that NBIPX uses
 	// (spec/captures/nwlink-win98.pcap frames 26-41), so a Conn can open it.
-	for in, want := range map[string]Protocol{"nbf": NBF, "NBIPX": NBIPX, " nbf ": NBF, "IPX": IPX} {
+	for in, want := range map[string]Protocol{"nbf": NBF, "NBIPX": NBIPX, " nbf ": NBF, "IPX": IPX} { //nolint:gocritic // " nbf " intentionally tests whitespace trimming
 		got, err := ParseProtocol(in)
 		if err != nil || got != want {
 			t.Errorf("ParseProtocol(%q) = %q, %v; want %q", in, got, err, want)

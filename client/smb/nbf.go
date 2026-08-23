@@ -836,7 +836,7 @@ func (t *nbfTransport) handleData(f *nbfproto.Frame, last bool) {
 	}
 	var msg []byte
 	if len(t.frag) > 0 {
-		msg = append(t.frag, f.Payload...)
+		msg = append(t.frag, f.Payload...) //nolint:gocritic // t.frag is nilled on the next line, so aliasing its backing array is harmless
 		t.frag = nil
 	} else {
 		msg = append([]byte(nil), f.Payload...)

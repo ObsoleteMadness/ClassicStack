@@ -90,7 +90,10 @@ func Main(v Version) {
 	defer stop()
 	if err := Run(ctx, os.Args[1:], v); err != nil {
 		fmt.Fprintln(os.Stderr, "classicstack:", err)
-		os.Exit(1)
+		// os.Exit skips the deferred stop(), but that only cancels the signal
+		// context and unregisters the SIGINT/SIGTERM handler — both moot the
+		// instant the process exits, so there is nothing to leak.
+		os.Exit(1) //nolint:gocritic
 	}
 }
 
@@ -298,10 +301,12 @@ func Run(ctx context.Context, args []string, v Version) error {
 // args would drop that subcommand and make classicstackd's dispatcher reject
 // the relaunch as an unknown command, so os.Args is what must be replayed.
 //
-//nolint:staticcheck // SA4023: every reachable return here IS a genuine error;
-// the only non-error path ends in os.Exit(0), which staticcheck doesn't model as
-// non-returning, so it (correctly, if confusingly) notes the caller's err != nil
-// check is always true given how this function is actually implemented.
+// Every reachable return here IS a genuine error; the only non-error path ends
+// in os.Exit(0), which staticcheck doesn't model as non-returning, so it
+// (correctly, if confusingly) flags the caller's err != nil check as always true
+// given how this function is actually implemented.
+//
+//nolint:staticcheck // SA4023: see above
 func relaunchProcess(_ []string) error {
 	exe, err := os.Executable()
 	if err != nil {

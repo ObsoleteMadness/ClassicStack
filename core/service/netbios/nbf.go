@@ -296,7 +296,7 @@ func (e *sessionEngine) handleDataOnlyLast(srcMAC [6]byte, frame *nbf.Frame) {
 	}
 	var msg []byte
 	if len(c.frag) > 0 {
-		msg = append(c.frag, frame.Payload...)
+		msg = append(c.frag, frame.Payload...) //nolint:gocritic // c.frag is nilled on the next line, so aliasing its backing array is harmless
 		c.frag = nil
 	} else {
 		msg = frame.Payload

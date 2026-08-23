@@ -327,8 +327,8 @@ func (s *Service) handleWrite(sess *smbSession, h protocol.Header, req []byte) [
 }
 
 // handleWriteAndClose answers SMB_COM_WRITE_AND_CLOSE (0x2C, LAN Manager 1.0;
-// deprecated in favour of WRITE_ANDX but still issued by OS/2 Warp's Workplace
-// Shell — [MS-CIFS] §2.2.4.40, netbeui.pcap 2026-07-13 frame 843). Request
+// superseded by WRITE_ANDX in later dialects but still issued by OS/2 Warp's
+// Workplace Shell — [MS-CIFS] §2.2.4.40, netbeui.pcap 2026-07-13 frame 843). Request
 // words (WCT=6 or 12): FID(2) CountOfBytesToWrite(2) WriteOffsetInBytes(4)
 // LastWriteTime(4) [Reserved[3] ULONG, 12-word form only, MUST be zero — not
 // an EA-list field; WRITE_AND_CLOSE carries no EAs on the wire at any

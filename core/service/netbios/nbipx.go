@@ -467,7 +467,7 @@ func (e *ipxSessionEngine) handleData(d *ipxproto.Datagram, hdr *protocol.NBIPXS
 	}
 	var msg []byte
 	if len(c.frag) > 0 {
-		msg = append(c.frag, body...)
+		msg = append(c.frag, body...) //nolint:gocritic // c.frag is nilled on the next line, so aliasing its backing array is harmless
 		c.frag = nil
 	} else {
 		msg = append([]byte(nil), body...)

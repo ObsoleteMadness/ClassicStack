@@ -50,7 +50,7 @@ func ResolveFold(fsys FileSystem, storePath string) (string, bool) {
 		if !ok {
 			// This component does not exist. Keep the requested casing for it and the
 			// rest (a create target), and report not-fully-resolved.
-			out := append(resolved, parts[i:]...)
+			out := append(resolved, parts[i:]...) //nolint:gocritic // resolved is not read again; the function returns on the next line
 			return strings.Join(out, "/"), false
 		}
 		resolved = append(resolved, actual)
