@@ -348,6 +348,30 @@ func NewIdentityFilenameCodec() FilenameCodec {
 	}
 }
 
+// NewWindowsSafeFilenameCodec is NewIdentityFilenameCodec with ReservedNTFS in
+// place of ReservedPOSIX: the NTFS/FAT reserved punctuation (in addition to the
+// always-reserved control characters every codec escapes) is escaped in
+// storage the moment a name is written, not just filtered when read back. The
+// default for the "windows-safe" share codec name and for SMB shares (see
+// core/service/smb.Share default), whose clients are always DOS/Windows and so
+// can never represent those characters locally under any wire charset —
+// unlike ReservedPOSIX, which only escapes what the POSIX store itself can't
+// hold, leaving e.g. '?' or '*' from a Mac-originated name (HFS permits both)
+// to flow to an SMB client unescaped.
+func NewWindowsSafeFilenameCodec() FilenameCodec {
+	return transcodeCodec{
+		profile: FilenameProfile{
+			Wire:         []WireEncoding{WireMacRoman, WireUTF8, WireANSI, WireUTF16},
+			StoreCharset: "posix-bytes",
+			Reserved:     ReservedNTFS,
+			Validate:     validatePOSIXElement,
+		},
+		store:    storePOSIXBytes,
+		escaping: true,
+		ansiCP:   encoding.CP437,
+	}
+}
+
 // NewMacRomanUTF8FilenameCodec transcodes MacRoman/UTF-8 wire names to a UTF-8
 // store (the macroman-utf8 default). This is the lifted service/afp path codec:
 // MacRoman in, UTF-8 on disk, reversible reserved-char escaping.
@@ -386,6 +410,8 @@ func codecByName(name string) (FilenameCodec, error) {
 	switch strings.ToLower(name) {
 	case "identity", "utf8":
 		return NewIdentityFilenameCodec(), nil
+	case "windows-safe":
+		return NewWindowsSafeFilenameCodec(), nil
 	case "macroman-utf8":
 		return NewMacRomanUTF8FilenameCodec(), nil
 	case "macroman-native":
@@ -398,5 +424,5 @@ func codecByName(name string) (FilenameCodec, error) {
 // FilenameCodecs returns the canonical filename-codec names a share can select.
 // Aliases (utf8 → identity) are omitted so the UI lists each codec once.
 func FilenameCodecs() []string {
-	return []string{"identity", "macroman-utf8", "macroman-native"}
+	return []string{"identity", "windows-safe", "macroman-utf8", "macroman-native"}
 }

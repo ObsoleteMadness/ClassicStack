@@ -39,7 +39,7 @@ type ShareSection struct {
 	// ForkBackend selects the fork engine ("appledouble"|"ads"|"xattr"|"native"|"auto").
 	ForkBackend string `toml:"fork_backend,omitempty" display:"Fork backend" desc:"How resource forks / Finder info are stored (appledouble · ads · xattr · native · auto)." widget:"fork_backend" example:"ads"`
 	// FilenameCodec selects the wire↔store name codec.
-	FilenameCodec string `toml:"filename_codec,omitempty" display:"Filename codec" desc:"Wire↔store filename translation. Empty = default." widget:"filename_codec" example:"macroman-utf8"`
+	FilenameCodec string `toml:"filename_codec,omitempty" display:"Filename codec" desc:"Wire↔store filename translation. Empty = default (windows-safe)." widget:"filename_codec" example:"windows-safe"`
 	// Metastore selects the CNID/shortname store kind ("mem" default).
 	Metastore string `toml:"metastore,omitempty" display:"Metastore" desc:"Where IDs/short-name mappings persist (mem default; sqlite for a durable store)." widget:"metastore" example:"sqlite"`
 	// MetaBackend selects the share's MetaEngine (derived names, CNIDs, DOS
@@ -119,12 +119,30 @@ func (s *ShareSection) Validate() error {
 // fsSpec maps the section to an fs.ShareSpec (the storage-seam half). Options
 // "key=value" entries become Extra entries; a malformed entry (no '=') with a
 // non-empty key reads as a present-but-empty value, a bare "" key is dropped.
+//
+// An unset FilenameCodec defaults to "windows-safe" rather than falling
+// through to fs.withDefaults' generic "identity" — every SMB client is a
+// DOS/Windows redirector, which cannot represent an NTFS/FAT-reserved
+// character (or a control character) in a filename under any wire charset it
+// speaks, so the share's own storage escaping should already assume that
+// (core/fs's NewWindowsSafeFilenameCodec: ReservedNTFS in place of
+// ReservedPOSIX). This complements, not replaces, the Encode-time DOS-wire
+// guard in core/fs's ReservedSet.unescape — that guard is what stops an
+// already-escaped control character (e.g. a classic Mac "Icon\r" marker's raw
+// CR — always-reserved, so escaped in storage under either set) from being
+// restored onto the wire for a share still on "identity"/ReservedPOSIX;
+// defaulting to windows-safe here additionally escapes the NTFS punctuation
+// set at write time instead of only filtering it back out at read time.
 func (s *ShareSection) fsSpec() fs.ShareSpec {
+	codec := s.FilenameCodec
+	if codec == "" {
+		codec = "windows-safe"
+	}
 	spec := fs.ShareSpec{
 		Name:          s.SName,
 		FSType:        s.FSType,
 		ForkBackend:   s.ForkBackend,
-		FilenameCodec: s.FilenameCodec,
+		FilenameCodec: codec,
 		Metastore:     s.Metastore,
 		MetaBackend:   s.MetaBackend,
 		Path:          s.Path,

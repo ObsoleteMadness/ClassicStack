@@ -85,6 +85,23 @@ func TestShareSectionSpecMapsFields(t *testing.T) {
 	}
 }
 
+// TestShareSectionDefaultsToWindowsSafeCodec proves an unset FilenameCodec
+// resolves to "windows-safe", not fs.withDefaults' generic "identity" — every
+// SMB client is a DOS/Windows redirector, so the share's own storage escaping
+// should assume the NTFS/FAT reserved-character set from the start rather
+// than only the bare POSIX one.
+func TestShareSectionDefaultsToWindowsSafeCodec(t *testing.T) {
+	ss := &ShareSection{SName: "Public", FSType: "local_fs", Path: "/srv/public"}
+	if got := ss.Spec().Share.FilenameCodec; got != "windows-safe" {
+		t.Fatalf("default FilenameCodec = %q, want %q", got, "windows-safe")
+	}
+	// An explicit choice is never overridden.
+	ss.FilenameCodec = "macroman-utf8"
+	if got := ss.Spec().Share.FilenameCodec; got != "macroman-utf8" {
+		t.Fatalf("explicit FilenameCodec = %q, want it left alone", got)
+	}
+}
+
 func TestShareSectionCloneIsDeep(t *testing.T) {
 	ss := &ShareSection{SName: "S", AllowedUsers: []string{"a"}, Options: []string{"k=v"}}
 	cp := ss.Clone().(*ShareSection)

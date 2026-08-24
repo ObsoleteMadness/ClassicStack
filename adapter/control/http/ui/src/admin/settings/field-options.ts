@@ -54,7 +54,7 @@ export const FALLBACK_FORK_BACKENDS = [
   'xattr',
   'native',
 ];
-export const FALLBACK_FILENAME_CODECS = ['identity', 'macroman-utf8', 'macroman-native'];
+export const FALLBACK_FILENAME_CODECS = ['identity', 'windows-safe', 'macroman-utf8', 'macroman-native'];
 export const FALLBACK_METASTORES = ['mem', 'sqlite'];
 export const FALLBACK_META_BACKENDS = ['metastore', 'xattr', 'ads'];
 

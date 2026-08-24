@@ -99,6 +99,40 @@ func TestControlCharTokenStaysEscapedForDOSWire(t *testing.T) {
 	}
 }
 
+// TestWindowsSafeCodecEscapesNTFSPunctuationAtWrite proves the "windows-safe"
+// codec (SMB's default, see core/service/smb.ShareSection.fsSpec) escapes an
+// NTFS/FAT-reserved character in storage the moment a name is written, unlike
+// "identity" (ReservedPOSIX), which only escapes what the POSIX store itself
+// rejects and so leaves e.g. a Mac-originated '?' (legal on HFS) raw in the
+// stored name — a byte an SMB client could never have created locally, but
+// that "identity" would still hand back to one verbatim on a listing.
+func TestWindowsSafeCodecEscapesNTFSPunctuationAtWrite(t *testing.T) {
+	id := NewIdentityFilenameCodec()
+	stored, err := id.Decode([]byte("Report?"), WireUTF8)
+	if err != nil {
+		t.Fatalf("identity Decode error: %v", err)
+	}
+	if string(stored) != "Report?" {
+		t.Fatalf("identity stored = %q, want the '?' left raw (POSIX permits it)", stored)
+	}
+
+	ws := NewWindowsSafeFilenameCodec()
+	wsStored, err := ws.Decode([]byte("Report?"), WireUTF8)
+	if err != nil {
+		t.Fatalf("windows-safe Decode error: %v", err)
+	}
+	if string(wsStored) != "Report0x3F" {
+		t.Fatalf("windows-safe stored = %q, want %q ('?' escaped at write time)", wsStored, "Report0x3F")
+	}
+	back, err := ws.Encode(wsStored, WireANSI)
+	if err != nil {
+		t.Fatalf("windows-safe Encode(WireANSI) error: %v", err)
+	}
+	if string(back) != "Report0x3F" {
+		t.Fatalf("windows-safe SMB roundtrip = %q, want literal %q ('?' kept escaped)", back, "Report0x3F")
+	}
+}
+
 // TestSMBWireEncodings exercises the new WireANSI / WireUTF16 paths the SMB
 // service threads from its dialect/Unicode flag. Only the identity codec
 // advertises them; macroman-utf8 must report ErrWireUnsupported.
