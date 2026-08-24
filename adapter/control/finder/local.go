@@ -13,9 +13,11 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/service/smb"
 )
 
-// LocalVolumes lists this instance’s bound AFP/SMB/NCP/EtherDFS shares.
+// LocalVolumes lists this instance’s bound AFP/SMB/NCP/EtherDFS shares. Always
+// non-nil (encodes as JSON "[]" rather than "null") since GET /finder/local
+// feeds the web UI's sidebar merge, which spreads the result as an array.
 func (s *Service) LocalVolumes() []VolumeInfo {
-	var out []VolumeInfo
+	out := []VolumeInfo{}
 	if s.src == nil {
 		return out
 	}

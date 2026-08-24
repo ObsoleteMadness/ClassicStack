@@ -88,6 +88,24 @@ type Version struct {
 func Main(v Version) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// A second Ctrl-C (or SIGTERM) forces an immediate exit. signal.NotifyContext's
+	// own handler goroutine reads exactly one signal, cancels ctx, then exits without
+	// restoring the OS-default (process-killing) disposition — so without this, a
+	// second press while Run's graceful shutdown is still in progress is silently
+	// dropped rather than falling back to "just kill it", however long that
+	// shutdown takes. Registering this fresh AFTER ctx is cancelled (not up front)
+	// guarantees the signal it sees is a genuinely new one, not the same press that
+	// just cancelled ctx delivered a second time to a second listener.
+	go func() {
+		<-ctx.Done()
+		again := make(chan os.Signal, 1)
+		signal.Notify(again, os.Interrupt, syscall.SIGTERM)
+		<-again
+		fmt.Fprintln(os.Stderr, "classicstack: second interrupt received, forcing exit")
+		os.Exit(1)
+	}()
+
 	if err := Run(ctx, os.Args[1:], v); err != nil {
 		fmt.Fprintln(os.Stderr, "classicstack:", err)
 		// os.Exit skips the deferred stop(), but that only cancels the signal

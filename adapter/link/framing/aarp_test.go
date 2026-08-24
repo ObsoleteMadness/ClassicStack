@@ -349,6 +349,67 @@ func TestAARPTableSnapshot(t *testing.T) {
 	}
 }
 
+// TestAARPReadDatagram_TrimsEthernetPadding is the regression guard for the dead-ZIP/ASP-
+// reply bug: a real NIC pads a short frame up to Ethernet's 60-byte minimum, but a short DDP
+// payload — an 8-byte ATP TReq, which is exactly what ZIP's GetZoneList/GetLocalZoneList/
+// GetNetInfo and AFP's ASP session traffic send — produces a frame well under that minimum
+// (14 eth + 8 SNAP + 21 DDP = 43 bytes). ReadDatagram must use the 802.3 length field to trim
+// that trailing zero padding before handing the slice to ddp.Decode, which requires an
+// EXACT-length match and rejects anything longer (ddp.ErrBadLength) — so an untrimmed read
+// silently dropped every short ATP request/reply while longer NBP/AEP traffic (which usually
+// clears the minimum on its own) decoded fine. This is why real captures showed NBP and AEP
+// working over EtherTalk while ZIP and ASP looked completely dead.
+func TestAARPReadDatagram_TrimsEthernetPadding(t *testing.T) {
+	station := aarpMAC(0x00, 0x11, 0x22, 0x33, 0x44, 0x55)
+	peerMAC := aarpMAC(0xAB, 0xCD, 0xEF, 0x01, 0x02, 0x03)
+	dl, _, peer, _ := newAARPHarness(t, station)
+	out := drainReadLoop(dl)
+
+	// An 8-byte ATP TReq payload (matches ZIP's GetLocalZoneList / AFP's ASP session
+	// traffic), long-header encoded: 13-byte DDP header + 8 bytes = 21 bytes total.
+	atpTReq := []byte{0x40, 0x01, 0x00, 0x01, 9 /* GetLocalZoneList */, 0, 0, 1}
+	ddpDatagram := ddp.Datagram{
+		DestNetwork: 0xFE01, SrcNetwork: 0xFE01,
+		DestNode: 0x42, SrcNode: 0x20,
+		DestSocket: 6, SrcSocket: 250,
+		DDPType: 3,
+		Data:    atpTReq,
+	}
+	ddpBytes, err := ddpDatagram.Encode(nil)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	if len(ddpBytes) != 21 {
+		t.Fatalf("encoded DDP length = %d, want 21 (a short ATP TReq)", len(ddpBytes))
+	}
+
+	// appendEthSNAP sets the 802.3 length field to the true (unpadded) payload length —
+	// exactly what a real NIC's sender does. The resulting frame (14+8+21=43 bytes) is then
+	// padded with trailing zeros to Ethernet's 60-byte minimum, exactly as a real NIC does
+	// on transmit — the read side must not treat that padding as part of the DDP payload.
+	frame := appendEthSNAP(nil, station[:], peerMAC[:], snapAppleTalk, ddpBytes)
+	if len(frame) < 60 {
+		frame = append(frame, make([]byte, 60-len(frame))...)
+	}
+	if err := peer.Write(frame); err != nil {
+		t.Fatalf("peer.Write: %v", err)
+	}
+
+	select {
+	case dg, ok := <-out:
+		if !ok {
+			t.Fatal("read loop closed instead of delivering the padded ATP datagram")
+		}
+		if dg.DDPType != 3 || dg.DestSocket != 6 || len(dg.Data) != 8 {
+			t.Fatalf("decoded datagram = %+v, want type=3 destsock=6 8-byte ATP payload", dg)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("REGRESSION: padded short-ATP frame was never delivered — ddp.Decode rejected" +
+			" it as ErrBadLength because the trailing Ethernet padding was not trimmed using the" +
+			" 802.3 length field")
+	}
+}
+
 func equalBytes(a, b []byte) bool {
 	if len(a) != len(b) {
 		return false

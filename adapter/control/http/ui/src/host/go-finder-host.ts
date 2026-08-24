@@ -14,7 +14,7 @@ import type { NameConflictChoice } from 'classicstack-web/fs/name-conflict';
 import type { LoginDialog } from 'classicstack-web/ui/login-dialog';
 import type { AlertDialog } from 'classicstack-web/ui/alert-dialog';
 import type { NameConflictDialog } from 'classicstack-web/ui/name-conflict-dialog';
-import { api, type FinderMountedVolume, type FinderSession, type FinderVolume } from '../api';
+import { api, ApiError, type FinderMountedVolume, type FinderSession, type FinderVolume } from '../api';
 import { telemetry, type FinderEvent } from '../telemetry';
 import { HttpFinderAPI } from './http-finder-api';
 import { promptText } from '../admin/prompt';
@@ -122,6 +122,14 @@ function schemeForGroup(group?: string): (typeof DISCOVER_SCHEMES)[number][] {
       return [...DISCOVER_SCHEMES];
   }
 }
+
+/** Client scheme that gates a sidebar group's visibility (Shares/Mounted are ungated). */
+const SCHEME_FOR_GROUP = new Map<string, string>([
+  [GROUP_APPLETALK, 'afp'],
+  [GROUP_SMB, 'smb'],
+  [GROUP_NETWARE, 'ncp'],
+  [GROUP_ETHERDFS, 'etherdfs'],
+]);
 
 function mountedEndpointId(sessionId: string): string {
   return `mounted:${sessionId}`;
@@ -280,6 +288,11 @@ export class GoFinderHost implements FinderHost {
   private capsLoaded = false;
   private mountHint = '';
   private defaultMountDir = '/Volumes';
+  /** [Client] enablement, refreshed from GET /finder/state. Defaults open so the
+   *  sidebar doesn’t flash groups away before the first state load resolves. */
+  private clientEnabled = true;
+  private enabledServices = new Set<string>(DISCOVER_SCHEMES);
+  private clientStateRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private onConfigureShare?: (ep: RemoteEndpoint) => void;
   private onEndpointInfo?: (model: EndpointInfoModel) => void;
   private onNetworksChange = new Set<() => void>();
@@ -291,7 +304,9 @@ export class GoFinderHost implements FinderHost {
     this.onConfigureShare = opts?.onConfigureShare;
     this.onEndpointInfo = opts?.onEndpointInfo;
     telemetry.onFinder.add((ev) => this.onFinderEvent(ev));
+    telemetry.onState.add((ev) => this.onStateEvent(ev));
     void this.loadMountCaps();
+    void this.loadClientState();
     void this.refreshMounted();
   }
 
@@ -321,6 +336,44 @@ export class GoFinderHost implements FinderHost {
     }
   }
 
+  /** Re-reads [Client] state (debounced) after the Settings UI reconfigures it, so the
+   *  sidebar reflects a services/enabled change without a page reload. Saving from
+   *  Settings publishes a StateChanged{Component:"Client", To:"reconfigured"} on the
+   *  SSE "state" topic (see compose/supervisor.SetWellKnown / reconfigureKnown). */
+  private onStateEvent(ev: unknown): void {
+    const component = (ev as { Component?: string } | null)?.Component;
+    if (component !== 'Client') return;
+    if (this.clientStateRefreshTimer != null) clearTimeout(this.clientStateRefreshTimer);
+    this.clientStateRefreshTimer = setTimeout(() => {
+      this.clientStateRefreshTimer = null;
+      void this.loadClientState();
+    }, 150);
+  }
+
+  /** Loads [Client] enablement so disabled schemes' sidebar sections stay hidden. */
+  private async loadClientState(): Promise<void> {
+    try {
+      const st = await api.finderState();
+      this.clientEnabled = !!st.enabled;
+      this.enabledServices = new Set((st.services?.length ? st.services : [...DISCOVER_SCHEMES]).map((s) => s.toLowerCase()));
+    } catch {
+      /* keep defaults (everything shown) */
+    }
+    // Drop any last-seen servers cached from before a scheme was turned off, so a
+    // re-enable later starts from a fresh scan instead of resurrecting stale ones,
+    // and so composeSidebar's own enabled-scheme filter never even has stale rows
+    // to filter in the meantime.
+    for (const scheme of DISCOVER_SCHEMES) {
+      if (!this.schemeEnabled(scheme)) this.lastRemote.delete(scheme);
+    }
+    this.onNetworksChange.forEach((cb) => cb());
+  }
+
+  /** True when scheme's sidebar group/discovery should be offered. */
+  private schemeEnabled(scheme: string): boolean {
+    return this.clientEnabled && this.enabledServices.has(scheme);
+  }
+
   isConnected(): boolean {
     return true;
   }
@@ -334,7 +387,7 @@ export class GoFinderHost implements FinderHost {
   }
 
   sidebarGroups(): SidebarGroup[] {
-    return [
+    const groups: SidebarGroup[] = [
       { id: GROUP_SHARES, title: 'Shares', hideWhenEmpty: true },
       { id: GROUP_MOUNTED, title: 'Mounted', hideWhenEmpty: true },
       { id: GROUP_APPLETALK, title: 'AppleTalk', refresh: true, empty: 'None' },
@@ -342,6 +395,10 @@ export class GoFinderHost implements FinderHost {
       { id: GROUP_NETWARE, title: 'NetWare', refresh: true, empty: 'None' },
       { id: GROUP_ETHERDFS, title: 'EtherDFS', refresh: true, empty: 'None' },
     ];
+    return groups.filter((g) => {
+      const scheme = SCHEME_FOR_GROUP.get(g.id);
+      return !scheme || this.schemeEnabled(scheme);
+    });
   }
 
   sidebarContextMenu(ep: RemoteEndpoint, volume?: string): SidebarAction[] {
@@ -427,22 +484,36 @@ export class GoFinderHost implements FinderHost {
     return this.composeSidebar();
   }
 
+  /** Discover schemes worth asking for: in scope and not turned off in [Client]. */
+  private activeSchemes(scope?: string): (typeof DISCOVER_SCHEMES)[number][] {
+    return schemeForGroup(scope).filter((scheme) => this.schemeEnabled(scheme));
+  }
+
   async refreshNetwork(scope?: string): Promise<RemoteEndpoint[]> {
-    const schemes = schemeForGroup(scope);
+    const schemes = this.activeSchemes(scope);
+    const disabled: string[] = [];
     await Promise.all(
       schemes.map(async (scheme) => {
         try {
           this.lastRemote.set(scheme, await api.finderDiscover(scheme));
-        } catch {
-          /* keep last-seen already in lastRemote */
+        } catch (e) {
+          if (e instanceof ApiError && e.status === 403) disabled.push(scheme);
+          /* otherwise keep last-seen already in lastRemote */
         }
       }),
     );
+    if (disabled.length) {
+      const names = disabled.map((s) => SHARE_BADGE[s] || s.toUpperCase()).join(', ');
+      this.showAlert(
+        'Client disabled',
+        `${names} discovery is turned off. Enable it (and the service) under Settings → Client.`,
+      );
+    }
     return this.composeSidebar();
   }
 
   private async loadSeen(scope?: string): Promise<void> {
-    const schemes = schemeForGroup(scope);
+    const schemes = this.activeSchemes(scope);
     await Promise.all(
       schemes.map(async (scheme) => {
         try {
@@ -457,7 +528,7 @@ export class GoFinderHost implements FinderHost {
   private refreshMounted(): Promise<FinderMountedVolume[]> {
     if (this.mountedInflight) return this.mountedInflight;
     this.mountedInflight = (async () => {
-      const mounted = await api.finderMounted().catch(() => [] as FinderMountedVolume[]);
+      const mounted = (await api.finderMounted().catch(() => [] as FinderMountedVolume[])) ?? [];
       this.mounted.clear();
       for (const m of mounted) {
         this.mounted.set(toMountedEndpoint(m).id, m);
@@ -472,11 +543,16 @@ export class GoFinderHost implements FinderHost {
 
   private async composeSidebar(): Promise<RemoteEndpoint[]> {
     const [local, mounted] = await Promise.all([
-      api.finderLocal().catch(() => [] as FinderVolume[]),
+      api.finderLocal().then((v) => v ?? [] as FinderVolume[]).catch(() => [] as FinderVolume[]),
       this.refreshMounted(),
     ]);
     const remote: FinderVolume[] = [];
     for (const scheme of DISCOVER_SCHEMES) {
+      // Skip a disabled scheme even if lastRemote still holds an entry for it (an
+      // SSE push can race a settings change) — otherwise its servers would surface
+      // miscategorized under whatever sidebar group is still visible, since their
+      // own group id no longer matches a rendered group.
+      if (!this.schemeEnabled(scheme)) continue;
       remote.push(...(this.lastRemote.get(scheme) ?? []));
     }
     const seen = new Set<string>();

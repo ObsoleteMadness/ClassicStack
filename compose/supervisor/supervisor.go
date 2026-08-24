@@ -243,7 +243,7 @@ func (s *Supervisor) stopNodeLocked(ctx context.Context, name string) error {
 		return nil
 	}
 	s.logShutdown1("waiting for component", name)
-	err := n.c.Stop(ctx)
+	err := s.stopWithDeadline(ctx, name, n.c)
 	n.running = false
 	s.publish(name, stateRunning, stateStopped)
 	if err != nil {
@@ -252,6 +252,26 @@ func (s *Supervisor) stopNodeLocked(ctx context.Context, name string) error {
 	}
 	s.logShutdown1("component stopped", name)
 	return nil
+}
+
+// stopWithDeadline calls c.Stop(ctx) without letting a component that ignores ctx
+// hang StopAll (and, transitively, Ctrl-C/SIGTERM shutdown) past ctx's deadline.
+// Several components' Stop implementations do not select on ctx internally — their
+// own close-channel/WaitGroup teardown has no context escape hatch — so a single
+// stuck goroutine there would otherwise block every component still waiting behind
+// it in reverse-dependency order, forever. A component that misses the deadline is
+// logged and its Stop call is abandoned (its goroutine leaks) rather than wedging
+// the rest of teardown.
+func (s *Supervisor) stopWithDeadline(ctx context.Context, name string, c component.Component) error {
+	done := make(chan error, 1)
+	go func() { done <- c.Stop(ctx) }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		s.logShutdown2("component did not stop before deadline; abandoning", name, ctx.Err().Error())
+		return ctx.Err()
+	}
 }
 
 // publish emits a StateChanged on the telemetry bus, if one is configured.

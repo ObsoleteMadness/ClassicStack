@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
@@ -177,6 +178,53 @@ func TestPerNameStopTakesDownDependents(t *testing.T) {
 	want := []string{"stop:afp", "stop:router", "stop:port"}
 	if !reflect.DeepEqual(log.seq, want) {
 		t.Fatalf("per-name stop order = %v, want %v", log.seq, want)
+	}
+}
+
+// stuckComponent's Stop ignores ctx and blocks until the test unblocks it — modeling
+// the real components (afp, smb, ncp, macip, browser, ...) whose Stop implementations
+// discard the passed context and rely purely on an internal close-channel/WaitGroup.
+type stuckComponent struct {
+	name    string
+	release chan struct{}
+}
+
+func (c *stuckComponent) Name() string                { return c.name }
+func (c *stuckComponent) Start(context.Context) error { return nil }
+func (c *stuckComponent) Stop(context.Context) error {
+	<-c.release
+	return nil
+}
+
+// TestStopAllHonoursDeadlineDespiteStuckComponent guards against a regression of the
+// Ctrl-C/SIGTERM "doesn't stop" bug: one component's Stop ignoring ctx must not hang
+// StopAll (and everything queued behind it) past the caller's deadline.
+func TestStopAllHonoursDeadlineDespiteStuckComponent(t *testing.T) {
+	s := New(config.NewModel(), nil)
+	log := &orderLog{}
+	stuck := &stuckComponent{name: "stuck", release: make(chan struct{})}
+	defer close(stuck.release) // let the leaked goroutine's Stop return so it doesn't leak past the test
+
+	s.Add(stuck, nil)
+	s.Add(&recordingComponent{name: "afterward", log: log}, []string{"stuck"})
+
+	if err := s.StartAll(context.Background()); err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- s.StopAll(ctx) }()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("StopAll error = %v, want context.DeadlineExceeded", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("StopAll did not return within its own deadline — a stuck component's Stop blocked it")
 	}
 }
 

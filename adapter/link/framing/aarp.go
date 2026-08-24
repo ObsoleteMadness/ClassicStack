@@ -163,7 +163,22 @@ func (d *aarpLink) ReadDatagram() (ddp.Datagram, error) {
 			if !deliverableTo(frame, d.srcMAC[:]) {
 				continue
 			}
-			dg, derr := ddp.Decode(frame[off:])
+			// The 802.3 length field bounds the real payload, trimming the
+			// trailing zero-padding Ethernet adds to reach its 60-byte minimum
+			// frame size — ddp.Decode requires an exact-length slice (it rejects
+			// anything longer than the DDP header's own declared length) and a
+			// short DDP payload (e.g. an 8-byte ATP TReq, ZIP/ASP's GetZoneList,
+			// GetNetInfo, GetStatus) is well under that minimum, so it is padded
+			// on every real NIC. Without this trim every such reply/request was
+			// silently dropped as ErrBadLength, while longer packets (NBP tuples,
+			// most AEP payloads) happened to clear the minimum and decoded fine —
+			// this is why ZIP/ASP looked completely dead while NBP/AEP worked.
+			// Mirrors framing.go's plain-framer decode(), which already does this.
+			end := ethHdrLen + (int(frame[12])<<8 | int(frame[13]))
+			if end < off || end > len(frame) {
+				continue // malformed 802.3 length field
+			}
+			dg, derr := ddp.Decode(frame[off:end])
 			if derr != nil {
 				continue
 			}
