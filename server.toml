@@ -37,7 +37,7 @@ broadcast = '192.168.100.255'
 subnet_mask = '255.255.255.0'
 interface = 'br-lan'
 default_gateway = '192.168.0.1'
-dhcp_relay = true
+dhcp_relay = false
 
 [NCP]
 enabled = true
