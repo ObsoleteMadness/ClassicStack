@@ -189,3 +189,34 @@ func TestInboundFillsSourceNetworkFromPort(t *testing.T) {
 		t.Errorf("source/dest network not filled from port: %+v", svc.got[0])
 	}
 }
+
+// TestInboundLeavesSourceNetworkZeroOnExtendedPort: on an extended (multi-network,
+// AARP-addressed) port, a zero source network is a genuinely unnumbered/startup-range
+// client, not shorthand for "this segment" — backfilling it would manufacture a
+// network.node nothing has claimed and defeat Reply()'s broadcast-to-unnumbered-client
+// fallback. The destination network is still filled (DestNetwork=0 legitimately means
+// "my network" regardless of port type).
+func TestInboundLeavesSourceNetworkZeroOnExtendedPort(t *testing.T) {
+	r := startedRouter(t)
+	p := newFakePort("EtherTalk", 10, 0x80, 10, 12) // extended: netMin(10) != netMax(12)
+	if err := r.Attach(p); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	svc := &recordingService{name: "AEP", socket: 4}
+	r.RegisterService(svc)
+
+	r.Inbound(ddp.Datagram{
+		DestNetwork: 0, SrcNetwork: 0, DestNode: 0x80, SrcNode: 0x81,
+		DestSocket: 4, SrcSocket: 4, DDPType: 4, Data: []byte{1},
+	}, p)
+
+	if len(svc.got) != 1 {
+		t.Fatalf("service received %d datagrams, want 1", len(svc.got))
+	}
+	if svc.got[0].DestNetwork != 10 {
+		t.Errorf("dest network = %d, want 10 (filled from port)", svc.got[0].DestNetwork)
+	}
+	if svc.got[0].SrcNetwork != 0 {
+		t.Errorf("src network = %d, want 0 (left unnumbered on an extended port)", svc.got[0].SrcNetwork)
+	}
+}

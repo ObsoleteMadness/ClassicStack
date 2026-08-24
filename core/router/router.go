@@ -217,18 +217,24 @@ func (r *RouterImpl) Detach(p RoutedPort) error {
 	return nil
 }
 
-// Inbound is the port→router hook: it fills in the source/destination network from the rx
-// port where the datagram left them zero, delivers locally-addressed datagrams to the
+// Inbound is the port→router hook: it fills in the destination network from the rx port
+// where the datagram left it zero, delivers locally-addressed datagrams to the
 // destination-socket service, and forwards everything else via Route.
+//
+// The source network is backfilled the same way only on a non-extended (short-header
+// LocalTalk-style) port, where a zero network is just the header's implicit "this
+// segment" and every node already carries a real, on-segment node number. On an
+// extended port (EtherTalk, LToUDP), a zero source network instead means the sender is
+// still in AARP startup range and has no claimed address at all — backfilling it here
+// would manufacture a network.node that nothing actually owns, and would erase the
+// signal Reply() needs to broadcast the response instead of unicasting it into the
+// void.
 func (r *RouterImpl) Inbound(d ddp.Datagram, from RoutedPort) {
 	if from.Network() != 0 {
-		switch {
-		case d.DestNetwork == 0 && d.SrcNetwork == 0:
+		if d.DestNetwork == 0 {
 			d.DestNetwork = from.Network()
-			d.SrcNetwork = from.Network()
-		case d.DestNetwork == 0:
-			d.DestNetwork = from.Network()
-		case d.SrcNetwork == 0:
+		}
+		if d.SrcNetwork == 0 && !PortIsExtended(from) {
 			d.SrcNetwork = from.Network()
 		}
 	}

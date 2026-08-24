@@ -366,8 +366,14 @@ func (s *Service) handlePacket(d ddp.Datagram, from router.RoutedPort) {
 		return
 	}
 
+	// A tuple network of 0 means the querier itself doesn't know its network number
+	// yet. On a non-extended (short-header) port that's just the implicit "this
+	// segment", safe to fill from the rx port. On an extended port it means the
+	// querier is still in AARP startup range with no claimed address at all — leave
+	// it 0 so replyMatches broadcasts the reply instead of unicasting to a
+	// network.node nothing actually owns.
 	replyNet := pkt.Tuple.Network
-	if replyNet == 0 {
+	if replyNet == 0 && !router.PortIsExtended(from) {
 		replyNet = from.Network()
 	}
 
@@ -549,6 +555,21 @@ func (s *Service) replyMatches(obj, typ, zone []byte, nbpID byte, from router.Ro
 	for _, m := range matches {
 		rply := nbp.BuildLkUpRply(nbpID, from.Network(), from.Node(), m.Socket, m.Object, m.Type, m.Zone)
 		s.bump(&s.replies)
+		if replyNet == 0 {
+			// Unnumbered querier (see handlePacket) — there's no real network.node to
+			// unicast to, so broadcast the reply on the segment it arrived on instead.
+			from.Broadcast(ddp.Datagram{
+				DestNetwork: 0,
+				SrcNetwork:  from.Network(),
+				DestNode:    0xFF,
+				SrcNode:     from.Node(),
+				DestSocket:  replySock,
+				SrcSocket:   Socket,
+				DDPType:     DDPType,
+				Data:        rply,
+			})
+			continue
+		}
 		_ = s.rtr.Route(ddp.Datagram{
 			DestNetwork: replyNet,
 			DestNode:    replyNode,

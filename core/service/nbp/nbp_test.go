@@ -138,6 +138,58 @@ func TestLkUpRepliesForRegisteredName(t *testing.T) {
 	}
 }
 
+// TestLkUpFromUnnumberedQuerierOnExtendedPortBroadcastsReply: a LkUp whose tuple
+// carries Network=0 (a querier that hasn't claimed a real AppleTalk address — e.g. a
+// probe client, see client/link.Opener) arriving on an extended port must get its
+// LkUp-Rply broadcast on that port rather than unicast to a fabricated network.node
+// nobody owns. Regression for handlePacket/replyMatches defaulting replyNet to
+// from.Network() unconditionally, which produced an address AARP could never resolve
+// and the reply silently vanished (this is what made ClassicStack's own AFP name
+// undiscoverable by a pcap/EtherTalk NBP scan whose client never ran an AARP claim).
+func TestLkUpFromUnnumberedQuerierOnExtendedPortBroadcastsReply(t *testing.T) {
+	r := startedRouter(t)
+	p := newFakePort("EtherTalk", 5, 0xFA, 3, 5) // extended: netMin(3) != netMax(5)
+	if err := r.Attach(p); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	svc := New(r, nil)
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("svc Start: %v", err)
+	}
+	defer svc.Stop(context.Background())
+
+	svc.RegisterName([]byte("ClassicStack"), []byte("AFPServer"), []byte("EtherTalk Network"), 0xFB)
+
+	// buildLkUp hardcodes the tuple's Network field to 0, matching a probe client that
+	// asserts a node without running an AARP claim.
+	svc.Inbound(ddp.Datagram{
+		DestNetwork: 5, SrcNetwork: 0, DestNode: 0xFA, SrcNode: 0x2A,
+		DestSocket: Socket, SrcSocket: Socket, DDPType: DDPType,
+		Data: buildLkUp(0x07, 0x2A, Socket, "=", "AFPServer", "EtherTalk Network"),
+	}, p)
+
+	if got := p.waitUnicast(1); len(got) != 0 {
+		t.Errorf("got %d unicast replies, want 0 (should broadcast instead): %+v", len(got), got)
+	}
+	got := p.waitBroadcast(1)
+	if len(got) != 1 {
+		t.Fatalf("got %d broadcast replies, want 1", len(got))
+	}
+	pkt, err := protonbp.ParsePacket(got[0].Data)
+	if err != nil {
+		t.Fatalf("parse reply: %v", err)
+	}
+	if pkt.Function != protonbp.CtrlLkUpRply {
+		t.Errorf("reply func = %d, want LkUpRply", pkt.Function)
+	}
+	if string(pkt.Tuple.Object) != "ClassicStack" {
+		t.Errorf("reply object = %q, want ClassicStack", pkt.Tuple.Object)
+	}
+	if got[0].DestNode != 0xFF {
+		t.Errorf("broadcast dest node = %#x, want 0xFF", got[0].DestNode)
+	}
+}
+
 // TestLkUpNoMatchNoReply: a LkUp for an unregistered name produces nothing.
 func TestLkUpNoMatchNoReply(t *testing.T) {
 	r := startedRouter(t)
