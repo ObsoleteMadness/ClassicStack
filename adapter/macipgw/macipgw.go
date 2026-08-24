@@ -91,6 +91,10 @@ func New(cfg Config, ownsIP func(macip.IPv4) bool, log *slog.Logger) (*Egress, e
 	if cfg.Interface == "" {
 		return nil, fmt.Errorf("macipgw: interface is required")
 	}
+	if cfg.NATEnabled && cfg.DHCPRelay {
+		log.Warn("macipgw: dhcp_relay is not supported in nat mode (clients would get real-LAN addresses instead of the NAT pool); disabling dhcp_relay", "iface", cfg.Interface)
+		cfg.DHCPRelay = false
+	}
 	gwIP := net.ParseIP(cfg.GatewayIP).To4()
 	netIP := net.ParseIP(cfg.Network).To4()
 	mask := net.ParseIP(cfg.SubnetMask).To4()
