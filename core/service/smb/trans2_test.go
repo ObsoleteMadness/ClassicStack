@@ -364,6 +364,48 @@ func TestTrans2_FindFirst2ListsDirectory(t *testing.T) {
 	}
 }
 
+// TestTrans2_FindFirst2WildcardWorksOnWindowsSafeCodec is an end-to-end
+// regression test for the "windows-safe" codec's first cut, which reused
+// ReservedNTFS (escapes '*'/'?' as well as the always-illegal punctuation).
+// A FIND_FIRST2 "*" request's search pattern is wire path text like any
+// other: it decoded to the inert token "0x2A" before resolveSearchPath's
+// wildcard/pattern split ever saw a '*', so every listing on a windows-safe
+// share (SMB's default) came back status-success with zero entries — SMB
+// clients saw a share with no files at all. Exercises the real share-build
+// path (NewShare with FilenameCodec: "windows-safe"), not the synthetic
+// "identity" fixture every other trans2 test uses, so a regression here
+// would not be masked by the fixture's codec choice.
+func TestTrans2_FindFirst2WildcardWorksOnWindowsSafeCodec(t *testing.T) {
+	sh, err := NewShare(ShareSpec{
+		Name: "SAFE",
+		Share: fs.ShareSpec{
+			Name:          "SAFE",
+			FSType:        "memfs",
+			ForkBackend:   "ads",
+			FilenameCodec: "windows-safe",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewShare: %v", err)
+	}
+	svc := &Service{shares: []*Share{sh}}
+	sess := newSession("")
+	tid := sess.allocTID(&treeConnect{share: sh})
+	for _, name := range []string{"alpha.txt", "beta.txt", "gamma.dat"} {
+		sess.closeFID(createFile(t, svc, sess, tid, name))
+	}
+
+	req := trans2Req(tid, trans2FindFirst2, findFirst2Params(100, 0, "*"))
+	reply := svc.Dispatch(sess, req)
+	if h := respHeader(t, reply); h.Status != statusSuccess {
+		t.Fatalf("FIND_FIRST2 status = %#x", h.Status)
+	}
+	names, _, _ := findReplyNames(t, reply, true)
+	if got := len(names); got != 3 {
+		t.Fatalf("FIND_FIRST2 \"*\" on a windows-safe share returned %d names %v, want 3", got, names)
+	}
+}
+
 // TestTrans2_FindFirst2ExactDirectoryNameReturnsEntryNotContents proves a
 // non-wildcard FIND_FIRST2 pattern that names a directory matches that one
 // directory entry in its parent (attrs report Directory) rather than listing

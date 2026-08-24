@@ -33,6 +33,20 @@ var (
 	// ReservedNTFS escapes the Win32 reserved set so a name stored on NTFS
 	// round-trips. Matches the old isHostReservedRune Windows branch.
 	ReservedNTFS = newReservedSet("ntfs", '<', '>', ':', '"', '/', '\\', '|', '?', '*')
+	// ReservedSMBWire is ReservedNTFS minus '?' and '*': the two are Win32-illegal
+	// in an actual filename, but on the SMB wire they are FIND_FIRST2/
+	// SMB_COM_SEARCH wildcard metacharacters. A FIND_FIRST2 request's search
+	// pattern is wire path text like any other — resolveSearchPath's
+	// wildcard/pattern split (trans2.go) runs on the string this codec's Decode
+	// already produced, so escaping '*'/'?' here would turn a pattern's "*" into
+	// an inert "0x2A" token before the split ever sees a wildcard, corrupting
+	// every listing into a literal (never-matching) exact-name lookup — the
+	// share would answer NEGOTIATE/TREE_CONNECT fine but FIND_FIRST2 "*" would
+	// return zero entries. Used by NewWindowsSafeFilenameCodec, the SMB-facing
+	// default; ReservedNTFS itself is left untouched for actual NTFS host
+	// storage, where escaping is about what the disk can hold, not about
+	// parsing a request.
+	ReservedSMBWire = newReservedSet("smb-wire", '<', '>', ':', '"', '/', '\\', '|')
 )
 
 func newReservedSet(name string, runes ...rune) ReservedSet {
@@ -348,22 +362,25 @@ func NewIdentityFilenameCodec() FilenameCodec {
 	}
 }
 
-// NewWindowsSafeFilenameCodec is NewIdentityFilenameCodec with ReservedNTFS in
-// place of ReservedPOSIX: the NTFS/FAT reserved punctuation (in addition to the
-// always-reserved control characters every codec escapes) is escaped in
-// storage the moment a name is written, not just filtered when read back. The
-// default for the "windows-safe" share codec name and for SMB shares (see
-// core/service/smb.Share default), whose clients are always DOS/Windows and so
-// can never represent those characters locally under any wire charset —
-// unlike ReservedPOSIX, which only escapes what the POSIX store itself can't
-// hold, leaving e.g. '?' or '*' from a Mac-originated name (HFS permits both)
-// to flow to an SMB client unescaped.
+// NewWindowsSafeFilenameCodec is NewIdentityFilenameCodec with ReservedSMBWire
+// in place of ReservedPOSIX: the Win32-reserved punctuation that can never be
+// wildcard syntax (in addition to the always-reserved control characters
+// every codec escapes) is escaped in storage the moment a name is written,
+// not just filtered when read back. The default for the "windows-safe" share
+// codec name and for SMB shares (see core/service/smb.Share default), whose
+// clients are always DOS/Windows and so can never represent those characters
+// locally under any wire charset — unlike ReservedPOSIX, which only escapes
+// what the POSIX store itself can't hold, leaving e.g. '<' or '|' from a
+// Mac-originated name (HFS permits both) to flow to an SMB client unescaped.
+// Deliberately NOT ReservedNTFS: '?'/'*' are also FIND_FIRST2/SMB_COM_SEARCH
+// wildcard metacharacters on the wire, so escaping them here would corrupt
+// every wildcard listing (see ReservedSMBWire's doc comment).
 func NewWindowsSafeFilenameCodec() FilenameCodec {
 	return transcodeCodec{
 		profile: FilenameProfile{
 			Wire:         []WireEncoding{WireMacRoman, WireUTF8, WireANSI, WireUTF16},
 			StoreCharset: "posix-bytes",
-			Reserved:     ReservedNTFS,
+			Reserved:     ReservedSMBWire,
 			Validate:     validatePOSIXElement,
 		},
 		store:    storePOSIXBytes,

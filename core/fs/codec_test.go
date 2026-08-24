@@ -99,37 +99,61 @@ func TestControlCharTokenStaysEscapedForDOSWire(t *testing.T) {
 	}
 }
 
-// TestWindowsSafeCodecEscapesNTFSPunctuationAtWrite proves the "windows-safe"
-// codec (SMB's default, see core/service/smb.ShareSection.fsSpec) escapes an
-// NTFS/FAT-reserved character in storage the moment a name is written, unlike
-// "identity" (ReservedPOSIX), which only escapes what the POSIX store itself
-// rejects and so leaves e.g. a Mac-originated '?' (legal on HFS) raw in the
-// stored name — a byte an SMB client could never have created locally, but
+// TestWindowsSafeCodecEscapesReservedPunctuationAtWrite proves the
+// "windows-safe" codec (SMB's default, see core/service/smb.ShareSection.fsSpec)
+// escapes a Win32-reserved character in storage the moment a name is written,
+// unlike "identity" (ReservedPOSIX), which only escapes what the POSIX store
+// itself rejects and so leaves e.g. a Mac-originated '|' (legal on HFS) raw in
+// the stored name — a byte an SMB client could never have created locally, but
 // that "identity" would still hand back to one verbatim on a listing.
-func TestWindowsSafeCodecEscapesNTFSPunctuationAtWrite(t *testing.T) {
+func TestWindowsSafeCodecEscapesReservedPunctuationAtWrite(t *testing.T) {
 	id := NewIdentityFilenameCodec()
-	stored, err := id.Decode([]byte("Report?"), WireUTF8)
+	stored, err := id.Decode([]byte("Report|Final"), WireUTF8)
 	if err != nil {
 		t.Fatalf("identity Decode error: %v", err)
 	}
-	if string(stored) != "Report?" {
-		t.Fatalf("identity stored = %q, want the '?' left raw (POSIX permits it)", stored)
+	if string(stored) != "Report|Final" {
+		t.Fatalf("identity stored = %q, want the '|' left raw (POSIX permits it)", stored)
 	}
 
 	ws := NewWindowsSafeFilenameCodec()
-	wsStored, err := ws.Decode([]byte("Report?"), WireUTF8)
+	wsStored, err := ws.Decode([]byte("Report|Final"), WireUTF8)
 	if err != nil {
 		t.Fatalf("windows-safe Decode error: %v", err)
 	}
-	if string(wsStored) != "Report0x3F" {
-		t.Fatalf("windows-safe stored = %q, want %q ('?' escaped at write time)", wsStored, "Report0x3F")
+	if string(wsStored) != "Report0x7CFinal" {
+		t.Fatalf("windows-safe stored = %q, want %q ('|' escaped at write time)", wsStored, "Report0x7CFinal")
 	}
 	back, err := ws.Encode(wsStored, WireANSI)
 	if err != nil {
 		t.Fatalf("windows-safe Encode(WireANSI) error: %v", err)
 	}
-	if string(back) != "Report0x3F" {
-		t.Fatalf("windows-safe SMB roundtrip = %q, want literal %q ('?' kept escaped)", back, "Report0x3F")
+	if string(back) != "Report0x7CFinal" {
+		t.Fatalf("windows-safe SMB roundtrip = %q, want literal %q ('|' kept escaped)", back, "Report0x7CFinal")
+	}
+}
+
+// TestWindowsSafeCodecLeavesWildcardsAlone proves '*' and '?' are NOT escaped
+// by the "windows-safe" codec despite being Win32-illegal in an actual
+// filename: on the SMB wire they are FIND_FIRST2/SMB_COM_SEARCH wildcard
+// metacharacters, and resolveSearchPath's wildcard/pattern split (trans2.go)
+// runs on the string Decode produces. Regression test for the codec's first
+// cut, which reused ReservedNTFS (escapes '*'/'?' too): every FIND_FIRST2
+// "*" request decoded to the inert token "0x2A" before the wildcard/pattern
+// split ever saw a '*', so resolveSearchPath treated it as an exact-name
+// lookup for a file literally called "0x2A" — no share ever had one, so
+// every listing came back empty (status success, zero entries) and SMB
+// clients saw a share with no files at all.
+func TestWindowsSafeCodecLeavesWildcardsAlone(t *testing.T) {
+	ws := NewWindowsSafeFilenameCodec()
+	for _, pattern := range []string{"*", "*.txt", "Report?.doc"} {
+		stored, err := ws.Decode([]byte(pattern), WireANSI)
+		if err != nil {
+			t.Fatalf("Decode(%q) error: %v", pattern, err)
+		}
+		if string(stored) != pattern {
+			t.Fatalf("Decode(%q) = %q, want the wildcard left untouched", pattern, stored)
+		}
 	}
 }
 
