@@ -91,9 +91,20 @@ jobs:
       # "latest" tag is published upstream, rebuilt on every Retro68 merge.
       # Mirrors the manual build recipe in tools/end-to-end/macos/readme.md,
       # just with the container's toolchain file path instead of the WSL one.
+      #
+      # The image's default "multiversal" interfaces (Retro68's free, still-
+      # incomplete reimplementation of Apple's headers) don't implement
+      # pre-System-7 APIs like AppleTalk.h yet, which afp/atalk.h needs. The
+      # container's entrypoint switches to the real thing given
+      # INTERFACES=universal + INTERFACESFILE pointing at a MacBinary
+      # DiskCopy image of Apple's Universal Interfaces — tools/end-to-end/
+      # tools/mpw/MPW-GM.img.bin (pinned in-repo alongside the MSVC kits;
+      # see tools/end-to-end/.gitignore).
       - name: Build AFPE2E.APPL + disk image
         run: |
-          docker run --rm -v "$PWD/tools/end-to-end/macos:/work" -w /work ghcr.io/autc04/retro68:latest \
+          docker run --rm -v "$PWD/tools/end-to-end:/e2e" -w /e2e/macos \
+            -e INTERFACES=universal -e INTERFACESFILE=/e2e/tools/mpw/MPW-GM.img.bin \
+            ghcr.io/autc04/retro68:latest \
             bash -c "mkdir -p build && cd build && cmake .. -DCMAKE_TOOLCHAIN_FILE=/Retro68-build/toolchain/m68k-apple-macos/cmake/retro68.toolchain.cmake && make"
 
       - name: Upload disk image
