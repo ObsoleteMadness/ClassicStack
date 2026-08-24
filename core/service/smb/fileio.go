@@ -63,6 +63,21 @@ func (s *Service) handleOpenAndX(sess *smbSession, h protocol.Header, req []byte
 	if st != statusSuccess {
 		return errResponse(h, st)
 	}
+	if info, err := sh.FS().Stat(store); err == nil && info.IsDir() {
+		// Unlike OPEN/CREATE, this path handed out a FID over
+		// os.OpenFile(dir) without checking IsDir first — the open succeeded
+		// (attrs correctly reported Directory), but the follow-up
+		// READ/READ_MPX on that FID then failed with the generic
+		// statusUnsuccessful (ERRSRV/ERRerror), a code CORE-dialect clients
+		// can't act on. A directory-copy walks FIND_FIRST2 results and opens
+		// each entry by name, depending on OPEN_ANDX itself rejecting
+		// directories to know to recurse instead of stream-reading it: an
+		// IPX SMB capture of a stalled directory copy showed the Open AndX
+		// Response reporting File Attributes Directory, then two Read
+		// attempts both coming back ERRSRV/ERRerror before the client's copy
+		// aborted (Windows-side "System error 1026").
+		return errResponse(h, statusFileIsADirectory)
+	}
 
 	// OpenFunction (low nibble = action if exists, high nibble = action if
 	// missing): 0x0001 open, 0x0002 truncate, 0x0010 create-if-missing. The

@@ -313,3 +313,31 @@ func TestFS_OpenMissingFileNotFound(t *testing.T) {
 		t.Fatalf("OPEN_ANDX missing status = %#x, want OBJECT_NAME_NOT_FOUND", h.Status)
 	}
 }
+
+// TestFS_OpenAndXOnDirectoryRefused proves OPEN_ANDX (0x2D) on a directory is
+// refused with STATUS_FILE_IS_A_DIRECTORY, matching OPEN/CREATE. Before this,
+// OPEN_ANDX had no IsDir check: it handed out a FID over os.OpenFile(dir), which
+// succeeded (attrs correctly reported Directory), and only the follow-up READ
+// failed — with the generic ERRSRV/ERRerror a CORE-dialect directory-copy client
+// can't distinguish from an ordinary I/O fault, so it aborted the whole copy
+// instead of recursing (observed as Windows "System error 1026" over an IPX SMB
+// capture).
+func TestFS_OpenAndXOnDirectoryRefused(t *testing.T) {
+	svc, sess, tid := fsService(t)
+
+	mkdirReq := smbReq(protocol.CommandCreateDirectory, protocol.Flags2NTStatus, tid, 1, nil, ansiPathArea("subdir"))
+	if h := respHeader(t, svc.Dispatch(sess, mkdirReq)); h.Status != statusSuccess {
+		t.Fatalf("CREATE_DIRECTORY status = %#x", h.Status)
+	}
+
+	ow := make([]byte, 30)
+	ow[0] = protocol.CommandNoAndXCommand
+	bp.PutLE16(ow[16:18], 0x01) // open existing, no create bit
+	reply := svc.Dispatch(sess, smbReq(protocol.CommandOpenAndX, protocol.Flags2NTStatus, tid, 1, ow, ansiPathArea("subdir")))
+	if h := respHeader(t, reply); h.Status != statusFileIsADirectory {
+		t.Fatalf("OPEN_ANDX on directory status = %#x, want STATUS_FILE_IS_A_DIRECTORY", h.Status)
+	}
+	if len(sess.fids) != 0 {
+		t.Fatalf("OPEN_ANDX on directory left %d FID(s) open, want 0", len(sess.fids))
+	}
+}
