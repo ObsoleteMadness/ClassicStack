@@ -6,6 +6,7 @@ import (
 	"sort"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/compose/registry"
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
@@ -434,6 +435,95 @@ type fakeSeedPort struct {
 func (p *fakeSeedPort) NetworkMin() uint16 { return p.nmin }
 func (p *fakeSeedPort) NetworkMax() uint16 { return p.nmax }
 func (p *fakeSeedPort) SeedZone() string   { return p.zone }
+
+// lateClaimPort simulates a real AARP-based EtherTalk port: NetworkMin/Max are 0 when
+// Start returns (matching runport/aarp's async claimLoop, which probes over the wire in
+// a background goroutine and calls SetAddress only once a node address is accepted —
+// Start itself never blocks on it). The range becomes available `delay` after Start.
+type lateClaimPort struct {
+	fakeRoutedPort
+	mu         sync.Mutex
+	nmin, nmax uint16
+	zone       string
+	delay      time.Duration
+}
+
+func (p *lateClaimPort) Start(ctx context.Context) error {
+	go func() {
+		time.Sleep(p.delay)
+		p.mu.Lock()
+		p.nmin, p.nmax = 3, 5
+		p.mu.Unlock()
+	}()
+	return p.fakeRoutedPort.Start(ctx)
+}
+func (p *lateClaimPort) NetworkMin() uint16 { p.mu.Lock(); defer p.mu.Unlock(); return p.nmin }
+func (p *lateClaimPort) NetworkMax() uint16 { p.mu.Lock(); defer p.mu.Unlock(); return p.nmax }
+func (p *lateClaimPort) SeedZone() string   { return p.zone }
+
+// TestStart_LateClaimingMemberNeverJoinsRoutingTable is the regression guard for the
+// dead-ZIP/ASP-reply bug: Runtime.Start attaches + seeds each router member SYNCHRONOUSLY
+// right after StartAll returns (runtime.go's Start loop), but a real EtherTalk port's AARP
+// claim finishes in a background goroutine — Start does not wait for it. When the claim
+// lands after Attach already ran with NetworkMin()==0, router.Attach's own
+// `if nmin != 0 && nmax != 0 { SetPortRange }` guard skips installing the directly-connected
+// route, and nothing ever retries it: the port later announces its range correctly over RTMP
+// and answers same-network unicast fine, but any reply that must round-trip through
+// router.Reply→Route (ZIP's ATP zone queries, AFP's ASP session reads) does
+// `RoutingTable.GetByNetwork(net)` and gets a permanent nil — the reply is dropped with no
+// error, forever, even though the port is otherwise live. This proves the race exists today.
+func TestStart_LateClaimingMemberNeverJoinsRoutingTable(t *testing.T) {
+	m := config.NewModel()
+	m.Router = config.RouterSection{Members: []string{"et0"}}
+	port := &lateClaimPort{
+		fakeRoutedPort: fakeRoutedPort{name: "et0"},
+		zone:           "EtherTalk Network",
+		delay:          20 * time.Millisecond,
+	}
+	src := fakeSource{
+		router.Name: func(*registry.BuildContext) (component.Component, error) {
+			return router.New(log.New(router.Name)), nil
+		},
+		"et0": func(*registry.BuildContext) (component.Component, error) { return port, nil },
+	}
+	rt, err := Build(Options{Model: m, source: src})
+	if err != nil {
+		t.Fatalf("Build = %v", err)
+	}
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	t.Cleanup(func() { rt.Stop(context.Background()) })
+
+	// Give the AARP-simulating goroutine time to land its claim (well past `delay`) and
+	// the runtime's late-claim watcher (which polls every claimWatchInterval) a full
+	// cycle to notice and install the route.
+	time.Sleep(250 * time.Millisecond)
+
+	if got := port.NetworkMin(); got != 3 {
+		t.Fatalf("port never claimed its range in this test setup: NetworkMin=%d", got)
+	}
+
+	rtr := rt.router()
+	// GetByNetwork's second return is a "marked bad" flag, not a found/ok flag (every
+	// caller in router.go checks entry == nil instead) — a fresh entry is state-good,
+	// so that bool is false here even on success.
+	if entry, _ := rtr.RoutingTable().GetByNetwork(3); entry == nil {
+		t.Errorf("REGRESSION: network 3 has no routing-table entry even after the port claimed" +
+			" range 3-5 — router.Reply()'s Route() call will silently drop any service reply" +
+			" addressed to this network forever, because Attach ran while NetworkMin() was still 0")
+	}
+	found := false
+	for _, z := range rtr.Zones().Zones() {
+		if string(z) == "EtherTalk Network" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("REGRESSION: seed zone never installed into the ZIT — seedZone() also ran while" +
+			" NetworkMin() was still 0 and its own `if nmin == 0 { return }` guard skipped it")
+	}
+}
 
 // TestStart_SeedsMemberZoneIntoZIT is the regression guard for the empty-Chooser bug:
 // when a seed member port attaches, the runtime must install its network range into the

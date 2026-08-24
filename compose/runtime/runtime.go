@@ -22,6 +22,8 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/compose/registry"
 	"github.com/ObsoleteMadness/ClassicStack/compose/supervisor"
@@ -161,6 +163,9 @@ type Runtime struct {
 	transports *transportWiring               // retained IPX/NetBEUI mini-routers + MacIP egress; drives runtime port attach + egress lifecycle
 	comps      map[string]component.Component // built components by name, for compose-edge lookups (diagnostics wiring)
 	log        log.Logger
+
+	claimWatchStop chan struct{}  // closed by Stop to cancel any still-polling late-claim watchers (§ late-claim fix)
+	claimWatchWG   sync.WaitGroup // Stop waits on this so no watcher touches the router after Stop returns
 }
 
 // Load builds a config.Model from a Store + Codec. A missing store file yields the
@@ -534,6 +539,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 		eg.Start()
 	}
 	if r.rtr != nil {
+		r.claimWatchStop = make(chan struct{})
 		for _, p := range r.members {
 			if err := r.rtr.Attach(p); err != nil {
 				if r.log != nil {
@@ -543,6 +549,26 @@ func (r *Runtime) Start(ctx context.Context) error {
 				continue
 			}
 			seedZone(r.rtr, p)
+			if p.NetworkMin() == 0 {
+				// A real AARP/LLAP claim (EtherTalk/LToUDP/TashTalk) finishes in a
+				// background goroutine well after Start returns (runport/aarp never
+				// blocks Start on the probe burst) — Attach ran above with
+				// NetworkMin()==0, so its own directly-connected route was skipped
+				// (router.go's `if nmin != 0 && nmax != 0` guard) and seedZone's own
+				// zero-range guard skipped the ZIT too. Nothing else ever retries
+				// either install: the port later announces its claimed range fine
+				// over RTMP and answers same-network traffic fine (Inbound's
+				// same-network fast path needs no routing-table entry), but every
+				// service reply that must round-trip through router.Reply→Route
+				// (ZIP's ATP zone queries, AFP's ASP session) does
+				// RoutingTable.GetByNetwork and gets a silent, permanent nil. Poll
+				// briefly for the claim to land and (re)run the same install once it
+				// does — SetPortRange/AddNetworksToZone are both idempotent against
+				// an already-correct entry, so this is a no-op on the fast path where
+				// the claim beat Attach.
+				r.claimWatchWG.Add(1)
+				go r.awaitLateClaim(p, r.claimWatchStop)
+			}
 		}
 	}
 	// Begin the telemetry stats flush once the stack is up: it polls every Statful
@@ -552,10 +578,50 @@ func (r *Runtime) Start(ctx context.Context) error {
 	return nil
 }
 
+// claimWatchInterval is the poll period awaitLateClaim uses while waiting for a
+// member port's AARP/LLAP claim to land.
+const claimWatchInterval = 100 * time.Millisecond
+
+// claimWatchAttempts bounds how long awaitLateClaim polls before giving up (30 ×
+// 100ms = 3s — generous over AARP's normal probe-burst duration; a port that has not
+// claimed by then logs a warning and is left for its own retry/conflict logic).
+const claimWatchAttempts = 30
+
+// awaitLateClaim polls p for its AARP/LLAP claim to land, then installs its
+// directly-connected route + seed zone (see the Start comment for why this install
+// can be skipped at Attach time). Runs until the claim lands, claimWatchAttempts is
+// exhausted, or stop is closed by Runtime.Stop. r.claimWatchWG.Done is deferred so
+// Stop can wait out any watcher still polling before it detaches ports.
+func (r *Runtime) awaitLateClaim(p router.RoutedPort, stop chan struct{}) {
+	defer r.claimWatchWG.Done()
+	for range claimWatchAttempts {
+		select {
+		case <-stop:
+			return
+		case <-time.After(claimWatchInterval):
+		}
+		if p.NetworkMin() == 0 {
+			continue
+		}
+		r.rtr.RoutingTable().SetPortRange(p, p.NetworkMin(), p.NetworkMax())
+		seedZone(r.rtr, p)
+		return
+	}
+	if r.log != nil {
+		r.log.Log1(log.Warn, "router member never claimed an address; routing table has no directly-connected entry for it",
+			log.Str("member", p.Name()))
+	}
+}
+
 // Stop detaches the router members (reversing Start's attach) and then brings the
 // whole stack down in reverse dependency order. Detach is best-effort — a member
 // already withdrawn (e.g. by an individual Stop) must not block shutdown.
 func (r *Runtime) Stop(ctx context.Context) error {
+	if r.claimWatchStop != nil {
+		close(r.claimWatchStop)
+		r.claimWatchWG.Wait()
+		r.claimWatchStop = nil
+	}
 	if r.log != nil && r.log.Enabled(log.Info) {
 		r.log.Log0(log.Info, "shutdown: stopping telemetry stats flush")
 	}
