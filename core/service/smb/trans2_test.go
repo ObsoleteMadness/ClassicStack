@@ -364,6 +364,40 @@ func TestTrans2_FindFirst2ListsDirectory(t *testing.T) {
 	}
 }
 
+// TestTrans2_FindFirst2ExactDirectoryNameReturnsEntryNotContents proves a
+// non-wildcard FIND_FIRST2 pattern that names a directory matches that one
+// directory entry in its parent (attrs report Directory) rather than listing
+// the directory's own contents — [MS-CIFS] §2.2.6.2 "a search for file(s)
+// within a directory OR FOR A DIRECTORY", confirmed against a real Windows 98
+// server (spec/captures/nwlink-win98.pcap frames 182-183: FIND_FIRST2
+// "\DRIVER" → one entry "DRIVER", Directory attrs set). A directory-copy
+// client depends on this to recognize an entry as a directory without
+// opening it first.
+func TestTrans2_FindFirst2ExactDirectoryNameReturnsEntryNotContents(t *testing.T) {
+	svc, sess, tid := fsService(t)
+	mkdirReq := smbReq(protocol.CommandCreateDirectory, protocol.Flags2NTStatus, tid, 1, nil, ansiPathArea("Disk Copy (v4.2)"))
+	if h := respHeader(t, svc.Dispatch(sess, mkdirReq)); h.Status != statusSuccess {
+		t.Fatalf("CREATE_DIRECTORY status = %#x", h.Status)
+	}
+	sess.closeFID(createFile(t, svc, sess, tid, "Disk Copy (v4.2)/inside.txt"))
+
+	req := trans2Req(tid, trans2FindFirst2, findFirst2Params(100, 0, "Disk Copy (v4.2)"))
+	reply := svc.Dispatch(sess, req)
+	if h := respHeader(t, reply); h.Status != statusSuccess {
+		t.Fatalf("FIND_FIRST2 status = %#x", h.Status)
+	}
+	names, _, _ := findReplyNames(t, reply, true)
+	if len(names) != 1 || names[0] != "Disk Copy (v4.2)" {
+		t.Fatalf("FIND_FIRST2 exact directory name returned %v, want exactly [\"Disk Copy (v4.2)\"]", names)
+	}
+
+	_, data := findReplyBlocks(t, reply)
+	attrs := bp.LE32(data[56:60])
+	if attrs&0x10 == 0 {
+		t.Fatalf("FIND_FIRST2 entry attrs = %#x, want Directory bit (0x10) set", attrs)
+	}
+}
+
 // TestTrans2_FindFirst2WildcardFilters proves a wildcard pattern restricts the
 // listing to matching names.
 func TestTrans2_FindFirst2WildcardFilters(t *testing.T) {

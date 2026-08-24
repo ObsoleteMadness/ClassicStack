@@ -481,6 +481,21 @@ func (s *Service) findNext2(sess *smbSession, sh *Share, h protocol.Header, para
 // directory is resolved through the codec; the last element is taken as the
 // pattern when it contains a wildcard, else the whole path is the directory and
 // the pattern is "*".
+//
+// A last element with no wildcard is matched exactly against its PARENT's
+// listing regardless of whether it names a file or a directory — [MS-CIFS]
+// §2.2.6.2 "a search for file(s) within a directory OR FOR A DIRECTORY": a
+// bare "\DRIVER" asks "does an entry named DRIVER exist here", answered with
+// that one entry (attrs report Directory), not a listing of DRIVER's
+// contents. A directory-copy client relies on this to tell files from
+// directories without opening them — it opens the returned entry only when
+// attrs say file, and recurses with an explicit "\DRIVER\*" otherwise
+// (real Windows 98 does exactly this: spec/captures/nwlink-win98.pcap frames
+// 182-183, FIND_FIRST2 "\DRIVER" → one entry, "DRIVER", Directory attrs set).
+// This function previously special-cased an IsDir leaf to list ITS contents
+// instead, which silently swapped in the child names — a copy client reading
+// that response never learns "Disk Copy (v4.2)" is a directory at all, and
+// then fails trying to open it directly ("Cannot find the specified path").
 func (s *Service) resolveSearchPath(sh *Share, wire []byte, flags2 uint16) (dirStore, pattern string, status uint32) {
 	raw, _, ok := extractWirePath(wire, flags2)
 	if !ok {
@@ -491,14 +506,6 @@ func (s *Service) resolveSearchPath(sh *Share, wire []byte, flags2 uint16) (dirS
 		return "", "", statusObjectNameInvalid
 	}
 	parent, leaf := storeParent(store)
-	if strings.ContainsAny(leaf, "*?") {
-		return parent, leaf, statusSuccess
-	}
-	// No wildcard in the last element: a path naming a directory lists it; a path
-	// naming a file matches just that file in its parent.
-	if info, err := sh.FS().Stat(store); err == nil && info.IsDir() {
-		return store, "*", statusSuccess
-	}
 	return parent, leaf, statusSuccess
 }
 
