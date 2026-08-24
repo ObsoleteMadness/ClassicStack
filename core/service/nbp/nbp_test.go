@@ -340,6 +340,89 @@ func TestLookupNotRunningReturnsNil(t *testing.T) {
 	}
 }
 
+func (p *fakePort) waitMulticast(n int) []ddp.Datagram {
+	for range 2000 {
+		p.mu.Lock()
+		got := len(p.multicast)
+		p.mu.Unlock()
+		if got >= n {
+			break
+		}
+		runtime.Gosched()
+		time.Sleep(time.Millisecond)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]ddp.Datagram(nil), p.multicast...)
+}
+
+// buildBrRq builds a single-tuple NBP BrRq packet for obj:typ@zone, with the
+// querier addressed at node/socket on enumerator 0.
+func buildBrRq(nbpID, node, socket byte, obj, typ, zone string) []byte {
+	out := []byte{(protonbp.CtrlBrRq << 4) | 1, nbpID, 0, 0, node, socket, 0}
+	out = append(out, byte(len(obj)))
+	out = append(out, obj...)
+	out = append(out, byte(len(typ)))
+	out = append(out, typ...)
+	out = append(out, byte(len(zone)))
+	out = append(out, zone...)
+	return out
+}
+
+// TestBrRqResolvesWildcardZoneInReRoutedLkUp: a BrRq with zone=* arriving on a port whose
+// network sits in exactly one zone must be re-broadcast as a LkUp carrying that resolved
+// zone name, not the literal "*" — otherwise responders on other member networks echo "*"
+// back, and a zone-scoped Chooser/Finder query (which asks for a real zone name) never
+// matches those replies. Regression for the resolved routeZone not being threaded into
+// buildCommonPayload.
+func TestBrRqResolvesWildcardZoneInReRoutedLkUp(t *testing.T) {
+	r := startedRouter(t)
+	p10 := newFakePort("EtherTalk10", 10, 0x80, 10, 10)
+	p20 := newFakePort("EtherTalk20", 20, 0x80, 20, 20)
+	if err := r.Attach(p10); err != nil {
+		t.Fatalf("Attach p10: %v", err)
+	}
+	if err := r.Attach(p20); err != nil {
+		t.Fatalf("Attach p20: %v", err)
+	}
+	nmax10 := uint16(10)
+	if err := r.Zones().AddNetworksToZone([]byte("ZoneA"), 10, &nmax10); err != nil {
+		t.Fatalf("AddNetworksToZone ZoneA: %v", err)
+	}
+	nmax20 := uint16(20)
+	if err := r.Zones().AddNetworksToZone([]byte("ZoneB"), 20, &nmax20); err != nil {
+		t.Fatalf("AddNetworksToZone ZoneB: %v", err)
+	}
+
+	svc := New(r, nil)
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("svc Start: %v", err)
+	}
+	defer svc.Stop(context.Background())
+
+	// A Chooser-style BrRq arrives on p10 asking for zone=* (its own, single-zone network).
+	svc.Inbound(ddp.Datagram{
+		DestNetwork: 10, SrcNetwork: 10, DestNode: 0x80, SrcNode: 0x81,
+		DestSocket: Socket, SrcSocket: Socket, DDPType: DDPType,
+		Data: buildBrRq(0x07, 0x81, Socket, "=", "AFPServer", "*"),
+	}, p10)
+
+	got := p10.waitMulticast(1)
+	if len(got) != 1 {
+		t.Fatalf("got %d multicasts on p10, want 1", len(got))
+	}
+	pkt, err := protonbp.ParsePacket(got[0].Data)
+	if err != nil {
+		t.Fatalf("parse re-broadcast LkUp: %v", err)
+	}
+	if pkt.Function != protonbp.CtrlLkUp {
+		t.Errorf("re-broadcast func = %d, want LkUp", pkt.Function)
+	}
+	if string(pkt.Tuple.Zone) != "ZoneA" {
+		t.Errorf("re-broadcast zone = %q, want resolved \"ZoneA\" (not the literal wildcard)", pkt.Tuple.Zone)
+	}
+}
+
 // TestRegisterUnregister verifies the name table mutates and dedups by entity.
 func TestRegisterUnregister(t *testing.T) {
 	svc := New(startedRouter(t), nil)

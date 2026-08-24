@@ -458,7 +458,7 @@ func (s *Service) handleBrRq(d ddp.Datagram, from router.RoutedPort, obj, typ, z
 		}
 	}
 
-	lkup, fwd := s.buildCommonPayload(d, zone, replyNet)
+	lkup, fwd := s.buildCommonPayload(d, routeZone, replyNet)
 
 	if bytes.Equal(routeZone, zoneWildcard) {
 		// Unresolved zone=* — broadcast the lookup on the receiving port only.
