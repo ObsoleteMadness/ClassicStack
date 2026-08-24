@@ -52,6 +52,53 @@ func TestReservedCharTokenRoundTrip(t *testing.T) {
 	}
 }
 
+// TestControlCharTokenStaysEscapedForDOSWire proves a classic Mac "Icon\r"
+// marker file's raw CR — always-reserved, so every backend escapes it as the
+// "0x0D" store token regardless of ReservedPOSIX/ReservedNTFS — unescapes back
+// to the true control byte for AFP's Mac clients (WireMacRoman/WireUTF8), but
+// stays literal "0x0D" text for SMB/NCP's DOS clients (WireANSI/WireUTF16),
+// which cannot represent a raw control character in a filename. Before this,
+// Encode unescaped unconditionally: a real capture showed the server handing
+// Windows Explorer a name containing a raw CR, and Explorer refused to copy it
+// ("The filename you specified is invalid or too long") — NT 3.51 File
+// Manager crashed merely listing the share.
+func TestControlCharTokenStaysEscapedForDOSWire(t *testing.T) {
+	c := NewIdentityFilenameCodec()
+
+	stored, err := c.Decode([]byte("Icon\r"), WireUTF8)
+	if err != nil {
+		t.Fatalf("Decode error: %v", err)
+	}
+	if string(stored) != "Icon0x0D" {
+		t.Fatalf("stored = %q, want %q", string(stored), "Icon0x0D")
+	}
+
+	afpBack, err := c.Encode(stored, WireUTF8)
+	if err != nil {
+		t.Fatalf("Encode(WireUTF8) error: %v", err)
+	}
+	if string(afpBack) != "Icon\r" {
+		t.Fatalf("AFP (WireUTF8) roundtrip = %q, want %q (raw CR restored)", afpBack, "Icon\r")
+	}
+
+	for _, w := range []WireEncoding{WireANSI, WireUTF16} {
+		smbBack, err := c.Encode(stored, w)
+		if err != nil {
+			t.Fatalf("Encode(%v) error: %v", w, err)
+		}
+		roundTripped, err := c.Decode(smbBack, w)
+		if err != nil {
+			t.Fatalf("Decode(%v) error: %v", w, err)
+		}
+		if string(roundTripped) != "Icon0x0D" {
+			t.Fatalf("SMB/NCP (%v) roundtrip = %q, want literal %q (CR kept escaped)", w, roundTripped, "Icon0x0D")
+		}
+		if bytes.ContainsRune(smbBack, '\r') {
+			t.Fatalf("SMB/NCP (%v) wire bytes %x contain a raw CR — Windows cannot represent that", w, smbBack)
+		}
+	}
+}
+
 // TestSMBWireEncodings exercises the new WireANSI / WireUTF16 paths the SMB
 // service threads from its dialect/Unicode flag. Only the identity codec
 // advertises them; macroman-utf8 must report ErrWireUnsupported.

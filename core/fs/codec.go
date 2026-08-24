@@ -113,10 +113,24 @@ func upperHexRune(r rune) string {
 // unescape reverses escape: "0xNN" tokens whose code point is reserved for this
 // backend become the original rune. Tokens for non-reserved code points are left
 // literal, matching the old decodeHostReservedTokens behaviour.
-func (rs ReservedSet) unescape(s string) string {
+//
+// A token for a rune windowsIllegal rejects stays literal "0xNN" text when dst
+// is a DOS/Windows wire encoding (WireANSI, WireUTF16 — always SMB or NCP;
+// WireMacRoman/WireUTF8 are AFP), regardless of whether rs considers it
+// reserved. Restoring the raw rune there would hand the client a filename
+// component it is structurally unable to represent: a classic Mac "Icon\r"
+// custom-icon marker (name is literally "Icon" + a raw CR byte, always
+// reserved so every backend escapes it as "0xNN" — spec/errata not
+// applicable, this is our own gap) crashes NT 3.51 File Manager just
+// listing the share, and Windows Explorer refuses to copy it ("The filename
+// you specified is invalid or too long"). AFP's Mac clients are the reason
+// these bytes exist in the name at all and handle them natively, so
+// WireMacRoman/WireUTF8 keep the full, unconditional unescape.
+func (rs ReservedSet) unescape(s string, dst WireEncoding) string {
 	if !strings.Contains(s, "0x") {
 		return s
 	}
+	dosWire := dst == WireANSI || dst == WireUTF16
 	var b strings.Builder
 	for i := 0; i < len(s); {
 		if i+4 <= len(s) && s[i] == '0' && s[i+1] == 'x' {
@@ -124,7 +138,7 @@ func (rs ReservedSet) unescape(s string) string {
 			l, okL := fromHex(s[i+3])
 			if okH && okL {
 				c := rune((h << 4) | l)
-				if rs.isReserved(c) {
+				if rs.isReserved(c) && (!dosWire || !windowsIllegal(c)) {
 					b.WriteRune(c)
 					i += 4
 					continue
@@ -136,6 +150,22 @@ func (rs ReservedSet) unescape(s string) string {
 		i += size
 	}
 	return b.String()
+}
+
+// windowsIllegal reports whether r can never appear in a Win32 filename
+// component, independent of any backend's storage ReservedSet: the control
+// characters plus the NTFS/FAT reserved punctuation. A DOS/Windows SMB or NCP
+// client cannot create a local file whose name needs one of these under any
+// wire charset.
+func windowsIllegal(r rune) bool {
+	if r < 0x20 {
+		return true
+	}
+	switch r {
+	case '<', '>', ':', '"', '/', '\\', '|', '?', '*':
+		return true
+	}
+	return false
 }
 
 func fromHex(c byte) (byte, bool) {
@@ -281,7 +311,7 @@ func (c transcodeCodec) Encode(stored StoredName, dst WireEncoding) ([]byte, err
 	}
 	mid := c.storeToUTF8(stored)
 	if c.escaping {
-		mid = c.profile.Reserved.unescape(mid)
+		mid = c.profile.Reserved.unescape(mid, dst)
 	}
 	return c.utf8ToWire(mid, dst)
 }
