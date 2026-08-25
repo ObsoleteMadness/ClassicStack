@@ -8,8 +8,6 @@ weight: 9
 Full flag, subcommand, and exit-code reference for every binary under [`cmd/`](../cmd/). For
 the short "what does each tool do" tour see [manual.md §2](manual.md#2-command-line-tools); this
 page is the exhaustive version, extracted from each tool's source and `-h`/`usage()` text.
-Unix man pages generated from this same material live under [`man/man1/`](../man/man1/) — see
-[§9](#9-man-pages) below.
 
 Every binary shares one `-version` output format (from `cmd/internal/buildinfo`):
 
@@ -103,12 +101,11 @@ on Windows` and exits `1` — use `classicstack-svc` there instead.
 
 ---
 
-### `classicstack-svc` *(Windows only — no Unix man page)*
+### `classicstack-svc` *(Windows only)*
 
 Windows Service Control Manager wrapper: `install`/`uninstall`/`start`/`stop`/`status`/`run`/
-`version` against a service named `ClassicStack`. Takes `-config <path>` for `install`/`run`. Not
-covered by a man page here since it targets Windows exclusively; see `classicstack-svc -h` or
-[manual.md](manual.md) for details. On non-Windows this binary is a stub.
+`version` against a service named `ClassicStack`. Takes `-config <path>` for `install`/`run`. See
+`classicstack-svc -h` or [manual.md](manual.md) for details. On non-Windows this binary is a stub.
 
 ---
 
@@ -504,7 +501,7 @@ csnetsend -iface eth0 -to WORKSTATION,nbf -text "Server rebooting in 5 minutes"
 to compile: it blank-imports the TinyGo-safe subset of `core/` so that a forbidden import or a
 reflection-using package in that subset makes `tinygo build` fail, proving the
 no-reflection/no-forbidden-import discipline without ESP32 hardware. No flags, no subcommands. The
-real interactive entry point remains `classicstack`. No man page is provided for this tool.
+real interactive entry point remains `classicstack`.
 
 ---
 
@@ -549,23 +546,3 @@ bash scripts/build-local.sh   # builds every desktop command into ./bin with the
 - [manual.md](manual.md) — the short operator tour these tools live in.
 - [build.md](build.md) — the full build-tag reference.
 - [config.md](config.md) — `server.toml` field reference.
-
-## 9. Man pages
-
-Traditional Unix `man(1)` pages for the tools in this document that build on Linux/macOS live under
-[`man/man1/`](../man/man1/) in the repository root (not mounted into this Hugo site). View one
-without installing:
-
-```bash
-man man/man1/csfs.1
-```
-
-Install them system-wide (default prefix `/usr/local`):
-
-```bash
-make install-man                    # installs to /usr/local/share/man/man1
-make install-man PREFIX=/opt/classicstack
-```
-
-`classicstack-svc` (Windows-only) and `cs-tinygo` (a build-gate smoke test, not an operator tool)
-do not have man pages.
