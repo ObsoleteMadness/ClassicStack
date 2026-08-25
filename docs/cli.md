@@ -178,7 +178,7 @@ hand-rolled parser so flags can precede the subcommand token):
 | `-transport` | `ipx` | SMB pcap sub-carrier: `ipx \| nbipx \| nbf`. |
 | `-frametype` (alias `-framing`) | *(empty)* | IPX Ethernet encapsulation: `ethernet_ii \| 802.3 \| 802.2` (empty = learn from server). |
 | `-mac` | *(random)* | Virtual-station MAC for raw-Ethernet carriers. |
-| `-fork` | *(empty)* | Host fork container: `appledouble \| applesingle \| macbinary \| derez \| native \| nofork`. |
+| `-fork` | *(empty)* | Host fork container: `appledouble \| applesingle \| macbinary \| derez \| native \| nofork`. See [forks.md](forks.md) for what each one stores. |
 | `-v` (alias `-verbose`) | `false` | Print the client wire-trace (NBP/ATP/ASP) to stderr. |
 | `-list-ifaces` | `false` | List the capturable pcap NICs and exit. |
 | `-version` | `false` | Print version information and exit. |
@@ -224,7 +224,8 @@ Shares the exact same flag set as `csfs` (see above), plus:
 |---|---|---|
 | `-cache-ms` | *(WinFsp default, ~1000)* | WinFsp `FileInfoTimeout` in ms. `0` disables the FSD metadata cache; `-1` is infinite (also enables kernel data caching). Windows-specific; accepted but not documented on other platforms. |
 
-`-fork` accepts different values per platform:
+`-fork` accepts different values per platform (see [forks.md](forks.md) for the full storage
+model behind each one):
 
 - **Windows:** `appledouble \| applesingle \| macbinary \| derez \| passthrough \| native \| ads \|
   nofork` — `native` (= `ads`) exposes resource fork / Finder info / comment as NTFS SFM streams
@@ -546,3 +547,6 @@ bash scripts/build-local.sh   # builds every desktop command into ./bin with the
 - [manual.md](manual.md) — the short operator tour these tools live in.
 - [build.md](build.md) — the full build-tag reference.
 - [config.md](config.md) — `server.toml` field reference.
+- [forks.md](forks.md) — what each `-fork` backend actually stores, server-side and client-side.
+- [filename-encoding.md](filename-encoding.md) — how filenames are transcoded between the host
+  filesystem and each protocol's own wire charset.

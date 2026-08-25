@@ -11,9 +11,10 @@ Focused documents split out of this manual: [quickstart.md](quickstart.md),
 [build.md](build.md) (build tags), [config.md](config.md) (full config key reference),
 [protocols.md](protocols.md) (supported protocol versions), [netboot.md](netboot.md),
 [testing.md](testing.md), [web-ui.md](web-ui.md) (control API + `classicstack-web`
-reuse), and [cli.md](cli.md) (full flag/subcommand reference for every tool in §2). Unix
-`man(1)` pages for these tools also live under [`man/man1/`](../man/man1/) in the repository
-root.
+reuse), [cli.md](cli.md) (full flag/subcommand reference for every tool in §2),
+[forks.md](forks.md) (resource forks, Finder metadata, DOS attributes), and
+[filename-encoding.md](filename-encoding.md) (wire↔store charset transcoding). Unix `man(1)`
+pages for the CLI tools also live under [`man/man1/`](../man/man1/) in the repository root.
 
 ---
 
