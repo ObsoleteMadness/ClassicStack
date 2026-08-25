@@ -1,7 +1,7 @@
 [AFP]
 enabled = true
 server_name = 'ClassicStack'
-zone = '*'
+zone = 'EtherTalk Network'
 transports = ['ddp']
 login_message = 'Welcome to ClassicStack - enjoy your stay.'
 
@@ -37,7 +37,6 @@ broadcast = '192.168.100.255'
 subnet_mask = '255.255.255.0'
 interface = 'br-lan'
 default_gateway = '192.168.0.1'
-dhcp_relay = false
 
 [NCP]
 enabled = true
@@ -105,7 +104,7 @@ name = 'br-lan'
 kind = 'bridge'
 default = true
 backend = 'pcap'
-device = 'bridge1'
+device = 'en5'
 
 [[ipx]]
 iface = 'br-lan'
@@ -147,7 +146,7 @@ path = './dist/Sample Volume'
 
 [[tashtalk]]
 enabled = true
-device = '/dev/tty.usbserial-1130'
+device = '/dev/tty.usbserial-1140'
 baud = 1000000
 seed_network = 2
 seed_zone = 'TashTalk Network'

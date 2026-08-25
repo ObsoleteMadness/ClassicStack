@@ -83,7 +83,7 @@ func (s *Service) ownNames(scheme string) []string {
 		}
 		n := ss.EffectiveServerName(host)
 		if n == "" {
-			n = "OMNITALK"
+			n = "CLASSICSTACK"
 		}
 		return compactNames(n)
 	case KindEtherDFS:

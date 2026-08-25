@@ -1,4 +1,4 @@
-# ClassicStack / OmniTalk — Refactor Workspace
+# ClassicStack — Refactor Workspace
 
 This folder holds the plan to refactor ClassicStack onto the greenfield hexagonal
 architecture. It is structured so individual steps can be farmed out to separate

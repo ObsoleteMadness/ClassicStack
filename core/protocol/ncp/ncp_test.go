@@ -66,7 +66,7 @@ func TestReplyHeaderMarshal(t *testing.T) {
 func TestSAPResponseRoundTrip(t *testing.T) {
 	e := SAPEntry{
 		Type:    SAPServerTypeFileServer,
-		Name:    "OMNITALK",
+		Name:    "CLASSICSTACK",
 		Network: [4]byte{0, 0, 0, 0x10},
 		Node:    [6]byte{1, 2, 3, 4, 5, 6},
 		Socket:  NCPSocket,
@@ -84,8 +84,8 @@ func TestSAPResponseRoundTrip(t *testing.T) {
 		t.Errorf("op = %#x, want general response", q.Operation)
 	}
 	// The name field is NUL-padded to 48 bytes starting at offset 4.
-	if got := string(bytes.TrimRight(out[4:4+sapNameLen], "\x00")); got != "OMNITALK" {
-		t.Errorf("name = %q, want OMNITALK", got)
+	if got := string(bytes.TrimRight(out[4:4+sapNameLen], "\x00")); got != "CLASSICSTACK" {
+		t.Errorf("name = %q, want CLASSICSTACK", got)
 	}
 }
 

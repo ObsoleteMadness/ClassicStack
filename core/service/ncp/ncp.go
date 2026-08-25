@@ -52,7 +52,7 @@ const OriginNCP = "ncp"
 // defaultServerName is the NetWare server name advertised (via SAP and Get Server
 // Info) when no §4-bis identity hostname is configured. NetWare names are
 // upper-case.
-const defaultServerName = "OMNITALK"
+const defaultServerName = "CLASSICSTACK"
 
 // Authenticator validates a (username, cleartext password) credential. It is a
 // LOCAL interface — structurally satisfied by auth.UserStore — so this package
@@ -116,7 +116,7 @@ func New(logger log.Logger) *Service {
 func (s *Service) Name() string { return Name }
 
 // SetServerName sets the NetWare server name NCP reports for itself (the §4-bis
-// identity hostname, upper-cased). Unset defaults to OMNITALK. Idempotent.
+// identity hostname, upper-cased). Unset defaults to CLASSICSTACK. Idempotent.
 func (s *Service) SetServerName(name string) {
 	s.mu.Lock()
 	s.server = strings.ToUpper(strings.TrimSpace(name))
@@ -161,7 +161,7 @@ func (s *Service) InternalNetworkBytes() (net [4]byte, ok bool) {
 	return net, true
 }
 
-// serverName returns the configured server name, defaulting to OMNITALK.
+// serverName returns the configured server name, defaulting to CLASSICSTACK.
 func (s *Service) serverName() string {
 	s.mu.Lock()
 	name := s.server

@@ -1,4 +1,4 @@
-# Greenfield Architecture: ClassicStack / OmniTalk
+# Greenfield Architecture: ClassicStack
 
 ## Charter — what ClassicStack is for
 

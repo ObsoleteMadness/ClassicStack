@@ -25,8 +25,8 @@ type ServerSection struct {
 	// New() default of true so existing configs without enabled= stay on.
 	Enabled bool `toml:"enabled" display:"Enabled" desc:"Whether the NCP (NetWare) file service is configured on." default:"true"`
 	// ServerName is the NetWare file-server name advertised via SAP and Get Server
-	// Info. Empty → Identity.Hostname, then the built-in default ("OMNITALK").
-	ServerName string `toml:"server_name,omitempty" display:"Server name" desc:"NetWare server name (upper-cased on the wire). Empty = Identity.Hostname, then OMNITALK." example:"FILESERVER"`
+	// Info. Empty → Identity.Hostname, then the built-in default ("CLASSICSTACK").
+	ServerName string `toml:"server_name,omitempty" display:"Server name" desc:"NetWare server name (upper-cased on the wire). Empty = Identity.Hostname, then CLASSICSTACK." example:"FILESERVER"`
 	// Description is an optional free-text remark reported to clients. Empty →
 	// Identity.Description.
 	Description string `toml:"description,omitempty" display:"Description" desc:"Optional server description. Empty = Identity.Description." example:"ClassicStack NetWare server"`

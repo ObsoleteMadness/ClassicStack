@@ -395,6 +395,6 @@ own case rules.
   gap, deferred.
 - **No SPX.** There is no SPX watchdog; idle connections are aged on inactivity.
 - **Server name** comes from `[identity].hostname`, upper-cased to a NetWare name;
-  default `OMNITALK`.
+  default `CLASSICSTACK`.
 - Wire deviations observed against real clients are recorded in
   [errata.md](errata.md).
