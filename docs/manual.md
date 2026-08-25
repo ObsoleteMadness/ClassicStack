@@ -10,8 +10,9 @@ First-pass operator and developer guide. For wire-level protocol notes see [`spe
 Focused documents split out of this manual: [quickstart.md](quickstart.md),
 [build.md](build.md) (build tags), [config.md](config.md) (full config key reference),
 [protocols.md](protocols.md) (supported protocol versions), [netboot.md](netboot.md),
-[testing.md](testing.md), and [web-ui.md](web-ui.md) (control API + `classicstack-web`
-reuse).
+[testing.md](testing.md), [web-ui.md](web-ui.md) (control API + `classicstack-web`
+reuse), and [cli.md](cli.md) (full flag/subcommand reference for every tool in §2, plus
+`man(1)` pages for Unix-like hosts).
 
 ---
 
@@ -42,7 +43,7 @@ The project is pragmatic and evolving — validate behaviour in your environment
 
 ## 2. Command-line tools
 
-Binaries live under `cmd/`. File-client tools share the **client SDK** (`client/`) and the same URI grammar (see §5).
+Binaries live under `cmd/`. File-client tools share the **client SDK** (`client/`) and the same URI grammar (see §5). This section is a quick tour; for every flag, subcommand, default, and exit code see **[cli.md](cli.md)**.
 
 ### Server and lifecycle
 

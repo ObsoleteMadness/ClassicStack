@@ -1,0 +1,180 @@
+.TH CSFS 1 "2026-08-26" "ClassicStack" "ClassicStack Manual"
+.SH NAME
+csfs \- ClassicStack file client for AFP, SMB, NCP, and EtherDFS
+.SH SYNOPSIS
+.B csfs
+[\fIflags\fR]
+.I command
+[\fIargs\fR]
+.br
+.B csfs
+[\fIflags\fR]
+.I uri
+.SH DESCRIPTION
+.B csfs
+is a cross\-platform command\-line file client built on ClassicStack's client
+SDK.  It connects
+.I out
+to remote AFP, SMB, NCP, and EtherDFS servers, and offers either one\-shot
+subcommands or an interactive REPL.  It preserves resource forks, Finder
+type/creator codes, and DOS attributes across host/remote copies.
+.PP
+Global flags may precede the subcommand or bare URI in any combination; a bare
+URI that names a server root is browsed like
+.BR ls ,
+while a URI that names a share or path opens an interactive session.
+.SH COMMANDS
+.TP
+.BI discover " scheme"
+Probes the LAN for servers of the given
+.IR scheme " (" afp ", " smb ", " ncp ", or " etherdfs ).
+Uses NBP plus Bonjour
+.B _afpovertcp._tcp
+for AFP, a SAP query for NCP, a master\-browser sweep for SMB, and a broadcast
+.B AL_INSTALLCHK
+for EtherDFS.
+.TP
+.BI ls " uri"
+Lists a directory.  A server\-root URI (no volume or path) instead prints
+server information and the volume/share list.
+.TP
+.BI cp " src dst"
+Copies; either side may be a URI or a host path.
+.TP
+.BI get " uri host\-path"
+Alias of
+.B cp
+for remote\-to\-host copies.
+.TP
+.BI put " host\-path uri"
+Alias of
+.B cp
+for host\-to\-remote copies.
+.TP
+.BI mv " uri newpath"
+Renames or moves an object on the server.
+.TP
+.BI rm " uri"
+Deletes an object.
+.TP
+.B attrib
+.I uri
+[\fB+r\fR|\fB\-r\fR|\fB+h\fR|\fB\-h\fR|\fB+s\fR|\fB\-s\fR|\fB+a\fR|\fB\-a\fR]
+.br
+Shows (with no extra argument) or sets DOS file attributes
+(read\-only, hidden, system, archive).
+.TP
+.BI type " uri " "[CODE]"
+Shows or sets the 4\-character Macintosh Finder type code.
+.TP
+.BI creator " uri " "[CODE]"
+Shows or sets the 4\-character Macintosh Finder creator code.
+.TP
+.I uri
+A bare URI (no subcommand) naming a server root is browsed like
+.BR ls ;
+a URI naming a share or path opens an interactive REPL (see
+.B REPL COMMANDS
+below).
+.TP
+.BR help ", " \-h ", " \-\-help
+Prints usage.
+.SH OPTIONS
+.TP
+.BI \-ifacetype " type"
+Transport:
+.BR ltoudp ", " tashtalk ", " pcap ", or " tcp ,
+validated against the URI's scheme.
+.TP
+.BI \-iface " name"
+Interface: an IPv4 address (ltoudp), a pcap device name, a serial device such
+as
+.IR COM3 " or " /dev/ttyUSB0 " (tashtalk), or a hostname (tcp)."
+For pcap, omit to auto\-detect the primary network interface.
+.TP
+.BI \-transport " carrier"
+SMB pcap sub\-carrier:
+.BR ipx " (default), " nbipx ", or " nbf .
+.TP
+.BI \-frametype " type" ", " \-framing " type"
+IPX Ethernet encapsulation:
+.BR ethernet_ii ", " 802.3 ", or " 802.2 .
+Empty (the default) learns the framing from the server.
+.TP
+.BI \-mac " address"
+Virtual\-station MAC address for raw\-Ethernet carriers.  Default: a random
+locally\-administered address.
+.TP
+.BI \-fork " backend"
+Host fork container:
+.BR appledouble ", " applesingle ", " macbinary ", " derez ", " native ", or " nofork .
+.TP
+.BR \-v ", " \-verbose
+Print the client wire trace (NBP/ATP/ASP) to stderr.
+.TP
+.B \-list\-ifaces
+List the capturable pcap network interfaces and exit.
+.TP
+.B \-version
+Print version information and exit.
+.SH REPL COMMANDS
+When a bare URI names a share or path,
+.B csfs
+opens an interactive session with its own command set:
+.BR ls " [\fIpath\fR], " cd " \fIpath\fR, " pwd ", " get ", " put ", " cp ", "
+.BR mv ", " rm ", " attrib ", " type ", " creator ", " help ", and "
+.BR quit " (alias " exit ).
+The prompt is
+.IR scheme:/cwd> .
+Arguments may be quoted with
+.B \(dq
+or
+.B \(aq
+and support backslash escapes.
+.SH URI GRAMMAR
+.EX
+<scheme>://[[user][:pass]@]<server>[,<transport>]/<volume>[/<path>]
+
+afp://classicstack:MyZone/Volume
+smb://pete:secret@host,tcp/share
+ncp://SERVER,ipx/SYS
+etherdfs://02\-1a\-4d\-11\-22\-33/C
+.EE
+.PP
+.I server
+and
+.I volume
+are protocol\-native and opaque to the parser: AFP may use
+.IR name:zone " or " net.node ;
+EtherDFS uses dash\- or bare\-hex MAC addresses, never colon\-separated.
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+An operational failure, printed as
+.BR "csfs: <error>" .
+.TP
+.B 2
+A usage error (missing or extra arguments, unknown command).
+.SH EXAMPLES
+.EX
+csfs discover afp
+csfs ls afp://classicstack:MyZone/Volume
+csfs get afp://classicstack:MyZone/Volume/README.txt ./README.txt
+csfs \-ifacetype tcp afp://server/Volume        # opens a REPL
+.EE
+.SH BUILDING
+.EX
+go build \-tags pcap \-o csfs ./cmd/csclient
+.EE
+.SH SEE ALSO
+.BR csmount (1),
+.BR csnbp (1)
+.br
+Full flag reference: https://obsoletemadness.github.io/ClassicStack/docs/cli/
+.SH AUTHOR
+ClassicStack is developed by the ObsoleteMadness project and contributors.
+.SH LICENSE
+ClassicStack is released under the GNU General Public License v3.0 or later.

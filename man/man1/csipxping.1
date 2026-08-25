@@ -1,0 +1,93 @@
+.TH CSIPXPING 1 "2026-08-26" "ClassicStack" "ClassicStack Manual"
+.SH NAME
+csipxping \- IPX Diagnostic request/response probe
+.SH SYNOPSIS
+.B csipxping
+[\fIflags\fR]
+.SH DESCRIPTION
+.B csipxping
+sends Novell IPX Diagnostic requests over raw Ethernet, the IPX equivalent of
+.BR ping (8)
+(the classic Novell
+.BR IPXPING
+utility).  It uses IPX socket
+.BR 0x0456 ,
+Ethernet II etherType
+.BR 0x8137 .
+.PP
+Requires a build with the
+.B pcap
+tag (libpcap/Npcap) and privilege to open the network interface.
+.SH OPTIONS
+.TP
+.BI \-iface " name"
+Interface to send on: a pcap device name.  Omit to auto\-detect the primary
+network interface.
+.TP
+.BI \-dst " target"
+Target node as a MAC address
+.RI ( aa:bb:cc:dd:ee:ff )
+or the literal string
+.BR "broadcast" " (the default)."
+.TP
+.BI \-net " hex8"
+IPX network number, 8 hex digits.
+.B 00000000
+(the default) means the local segment.
+.TP
+.BI \-count " n"
+Number of diagnostic requests to send.  Default:
+.BR 3 .
+.TP
+.BI \-timeout " duration"
+Per\-request reply timeout.  Default:
+.BR 2s .
+.TP
+.BI \-interval " duration"
+Delay between requests.  Default:
+.BR 500ms .
+.TP
+.BI \-mac " address"
+Source MAC for our virtual station.  Default: a random
+locally\-administered address.
+.TP
+.B \-list\-ifaces
+List the capturable pcap network interfaces and exit.
+.TP
+.B \-version
+Print version information and exit.
+.SH OUTPUT
+Prints an
+.B "IPXPING <target> on <iface>"
+banner, one line per reply or timeout, and a final
+.B "--- <iface> IPX diagnostic statistics ---"
+summary with the number of requests sent, replies received, and percentage
+loss.
+.SH EXIT STATUS
+.TP
+.B 0
+At least one reply was received.
+.TP
+.B 1
+No replies were received across all attempts, or another error occurred
+(printed as
+.BR "csipxping: <error>" ).
+.SH EXAMPLES
+.EX
+csipxping \-iface eth0 \-dst broadcast \-count 5
+csipxping \-iface en0 \-dst 00:1a:2b:3c:4d:5e \-net 00000001
+.EE
+.SH BUILDING
+.EX
+go build \-tags pcap \-o csipxping ./cmd/csipxping
+.EE
+.SH SEE ALSO
+.BR csncpinfo (1),
+.BR csnetview (1),
+.BR csnetsend (1)
+.br
+Full flag reference: https://obsoletemadness.github.io/ClassicStack/docs/cli/
+.SH AUTHOR
+ClassicStack is developed by the ObsoleteMadness project and contributors.
+.SH LICENSE
+ClassicStack is released under the GNU General Public License v3.0 or later.

@@ -1,0 +1,83 @@
+.TH CSNCPINFO 1 "2026-08-26" "ClassicStack" "ClassicStack Manual"
+.SH NAME
+csncpinfo \- NetWare file server discovery probe (SAP)
+.SH SYNOPSIS
+.B csncpinfo
+[\fIflags\fR]
+.SH DESCRIPTION
+.B csncpinfo
+discovers NetWare file servers over raw Ethernet using a Service
+Advertising Protocol (SAP) query, like the classic NetWare
+.BR SLIST
+command.  It uses IPX socket
+.BR 0x0452 .
+.PP
+Requires a build with the
+.B pcap
+tag (libpcap/Npcap) and privilege to open the network interface.
+.SH OPTIONS
+.TP
+.BI \-iface " name"
+Interface to send on: a pcap device name.  Omit to auto\-detect the primary
+network interface.
+.TP
+.BI \-net " hex8"
+IPX network number, 8 hex digits.
+.B 00000000
+(the default) means the local segment.
+.TP
+.BI \-timeout " duration"
+How long to collect SAP responses.  Default:
+.BR 2s .
+.TP
+.B \-nearest
+Send a Get\-Nearest\-Server query instead of a general service query.
+.TP
+.BI \-frametype " type"
+IPX Ethernet encapsulation:
+.BR ethernet_ii " (default), " 802.3 ", or " 802.2 .
+This
+.B must
+match the target server's IPX encapsulation, or it will not respond.
+.TP
+.BI \-mac " address"
+Source MAC for our virtual station.  Default: a random
+locally\-administered address.
+.TP
+.B \-list\-ifaces
+List the capturable pcap network interfaces and exit.
+.TP
+.B \-version
+Print version information and exit.
+.SH OUTPUT
+Prints an
+.B "SLIST on <iface> (<frametype>)"
+banner, one line per discovered server (name, network, node, socket), and a
+final count of servers found.
+.SH EXIT STATUS
+.TP
+.B 0
+At least one server was found.
+.TP
+.B 1
+No servers were found, or another error occurred (printed as
+.BR "csncpinfo: <error>" ).
+.SH EXAMPLES
+.EX
+csncpinfo \-iface eth0
+csncpinfo \-iface eth0 \-frametype 802.3 \-nearest
+.EE
+.SH BUILDING
+.EX
+go build \-tags pcap \-o csncpinfo ./cmd/csncpinfo
+.EE
+.SH SEE ALSO
+.BR csipxping (1),
+.BR csnetview (1),
+.BR csnetsend (1)
+.br
+Full flag reference: https://obsoletemadness.github.io/ClassicStack/docs/cli/
+.SH AUTHOR
+ClassicStack is developed by the ObsoleteMadness project and contributors.
+.SH LICENSE
+ClassicStack is released under the GNU General Public License v3.0 or later.

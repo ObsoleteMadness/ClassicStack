@@ -32,7 +32,7 @@ GOSEC_PKG       := github.com/securego/gosec/v2/cmd/gosec@latest
 GOSEC_PKGS := ./service/macip/... ./service/macgarden/... ./service/afpfs/macgarden/...
 
 .PHONY: build build-local build-svc build-mount app-darwin installer-windows spa test test-race test-tags lint quality vet vuln gosec fuzz clean \
-        harness archtest tinygo-gate
+        harness archtest tinygo-gate install-man
 
 # Vite SPA (Finder + admin). Required for TAGS that embed webui (all, webui).
 # Finder UI comes from the third_party/classicstack-web submodule; WEB_DIR pins a
@@ -169,4 +169,16 @@ build-pico2w:
 clean:
 	rm -f classicstack classicstack.exe classicstackd classicstack-svc.exe csmount csmount.exe cs-tinygo.exe
 	rm -rf out dist bin
+
+# --- Documentation ---------------------------------------------------------
+
+# install-man installs the Unix man(1) pages under man/man1 (see docs/cli.md
+# §9). PREFIX/DESTDIR follow the usual GNU convention so packagers can stage
+# into a fakeroot: `make install-man DESTDIR=/pkg/root PREFIX=/usr`.
+PREFIX ?= /usr/local
+MANDIR := $(DESTDIR)$(PREFIX)/share/man/man1
+
+install-man:
+	install -d "$(MANDIR)"
+	install -m 0644 man/man1/*.1 "$(MANDIR)"
 
