@@ -28,7 +28,17 @@
 -- Install with: Wireshark -> Help -> About Wireshark -> Folders -> Personal Lua
 -- Plugins, then copy this file there (or symlink it), and Analyze -> Reload Lua
 -- Plugins. It binds to UDP port 1954 by default (see registration at the foot).
--- LToUDP ("LocalTalk over UDP") Wireshark dissector.
+--
+-- After the 4-byte Sender ID, the rest of the datagram is a plain LLAP frame,
+-- so we hand it off to Wireshark's own built-in LocalTalk (LLAP) dissector
+-- (part of epan/dissectors/packet-atalk.c, registered as "llap") instead of
+-- re-implementing LLAP/DDP/ATP/ASP/AFP parsing ourselves. This mirrors the
+-- draft native packet-ltoudp.c dissector for LToUDP itself
+-- (wireshark/wireshark@c0e48a1a19df1ff19a5739ec36bd23e19831422b), which
+-- resolves the "llap" dissector via find_dissector_add_dependency() and
+-- hands off with call_dissector() the same way. Credit to @NJRoadfan for
+-- pointing out that Wireshark's AppleTalk dissector already has an LLAP
+-- entry point, saving us from hand-rolling it here.
 
 local ltoudp = Proto("ltoudp", "LToUDP (LocalTalk over UDP)")
 
