@@ -37,6 +37,18 @@ type session struct {
 	seq    seqFilter // ASP-level duplicate filter (retransmitted TReq must not re-run)
 	closed bool      // set once the maintenance loop / CloseSess has torn it down
 	stop   chan struct{}
+
+	// activeWrite is the pendingWriteTable tid of this session's one in-flight
+	// two-phase write (aspWrite/aspDataWrite), or 0 if none. AFP/ASP is
+	// synchronous per session — a workstation has at most one outstanding
+	// aspWrite at a time — but a workstation whose data-pull is running slow can
+	// give up on it and re-issue the write (a fresh ASP seqNum, so seqFilter
+	// waves it through as new work) before the server has finished retrying the
+	// abandoned one. Tracking the active tid here lets handleWrite supersede that
+	// stale pendingWrite instead of leaving it to retry independently alongside
+	// the new one, which is how a handful of writes could previously pile up
+	// into hundreds of concurrent retryDataWrite loops flooding the link.
+	activeWrite uint16
 }
 
 // seqFilter is the per-session ASP duplicate filter. A workstation retransmits a
@@ -75,6 +87,29 @@ func (s *session) idle() time.Duration {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return time.Since(s.lastRx)
+}
+
+// swapActiveWrite records tid as this session's one in-flight two-phase write
+// and returns whichever tid previously held that slot (0 if none), so the
+// caller can supersede it — a session has at most one aspWrite outstanding at
+// a time, matching AFP/ASP's synchronous per-session request model.
+func (s *session) swapActiveWrite(tid uint16) (old uint16) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	old = s.activeWrite
+	s.activeWrite = tid
+	return old
+}
+
+// clearActiveWrite releases tid's claim on the active-write slot, but only if
+// it still holds it — a stale tid (already superseded by a newer write) must
+// not clobber the newer one's claim.
+func (s *session) clearActiveWrite(tid uint16) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.activeWrite == tid {
+		s.activeWrite = 0
+	}
 }
 
 // sessionTable holds the live ASP sessions keyed by session id, and allocates new
@@ -367,6 +402,19 @@ func (s *Service) handleWrite(req atpRequest) {
 
 	pw := &pendingWrite{orig: req, sess: sess, cmdBlk: pkt.CmdBlock, hdrLen: hdrLen, want: want, seq: pkt.SeqNum}
 	tid := s.pendingWrites.add(pw)
+
+	// A session has at most one aspWrite in flight. If the workstation gave up
+	// on an earlier one and re-issued (fresh seqNum, so touch above accepted it
+	// as new work) before that earlier write finished retrying, drop it now
+	// rather than let it keep retrying independently alongside this one — left
+	// unchecked, a run of abandoned-and-reissued writes accumulates into many
+	// concurrent retryDataWrite loops all fighting for the same session socket
+	// (observed on ltoudp-netboot.pcap: 729 concurrent FPAddIcon writes for two
+	// files, 7000+ Write Continue retransmissions, session collapse).
+	if old := sess.swapActiveWrite(tid); old != 0 {
+		s.pendingWrites.remove(old)
+	}
+
 	s.sendDataWrite(sess, pkt.SeqNum, tid, want)
 	s.wg.Add(1)
 	go s.retryDataWrite(pw, tid)
@@ -400,6 +448,7 @@ func (s *Service) retryDataWrite(pw *pendingWrite, tid uint16) {
 	// the client stops waiting.
 	if _, live := s.pendingWrites.get(tid); live {
 		s.pendingWrites.remove(tid)
+		pw.sess.clearActiveWrite(tid)
 		pw.orig.respond(s.rtr, int32ToUserData(int32(asp.SPErrorParamErr)), nil)
 	}
 }
@@ -519,6 +568,7 @@ func (s *Service) handleDataResponse(resp atpResponse) {
 	}
 
 	s.pendingWrites.remove(resp.transID)
+	pw.sess.clearActiveWrite(resp.transID)
 	pw.sess.mu.Lock()
 	pw.sess.lastRx = time.Now()
 	pw.sess.mu.Unlock()

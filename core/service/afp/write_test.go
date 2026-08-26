@@ -224,6 +224,78 @@ func TestTwoPhaseWrite_MultiPacketData(t *testing.T) {
 	}
 }
 
+// TestTwoPhaseWrite_SupersedesStaleWrite proves a session can have only one
+// two-phase write in flight at a time: if the workstation abandons a slow
+// aspWrite and re-issues it (a fresh ASP seqNum, so it is not the duplicate
+// aspWrite retransmission touch() drops) before the first one's data has
+// arrived, the server must cancel the stale pendingWrite rather than run it
+// alongside the new one. Left unchecked, a run of abandon-and-reissue writes
+// on one session accumulates into many concurrent retryDataWrite loops all
+// resending aspDataWrite to the same workstation socket — observed on the
+// wire as 729 concurrent FPAddIcon writes and 7000+ Write Continue
+// retransmissions during a single Finder copy, which saturated the link and
+// killed the session (see ltoudp-netboot.pcap).
+func TestTwoPhaseWrite_SupersedesStaleWrite(t *testing.T) {
+	svc, r := newRunningService(t)
+	vol := svc.Volumes()[0]
+	mustCreate(t, vol, "doc.txt")
+
+	from := &recordingPort{}
+	sessID, forkRef := openForkRW(t, svc, r, from, "doc.txt")
+
+	// Phase 1, write #1: the workstation asks to write 5 bytes but never
+	// answers the server's aspDataWrite for it.
+	r.reset()
+	header1 := fpWriteHeader(forkRef, 0, 5)
+	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncWrite, sessID, 1), header1)), from)
+	if len(r.routed) != 1 {
+		t.Fatalf("aspDataWrite #1 routed = %d, want 1", len(r.routed))
+	}
+	dh1, err := atp.Decode(r.routed[0].Data)
+	if err != nil {
+		t.Fatalf("decode aspDataWrite #1: %v", err)
+	}
+	if _, live := svc.pendingWrites.get(dh1.TransID); !live {
+		t.Fatalf("pendingWrite #1 not registered")
+	}
+
+	// Phase 1, write #2: the workstation gives up on #1 and re-issues with a
+	// new seqNum, still without ever answering #1's data pull.
+	r.reset()
+	header2 := fpWriteHeader(forkRef, 0, 7)
+	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncWrite, sessID, 2), header2)), from)
+	if len(r.routed) != 1 {
+		t.Fatalf("aspDataWrite #2 routed = %d, want 1", len(r.routed))
+	}
+	dh2, err := atp.Decode(r.routed[0].Data)
+	if err != nil {
+		t.Fatalf("decode aspDataWrite #2: %v", err)
+	}
+
+	// #1 must have been superseded (dropped from the pending table) rather
+	// than left to retry alongside #2.
+	if _, live := svc.pendingWrites.get(dh1.TransID); live {
+		t.Fatalf("stale pendingWrite #1 still registered after write #2 superseded it")
+	}
+	// A late TResp for the abandoned #1 must produce no reply — the client
+	// that sent it has already moved on to #2 and is not listening for it.
+	r.reset()
+	svc.Inbound(dataResponse(dh1.TransID, []byte("stale")), from)
+	if len(r.replies) != 0 {
+		t.Fatalf("stale write #1 produced %d replies, want 0", len(r.replies))
+	}
+
+	// #2 is still live and completes normally.
+	r.reset()
+	svc.Inbound(dataResponse(dh2.TransID, []byte("fresh #2")), from)
+	if len(r.replies) != 1 {
+		t.Fatalf("write #2 replies = %d, want 1", len(r.replies))
+	}
+	if got := int32(respUserData(r.lastReply())); got != afpNoErr {
+		t.Fatalf("write #2 result = %d, want 0", got)
+	}
+}
+
 // TestTwoPhaseWrite_ZeroLength proves a zero-reqCount FPWrite completes inline
 // without a data round-trip (no aspDataWrite is sent).
 func TestTwoPhaseWrite_ZeroLength(t *testing.T) {
