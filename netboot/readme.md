@@ -23,7 +23,7 @@ server stamps at load time (EBP has no size query), before the Snefru trailer
 is computed.
 
 ## Building
-You'll need vasmm68 and Python with machfs, etc.
+You'll need vasm and Python with machfs, etc.
 
 ```
 bin/vasmm68k_mot.exe -Fbin -m68000 -o ChainDisk.bin ChainDisk.a
