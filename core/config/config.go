@@ -501,6 +501,11 @@ func (m *Model) SetInterface(s InterfaceSection) {
 // LoggingSection is the logging config (level, sinks).
 type LoggingSection struct {
 	Level string `toml:"level,omitempty"` // "trace"|"debug"|"info"|"warn"|"error"
+	// Path is an optional log file the process logger appends to, in addition to
+	// stderr. Empty = stderr only. Relative paths resolve against the process's
+	// working directory. Takes effect on the next restart (the sink is built once
+	// at startup, like Client.LogFile).
+	Path string `toml:"path,omitempty" display:"Log file path" desc:"Optional file the process logger appends to, in addition to stderr. Empty = stderr only. Takes effect after restart." example:"classicstack.log" widget:"path"`
 }
 
 // Validate checks the log level is a known threshold (empty = info).

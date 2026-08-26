@@ -46,11 +46,15 @@ description = "ClassicStack file server"
 
 
 # --- Logging -----------------------------------------------------------------
-# Level is debug | info | warn | error. (Field key is capitalised "Level"
+# Level is trace | debug | info | warn | error. (Field key is capitalised "Level"
 # because LoggingSection carries no toml tag — the codec emits the Go field
 # name; both "Level" and lowercase are accepted on read.)
+#   path  optional log file the process logger appends to, in addition to
+#         stderr (blank = stderr only). Relative paths resolve against the
+#         process's working directory. Takes effect on the next restart.
 [logging]
 Level = "info"
+# path = "classicstack.log"
 
 
 # --- AppleTalk router (§3d) --------------------------------------------------

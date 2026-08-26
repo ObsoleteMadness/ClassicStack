@@ -513,6 +513,7 @@ export class ServerSettingsWindow extends HTMLElement {
         data,
         { ...this.formCtx, schemaKey: key, portMembers: this.formCtx?.portMembers },
         (section) => api.setWellKnown(key, section),
+        (inp) => this.browsePath(inp),
       ),
     ]);
   }

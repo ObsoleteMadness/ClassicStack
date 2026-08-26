@@ -22,6 +22,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -137,8 +138,9 @@ type Options struct {
 	MacIPEgress MacIPEgressOpener
 	// LogSinks are extra log sinks installed on every component logger, threaded into
 	// each factory's BuildContext (in addition to the stderr sink built at the
-	// configured [Logging] Level). Injected at the cmd edge — e.g. the web-UI ring
-	// buffer feeding the log viewer. nil keeps components stderr-only.
+	// configured [Logging] Level, and the [Logging] Path file sink when set).
+	// Injected at the cmd edge — e.g. the web-UI ring buffer feeding the log viewer.
+	// nil keeps components stderr-only.
 	LogSinks []log.Sink
 	// LogLevel is the shared process log threshold. Threaded into every
 	// BuildContext so [Logging] Level can retune live. Nil creates one from
@@ -209,7 +211,16 @@ func Build(opts Options) (*Runtime, error) {
 		}
 		logLevel = log.NewLevelVar(lvl)
 	}
-	sinks := append([]log.Sink{log.NewStderrSink(logLevel)}, opts.LogSinks...)
+	sinks := []log.Sink{log.NewStderrSink(logLevel)}
+	if path := strings.TrimSpace(opts.Model.Logging.Path); path != "" {
+		if fsink, ferr := log.NewFileSink(path, logLevel); ferr != nil {
+			log.New("runtime", log.NewStderrSink(logLevel)).Log2(log.Warn, "log file unwritable",
+				log.Str("path", path), log.Str("err", ferr.Error()))
+		} else {
+			sinks = append(sinks, fsink)
+		}
+	}
+	sinks = append(sinks, opts.LogSinks...)
 	rtLog := log.New("runtime", sinks...)
 	sup.SetLogger(log.New("supervisor", sinks...))
 	sup.SetLogLevelApplier(func(level string) {

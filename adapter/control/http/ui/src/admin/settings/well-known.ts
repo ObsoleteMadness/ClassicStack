@@ -25,6 +25,13 @@ export const WELL_KNOWN: Record<string, FieldInfo[]> = {
       description: 'Process log verbosity.',
       widget: 'select',
     },
+    {
+      key: 'Path',
+      type: 'string',
+      display_name: 'Log file path',
+      description: 'Optional file the process logger appends to, in addition to stderr. Empty = stderr only. Takes effect after restart.',
+      widget: 'path',
+    },
   ],
   HTTP: [
     { key: 'Enabled', type: 'bool', display_name: 'Enabled', description: 'Serve the web-admin UI on this process.' },
