@@ -558,7 +558,11 @@ export class GoFinderHost implements FinderHost {
     const seen = new Set<string>();
     const out: RemoteEndpoint[] = [];
     for (const m of mounted) {
-      if (!m.mountpoint) continue;
+      // Every entry here already has an open volume (server-side MountedVolumes only
+      // lists sessions with FS != nil) — a host FUSE/WinFsp mount (m.mountpoint set)
+      // or a plain browse connection with no OS mount. Both belong in the sidebar so
+      // an existing connection from another tab/session is visible on load, not just
+      // ones this instance happens to be host-mounting.
       const ep = toMountedEndpoint(m);
       if (seen.has(ep.id)) continue;
       seen.add(ep.id);

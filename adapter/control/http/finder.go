@@ -140,7 +140,7 @@ func (s *Server) handleFinderOpen(w http.ResponseWriter, r *http.Request) {
 		}
 		info, err := f.OpenVolume(req.SessionID, req.Volume)
 		if err != nil {
-			writeFinderErr(w, err)
+			writeFinderErrSession(w, f, req.SessionID, err)
 			return
 		}
 		writeJSON(w, info)
@@ -176,7 +176,7 @@ func (s *Server) handleFinderNode(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := f.GetNode(sess, id)
 	if err != nil {
-		writeFinderErr(w, err)
+		writeFinderErrSession(w, f, sess, err)
 		return
 	}
 	writeJSON(w, n)
@@ -197,7 +197,7 @@ func (s *Server) handleFinderChildren(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := f.Children(sess, id)
 	if err != nil {
-		writeFinderErr(w, err)
+		writeFinderErrSession(w, f, sess, err)
 		return
 	}
 	writeJSON(w, n)
@@ -218,7 +218,7 @@ func (s *Server) handleFinderLookup(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := f.Lookup(sess, parent, r.URL.Query().Get("name"))
 	if err != nil {
-		writeFinderErr(w, err)
+		writeFinderErrSession(w, f, sess, err)
 		return
 	}
 	writeJSON(w, n)
@@ -250,7 +250,7 @@ func (s *Server) handleFinderMkdir(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := f.Mkdir(req.SessionID, parent, req.Name)
 	if err != nil {
-		writeFinderErr(w, err)
+		writeFinderErrSession(w, f, req.SessionID, err)
 		return
 	}
 	writeJSON(w, n)
@@ -285,7 +285,7 @@ func (s *Server) handleFinderCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := f.CreateFile(req.SessionID, parent, req.Name, req.Data, req.Resource, req.FinderInfo)
 	if err != nil {
-		writeFinderErr(w, err)
+		writeFinderErrSession(w, f, req.SessionID, err)
 		return
 	}
 	writeJSON(w, n)
@@ -316,7 +316,7 @@ func (s *Server) handleFinderRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := f.Rename(req.SessionID, ref, req.Name); err != nil {
-		writeFinderErr(w, err)
+		writeFinderErrSession(w, f, req.SessionID, err)
 		return
 	}
 	writeJSON(w, map[string]bool{"ok": true})
@@ -365,7 +365,7 @@ func (s *Server) handleFinderMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := f.Move(req.SessionID, ref, parent); err != nil {
-		writeFinderErr(w, err)
+		writeFinderErrSession(w, f, req.SessionID, err)
 		return
 	}
 	writeJSON(w, map[string]bool{"ok": true})
@@ -415,7 +415,11 @@ func (s *Server) handleFinderExpand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	streamFinderTransfer(w, r, body, func(ctx context.Context, emit func(finder.OpProgress)) error {
-		return f.Expand(ctx, req, emit)
+		err := f.Expand(ctx, req, emit)
+		if err != nil {
+			f.InvalidateOnError(req.SessionID, err)
+		}
+		return err
 	})
 }
 
@@ -509,7 +513,7 @@ func (s *Server) handleFinderRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := f.Remove(req.SessionID, ref); err != nil {
-		writeFinderErr(w, err)
+		writeFinderErrSession(w, f, req.SessionID, err)
 		return
 	}
 	writeJSON(w, map[string]bool{"ok": true})
@@ -543,7 +547,7 @@ func (s *Server) handleFinderFork(w http.ResponseWriter, r *http.Request) {
 		}
 		data, err := f.ReadFork(sess, ref, resource, off, length)
 		if err != nil {
-			writeFinderErr(w, err)
+			writeFinderErrSession(w, f, sess, err)
 			return
 		}
 		w.Header().Set("Content-Type", "application/octet-stream")
@@ -556,7 +560,7 @@ func (s *Server) handleFinderFork(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := f.WriteFork(sess, ref, resource, off, body); err != nil {
-			writeFinderErr(w, err)
+			writeFinderErrSession(w, f, sess, err)
 			return
 		}
 		writeJSON(w, map[string]bool{"ok": true})
@@ -590,7 +594,7 @@ func (s *Server) handleFinderFinderInfo(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err := f.WriteFinderInfo(req.SessionID, ref, req.FinderInfo); err != nil {
-		writeFinderErr(w, err)
+		writeFinderErrSession(w, f, req.SessionID, err)
 		return
 	}
 	writeJSON(w, map[string]bool{"ok": true})
@@ -621,7 +625,7 @@ func (s *Server) handleFinderAttrs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := f.WriteAttrs(req.SessionID, ref, req.Attrs); err != nil {
-		writeFinderErr(w, err)
+		writeFinderErrSession(w, f, req.SessionID, err)
 		return
 	}
 	writeJSON(w, map[string]bool{"ok": true})
@@ -644,7 +648,7 @@ func (s *Server) handleFinderResolve(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := f.ResolvePath(sess, path)
 	if err != nil {
-		writeFinderErr(w, err)
+		writeFinderErrSession(w, f, sess, err)
 		return
 	}
 	writeJSON(w, n)
@@ -665,7 +669,7 @@ func (s *Server) handleFinderPath(w http.ResponseWriter, r *http.Request) {
 	}
 	path, err := f.PathOf(sess, ref)
 	if err != nil {
-		writeFinderErr(w, err)
+		writeFinderErrSession(w, f, sess, err)
 		return
 	}
 	writeJSON(w, map[string]string{"path": path})
@@ -772,6 +776,15 @@ func parseBodyRef(idRaw json.RawMessage, path *string) (finder.NodeRef, error) {
 		return finder.NodeRef{}, err
 	}
 	return finder.CNIDRef(id), nil
+}
+
+// writeFinderErrSession is writeFinderErr plus connection-loss cleanup: when err
+// shows the session's underlying client transport died, the session (and any host
+// mount riding it) is dropped before the response is written, so it stops
+// appearing in GET /finder/mounted for every web client, not just this request.
+func writeFinderErrSession(w http.ResponseWriter, f *finder.Service, sessionID string, err error) {
+	f.InvalidateOnError(sessionID, err)
+	writeFinderErr(w, err)
 }
 
 func writeFinderErr(w http.ResponseWriter, err error) {
