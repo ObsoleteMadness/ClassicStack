@@ -1094,6 +1094,29 @@ func (s *Supervisor) RemoveInterface(ctx context.Context, name string) error {
 	return s.reconcileInterfaceRefsLocked(ctx, name)
 }
 
+// sectionForComponentLocked resolves the model section backing a supervised component
+// name: a singleton section by key, or — for a repeated schema (NetBEUI, IPX,
+// EtherTalk, LocalTalk, ...) — the Lists entry whose InstanceName matches, falling back
+// to the schema key for the unnamed default instance (mirroring the node-naming
+// ReplaceModel uses when standing up repeated-port instances). Caller holds mu.
+func (s *Supervisor) sectionForComponentLocked(name string) (config.Section, bool) {
+	if sec, ok := s.model.Get(name); ok {
+		return sec, true
+	}
+	for key, list := range s.model.Lists {
+		for _, sec := range list {
+			nodeName := key
+			if ns, ok := sec.(config.NamedSection); ok && ns.InstanceName() != "" {
+				nodeName = ns.InstanceName()
+			}
+			if nodeName == name {
+				return sec, true
+			}
+		}
+	}
+	return nil, false
+}
+
 // reconcileInterfaceRefsLocked reconfigures every built component whose section
 // resolves its effective interface to the named entry (or, for default-interface
 // inheritance, matches the namespace default's name), so an interface edit propagates
@@ -1103,7 +1126,7 @@ func (s *Supervisor) RemoveInterface(ctx context.Context, name string) error {
 // reconfigure semantics.
 func (s *Supervisor) reconcileInterfaceRefsLocked(ctx context.Context, name string) error {
 	for _, compName := range s.order {
-		sec, ok := s.model.Get(compName)
+		sec, ok := s.sectionForComponentLocked(compName)
 		if !ok {
 			continue
 		}
