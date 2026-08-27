@@ -13,6 +13,7 @@ import type { FinderWindow } from 'classicstack-web/ui/finder-window';
 import type { ExtensionEditorDialog } from 'classicstack-web/ui/extension-editor-dialog';
 import { api, type AuthUser, type ConfigModel, type FieldInfo, type Schemas } from '../api';
 import { btn, el } from './dom';
+import { reportServerError } from './prompt';
 import { loadFormContext, openPathBrowser, renderLiveForm, type FormContext } from './settings/form';
 import { settingsIcons } from './settings/icons';
 import { INTERFACE_FIELDS, WELL_KNOWN } from './settings/well-known';
@@ -301,9 +302,25 @@ export class ServerSettingsWindow extends HTMLElement {
     void this.openShareEditor(meta, inst, this.schema(meta.key), false);
   }
 
+  // Every settings edit lands here: apply the change to the running stack, then persist it
+  // to disk. The apply half is where a service is stopped, rebuilt and started again, so
+  // it is where a repair fails ("pcap: no such device en9") — loudly, in a dialog, because
+  // the outcome is a service left down. The two halves are reported apart so the operator
+  // knows whether the running stack or the saved file is the one that did not take. Both
+  // rethrow: the form still marks the field with the inline status.
   private async persist(apply: () => Promise<void>): Promise<void> {
-    await apply();
-    await api.save();
+    try {
+      await apply();
+    } catch (e) {
+      reportServerError('Error starting service', e);
+      throw e;
+    }
+    try {
+      await api.save();
+    } catch (e) {
+      reportServerError('Error saving configuration', e);
+      throw e;
+    }
     const model = await api.config().catch(() => null);
     if (model) {
       this.model = model;

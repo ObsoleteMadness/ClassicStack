@@ -1,6 +1,7 @@
 import { api, type HostInfo, type Unit } from '../api';
 import { telemetry } from '../telemetry';
 import { btn, el, formatBytes } from './dom';
+import { alertError } from './prompt';
 import { kindLabel, type NotificationCentre } from './notifications';
 
 const GROUPS = [
@@ -238,11 +239,21 @@ export function mountControlPlane(
     paint();
   }
 
+  // Present participles for the lifecycle verbs, so a failure names what was attempted.
+  const ACTING: Record<'start' | 'stop' | 'restart', string> = {
+    start: 'starting',
+    stop: 'stopping',
+    restart: 'restarting',
+  };
+
   async function act(verb: 'start' | 'stop' | 'restart', name: string): Promise<void> {
     try {
       await api.action(verb, name);
     } catch (e) {
-      alert(e instanceof Error ? e.message : String(e));
+      // "Error starting NetBEUI — pcap: no such device en9". The reason the unit would
+      // not come up is the answer the operator pressed the button for, so it gets a
+      // dialog whatever the status code: they asked for this explicitly.
+      alertError(`Error ${ACTING[verb]} ${name}`, e instanceof Error ? e.message : String(e));
     }
     await refresh();
   }

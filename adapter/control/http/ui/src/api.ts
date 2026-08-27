@@ -11,9 +11,19 @@ export class ApiError extends Error {
 }
 
 async function errText(r: Response): Promise<string> {
-  const j = (await r.json().catch(() => null)) as { error?: string } | null;
-  if (j?.error) return j.error;
-  return `HTTP ${r.status}`;
+  // The control adapter answers some routes with {"error": "..."} and others through
+  // http.Error, which writes the message as plain text. Read the body once and try JSON
+  // over it, so a plain-text failure (every service start/stop/reconfigure error) reaches
+  // the UI as its message instead of a bare "HTTP 500".
+  const body = await r.text().catch(() => '');
+  try {
+    const j = JSON.parse(body) as { error?: string } | null;
+    if (j?.error) return j.error;
+  } catch {
+    // not JSON — fall through to the raw text
+  }
+  const text = body.trim();
+  return text || `HTTP ${r.status}`;
 }
 
 function refQs(ref: import('classicstack-web/finder').NodeRef): Record<string, string> {

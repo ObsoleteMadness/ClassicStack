@@ -1405,8 +1405,18 @@ html.compact-ui cs-tab {
   gap: 6px;
 }
 
-.prompt-overlay {
+.prompt-overlay,
+.error-overlay {
   z-index: 100;
+}
+
+.error-overlay .modal {
+  width: min(460px, 100%);
+}
+
+.error-message {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .prompt-text {

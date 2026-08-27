@@ -1,3 +1,4 @@
+import { ApiError } from '../api';
 import { escapeHtml } from './floating-window';
 
 export type PromptTextOptions = {
@@ -6,6 +7,77 @@ export type PromptTextOptions = {
   placeholder?: string;
   hint?: string;
 };
+
+/**
+ * Modal error dialog. The control adapter answers a failed lifecycle operation with a
+ * 500 carrying the reason a service would not come up ("pcap: no such device en9"), and
+ * that reason is the whole point of the interaction — the operator is repairing a
+ * config. An inline status line beside a field is too easy to miss for something that
+ * left a service down, so failures that reach the server get a dialog the operator has
+ * to dismiss.
+ *
+ * Repeated calls collapse onto the open dialog: a settings form that fans out into
+ * several requests must not stack a wall of overlays.
+ */
+export function alertError(title: string, message: string): void {
+  const existing = document.querySelector('.error-overlay');
+  if (existing) {
+    const body = existing.querySelector('.error-message');
+    if (body) body.textContent = message;
+    const head = existing.querySelector('h2');
+    if (head) head.textContent = title;
+    return;
+  }
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay error-overlay';
+  overlay.innerHTML = `
+    <div class="modal" role="alertdialog" aria-modal="true">
+      <div class="modal-head"><h2>${escapeHtml(title)}</h2></div>
+      <div class="modal-body"><p class="error-message"></p></div>
+      <div class="modal-foot">
+        <button type="button" class="btn primary" data-act="ok">OK</button>
+      </div>
+    </div>
+  `;
+  // Assigned rather than interpolated: a server error message is arbitrary text.
+  const body = overlay.querySelector<HTMLElement>('.error-message');
+  if (body) body.textContent = message;
+  const close = (): void => {
+    overlay.remove();
+    window.removeEventListener('keydown', onKey);
+  };
+  const onKey = (e: KeyboardEvent): void => {
+    if (e.key === 'Escape' || e.key === 'Enter') {
+      e.preventDefault();
+      close();
+    }
+  };
+  overlay.addEventListener('click', (e) => {
+    const t = (e.target as HTMLElement).closest('[data-act]') as HTMLElement | null;
+    if (e.target === overlay || t?.dataset.act === 'ok') close();
+  });
+  window.addEventListener('keydown', onKey);
+  document.body.append(overlay);
+  overlay.querySelector<HTMLButtonElement>('[data-act="ok"]')?.focus();
+}
+
+/**
+ * Surface a failed control-plane call as a modal, but only when the SERVER failed.
+ *
+ * A 5xx is the adapter reporting that it could not do the thing — a service refused to
+ * start, a rebuild failed — and carries the reason as its message. A 4xx is the operator's
+ * own input being rejected (a bad field, a name clash); those stay as the inline status
+ * beside the field they belong to, where they read as validation rather than breakage.
+ * A transport failure (server gone) has no status and is treated as a server failure.
+ *
+ * Returns whether it raised the dialog, so a caller can fall back to its own reporting.
+ */
+export function reportServerError(title: string, e: unknown): boolean {
+  const status = e instanceof ApiError ? e.status : 0;
+  if (status >= 400 && status < 500) return false;
+  alertError(title, e instanceof Error ? e.message : String(e));
+  return true;
+}
 
 /** Promise-based text prompt used for Send Message and Open by Path. */
 export function promptText(
