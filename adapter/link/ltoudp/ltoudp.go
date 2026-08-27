@@ -16,6 +16,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/hostinfo"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
+	"github.com/ObsoleteMadness/ClassicStack/core/protocol/llap"
 )
 
 // LToUDP multicast group — the shared "LocalTalk over UDP" segment.
@@ -58,19 +59,42 @@ func DefaultConfig(iface string) Config {
 }
 
 // frameLink implements core/link.FrameLink over an LToUDP multicast socket. It
-// strips/prepends the 4-byte sender ID and drops its own echoed frames, so the
-// framer above sees only peer LLAP frames.
+// strips/prepends the 4-byte sender ID, drops its own echoed frames, and drops
+// structurally malformed ones (see Read), so the framer above sees only well-formed
+// peer LLAP frames.
 type frameLink struct {
 	conn        *net.UDPConn
 	group       *net.UDPAddr
 	senderID    [senderIDLen]byte
 	readTimeout time.Duration
+	logger      log.Logger // nil → no peer/malformed narration
 
 	// mu guards closed so Close cannot race a Read/Write into a freed socket.
 	mu      sync.RWMutex
 	closed  bool
 	sendBuf sync.Pool
+
+	// peersMu guards peers, the per-source-address ingress tally behind the
+	// malformed-frame reporting.
+	peersMu sync.Mutex
+	peers   map[string]*peerStat
 }
+
+// peerStat is what this link has seen from one UDP source address. It exists so a
+// malformed-frame report can name a culprit and quantify it: "peer X, 30036 of
+// 83239 frames malformed" is actionable, an unattributed "bad frame" is not.
+type peerStat struct {
+	good     uint64
+	bad      uint64
+	lastLog  time.Time
+	lastKind string
+}
+
+// malformedLogInterval rate-limits the per-peer malformed-frame report. A peer that
+// floods the group with junk (the failure this reporting exists for) would otherwise
+// flood the log with it. The first bad frame from a peer always reports immediately;
+// after that the peer is summarised at most this often.
+const malformedLogInterval = 30 * time.Second
 
 // Compile-time assertion: *frameLink satisfies core/link.FrameLink.
 var _ link.FrameLink = (*frameLink)(nil)
@@ -131,7 +155,13 @@ func Open(cfg Config) (link.FrameLink, error) {
 		return nil, fmt.Errorf("ltoudp: resolve group: %w", err)
 	}
 
-	fl := &frameLink{conn: c, group: ga, readTimeout: cfg.ReadTimeout}
+	fl := &frameLink{
+		conn:        c,
+		group:       ga,
+		readTimeout: cfg.ReadTimeout,
+		logger:      cfg.Logger,
+		peers:       make(map[string]*peerStat),
+	}
 	// A per-process sender ID — the PID, like the legacy port. Two ClassicStack
 	// processes on one host get distinct IDs and so don't eat each other's frames.
 	putUint32(fl.senderID[:], uint32(os.Getpid()))
@@ -156,7 +186,7 @@ func (l *frameLink) Read() (link.Frame, error) {
 		l.mu.RUnlock()
 
 		_ = conn.SetReadDeadline(time.Now().Add(l.readTimeout))
-		n, _, err := conn.ReadFromUDP(buf)
+		n, src, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			var ne net.Error
 			if errors.As(err, &ne) {
@@ -179,8 +209,70 @@ func (l *frameLink) Read() (link.Frame, error) {
 		// Hand the caller its own copy of just the LLAP frame (sans sender ID).
 		frame := make(link.Frame, n-senderIDLen)
 		copy(frame, buf[senderIDLen:n])
+
+		// Structural validation at ingress. The framer above would refuse to decode
+		// a malformed frame anyway, but it drops it silently and — reading a
+		// FrameLink, not a socket — cannot say who sent it. Dropping HERE keeps the
+		// junk out of the capture tee that wraps this link (a .pcap that is mostly
+		// unparseable records is no use for diagnosing the peer that produced them)
+		// and lets the report name the source address.
+		if err := llap.Validate(frame); err != nil {
+			l.notePeer(src, err)
+			continue
+		}
+		l.notePeer(src, nil)
 		return frame, nil
 	}
+}
+
+// notePeer records one frame against its source address and, when bad is non-nil,
+// reports the peer that sent a malformed frame. The first bad frame from a peer is
+// reported immediately (that is the one that tells an operator something is wrong);
+// after that the peer is summarised at most every malformedLogInterval, so a peer
+// stuck emitting junk costs one line per interval rather than one per frame.
+func (l *frameLink) notePeer(src *net.UDPAddr, bad error) {
+	if l.logger == nil || src == nil {
+		return
+	}
+	key := src.String()
+
+	l.peersMu.Lock()
+	st, seen := l.peers[key]
+	if !seen {
+		st = &peerStat{}
+		l.peers[key] = st
+	}
+	if bad == nil {
+		st.good++
+		l.peersMu.Unlock()
+		if !seen {
+			l.logger.Log1(log.Info, "ltoudp: peer seen", log.Str("peer", key))
+		}
+		return
+	}
+	st.bad++
+	kind := bad.Error()
+	report := st.bad == 1 || time.Since(st.lastLog) >= malformedLogInterval || kind != st.lastKind
+	good, badN := st.good, st.bad
+	if report {
+		st.lastLog = time.Now()
+		st.lastKind = kind
+	}
+	l.peersMu.Unlock()
+
+	if !seen {
+		l.logger.Log1(log.Info, "ltoudp: peer seen", log.Str("peer", key))
+	}
+	if !report {
+		return
+	}
+	// Warn, not Debug: a peer emitting malformed frames is a fault on the segment,
+	// and the whole point of this path is that it was previously invisible.
+	l.logger.Log(log.Warn, "ltoudp: dropping malformed frame from peer",
+		log.Str("peer", key),
+		log.Str("reason", kind),
+		log.Int("malformed", int64(badN)),
+		log.Int("accepted", int64(good)))
 }
 
 // Write sends frame as one LToUDP datagram (sender ID + frame) to the group. It
