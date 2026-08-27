@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -225,6 +226,88 @@ func TestStopAllHonoursDeadlineDespiteStuckComponent(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("StopAll did not return within its own deadline — a stuck component's Stop blocked it")
+	}
+}
+
+// TestStuckComponentDoesNotFailTheRest guards the shutdown-budget cascade seen in a
+// real log: TashTalk's Stop hung, ate the whole 5s budget, and every one of the 15
+// components behind it in the teardown order was then handed an already-expired
+// context and logged as "did not stop before deadline" — 30 error lines for one
+// fault, with nothing to say which component was actually to blame. Each component
+// gets its own share of the budget, so a healthy component after a stuck one still
+// stops normally.
+func TestStuckComponentDoesNotFailTheRest(t *testing.T) {
+	s := New(config.NewModel(), nil)
+	lg := &orderLog{}
+	stuck := &stuckComponent{name: "stuck", release: make(chan struct{})}
+	defer close(stuck.release)
+
+	// stuck depends on healthy, so reverse-dependency teardown stops stuck FIRST and
+	// healthy second — healthy is behind the component that overruns.
+	s.Add(&recordingComponent{name: "healthy", log: lg}, nil)
+	s.Add(stuck, []string{"healthy"})
+
+	if err := s.StartAll(context.Background()); err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+
+	// A budget the stuck component alone will exhaust.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- s.StopAll(ctx) }()
+
+	select {
+	case err := <-done:
+		// The stuck component is still reported — the fault is not swallowed.
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("StopAll error = %v, want context.DeadlineExceeded from the stuck component", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("StopAll did not return")
+	}
+
+	lg.mu.Lock()
+	seq := append([]string(nil), lg.seq...)
+	lg.mu.Unlock()
+	if !slices.Contains(seq, "stop:healthy") {
+		t.Fatalf("component after the stuck one never stopped; log = %v", seq)
+	}
+}
+
+// TestStopShare pins the budget split: an even share of the time left, clamped so a
+// component is never given less than minStopGrace (the cascade guard) nor more than
+// maxStopGrace (so a two-component order does not wait a long time on the first).
+func TestStopShare(t *testing.T) {
+	cases := []struct {
+		name      string
+		budget    time.Duration
+		remaining int
+		want      time.Duration
+	}{
+		{"even split", 4 * time.Second, 4, time.Second},
+		{"clamped to floor when budget is spent", 0, 8, minStopGrace},
+		{"clamped to floor when share is tiny", time.Second, 100, minStopGrace},
+		{"clamped to ceiling", time.Minute, 2, maxStopGrace},
+		{"last component takes what is left", 500 * time.Millisecond, 1, 500 * time.Millisecond},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), tc.budget)
+			defer cancel()
+			got := stopShare(ctx, tc.remaining)
+			// time.Until loses a sliver between the WithTimeout and the call.
+			if d := tc.want - got; d < 0 || d > 20*time.Millisecond {
+				t.Fatalf("stopShare(budget=%v, remaining=%d) = %v, want ~%v", tc.budget, tc.remaining, got, tc.want)
+			}
+		})
+	}
+
+	// No deadline must still bound the wait: StopAll runs on the way out of the
+	// process, and a component that will not stop cannot be allowed to hold it open.
+	if got := stopShare(context.Background(), 3); got != maxStopGrace {
+		t.Fatalf("stopShare(no deadline) = %v, want %v", got, maxStopGrace)
 	}
 }
 

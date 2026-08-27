@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/auth"
 	"github.com/ObsoleteMadness/ClassicStack/core/bus"
@@ -173,7 +174,14 @@ func (s *Supervisor) StopAll(ctx context.Context) error {
 	s.logShutdown0("stopping supervised components")
 	var firstErr error
 	for i := len(order) - 1; i >= 0; i-- {
-		if err := s.stopNodeLocked(ctx, order[i]); err != nil && firstErr == nil {
+		// Each component is stopped on its own slice of the remaining budget (see
+		// stopShare), not on the shared deadline: one component that ignores its
+		// deadline must not spend everyone else's time and leave the whole tail of
+		// the teardown order recorded as failures it caused.
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stopShare(ctx, i+1))
+		err := s.stopNodeLocked(cctx, order[i])
+		cancel()
+		if err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -252,6 +260,42 @@ func (s *Supervisor) stopNodeLocked(ctx context.Context, name string) error {
 	}
 	s.logShutdown1("component stopped", name)
 	return nil
+}
+
+// Bounds on one component's share of the shutdown budget. minStopGrace is the floor
+// every component gets however little of the budget is left when its turn comes —
+// without it, one component overrunning makes the whole tail of the teardown order
+// fail instantly with a deadline it never actually got. maxStopGrace stops a short
+// order from handing an early component a share long enough to feel like a hang.
+const (
+	minStopGrace = 250 * time.Millisecond
+	maxStopGrace = 2 * time.Second
+)
+
+// stopShare returns how long the next component may take, dividing the time left on
+// ctx evenly among the remaining components and clamping to [minStopGrace,
+// maxStopGrace]. A component that stops promptly returns its unused share to the
+// pool, so the common case (everything stops at once) still finishes immediately and
+// the budget only starts to bind when something is genuinely stuck. A ctx with no
+// deadline yields maxStopGrace rather than an unbounded wait: StopAll is called on
+// the process's way out, and a component that will not stop must not be able to hold
+// the exit open forever.
+func stopShare(ctx context.Context, remaining int) time.Duration {
+	if remaining < 1 {
+		remaining = 1
+	}
+	dl, ok := ctx.Deadline()
+	if !ok {
+		return maxStopGrace
+	}
+	share := time.Until(dl) / time.Duration(remaining)
+	if share < minStopGrace {
+		return minStopGrace
+	}
+	if share > maxStopGrace {
+		return maxStopGrace
+	}
+	return share
 }
 
 // stopWithDeadline calls c.Stop(ctx) without letting a component that ignores ctx
