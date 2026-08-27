@@ -58,6 +58,14 @@ var ErrServiceDisabled = errors.New("finder: client service is not enabled")
 // ErrMountDisabled is returned when [Client].mount is false.
 var ErrMountDisabled = errors.New("finder: host mounting is disabled ([Client].mount)")
 
+// ErrLocalServiceDisabled is returned when a local AFP/SMB/NCP/EtherDFS volume's
+// owning service is administratively disabled ([AFP]/[SMB]/[NCP]/[EtherDFS].enabled =
+// false). The component stays built either way (so the dashboard/web UI can
+// configure/enable it live) and its Volumes()/Shares() keep reporting the
+// configured list, so this is distinct from ErrServiceDisabled (the outbound
+// [Client] scheme gate) — it is the operator turning off THIS instance's own share.
+var ErrLocalServiceDisabled = errors.New("finder: local service is disabled")
+
 // componentSource is the read-only lookup the finder needs. *runtime.Runtime
 // satisfies it (Component + Built), matching adapter/control/diag. When the source
 // also exposes Model() *config.Model (Runtime does), New binds the outbound client

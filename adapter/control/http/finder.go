@@ -799,7 +799,8 @@ func writeFinderErr(w http.ResponseWriter, err error) {
 		code = http.StatusNotImplemented
 	} else if errors.Is(err, finder.ErrLocalMount) {
 		code = http.StatusBadRequest
-	} else if errors.Is(err, finder.ErrClientDisabled) || errors.Is(err, finder.ErrServiceDisabled) || errors.Is(err, finder.ErrMountDisabled) {
+	} else if errors.Is(err, finder.ErrClientDisabled) || errors.Is(err, finder.ErrServiceDisabled) ||
+		errors.Is(err, finder.ErrMountDisabled) || errors.Is(err, finder.ErrLocalServiceDisabled) {
 		code = http.StatusForbidden
 	}
 	writeJSONError(w, code, err.Error())
