@@ -122,8 +122,30 @@ func (s *Service) Start(ctx context.Context) error {
 	s.cancel = cancel
 	s.mu.Unlock()
 	go s.scanAll(scanCtx)
+	go s.scanLoop(scanCtx)
 	go s.autoMountAll(scanCtx)
 	return nil
+}
+
+// scanInterval is how often scanLoop re-scans the LAN after the initial scan at
+// Start, so a server that announces itself after startup — or after the last
+// operator-triggered refresh — reaches the sidebar (via remember's SSE publish)
+// without an operator clicking refresh. Each scheme's browse window is 2-4s
+// (afp.go/smb.go/ncp.go/etherdfs.go), so a full pass across all four comfortably
+// fits inside this interval with no overlap.
+const scanInterval = 30 * time.Second
+
+func (s *Service) scanLoop(ctx context.Context) {
+	t := time.NewTicker(scanInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.scanAll(ctx)
+		}
+	}
 }
 
 // Close shuts down the client (scan, mounts, remote sessions). Prefer Stop when

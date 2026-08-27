@@ -27,12 +27,24 @@ func toBusVolumes(vols []VolumeInfo) []bus.FinderVolume {
 	return out
 }
 
+// volumeListsEqual compares by ID as a multiset, not by position: discoverAFP (and
+// the other schemes) fan results in from concurrent per-interface/zone goroutines, so
+// the same server set can land in a different order across two scans of an unchanged
+// network. A positional compare would call that "changed" and fire a spurious SSE
+// networks event + sidebar re-render every scanLoop tick even when nothing moved.
 func volumeListsEqual(a, b []VolumeInfo) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	for i := range a {
-		if a[i].ID != b[i].ID {
+	counts := make(map[string]int, len(a))
+	for _, v := range a {
+		counts[v.ID]++
+	}
+	for _, v := range b {
+		counts[v.ID]--
+	}
+	for _, n := range counts {
+		if n != 0 {
 			return false
 		}
 	}

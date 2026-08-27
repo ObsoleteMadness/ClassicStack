@@ -105,6 +105,22 @@ func TestStartDisabledIsNoop(t *testing.T) {
 	}
 }
 
+func TestScanLoopExitsOnCancel(t *testing.T) {
+	svc := New(modelStub{m: config.NewModel()}, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		svc.scanLoop(ctx)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("scanLoop did not exit after context cancellation (goroutine leak on Stop)")
+	}
+}
+
 func TestNewBindsClientIface(t *testing.T) {
 	m := config.NewModel()
 	m.SetInterface(config.InterfaceSection{Name: "br-lan", Kind: config.IfaceKindBridge, Device: "en0", Default: true})
