@@ -173,7 +173,7 @@ func TestTransportWiring_AttachPortNetBEUILate(t *testing.T) {
 	// Now the operator adds the first NetBEUI port at runtime. AttachPort must join it to
 	// the existing router (installing the delivery callback).
 	port := &recordingNetBEUIPort{}
-	w.AttachPort(port)
+	w.AttachPort(nil, port)
 	if port.cb == nil {
 		t.Fatal("AttachPort did not attach the late NetBEUI port (no delivery callback)")
 	}
@@ -206,7 +206,7 @@ func TestTransportWiring_AttachPortIPXLate(t *testing.T) {
 	}
 
 	port := &recordingIPXPort{}
-	w.AttachPort(port)
+	w.AttachPort(nil, port)
 	if port.cb == nil {
 		t.Fatal("AttachPort did not attach the late IPX port (no delivery callback)")
 	}
@@ -222,13 +222,13 @@ func TestTransportWiring_AttachPortNoRouters(t *testing.T) {
 	}
 	// Must not panic and must not attach.
 	port := &recordingNetBEUIPort{}
-	w.AttachPort(port)
+	w.AttachPort(nil, port)
 	if port.cb != nil {
 		t.Fatal("AttachPort attached a port with no mini-router wired")
 	}
 	// A nil wiring is also safe (the pre-seam / no-transports build).
 	var nilw *transportWiring
-	nilw.AttachPort(port)
+	nilw.AttachPort(nil, port)
 }
 
 // TestSMBBrowseBridge_Forwards proves the browser→SMB BrowseProvider adapter copies

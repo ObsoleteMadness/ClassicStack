@@ -129,6 +129,33 @@ func (r *Router) AddPort(p Port) {
 	p.SetDeliveryCallback(r.Inbound)
 }
 
+// RemovePort detaches a previously added port (by identity) and clears its delivery
+// callback, so a port the supervisor REBUILT across a reconfigure does not linger in
+// the port list ahead of its replacement — Send writes through ports[0], so a stale
+// port left at the head would swallow every outbound frame. Reports whether the
+// port was attached; a port that was never added is a no-op.
+func (r *Router) RemovePort(p Port) bool {
+	if p == nil {
+		return false
+	}
+	r.mu.Lock()
+	found := false
+	kept := r.ports[:0]
+	for _, have := range r.ports {
+		if have == p {
+			found = true
+			continue
+		}
+		kept = append(kept, have)
+	}
+	r.ports = kept
+	r.mu.Unlock()
+	if found {
+		p.SetDeliveryCallback(nil)
+	}
+	return found
+}
+
 // Send writes a UI frame to dstMAC through the first attached port.
 func (r *Router) Send(dstMAC [6]byte, frame *nbf.Frame) error {
 	r.mu.RLock()

@@ -10,13 +10,6 @@
 // adapters at the cmd edge without this package pulling all of them in. The
 // registry's build-tagged init()s decide which components exist; this root only
 // assembles whatever registered.
-//
-// What this slice does NOT do (kept for the later M10 cutover, per .refactor/TODO):
-// inject REAL device links (the ports still build inert until pcap/framing is wired
-// here), flag parsing, and retiring the legacy internal/app. The cross-wiring of
-// the runtime data path (service↔router, transport↔service) is the M-ng work; this
-// root provides the place that wiring will live (Build → wire) and does the part
-// that needs no new seam yet: load, build, dependency-ordered supervise.
 package runtime
 
 import (
@@ -390,16 +383,7 @@ func Build(opts Options) (*Runtime, error) {
 		return c, declaredDeps(ownerKey, map[string]component.Component{ownerKey: c}), nil
 	})
 
-	// Inject the transport attacher so a repeated PORT the supervisor builds at runtime
-	// (the InstanceBuilder above) is also joined to its NBF/NBIPX mini-router — the seam
-	// that carries the port's traffic up to SMB. Without this, a runtime-added IPX/NetBEUI
-	// port came up as a live supervised link but stayed dark to the NetBIOS engines until a
-	// Save+restart rebuilt the whole stack (the boundary this slice removes). The mini-
-	// routers were retained by crossWireTransports; AttachPort is a no-op for a component
-	// of neither family, and for a build that wired no transports (nil wiring).
-	sup.SetTransportAttacher(transports.AttachPort)
-
-	return &Runtime{
+	rt := &Runtime{
 		sup:        sup,
 		model:      opts.Model,
 		telemetry:  opts.Telemetry,
@@ -409,7 +393,65 @@ func Build(opts Options) (*Runtime, error) {
 		transports: transports,
 		comps:      comps,
 		log:        rtLog,
-	}, nil
+	}
+
+	// Inject the port attacher so a PORT the supervisor stands up at runtime is joined to
+	// the cross-wiring the compose root built once, here. Two moments need it:
+	//
+	//   - A repeated port ADDED at runtime (the InstanceBuilder above). Without this it
+	//     came up as a live supervised link but stayed dark to the NetBIOS engines until a
+	//     Save+restart rebuilt the whole stack.
+	//   - A port REBUILT by a restart-driven reconfigure (an interface edit, most of all).
+	//     The rebuild produces a NEW object; the mini-routers and the shared AppleTalk
+	//     router still hold the one built at startup, so without the handover the operator
+	//     fixes the NIC, the port dutifully reopens the right device — and still moves no
+	//     traffic, because every wire still points at the object it replaced.
+	//
+	// rewirePort covers both families: the mini-routers (retained by crossWireTransports)
+	// and the AppleTalk router membership. It is a no-op for a component of neither family
+	// and for a build that wired no transports.
+	sup.SetTransportAttacher(rt.rewirePort)
+
+	return rt, nil
+}
+
+// rewirePort hands the compose-root cross-wiring from a port object to its replacement.
+// prev is the object built earlier (nil when the port is brand new), next the one now
+// supervised under that name. It is the supervisor's TransportAttacher (see
+// supervisor.TransportAttacher) and runs while the supervisor holds its lock, straight
+// after the rebuild and BEFORE the new object is started.
+//
+// Two wirings are re-pointed. The NBF/NBIPX mini-routers take the swap directly
+// (transportWiring.AttachPort). The AppleTalk router is membership-based (§3d): only a
+// port named in [Router].members is attached, so a replacement inherits its predecessor's
+// membership — the stale entry is detached (the router keys ports by name, and prev is
+// already stopped at this point) and the slot in r.members is re-pointed so a later
+// Runtime.Stop detaches the object that is actually attached. The Attach itself is left
+// to the caller's Start path: the router refuses to attach while stopped, and an
+// AARP/LLAP port has not claimed its address yet — Runtime.Start's attach loop, which
+// already handles both, runs against the updated members slice.
+func (r *Runtime) rewirePort(prev, next component.Component) {
+	r.transports.AttachPort(prev, next)
+	if r.rtr == nil || prev == nil || next == nil {
+		return
+	}
+	prevPort, ok := prev.(router.RoutedPort)
+	if !ok {
+		return
+	}
+	nextPort, ok := next.(router.RoutedPort)
+	if !ok {
+		return
+	}
+	for i, m := range r.members {
+		if m != prevPort {
+			continue
+		}
+		_ = r.rtr.Detach(prevPort)
+		r.members[i] = nextPort
+		r.attachMember(nextPort)
+		return
+	}
 }
 
 // router returns the shared AppleTalk router (nil if none built). Unexported — it
@@ -573,34 +615,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 	if r.rtr != nil {
 		r.claimWatchStop = make(chan struct{})
 		for _, p := range r.members {
-			if err := r.rtr.Attach(p); err != nil {
-				if r.log != nil {
-					r.log.Log2(log.Error, "router member attach failed; continuing",
-						log.Str("member", p.Name()), log.Str("err", err.Error()))
-				}
-				continue
-			}
-			seedZone(r.rtr, p)
-			if p.NetworkMin() == 0 {
-				// A real AARP/LLAP claim (EtherTalk/LToUDP/TashTalk) finishes in a
-				// background goroutine well after Start returns (runport/aarp never
-				// blocks Start on the probe burst) — Attach ran above with
-				// NetworkMin()==0, so its own directly-connected route was skipped
-				// (router.go's `if nmin != 0 && nmax != 0` guard) and seedZone's own
-				// zero-range guard skipped the ZIT too. Nothing else ever retries
-				// either install: the port later announces its claimed range fine
-				// over RTMP and answers same-network traffic fine (Inbound's
-				// same-network fast path needs no routing-table entry), but every
-				// service reply that must round-trip through router.Reply→Route
-				// (ZIP's ATP zone queries, AFP's ASP session) does
-				// RoutingTable.GetByNetwork and gets a silent, permanent nil. Poll
-				// briefly for the claim to land and (re)run the same install once it
-				// does — SetPortRange/AddNetworksToZone are both idempotent against
-				// an already-correct entry, so this is a no-op on the fast path where
-				// the claim beat Attach.
-				r.claimWatchWG.Add(1)
-				go r.awaitLateClaim(p, r.claimWatchStop)
-			}
+			r.attachMember(p)
 		}
 	}
 	// Begin the telemetry stats flush once the stack is up: it polls every Statful
@@ -608,6 +623,44 @@ func (r *Runtime) Start(ctx context.Context) error {
 	// control plane's SSE stream (§5). A nil bus makes this a no-op.
 	r.sup.StartStatsFlush(supervisor.DefaultStatsInterval)
 	return nil
+}
+
+// attachMember attaches one [Router].members port to the shared router, installs its
+// seed zone, and — when the port has not claimed an AppleTalk address yet — starts the
+// watcher that finishes the install once the claim lands. Shared by Runtime.Start's
+// bring-up loop and rewirePort's handover to a rebuilt member, so a port replaced at
+// runtime rejoins routing on exactly the terms it joined on at boot. An attach failure is
+// logged and skipped, never fatal: the rest of the members still route.
+//
+// The late-claim watcher is only started while the stack is running (claimWatchStop
+// non-nil); outside that window Runtime.Start's own loop will run it.
+func (r *Runtime) attachMember(p router.RoutedPort) {
+	if err := r.rtr.Attach(p); err != nil {
+		if r.log != nil {
+			r.log.Log2(log.Error, "router member attach failed; continuing",
+				log.Str("member", p.Name()), log.Str("err", err.Error()))
+		}
+		return
+	}
+	seedZone(r.rtr, p)
+	if p.NetworkMin() != 0 || r.claimWatchStop == nil {
+		return
+	}
+	// A real AARP/LLAP claim (EtherTalk/LToUDP/TashTalk) finishes in a background
+	// goroutine well after Start returns (runport/aarp never blocks Start on the probe
+	// burst) — Attach ran above with NetworkMin()==0, so its own directly-connected
+	// route was skipped (router.go's `if nmin != 0 && nmax != 0` guard) and seedZone's
+	// own zero-range guard skipped the ZIT too. Nothing else ever retries either
+	// install: the port later announces its claimed range fine over RTMP and answers
+	// same-network traffic fine (Inbound's same-network fast path needs no routing-table
+	// entry), but every service reply that must round-trip through router.Reply→Route
+	// (ZIP's ATP zone queries, AFP's ASP session) does RoutingTable.GetByNetwork and
+	// gets a silent, permanent nil. Poll briefly for the claim to land and (re)run the
+	// same install once it does — SetPortRange/AddNetworksToZone are both idempotent
+	// against an already-correct entry, so this is a no-op on the fast path where the
+	// claim beat Attach.
+	r.claimWatchWG.Add(1)
+	go r.awaitLateClaim(p, r.claimWatchStop)
 }
 
 // claimWatchInterval is the poll period awaitLateClaim uses while waiting for a

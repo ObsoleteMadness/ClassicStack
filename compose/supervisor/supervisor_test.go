@@ -40,6 +40,13 @@ func (l *orderLog) add(s string) {
 	l.mu.Unlock()
 }
 
+// snapshot copies the recorded lifecycle sequence so a test can assert on it.
+func (l *orderLog) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.seq...)
+}
+
 func TestStartStopOrdering(t *testing.T) {
 	log := &orderLog{}
 	s := New(config.NewModel(), nil)

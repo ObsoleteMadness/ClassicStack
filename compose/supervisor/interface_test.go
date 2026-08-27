@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
@@ -45,7 +46,7 @@ var (
 
 // TestSetInterfaceReconcilesRepeatedInstance: a component backing the unnamed default
 // instance of a repeated schema (e.g. the sole [[netbeui]] entry, node-named "NetBEUI"
-// after its schema key) must still be found and reconfigured when the interface it
+// after its schema key) must still be found and RESTARTED when the interface it
 // references changes. Regression for reconcileInterfaceRefsLocked using model.Get,
 // which only resolves singleton Sections and silently skipped every repeated-schema
 // port (NetBEUI, IPX, EtherTalk, LocalTalk) on a live interface edit.
@@ -67,13 +68,18 @@ func TestSetInterfaceReconcilesRepeatedInstance(t *testing.T) {
 		t.Fatalf("SetInterface: %v", err)
 	}
 
-	if c.applied != 1 {
-		t.Errorf("repeated-instance port ApplyConfig called %d times, want 1", c.applied)
+	// The port is restarted, not offered a hot apply: its section still names "br-lan",
+	// so ApplyConfig could not tell that the device behind that name changed.
+	if c.applied != 0 {
+		t.Errorf("repeated-instance port ApplyConfig called %d times, want 0 (forced restart)", c.applied)
+	}
+	if got, want := log.snapshot(), []string{"start:NetBEUI", "stop:NetBEUI", "start:NetBEUI"}; !slices.Equal(got, want) {
+		t.Errorf("lifecycle = %v, want %v", got, want)
 	}
 }
 
 // TestSetInterfaceReconcilesReferencingPort: editing a namespace interface a port
-// references reconfigures that port (so the change goes live), and stages the entry.
+// references restarts that port (so the change goes live), and stages the entry.
 func TestSetInterfaceReconcilesReferencingPort(t *testing.T) {
 	m := config.NewModel()
 	// A port section referencing the "eth0" namespace entry.
@@ -98,9 +104,13 @@ func TestSetInterfaceReconcilesReferencingPort(t *testing.T) {
 	if !ok || got.Addr != "10.0.0.5" {
 		t.Fatalf("interface not staged: %+v ok=%v", got, ok)
 	}
-	// The referencing port must have been reconfigured (hot-applied via ApplyConfig).
-	if c.applied != 1 {
-		t.Errorf("referencing port ApplyConfig called %d times, want 1", c.applied)
+	// The referencing port must have been restarted rather than hot-applied — a port
+	// resolves its device from the namespace at BUILD time, so only a rebuild re-reads it.
+	if c.applied != 0 {
+		t.Errorf("referencing port ApplyConfig called %d times, want 0 (forced restart)", c.applied)
+	}
+	if got, want := log.snapshot(), []string{"start:port", "stop:port", "start:port"}; !slices.Equal(got, want) {
+		t.Errorf("lifecycle = %v, want %v", got, want)
 	}
 }
 
@@ -131,8 +141,9 @@ func TestRemoveInterface(t *testing.T) {
 	m.SetInterface(config.InterfaceSection{Name: "br-lan", Kind: config.IfaceKindNIC})
 	m.Set(ifaceSection{key: "port", iface: config.InterfaceSection{Name: "br-lan"}})
 
+	log := &orderLog{}
 	s := New(m, nil)
-	c := &configurableComp{name: "port", log: &orderLog{}, applyErr: nil}
+	c := &configurableComp{name: "port", log: log, applyErr: nil}
 	s.Add(c, nil)
 	if err := s.StartAll(context.Background()); err != nil {
 		t.Fatalf("StartAll: %v", err)
@@ -144,7 +155,7 @@ func TestRemoveInterface(t *testing.T) {
 	if _, ok := m.Interface("br-lan"); ok {
 		t.Error("interface still present after RemoveInterface")
 	}
-	if c.applied != 1 {
-		t.Errorf("referencing port ApplyConfig called %d times, want 1", c.applied)
+	if got, want := log.snapshot(), []string{"start:port", "stop:port", "start:port"}; !slices.Equal(got, want) {
+		t.Errorf("lifecycle = %v, want %v", got, want)
 	}
 }

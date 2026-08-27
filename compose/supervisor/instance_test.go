@@ -147,7 +147,7 @@ func TestAddInstanceAttachesBuiltPortToTransport(t *testing.T) {
 		return built, nil, nil
 	})
 	var attached []component.Component
-	s.SetTransportAttacher(func(c component.Component) { attached = append(attached, c) })
+	s.SetTransportAttacher(func(_, c component.Component) { attached = append(attached, c) })
 
 	sec := namedSection{key: "IPX", name: ""}
 	if err := s.AddInstance(context.Background(), "IPX", sec); err != nil {

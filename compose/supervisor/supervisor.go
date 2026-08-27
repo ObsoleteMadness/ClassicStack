@@ -46,16 +46,25 @@ type Rebuilder func(m *config.Model) (component.Component, error)
 // the FIRST instance of a repeated port that had no node at startup (§M11 config-builder).
 type InstanceBuilder func(m *config.Model, ownerKey, instanceName string) (component.Component, []string, error)
 
-// TransportAttacher joins a freshly-built repeated-port component to whatever
-// transport mini-router carries its family (IPX → the IPX mini-router, NetBEUI → the
-// NetBEUI mini-router), so a port added at runtime immediately carries NBF/NBIPX traffic
-// up to SMB instead of coming up as a dark supervised link that only wires in on the next
-// Save+restart. It is the runtime's compose seam (the runtime owns the mini-routers built
-// during cross-wiring); the supervisor stays free of that knowledge and only invokes it
-// on the node it just built. A component of neither transport family is a no-op. The
-// runtime injects it via SetTransportAttacher; a nil attacher (the default, or a build
-// with no NetBIOS transports) skips the step — the pre-seam behaviour.
-type TransportAttacher func(c component.Component)
+// TransportAttacher points the compose root's cross-wiring at a supervised port
+// component: `next` is joined to whatever router carries its family (IPX → the IPX
+// mini-router, NetBEUI → the NetBEUI mini-router, AppleTalk → the shared router), and
+// `prev` — the object `next` REPLACES, nil when the port is brand new — is detached
+// first.
+//
+// It covers two moments. A port ADDED at runtime (prev nil) immediately carries
+// NBF/NBIPX traffic up to SMB instead of coming up as a dark supervised link that only
+// wires in on the next Save+restart. A port REBUILT by a restart-driven reconfigure
+// (prev set — the pre-rebuild object) hands its family over to the replacement;
+// without that handover the stale object stays wired and the freshly-built port, though
+// running on the right device, never sees or sends a frame.
+//
+// It is the runtime's compose seam (the runtime owns the routers built during
+// cross-wiring); the supervisor stays free of that knowledge and only invokes it on the
+// node it just built. A component of no wired family is a no-op. The runtime injects it
+// via SetTransportAttacher; a nil attacher (the default, or a build with no NetBIOS
+// transports) skips the step — the pre-seam behaviour.
+type TransportAttacher func(prev, next component.Component)
 
 // node is one managed component plus its hard dependency edges and current run state.
 type node struct {
@@ -520,6 +529,14 @@ func (s *Supervisor) startTreeLocked(ctx context.Context, name string) error {
 func (s *Supervisor) Stop(ctx context.Context, name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// An explicit Stop clears any recorded start failure. That failure is what marks a
+	// node as "down and awaiting repair", which restartNodeLocked reads to bring a
+	// component back up after the operator corrects its config. Stopping the component
+	// says the operator wants it down regardless, so the pending-repair flag must not
+	// survive to override that on the next reconfigure.
+	if n := s.nodes[name]; n != nil {
+		n.lastErr = nil
+	}
 	return s.stopTreeLocked(ctx, name)
 }
 
@@ -685,7 +702,7 @@ func (s *Supervisor) addInstanceNodeLocked(ctx context.Context, ownerKey, nodeNa
 	// after Start is safe: AddPort only installs the delivery callback + send port, which the
 	// already-running read loop picks up atomically.
 	if s.attachPort != nil {
-		s.attachPort(c)
+		s.attachPort(nil, c)
 	}
 	return nil
 }
@@ -730,12 +747,23 @@ func (s *Supervisor) validateMutationLocked(mutate func(*config.Model)) error {
 // Caller holds mu. `section` is the component's own section for the head call; dependents are
 // notified with nil (they re-resolve from the already-updated model).
 func (s *Supervisor) reconfigureLocked(ctx context.Context, name string, section config.Section) error {
+	return s.applyReconfigureLocked(ctx, name, section, false)
+}
+
+// applyReconfigureLocked is reconfigureLocked with an explicit escape from the hot-apply
+// step. forceRestart skips ApplyConfig entirely and goes straight to rebuild-and-restart.
+// It exists for changes a component CANNOT see in its own section — an interface-namespace
+// edit, most of all: a port's section names its interface, so its ApplyConfig compares two
+// identical sections and reports a clean live apply, while the pcap device the port
+// actually opens was resolved from the namespace at BUILD time and is now stale. Only the
+// head component is forced; dependents take the normal cascade and may still hot-apply.
+func (s *Supervisor) applyReconfigureLocked(ctx context.Context, name string, section config.Section, forceRestart bool) error {
 	n := s.nodes[name]
 	if n == nil {
 		return fmt.Errorf("%w: %s", ErrUnknownComponent, name)
 	}
 
-	if cfg, ok := n.c.(component.Configurable); ok {
+	if cfg, ok := n.c.(component.Configurable); ok && !forceRestart {
 		err := cfg.ApplyConfig(section)
 		switch {
 		case err == nil:
@@ -769,28 +797,61 @@ func (s *Supervisor) reconfigureLocked(ctx context.Context, name string, section
 	return nil
 }
 
-// restartNodeLocked stops the node, rebuilds it from the model if a Rebuilder is set, then
-// starts it. Caller holds mu. Stop/Start publish their own StateChanged transitions.
+// restartNodeLocked stops the node, rebuilds it from the model if a Rebuilder is set,
+// re-points the compose cross-wiring at the rebuilt object, then starts it. Caller holds
+// mu. Stop/Start publish their own StateChanged transitions.
+//
+// The node is started again when it was running before — and ALSO when its last start
+// FAILED (n.lastErr set) and it is still configured-enabled. That second case is the
+// whole point of a reconfigure for a service the operator is repairing: a port bound to
+// a pcap device that did not exist came up stopped at boot, so "was it running?" is
+// exactly the wrong question to ask after the operator has corrected the device. Without
+// the retry the fixed config is rebuilt into a component nobody ever starts, and the
+// service stays down until the process restarts. A node the operator deliberately
+// Stopped is untouched: Stop leaves lastErr nil, so only a genuine start failure
+// re-arms.
 func (s *Supervisor) restartNodeLocked(ctx context.Context, n *node, name string) error {
+	// retryFailed: the last Start attempt errored and the component is still enabled, so
+	// this reconfigure is a repair attempt and should end with the node up.
+	retryFailed := !n.running && n.lastErr != nil && enabled(n.c)
 	wasRunning := n.running
 	if err := s.stopNodeLocked(ctx, name); err != nil {
 		return err
 	}
+	var replaced component.Component // the pre-rebuild object, when the rebuild produced a new one
 	if n.rebuild != nil {
+		prev := n.c
 		c, err := n.rebuild(s.model)
 		if err != nil {
 			return fmt.Errorf("rebuild %s: %w", name, err)
 		}
-		if c != nil {
-			n.c = c
+		if c != nil && c != prev {
+			n.c, replaced = c, prev
 		}
 	}
-	if wasRunning {
-		if err := s.startNodeLocked(ctx, name); err != nil {
-			return err
-		}
+	var startErr error
+	if wasRunning || retryFailed {
+		startErr = s.startNodeLocked(ctx, name)
 	}
-	return nil
+	// Hand the cross-wiring (mini-routers, shared AppleTalk router) over from the object
+	// built at startup to its replacement. After the Start, mirroring addInstanceNodeLocked:
+	// attaching installs a delivery callback the already-running read loop picks up, and the
+	// AppleTalk router wants the port's claimed address range. Run even when the Start
+	// failed, so the wires point at the live object for a later manual Start rather than at
+	// one that has been discarded.
+	if replaced != nil && s.attachPort != nil {
+		s.attachPort(replaced, n.c)
+	}
+	return startErr
+}
+
+// enabled reports a component's configured-enabled flag, defaulting to true for a
+// component that does not implement component.Enableable (nothing to gate on).
+func enabled(c component.Component) bool {
+	if en, ok := c.(component.Enableable); ok {
+		return en.Enabled()
+	}
+	return true
 }
 
 // Status reports a snapshot Unit per managed component for the dashboard.
@@ -1117,13 +1178,20 @@ func (s *Supervisor) sectionForComponentLocked(name string) (config.Section, boo
 	return nil, false
 }
 
-// reconcileInterfaceRefsLocked reconfigures every built component whose section
-// resolves its effective interface to the named entry (or, for default-interface
-// inheritance, matches the namespace default's name), so an interface edit propagates
-// to the ports using it without a whole-stack restart. Caller holds mu. Best-effort: a component
-// with no model section, or one that is not interface-bound, is skipped. The first
-// reconfigure error is returned (later ports are not attempted), matching the addressed
-// reconfigure semantics.
+// reconcileInterfaceRefsLocked restarts every built component whose section resolves its
+// effective interface to the named entry (or, for default-interface inheritance, matches
+// the namespace default's name), so an interface edit propagates to the ports using it
+// without a whole-stack restart. Caller holds mu. Best-effort: a component with no model
+// section, or one that is not interface-bound, is skipped. The first error is returned
+// (later ports are not attempted), matching the addressed reconfigure semantics.
+//
+// The restart is FORCED rather than offered as a hot apply. A port's section names its
+// interface by NAME; the pcap device behind that name is resolved from the namespace when
+// the port is BUILT and then captured in its link opener. So after an interface edit the
+// section a port would compare in ApplyConfig is byte-identical to the one it already
+// holds — it reports a clean live apply and keeps opening the old (often non-existent)
+// device forever. Only a rebuild re-resolves the device, which is exactly what makes
+// "point the bridge at the right NIC" bring IPX/NetBEUI/EtherTalk up from the web UI.
 func (s *Supervisor) reconcileInterfaceRefsLocked(ctx context.Context, name string) error {
 	for _, compName := range s.order {
 		sec, ok := s.sectionForComponentLocked(compName)
@@ -1142,7 +1210,7 @@ func (s *Supervisor) reconcileInterfaceRefsLocked(ctx context.Context, name stri
 		if ref != name && (ref != "" || s.model.DefaultInterface().Name != name) {
 			continue
 		}
-		if err := s.reconfigureLocked(ctx, compName, sec); err != nil {
+		if err := s.applyReconfigureLocked(ctx, compName, sec, true); err != nil {
 			return err
 		}
 	}

@@ -76,25 +76,37 @@ type transportWiring struct {
 	egress  MacIPEgress           // MacIP IP-side egress (nil when AppleTalk-only)
 }
 
-// AttachPort attaches a newly-built port component to whichever mini-router carries its
-// family, so a port added at runtime immediately joins the live NBF/NBIPX dispatch (the
-// engines + SMB consumer were registered once at build). It is best-effort by type
-// assertion, mirroring wireIPX/wireNetBEUI: a component that is neither an IPX nor a
-// NetBEUI port (or a family whose router was not wired — the service absent or its
-// binding off) is left alone. Safe to call with a nil receiver (a build that wired no
-// transports). A port may satisfy BOTH interfaces only in principle; in practice each
-// port type rides one family, and AddPort on the non-matching router simply never fires.
-func (w *transportWiring) AttachPort(c component.Component) {
-	if w == nil || c == nil {
+// AttachPort points the mini-routers at a port component: `next` joins whichever
+// mini-router carries its family, and `prev` — the object `next` REPLACES, nil when the
+// port is brand new — is detached first. So a port added at runtime immediately joins
+// the live NBF/NBIPX dispatch (the engines + SMB consumer were registered once at
+// build), and a port the supervisor rebuilt across a reconfigure hands its family over
+// to the replacement instead of leaving the stale object at the head of the port list
+// (Send writes through ports[0], so a stale head swallows every outbound frame).
+//
+// It is best-effort by type assertion, mirroring wireIPX/wireNetBEUI: a component that
+// is neither an IPX nor a NetBEUI port (or a family whose router was not wired — the
+// service absent or its binding off) is left alone. Safe to call with a nil receiver (a
+// build that wired no transports). A port may satisfy BOTH interfaces only in
+// principle; in practice each port type rides one family, and AddPort on the
+// non-matching router simply never fires.
+func (w *transportWiring) AttachPort(prev, next component.Component) {
+	if w == nil {
 		return
 	}
 	if w.ipx != nil {
-		if p, ok := c.(ipxrouter.Port); ok {
+		if p, ok := prev.(ipxrouter.Port); ok && prev != nil {
+			w.ipx.RemovePort(p)
+		}
+		if p, ok := next.(ipxrouter.Port); ok && next != nil {
 			w.ipx.AddPort(p)
 		}
 	}
 	if w.netbeui != nil {
-		if p, ok := c.(netbeuirouter.Port); ok {
+		if p, ok := prev.(netbeuirouter.Port); ok && prev != nil {
+			w.netbeui.RemovePort(p)
+		}
+		if p, ok := next.(netbeuirouter.Port); ok && next != nil {
 			w.netbeui.AddPort(p)
 		}
 	}
