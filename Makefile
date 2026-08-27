@@ -31,7 +31,7 @@ GOSEC_PKG       := github.com/securego/gosec/v2/cmd/gosec@latest
 # the CI Quality job exactly.
 GOSEC_PKGS := ./service/macip/... ./service/macgarden/... ./service/afpfs/macgarden/...
 
-.PHONY: build build-local build-svc build-mount app-darwin installer-windows spa test test-race test-tags lint quality vet vuln gosec fuzz clean \
+.PHONY: build build-local build-svc build-mount app-darwin installer-windows spa spa-sib test test-race test-tags lint quality vet vuln gosec fuzz clean \
         harness archtest tinygo-gate install-man
 
 # Vite SPA (Finder + admin). Required for TAGS that embed webui (all, webui).
@@ -39,6 +39,14 @@ GOSEC_PKGS := ./service/macip/... ./service/macgarden/... ./service/afpfs/macgar
 # local checkout instead. Falls back to sibling ../ClassicStack-web or WEB_REF clone.
 spa:
 	bash scripts/ci/spa.sh
+
+# spa-sib builds against the sibling ../ClassicStack-web checkout (a plain WEB_DIR
+# pin under the hood — spa.sh's own escape hatch) instead of the submodule pin, so
+# a local Finder UI change can be test-built without pushing to ClassicStack-web
+# and bumping the submodule first. Errors clearly (via spa.sh's WEB_DIR check) if
+# ../ClassicStack-web is not a checkout.
+spa-sib:
+	WEB_DIR="$(abspath $(CURDIR)/../ClassicStack-web)" bash scripts/ci/spa.sh
 
 ifneq ($(filter all webui,$(TAGS)),)
 build: spa
