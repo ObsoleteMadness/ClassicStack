@@ -1,6 +1,10 @@
 package serial
 
-import "testing"
+import (
+	"errors"
+	"io"
+	"testing"
+)
 
 // TestOpenRejectsEmptyDevice proves Open guards against an empty device path before
 // touching the serial library (a misconfigured serial interface is a clear error,
@@ -41,5 +45,58 @@ func TestDefaultRTSCTS(t *testing.T) {
 	}
 	if rtscts(Config{NoFlowControl: true}) {
 		t.Fatal("NoFlowControl=true still resolves to RTS/CTS on, want off")
+	}
+}
+
+// fakeStream replays a scripted sequence of Read results.
+type fakeStream struct {
+	steps []struct {
+		data []byte
+		err  error
+	}
+	i int
+}
+
+func (f *fakeStream) Read(p []byte) (int, error) {
+	if f.i >= len(f.steps) {
+		return 0, io.EOF
+	}
+	s := f.steps[f.i]
+	f.i++
+	return copy(p, s.data), s.err
+}
+func (f *fakeStream) Write(p []byte) (int, error) { return len(p), nil }
+func (f *fakeStream) Close() error                { return nil }
+
+// TestIdleReaderSwallowsTimeoutEOF pins the VMIN=0 contract: a zero-byte read is the
+// read timeout on an idle line, not end-of-stream, and must NOT reach a framer as
+// io.EOF (TashTalk maps that to link.ErrClosed and would tear the port down on every
+// quiet interval). A real device failure, and a read that actually returns data, both
+// pass through unchanged.
+func TestIdleReaderSwallowsTimeoutEOF(t *testing.T) {
+	devGone := errors.New("input/output error")
+	f := &fakeStream{steps: []struct {
+		data []byte
+		err  error
+	}{
+		{nil, io.EOF},             // idle-line timeout
+		{[]byte{0x01, 0x02}, nil}, // real data
+		{[]byte{0x03}, io.EOF},    // data AND EOF: keep the EOF, there are bytes
+		{nil, devGone},            // device failure
+	}}
+	r := &idleReader{ReadWriteCloser: f}
+	buf := make([]byte, 8)
+
+	if n, err := r.Read(buf); n != 0 || err != nil {
+		t.Fatalf("idle read = (%d, %v), want (0, nil)", n, err)
+	}
+	if n, err := r.Read(buf); n != 2 || err != nil {
+		t.Fatalf("data read = (%d, %v), want (2, nil)", n, err)
+	}
+	if n, err := r.Read(buf); n != 1 || !errors.Is(err, io.EOF) {
+		t.Fatalf("data+EOF read = (%d, %v), want (1, EOF)", n, err)
+	}
+	if n, err := r.Read(buf); n != 0 || !errors.Is(err, devGone) {
+		t.Fatalf("device-failure read = (%d, %v), want (0, %v)", n, err, devGone)
 	}
 }

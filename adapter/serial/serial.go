@@ -66,5 +66,30 @@ func Open(cfg Config) (io.ReadWriteCloser, error) {
 	if err != nil {
 		return nil, fmt.Errorf("serial: open %s: %w", cfg.Device, err)
 	}
-	return s, nil
+	return &idleReader{ReadWriteCloser: s}, nil
+}
+
+// idleReader translates the read timeout into something a framer can act on.
+//
+// With VMIN = 0 the driver returns zero bytes once interCharTimeoutMs elapses on a
+// quiet line, and the os.File underneath reports that as (0, io.EOF) — the same
+// thing it would report for a stream that has genuinely ended. A framer cannot tell
+// those apart, and a serial port that is merely idle is emphatically not closed: the
+// TashTalk framer maps io.EOF to link.ErrClosed, which would tear the port down
+// roughly four times a second on a wire with no traffic.
+//
+// A tty held open has no end-of-stream, so the EOF is always the timeout. Report it
+// as (0, nil) and let the caller's own zero-byte handling decide (the framer already
+// maps that to link.ErrTimeout and polls for Stop). A device that actually goes away
+// fails with a real errno — EIO, ENXIO — which passes through untouched.
+type idleReader struct {
+	io.ReadWriteCloser
+}
+
+func (r *idleReader) Read(p []byte) (int, error) {
+	n, err := r.ReadWriteCloser.Read(p)
+	if n == 0 && errors.Is(err, io.EOF) {
+		return 0, nil
+	}
+	return n, err
 }
