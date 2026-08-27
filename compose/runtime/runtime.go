@@ -259,6 +259,15 @@ func Build(opts Options) (*Runtime, error) {
 	// addressed by instance name.
 	comps := make(map[string]component.Component)
 	var order []string
+	// rebuilders holds a Rebuilder per component built below, so a restart-driven
+	// reconfigure (ApplyConfig returning component.ErrNeedsRestart — an interface
+	// swap, most notably) reconstructs the component from the CURRENT model instead
+	// of restarting the original object with whatever it resolved at process
+	// startup. Without this a NIC-bound port (NetBEUI/IPX/EtherTalk/...) that
+	// captured its pcap device once, at build time, would keep reopening that same
+	// stale device forever — a live interface edit would update the model and the
+	// namespace entry, but never the already-built port.
+	rebuilders := make(map[string]supervisor.Rebuilder)
 	for _, id := range src.Instances(opts.Model) {
 		if stubNames[id.Key] {
 			continue
@@ -292,6 +301,17 @@ func Build(opts Options) (*Runtime, error) {
 		}
 		comps[id.Name] = c
 		order = append(order, id.Name)
+		key, instance := id.Key, id.Instance
+		rebuilders[id.Name] = func(m *config.Model) (component.Component, error) {
+			rctx := *ctx
+			rctx.Model = m
+			rctx.Instance = instance
+			c, ok, err := src.Build(key, &rctx)
+			if err != nil || !ok {
+				return nil, err
+			}
+			return c, nil
+		}
 	}
 
 	// Second pass (Client): the in-process file client lists live local shares from
@@ -342,13 +362,14 @@ func Build(opts Options) (*Runtime, error) {
 	}
 
 	// Second pass: register with the supervisor under filtered edges (only edges
-	// whose dependency is also built).
+	// whose dependency is also built). AddBuildable with a nil Rebuilder (Router,
+	// reused up-front; Client, built after this loop) behaves exactly like Add.
 	for _, name := range order {
 		deps := builtDeps(name, comps)
 		if name == config.ClientKey {
 			deps = registry.ClientDeps(comps)
 		}
-		sup.Add(comps[name], deps)
+		sup.AddBuildable(comps[name], deps, rebuilders[name])
 	}
 
 	// Inject the per-instance builder so the supervisor can stand up the FIRST instance of

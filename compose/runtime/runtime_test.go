@@ -564,3 +564,85 @@ func TestStart_SeedsMemberZoneIntoZIT(t *testing.T) {
 		t.Fatalf("seed zone not installed into ZIT after attach; zones = %v", zones)
 	}
 }
+
+// nicPortSection is a minimal config.Section that names an interface — the shape
+// every real NIC-bound port's section takes (NetBEUI/IPX/EtherTalk/... all resolve
+// their device through an `iface` reference into the namespace at build time).
+type nicPortSection struct {
+	iface config.InterfaceSection
+}
+
+func (s nicPortSection) Key() string                        { return "port" }
+func (s nicPortSection) Clone() config.Section              { return s }
+func (s nicPortSection) Validate() error                    { return nil }
+func (s nicPortSection) Interface() config.InterfaceSection { return s.iface }
+
+var _ config.InterfaceProvider = nicPortSection{}
+
+// nicPortComp is a component.Configurable standing in for a real NIC port: it
+// resolves its device once, at build time, from the BuildContext.Model, and
+// ApplyConfig always signals ErrNeedsRestart (a NIC port has no live hot-apply —
+// any config change, an interface swap most of all, needs a fresh open). Start
+// records the device it was built with into a shared slot so a test can tell
+// whether a later restart reused the SAME built object (stale device) or a freshly
+// rebuilt one (current device).
+type nicPortComp struct {
+	device      string
+	lastStarted *string
+}
+
+func (c *nicPortComp) Name() string                { return "port" }
+func (c *nicPortComp) Start(context.Context) error { *c.lastStarted = c.device; return nil }
+func (c *nicPortComp) Stop(context.Context) error  { return nil }
+func (c *nicPortComp) ApplyConfig(any) error       { return component.ErrNeedsRestart }
+
+var _ component.Configurable = (*nicPortComp)(nil)
+
+// TestSetInterface_RebuildsNICPort is the regression guard for a live bridge-device
+// edit (the web UI's Change Interface) never reaching an already-built NIC port —
+// exactly what NetBEUI/IPX/EtherTalk hit in production. Build wired every component
+// with a plain Add (no Rebuilder), so the restart-driven reconfigure ApplyConfig's
+// ErrNeedsRestart triggers just stopped and restarted the SAME component object,
+// which had resolved its device once, at initial Build, and never again — the port
+// kept reopening the OLD device no matter how many times the interface was edited.
+func TestSetInterface_RebuildsNICPort(t *testing.T) {
+	m := config.NewModel()
+	m.Set(nicPortSection{iface: config.InterfaceSection{Name: "br-lan"}})
+	m.SetInterface(config.InterfaceSection{
+		Name: "br-lan", Kind: config.IfaceKindNIC, Backend: config.IfaceBackendPcap, Device: "en5",
+	})
+
+	var lastStarted string
+	src := fakeSource{
+		"port": func(ctx *registry.BuildContext) (component.Component, error) {
+			sec, _ := ctx.Model.Get("port")
+			return &nicPortComp{
+				device:      ctx.Model.EffectiveInterfaceFor(sec).Device,
+				lastStarted: &lastStarted,
+			}, nil
+		},
+	}
+
+	rt, err := Build(Options{Model: m, source: src})
+	if err != nil {
+		t.Fatalf("Build = %v", err)
+	}
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	t.Cleanup(func() { rt.Stop(context.Background()) })
+
+	if lastStarted != "en5" {
+		t.Fatalf("initial device = %q, want en5", lastStarted)
+	}
+
+	if err := rt.Supervisor().SetInterface(context.Background(), config.InterfaceSection{
+		Name: "br-lan", Kind: config.IfaceKindNIC, Backend: config.IfaceBackendPcap, Device: "en1",
+	}); err != nil {
+		t.Fatalf("SetInterface = %v", err)
+	}
+
+	if lastStarted != "en1" {
+		t.Fatalf("device after SetInterface = %q, want en1 (component must be rebuilt, not just restarted)", lastStarted)
+	}
+}
