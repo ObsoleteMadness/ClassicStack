@@ -28,6 +28,8 @@ import { telemetry, type ServerMessage } from './telemetry';
 import { renderSetup } from './admin/setup';
 import { mountControlPlane } from './admin/status';
 import { TopologyWindow } from './admin/topology';
+import { mountOfflineGate } from './admin/offline';
+import { setMenubarOpen } from 'classicstack-web/ui/menu-bar-track';
 
 function setConn(text: string, cls = ''): void {
   const node = document.getElementById('conn');
@@ -170,6 +172,31 @@ async function main(): Promise<void> {
   const bell = header.querySelector<HTMLButtonElement>('#notify-bell');
   if (bell) notify.bindBell(bell);
   mountControlPlane(header, workspace, notify);
+  mountOfflineGate({
+    app: app as HTMLElement,
+    finder,
+    overlayHost: finderScreen,
+    dismiss: [
+      settings,
+      logWindow,
+      sharing,
+      leases,
+      endpointInfo,
+      topology,
+      extensionEditor,
+      getInfoWindow,
+      resourceExplorer,
+      winResourceExplorer,
+      loginDialog,
+      nameConflictDialog,
+    ],
+    onChange(offline) {
+      if (offline) {
+        const menus = header.querySelector<HTMLElement>('.app-brand-menus');
+        if (menus) setMenubarOpen(menus, null);
+      }
+    },
+  });
   settings.bind({ finder, extensionEditor, leases });
   topology.openSharing = (protocol) => {
     settings.open(

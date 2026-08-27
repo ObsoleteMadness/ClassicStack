@@ -24,6 +24,10 @@ export type FinderEvent = {
 
 export type LiveConn = 'connecting' | 'connected' | 'offline';
 
+export function isServerOffline(): boolean {
+  return telemetry.conn === 'offline';
+}
+
 export const telemetry = {
   source: null as EventSource | null,
   stats: {} as Record<string, Record<string, unknown>>,

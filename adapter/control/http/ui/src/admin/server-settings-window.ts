@@ -718,7 +718,9 @@ export class ServerSettingsWindow extends HTMLElement {
     for (const u of list) {
       const isGuest = u.Name.toLowerCase() === GUEST.toLowerCase();
       const row = el('button', { type: 'button', class: 'settings-user-row' }, [
-        el('span', { class: 'settings-user-row__avatar', 'aria-hidden': 'true' }, [isGuest ? '👤' : '🔑']),
+        el('span', { class: 'settings-user-row__avatar', 'aria-hidden': 'true' }, [
+          el('img', { src: '/icons/classic/user.png', width: '20', height: '20', alt: '', draggable: 'false' }),
+        ]),
         el('span', { class: 'settings-user-row__name' }, [isGuest ? 'Guest User' : u.Name]),
         el('span', { class: 'settings-user-row__meta' }, [u.Disabled ? 'Disabled' : '']),
         el('span', { class: 'settings-user-row__chev', 'aria-hidden': 'true' }, ['›']),

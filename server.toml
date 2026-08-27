@@ -15,7 +15,7 @@ log_file = 'client.log'
 capture = 'client-afp.pcap'
 
 [EtherDFS]
-enabled = true
+enabled = false
 capture = 'etherdfs.pcap'
 
 [FUSE]
@@ -115,6 +115,7 @@ capture = 'ipx.pcap'
 
 [logging]
 level = 'debug'
+path = 'classicstack.log'
 
 [[ltoudp]]
 enabled = true
@@ -122,7 +123,7 @@ seed_network = 1
 seed_network_end = 1
 seed_zone = 'LToUDP Network'
 capture = 'ltoudp-netboot.pcap'
-pace_ms = 30
+pace_ms = 5
 
 [[ncpvolumes]]
 name = 'Netware'

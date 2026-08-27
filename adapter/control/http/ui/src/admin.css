@@ -108,6 +108,66 @@
   position: relative;
 }
 
+.offline-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(12, 14, 18, 0.62);
+  backdrop-filter: blur(2px);
+}
+
+.offline-overlay[hidden] {
+  display: none;
+}
+
+.offline-overlay__card {
+  max-width: 360px;
+  padding: 22px 24px 20px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow);
+  text-align: center;
+}
+
+.offline-overlay__card h2 {
+  margin: 12px 0 8px;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+.offline-overlay__card p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+#app.cs-offline finder-window {
+  pointer-events: none;
+  filter: saturate(0.35);
+}
+
+#app.cs-offline .finder-file-menu,
+#app.cs-offline .finder-view-menu {
+  pointer-events: none;
+  opacity: 0.45;
+}
+
+#app.cs-offline .notify-centre {
+  z-index: 80;
+  pointer-events: auto;
+}
+
+#app.cs-offline .server-about-dialog {
+  z-index: 100;
+  pointer-events: auto;
+}
+
 .workspace {
   flex: 1;
   min-height: 0;
@@ -988,6 +1048,16 @@ input[type='radio'] {
   width: 28px;
   text-align: center;
   flex: none;
+}
+
+.settings-user-row__avatar img {
+  display: block;
+  width: 20px;
+  height: 20px;
+  margin: 0 auto;
+  object-fit: contain;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
 }
 
 .settings-user-row__name {

@@ -15,6 +15,7 @@ import {
   viewMenuInnerHTML,
 } from 'classicstack-web/ui/finder-view-menu';
 import { MENUBAR_CHANGE, menubarOpenKey, setMenubarOpen } from 'classicstack-web/ui/menu-bar-track';
+import { isServerOffline, telemetry } from './telemetry';
 
 type FinderMenuHost = { finder: FinderWindow; extensionEditor?: ExtensionEditorDialog };
 
@@ -40,6 +41,11 @@ function mountFinderMenuItem(
     const open = (menus ? menubarOpenKey(menus) : null) === key;
     wrap.classList.toggle('open', open);
     wrap.innerHTML = inner(host, open);
+    if (isServerOffline()) {
+      wrap.querySelectorAll<HTMLButtonElement>('button').forEach((b) => {
+        b.disabled = true;
+      });
+    }
   };
 
   const dismiss = (): void => {
@@ -55,6 +61,7 @@ function mountFinderMenuItem(
     const t = el?.closest('[data-act]') as HTMLElement | null;
     if (!t) return;
     const act = t.dataset.act;
+    if (t instanceof HTMLButtonElement && t.disabled) return;
     if (isToggle(act)) {
       e.stopPropagation();
       if (menus) {
@@ -75,6 +82,7 @@ function mountFinderMenuItem(
   });
 
   menus?.addEventListener(MENUBAR_CHANGE, paint);
+  telemetry.onConn.add(() => paint());
   paint();
 }
 

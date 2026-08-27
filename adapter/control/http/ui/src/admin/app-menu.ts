@@ -3,6 +3,7 @@
 import { bindMenuBarTracking, MENUBAR_CHANGE, menubarOpenKey, setMenubarOpen } from 'classicstack-web/ui/menu-bar-track';
 import type { SettingsSection } from './server-settings-window';
 import { api } from '../api';
+import { isServerOffline, telemetry } from '../telemetry';
 
 export interface AppMenuHost {
   settings: { open: (section?: SettingsSection) => void };
@@ -39,6 +40,8 @@ export function mountAppMenu(header: HTMLElement, host: AppMenuHost): void {
     const leasesOpen = !host.leases.hidden;
     const notifyOpen = !host.notify.hidden;
     const topologyOpen = !host.topology.hidden;
+    const offline = isServerOffline();
+    const off = offline ? ' disabled' : '';
     brand.className = `app-menu${appOpen ? ' open' : ''} app-brand-menu`;
     brand.dataset.menu = 'app';
     brand.innerHTML = `
@@ -48,10 +51,10 @@ export function mountAppMenu(header: HTMLElement, host: AppMenuHost): void {
       <div class="app-menu__dropdown" role="menu" ${appOpen ? '' : 'hidden'}>
         <button type="button" role="menuitem" data-act="about" class="app-menu__item">About ClassicStack…</button>
         <hr />
-        <button type="button" role="menuitem" data-act="settings" class="app-menu__item">Settings…</button>
+        <button type="button" role="menuitem" data-act="settings" class="app-menu__item"${off}>Settings…</button>
         <hr />
-        <button type="button" role="menuitem" data-act="restart-stack" class="app-menu__item">Restart ClassicStack…</button>
-        <button type="button" role="menuitem" data-act="shutdown" class="app-menu__item">Shut Down ClassicStack…</button>
+        <button type="button" role="menuitem" data-act="restart-stack" class="app-menu__item"${off}>Restart ClassicStack…</button>
+        <button type="button" role="menuitem" data-act="shutdown" class="app-menu__item"${off}>Shut Down ClassicStack…</button>
       </div>
     `;
     advanced.className = `app-menu${advancedOpen ? ' open' : ''} app-advanced-menu`;
@@ -61,20 +64,20 @@ export function mountAppMenu(header: HTMLElement, host: AppMenuHost): void {
         Advanced
       </button>
       <div class="app-menu__dropdown" role="menu" ${advancedOpen ? '' : 'hidden'}>
-        <button type="button" role="menuitem" data-act="open-by-path" class="app-menu__item">
+        <button type="button" role="menuitem" data-act="open-by-path" class="app-menu__item"${off}>
           <span class="app-menu__check"></span>Open by Path…
         </button>
         <hr />
-        <button type="button" role="menuitemcheckbox" aria-checked="${logOpen}" data-act="show-log" class="app-menu__item">
+        <button type="button" role="menuitemcheckbox" aria-checked="${logOpen}" data-act="show-log" class="app-menu__item"${off}>
           <span class="app-menu__check">${logOpen ? '✓' : ''}</span>Show Log
         </button>
-        <button type="button" role="menuitemcheckbox" aria-checked="${sharingOpen}" data-act="sharing" class="app-menu__item">
+        <button type="button" role="menuitemcheckbox" aria-checked="${sharingOpen}" data-act="sharing" class="app-menu__item"${off}>
           <span class="app-menu__check">${sharingOpen ? '✓' : ''}</span>Sharing Monitor
         </button>
-        <button type="button" role="menuitemcheckbox" aria-checked="${leasesOpen}" data-act="leases" class="app-menu__item">
+        <button type="button" role="menuitemcheckbox" aria-checked="${leasesOpen}" data-act="leases" class="app-menu__item"${off}>
           <span class="app-menu__check">${leasesOpen ? '✓' : ''}</span>MacIP Leases
         </button>
-        <button type="button" role="menuitemcheckbox" aria-checked="${topologyOpen}" data-act="topology" class="app-menu__item">
+        <button type="button" role="menuitemcheckbox" aria-checked="${topologyOpen}" data-act="topology" class="app-menu__item"${off}>
           <span class="app-menu__check">${topologyOpen ? '✓' : ''}</span>Topology
         </button>
         <hr />
@@ -86,6 +89,7 @@ export function mountAppMenu(header: HTMLElement, host: AppMenuHost): void {
   };
 
   wrap.addEventListener(MENUBAR_CHANGE, paint);
+  telemetry.onConn.add(() => paint());
   bindMenuBarTracking(wrap);
 
   wrap.addEventListener('click', (e) => {
@@ -94,6 +98,7 @@ export function mountAppMenu(header: HTMLElement, host: AppMenuHost): void {
     const t = el?.closest<HTMLElement>('[data-act]');
     if (!t) return;
     const act = t.dataset.act;
+    if (t instanceof HTMLButtonElement && t.disabled) return;
     if (act === 'toggle-app' || act === 'toggle-file' || act === 'toggle-view' || act === 'toggle-advanced') return;
     e.stopPropagation();
     setMenubarOpen(wrap, null);

@@ -1,14 +1,12 @@
 import {
   Folder,
-  Globe,
   Monitor,
   Share2,
   Shield,
   Terminal,
-  Users,
   type IconNode,
 } from 'lucide';
-import { settingsBitmapIcons } from 'classicstack-web/ui/settings-icons';
+import { settingsBitmapIcons, settingsIconImg } from 'classicstack-web/ui/settings-icons';
 
 function svg(icon: IconNode, size = 18): string {
   const inner = icon
@@ -25,9 +23,9 @@ function svg(icon: IconNode, size = 18): string {
 
 export const settingsIcons = {
   ...settingsBitmapIcons,
-  users: svg(Users),
-  macip: svg(Globe),
-  ipxgw: svg(Globe),
+  users: settingsIconImg('/icons/classic/users.png'),
+  macip: settingsIconImg('/icons/classic/apple-ip-gw.png'),
+  ipxgw: settingsIconImg('/icons/classic/macipx-cp.png'),
   web: svg(Monitor),
   client: svg(Share2),
   fuse: svg(Folder),

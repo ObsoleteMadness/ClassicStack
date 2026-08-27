@@ -84,3 +84,10 @@ adapter/control/http/spa/icons/
 
 # Node.js dependencies (root or package-local)
 node_modules/
+client-afp.pcap
+etherdfs.pcap
+ethertalk.pcap
+ipx.pcap
+ltoudp-netboot.pcap
+netbeui.pcap
+tashtalk.pcap
