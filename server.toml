@@ -104,7 +104,7 @@ name = 'br-lan'
 kind = 'bridge'
 default = true
 backend = 'pcap'
-device = 'en5'
+device = 'en1'
 
 [[ipx]]
 iface = 'br-lan'
