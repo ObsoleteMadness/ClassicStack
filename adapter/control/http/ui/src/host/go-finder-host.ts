@@ -3,6 +3,7 @@
 import type {
   Credentials,
   FinderHost,
+  KnownVolume,
   RemoteEndpoint,
   SessionInfo,
   ShareKind,
@@ -153,6 +154,14 @@ function toMountedEndpoint(m: FinderMountedVolume): RemoteEndpoint & EndpointLoc
     role: 'volume',
     uri: /^[a-z][a-z0-9+.-]*:\/\//i.test(target) ? target.replace(/\/+$/, '') : undefined,
   };
+}
+
+/** Friendly connect URL for a MountedVolume's open volume (server + volume). */
+function friendlyVolumePath(m: FinderMountedVolume): string {
+  const base = (m.target || '').trim().replace(/\/+$/, '');
+  if (base && m.volume) return `${base}/${m.volume}`;
+  if (m.volume && m.serverName) return `${m.serverName}:${m.volume}`;
+  return m.volume || m.serverName || '';
 }
 
 function toFinderSession(m: FinderMountedVolume): FinderSession {
@@ -557,12 +566,9 @@ export class GoFinderHost implements FinderHost {
     }
     const seen = new Set<string>();
     const out: RemoteEndpoint[] = [];
+    // Mounted group: FUSE/WinFsp host mounts only, flat rows (eject on the row itself).
     for (const m of mounted) {
-      // Every entry here already has an open volume (server-side MountedVolumes only
-      // lists sessions with FS != nil) — a host FUSE/WinFsp mount (m.mountpoint set)
-      // or a plain browse connection with no OS mount. Both belong in the sidebar so
-      // an existing connection from another tab/session is visible on load, not just
-      // ones this instance happens to be host-mounting.
+      if (!m.mountpoint) continue;
       const ep = toMountedEndpoint(m);
       if (seen.has(ep.id)) continue;
       seen.add(ep.id);
@@ -577,6 +583,49 @@ export class GoFinderHost implements FinderHost {
       if (seen.has(v.id)) continue;
       seen.add(v.id);
       out.push(toEndpoint(v));
+    }
+
+    // Plain browse connections (no host mount) are not their own sidebar row — they
+    // attach to their server row as knownVolumes, the same slot a live login in this
+    // tab fills, so a volume already open elsewhere shows as a child under its host,
+    // in its protocol group, exactly like browsing to it would. Grouped by (server,
+    // kind) so distinct protocols on the same server id never collide.
+    const knownByServer = new Map<string, KnownVolume[]>();
+    const sampleByServer = new Map<string, FinderMountedVolume>();
+    for (const m of mounted) {
+      if (m.mountpoint || !m.volume) continue;
+      const serverId = (m.target || '').trim() || mountedEndpointId(m.sessionId);
+      const key = `${asShareKind(m.kind)}|${serverId}`;
+      const list = knownByServer.get(key) ?? [];
+      list.push({ name: m.volume, path: friendlyVolumePath(m), sessionId: m.sessionId });
+      knownByServer.set(key, list);
+      sampleByServer.set(key, m);
+    }
+    for (const [key, vols] of knownByServer) {
+      const [kind, serverId] = [key.slice(0, key.indexOf('|')), key.slice(key.indexOf('|') + 1)];
+      const existing = out.find((e) => e.id === serverId && e.kind === kind && e.role !== 'volume');
+      if (existing) {
+        existing.knownVolumes = vols;
+        continue;
+      }
+      // No discovered/pinned row for this server (a stale scan cache, or discovery
+      // turned off) — synthesize one from the mounted data so the connection stays
+      // visible under its protocol group rather than disappearing.
+      const sample = sampleByServer.get(key);
+      if (!sample) continue;
+      const shareKind = asShareKind(sample.kind);
+      const transport = (sample.transport || defaultTransport(shareKind)).toLowerCase();
+      out.push({
+        id: serverId,
+        kind: shareKind,
+        title: sample.serverName || vols[0]?.name || serverId,
+        group: remoteGroup(shareKind),
+        badge: TRANSPORT_BADGE[transport] || transport.toUpperCase(),
+        protocol: sample.protocol || shareKind,
+        transport,
+        uri: /^[a-z][a-z0-9+.-]*:\/\//i.test(serverId) ? serverId.replace(/\/+$/, '') : undefined,
+        knownVolumes: vols,
+      });
     }
     return out;
   }
