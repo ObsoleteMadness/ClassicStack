@@ -13,7 +13,9 @@ package atlink
 
 import (
 	"flag"
+	"fmt"
 	"io"
+	"math/rand"
 
 	"github.com/ObsoleteMadness/ClassicStack/client/link"
 	corelink "github.com/ObsoleteMadness/ClassicStack/core/link"
@@ -69,8 +71,22 @@ func PrintInterfaces(w io.Writer) { link.PrintInterfaces(w) }
 // default) srcNode is only the desired first LLAP node-claim candidate, and the
 // second return value is the node actually claimed (which may differ). With Claim
 // false, or on a non-LocalTalk transport, the returned node is srcNode unchanged.
+//
+// srcNode == 0 means "no explicit candidate": with Claim set, Open generates one at
+// random from the LocalTalk workstation range (Inside AppleTalk, 2nd ed., Appendix B —
+// "IF hint > 0 THEN MyAddress := hint ELSE ... Random(127) + 1" for a non-server node),
+// rather than defaulting to a fixed low node like 1 that's likely to already be taken.
+// Without Claim there is no negotiation to resolve an unspecified address, so srcNode
+// == 0 is an error.
+//
 // The caller closes the link.
 func (o *Options) Open(network uint16, srcNode uint8) (corelink.DatagramLink, uint8, error) {
+	if srcNode == 0 {
+		if !o.Claim {
+			return nil, 0, fmt.Errorf("src node 0 requires -claim (asserting an address with -claim=false needs an explicit -src 1..254)")
+		}
+		srcNode = uint8(1 + rand.Intn(127)) //nolint:gosec // address pick, not a security boundary
+	}
 	name := o.Iface
 	if o.Transport == link.KindTashTalk {
 		name = o.Device

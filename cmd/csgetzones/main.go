@@ -50,7 +50,7 @@ func main() {
 func run() error {
 	var (
 		network = flag.Uint("net", 0, "AppleTalk network number (0 = local segment)")
-		srcNode = flag.Uint("src", 0x01, "our LocalTalk source node (1..254) — with -claim (the default), this is only the desired first candidate for the LLAP node-claim; the node actually used may differ if it's taken")
+		srcNode = flag.Uint("src", 0, "our LocalTalk source node — 0 (default) picks a random workstation-range candidate (1..127) for the LLAP node-claim; 1..254 requests a specific candidate instead. With -claim (the default) this is only the desired first candidate: the node actually used may differ if it's taken. Requires -claim when 0.")
 		dstNode = flag.Uint("dst", broadcastNode, "router node to query (0xFF = broadcast to any router)")
 		timeout = flag.Duration("timeout", 2*time.Second, "per-request reply timeout")
 		local   = flag.Bool("local", false, "GetLocalZones: only zones on our own network")
@@ -72,8 +72,8 @@ func run() error {
 		return nil
 	}
 
-	if *srcNode < 1 || *srcNode > 254 {
-		return fmt.Errorf("src node %d out of range (1..254)", *srcNode)
+	if *srcNode != 0 && (*srcNode < 1 || *srcNode > 254) {
+		return fmt.Errorf("src node %d out of range (0, or 1..254)", *srcNode)
 	}
 
 	query := atalk.AllZones
