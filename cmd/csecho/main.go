@@ -43,7 +43,7 @@ func main() {
 
 func run() error {
 	var (
-		network = flag.Uint("net", 0, "AppleTalk network number (0 = local segment)")
+		network = flag.Uint("net", 0, "AppleTalk network number we claim as our source (0 = the AppleTalk \"startup range\" placeholder — a strict peer may legitimately ignore requests from a node still asserting network 0; pass the segment's real network number, e.g. -net 1, if a peer that answers a real client doesn't answer this probe)")
 		srcNode = flag.Uint("src", 0x01, "our LocalTalk source node (1..254)")
 		dstNode = flag.Uint("dst", 0xFF, "destination node (0xFF = broadcast to every node)")
 		count   = flag.Int("count", 1, "number of echo requests to send")

@@ -47,7 +47,7 @@ func main() {
 
 func run() error {
 	var (
-		network = flag.Uint("net", 0, "AppleTalk network number (0 = local segment)")
+		network = flag.Uint("net", 0, "AppleTalk network number we claim as our source (0 = the AppleTalk \"startup range\" placeholder — a strict peer, e.g. a real Mac or an accurate emulator, may legitimately ignore requests from a node still asserting network 0; pass the segment's real network number, e.g. -net 1, if a peer that answers a real client doesn't answer this probe)")
 		srcNode = flag.Uint("src", 0x01, "our LocalTalk source node (1..254)")
 		timeout = flag.Duration("timeout", 2*time.Second, "how long to collect replies")
 		verbose = flag.Bool("v", false, "verbose wire trace to stderr")
