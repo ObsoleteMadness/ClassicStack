@@ -22,6 +22,8 @@ export type FinderEvent = {
   Time?: string;
 };
 
+export type StateChange = { Component: string; From: string; To: string; Err?: string };
+
 export type LiveConn = 'connecting' | 'connected' | 'offline';
 
 export function isServerOffline(): boolean {
@@ -34,7 +36,7 @@ export const telemetry = {
   logs: [] as LogRecord[],
   conn: 'connecting' as LiveConn,
   onStats: new Set<(s: StatsSample) => void>(),
-  onState: new Set<(s: unknown) => void>(),
+  onState: new Set<(s: StateChange) => void>(),
   onLog: new Set<(r: LogRecord) => void>(),
   onMessage: new Set<(m: ServerMessage) => void>(),
   onFinder: new Set<(f: FinderEvent) => void>(),
@@ -60,7 +62,7 @@ export const telemetry = {
     });
     es.addEventListener('state', (e) => {
       try {
-        const s = JSON.parse((e as MessageEvent).data);
+        const s = JSON.parse((e as MessageEvent).data) as StateChange;
         this.onState.forEach((cb) => cb(s));
       } catch {
         /* ignore */

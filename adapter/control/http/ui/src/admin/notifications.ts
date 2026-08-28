@@ -1,5 +1,5 @@
-import { api, type Unit } from '../api';
-import { telemetry, type ServerMessage } from '../telemetry';
+import { api } from '../api';
+import { telemetry, type ServerMessage, type StateChange } from '../telemetry';
 import { escapeHtml, mountFloatingWindow, raise } from './floating-window';
 
 export type NoticeKind = 'failure' | 'messenger' | 'afp' | 'info';
@@ -29,9 +29,12 @@ export function kindLabel(k: NoticeKind): string {
 /** Bell + floating notification centre for failed units, net send, and AFP alerts. */
 export class NotificationCentre extends HTMLElement {
   private notices: Notice[] = [];
-  private seenFailures = new Set<string>();
-  private poll: ReturnType<typeof setInterval> | null = null;
+  // Component name -> the "component:err" key currently notified for it, so a later
+  // state event that clears the error (Err empty, e.g. a repaired reconfigure or an
+  // explicit Stop) can retract the notice instead of leaving it stuck forever.
+  private failedKeys = new Map<string, string>();
   private onMessage: ((m: ServerMessage) => void) | null = null;
+  private onState: ((s: StateChange) => void) | null = null;
   private bell: HTMLButtonElement | null = null;
   readonly onChange = new Set<() => void>();
 
@@ -54,13 +57,17 @@ export class NotificationCentre extends HTMLElement {
     window.addEventListener('keydown', this.onKey);
     this.onMessage = (m) => this.ingestMessage(m);
     telemetry.onMessage.add(this.onMessage);
-    void this.pollStatus();
-    this.poll = setInterval(() => void this.pollStatus(), 5000);
+    this.onState = (s) => this.ingestState(s);
+    telemetry.onState.add(this.onState);
+    // One-off catch-up for failures that happened before this UI session connected
+    // (e.g. a unit that failed to start at boot); live failures arrive over the
+    // state stream from here on, no poll needed.
+    void this.seedFailures();
   }
 
   disconnectedCallback(): void {
-    if (this.poll) clearInterval(this.poll);
     if (this.onMessage) telemetry.onMessage.delete(this.onMessage);
+    if (this.onState) telemetry.onState.delete(this.onState);
     window.removeEventListener('keydown', this.onKey);
   }
 
@@ -153,26 +160,30 @@ export class NotificationCentre extends HTMLElement {
     this.push('afp', from, text);
   }
 
-  private async pollStatus(): Promise<void> {
-    let units: Unit[] = [];
+  private async seedFailures(): Promise<void> {
     try {
-      units = await api.status();
+      const units = await api.status();
+      for (const u of units) {
+        const err = (u.Error || '').trim();
+        if (!err || u.Running) continue;
+        this.noteFailed(u.Name, err);
+      }
     } catch {
-      return;
+      /* stream will still surface failures as they happen */
     }
-    const live = new Set<string>();
-    for (const u of units) {
-      const err = (u.Error || '').trim();
-      if (!err || u.Running) continue;
-      const key = `${u.Name}:${err}`;
-      live.add(key);
-      if (this.seenFailures.has(key)) continue;
-      this.seenFailures.add(key);
-      this.push('failure', `${u.Name} failed`, err, key);
-    }
-    for (const k of [...this.seenFailures]) {
-      if (!live.has(k)) this.seenFailures.delete(k);
-    }
+  }
+
+  private ingestState(s: StateChange): void {
+    const err = (s.Err || '').trim();
+    if (err) this.noteFailed(s.Component, err);
+    else this.failedKeys.delete(s.Component);
+  }
+
+  private noteFailed(component: string, err: string): void {
+    const key = `${component}:${err}`;
+    if (this.failedKeys.get(component) === key) return;
+    this.failedKeys.set(component, key);
+    this.push('failure', `${component} failed`, err, key);
   }
 
   private emit(): void {

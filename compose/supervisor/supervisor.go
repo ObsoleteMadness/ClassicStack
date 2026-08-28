@@ -24,6 +24,7 @@ const (
 	stateStopped      = "stopped"
 	stateRunning      = "running"
 	stateReconfigured = "reconfigured"
+	stateFailed       = "failed"
 )
 
 // ErrUnknownComponent is returned by per-name operations addressing a component the supervisor
@@ -212,6 +213,7 @@ func (s *Supervisor) startNodeLocked(ctx context.Context, name string) error {
 	if err := n.c.Start(ctx); err != nil {
 		n.lastErr = err
 		n.running = false
+		s.publishFailed(name, stateStopped, err)
 		return fmt.Errorf("start %s: %w", name, err)
 	}
 	n.lastErr = nil
@@ -333,6 +335,17 @@ func (s *Supervisor) publish(name, from, to string) {
 		return
 	}
 	s.telemetry.Publish(bus.StateChanged{Component: name, From: from, To: to})
+}
+
+// publishFailed emits a StateChanged{To: stateFailed} carrying err's text, so a start
+// failure that happens with nobody synchronously waiting on it (StartAll at boot, or a
+// reconfigure-driven repair retry) still reaches subscribers — the two cases the web
+// UI's notification centre otherwise has to learn about by polling Status.
+func (s *Supervisor) publishFailed(name, from string, err error) {
+	if s.telemetry == nil {
+		return
+	}
+	s.telemetry.Publish(bus.StateChanged{Component: name, From: from, To: stateFailed, Err: err.Error()})
 }
 
 // topoOrder returns component names in dependency order (a dependency precedes its dependents).
@@ -534,8 +547,12 @@ func (s *Supervisor) Stop(ctx context.Context, name string) error {
 	// component back up after the operator corrects its config. Stopping the component
 	// says the operator wants it down regardless, so the pending-repair flag must not
 	// survive to override that on the next reconfigure.
-	if n := s.nodes[name]; n != nil {
+	if n := s.nodes[name]; n != nil && n.lastErr != nil {
 		n.lastErr = nil
+		// The node never got as far as running, so stopNodeLocked below is a no-op
+		// for it (nothing to stop) and would otherwise never tell a subscriber the
+		// failure notice it raised for this component can be retracted.
+		s.publish(name, stateFailed, stateStopped)
 	}
 	return s.stopTreeLocked(ctx, name)
 }

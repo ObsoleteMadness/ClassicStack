@@ -115,7 +115,13 @@ const (
 )
 
 // StateChanged is published on every component lifecycle transition. Topic()=="state".
-type StateChanged struct{ Component, From, To string }
+// Err carries the failure reason when To is a failed state (empty otherwise), so a
+// subscriber can surface a start failure that happened in the background — at boot or
+// during a reconfigure-driven repair retry — without polling Status for it.
+type StateChanged struct {
+	Component, From, To string
+	Err                 string `json:"Err,omitempty"`
+}
 
 func (StateChanged) Topic() string { return TopicState }
 
