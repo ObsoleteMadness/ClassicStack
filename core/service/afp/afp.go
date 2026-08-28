@@ -123,6 +123,7 @@ type Service struct {
 	resolver   func() ([]VolumeSpec, error) // re-resolves the desired volume set from the model; set at wire time for hot-apply
 	busFor     func(fs.ShareSpec) bus.Bus   // resolves the shared FS-mutation bus for a share's host path (§10d); nil = isolated
 	reactor    *share.Reactor               // §10d coordination consumer; subscribes to same-path buses on Start
+	pub        Publisher                    // telemetry-bus seam for session open/close events; nil = no publishing
 	loginMsg   string                       // greeting served as the login message (FPGetSrvrMsg type 0); "" = none
 	running    bool
 	stopping   bool // Stop's client-notice phase is underway (still serving; a second Stop is a no-op)
@@ -500,6 +501,33 @@ func (s *Service) SetBusResolver(resolve func(fs.ShareSpec) bus.Bus) {
 	s.mu.Lock()
 	s.busFor = resolve
 	s.mu.Unlock()
+}
+
+// Publisher is the telemetry-bus seam: AFP publishes a bus.SessionChanged when an
+// ASP session opens or closes, so a UI can refresh its session table without
+// polling. bus.Bus satisfies it; a nil Publisher disables publishing. Kept narrow
+// (Publish only), mirroring core/service/messenger's seam.
+type Publisher interface {
+	Publish(bus.Event)
+}
+
+// SetPublisher installs the telemetry-bus seam (compose wires ctx.Telemetry here).
+// A nil pub disables publishing. Idempotent; safe before or after Start.
+func (s *Service) SetPublisher(pub Publisher) {
+	s.mu.Lock()
+	s.pub = pub
+	s.mu.Unlock()
+}
+
+// publishSession emits a bus.SessionChanged for AFP, if a Publisher is wired.
+func (s *Service) publishSession() {
+	s.mu.Lock()
+	pub := s.pub
+	s.mu.Unlock()
+	if pub == nil {
+		return
+	}
+	pub.Publish(bus.SessionChanged{Component: "AFP"})
 }
 
 // busForSpec resolves the shared bus for a spec, or nil when no resolver is wired.

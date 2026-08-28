@@ -179,8 +179,12 @@ func newSessionTable() *sessionTable {
 }
 
 // get returns the session for mac, creating one on first contact and opportunistically
-// reclaiming sessions idle past sessionTTL.
-func (t *sessionTable) get(mac [6]byte) *session {
+// reclaiming sessions idle past sessionTTL. changed reports whether the live session
+// count changed (a session was created and/or one or more were reclaimed), so a
+// caller can publish a session-table-changed event only when it actually is one —
+// EtherDFS has no distinct connect opcode, so get() is called on every request and
+// most calls touch no membership change at all.
+func (t *sessionTable) get(mac [6]byte) (s *session, changed bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := time.Now()
@@ -188,6 +192,7 @@ func (t *sessionTable) get(mac [6]byte) *session {
 	if !ok {
 		s = newSession()
 		t.sessions[mac] = s
+		changed = true
 	} else {
 		s.mu.Lock()
 		s.lastSeen = now
@@ -203,9 +208,10 @@ func (t *sessionTable) get(mac [6]byte) *session {
 		if idle {
 			other.closeAll()
 			delete(t.sessions, m)
+			changed = true
 		}
 	}
-	return s
+	return s, changed
 }
 
 // count returns the number of live client sessions (diagnostics / Stats gauge).
@@ -251,8 +257,8 @@ func (t *sessionTable) list() []SessionInfo {
 	return out
 }
 
-// closeAll tears down every session (service Stop).
-func (t *sessionTable) closeAll() {
+// closeAll tears down every session (service Stop) and reports how many there were.
+func (t *sessionTable) closeAll() int {
 	t.mu.Lock()
 	sessions := t.sessions
 	t.sessions = make(map[[6]byte]*session)
@@ -260,4 +266,5 @@ func (t *sessionTable) closeAll() {
 	for _, s := range sessions {
 		s.closeAll()
 	}
+	return len(sessions)
 }

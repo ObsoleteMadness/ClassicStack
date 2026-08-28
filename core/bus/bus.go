@@ -106,6 +106,12 @@ const (
 	// TopicFinder carries in-process client discovery updates (LAN scan results)
 	// so the web SPA can refresh server listings without polling.
 	TopicFinder = "finder"
+	// TopicSession carries a ping when a file-sharing session/connection opens or
+	// closes (AFP, SMB, NCP, EtherDFS), so a UI can refresh its session table
+	// without polling. The event carries no session payload — the UI already has
+	// an HTTP endpoint per protocol to fetch the fresh table; this only tells it
+	// when to call that endpoint again.
+	TopicSession = "session"
 )
 
 // MessageKind values for MessageReceived.Kind.
@@ -132,6 +138,13 @@ type StatSample struct {
 }
 
 func (StatSample) Topic() string { return TopicStats }
+
+// SessionChanged is published when a file-sharing session/connection opens or
+// closes. Component names the protocol service (AFP, SMB, NCP, EtherDFS).
+// Topic()=="session".
+type SessionChanged struct{ Component string }
+
+func (SessionChanged) Topic() string { return TopicSession }
 
 // LogRecord carries TYPED fields — never []slog.Attr / ...any (no reflection, §6).
 // Topic()=="log".

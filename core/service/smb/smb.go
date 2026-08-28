@@ -86,6 +86,7 @@ type Service struct {
 	busFor   func(fs.ShareSpec) bus.Bus  // resolves the shared FS-mutation bus for a share's host path (§10d); nil = isolated
 	reactor  *share.Reactor              // §10d coordination consumer; subscribes to same-path buses on Start
 	sessions map[*smbSession]struct{}    // live circuits, for delivering async NOTIFY_CHANGE completions (§10d push)
+	pub      Publisher                   // telemetry-bus seam for session open/close events; nil = no publishing
 	// bound is the transport families the operator bound (from the SMB server section),
 	// stored so the service DECLARES its own transport intent (BoundTransports) and
 	// dependency edges (Dependencies) — the compose root asks the service instead of
@@ -259,6 +260,7 @@ func (s *Service) registerSession(sess *smbSession) {
 	}
 	s.sessions[sess] = struct{}{}
 	s.mu.Unlock()
+	s.publishSession()
 }
 
 // unregisterSession drops a session from the push set (called from Conn.Close).
@@ -266,6 +268,7 @@ func (s *Service) unregisterSession(sess *smbSession) {
 	s.mu.Lock()
 	delete(s.sessions, sess)
 	s.mu.Unlock()
+	s.publishSession()
 }
 
 // liveSessions snapshots the registered sessions for a §10d push fan-out.
@@ -474,6 +477,33 @@ func (s *Service) busForSpec(spec fs.ShareSpec) bus.Bus {
 		return nil
 	}
 	return resolve(spec)
+}
+
+// Publisher is the telemetry-bus seam: SMB publishes a bus.SessionChanged when a
+// circuit opens or closes, so a UI can refresh its session table without polling.
+// bus.Bus satisfies it; a nil Publisher disables publishing. Kept narrow (Publish
+// only), mirroring core/service/messenger's seam.
+type Publisher interface {
+	Publish(bus.Event)
+}
+
+// SetPublisher installs the telemetry-bus seam (compose wires ctx.Telemetry here).
+// A nil pub disables publishing. Idempotent; safe before or after Start.
+func (s *Service) SetPublisher(pub Publisher) {
+	s.mu.Lock()
+	s.pub = pub
+	s.mu.Unlock()
+}
+
+// publishSession emits a bus.SessionChanged for SMB, if a Publisher is wired.
+func (s *Service) publishSession() {
+	s.mu.Lock()
+	pub := s.pub
+	s.mu.Unlock()
+	if pub == nil {
+		return
+	}
+	pub.Publish(bus.SessionChanged{Component: "SMB"})
 }
 
 // SetEnabled records the configured-enabled flag (component.Enableable). The compose

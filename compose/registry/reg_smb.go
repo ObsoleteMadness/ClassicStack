@@ -26,6 +26,11 @@ func init() {
 		// spec (invalid fs_type×fork×codec triple or missing required param) fails
 		// the build loudly here rather than mangling names at runtime.
 		svc := smb.New(logger)
+		// Publish session open/close pings on the telemetry bus so the web UI's
+		// Sharing Monitor can refresh its SMB tab without polling (mirrors reg_afp.go).
+		if ctx.Telemetry != nil {
+			svc.SetPublisher(ctx.Telemetry)
+		}
 		// Server identity is one top-level value (§4-bis): SMB advertises the shared
 		// Identity.Hostname/Workgroup/Description — no per-service name field, so SMB
 		// and NetBIOS cannot diverge. These hold even with NetBIOS absent (direct-TCP

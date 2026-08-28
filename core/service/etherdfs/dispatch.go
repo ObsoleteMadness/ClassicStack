@@ -28,7 +28,10 @@ import (
 // the wire. So a normal drive lookup below is what makes discovery work; there
 // is deliberately no opcode-0x00 special case.
 func (s *Service) dispatch(req proto.Frame) (status uint16, payload []byte, ok bool) {
-	sess := s.sessions.get(req.SrcMAC)
+	sess, changed := s.sessions.get(req.SrcMAC)
+	if changed {
+		s.publishSession()
+	}
 
 	if cachedStatus, cachedPayload, hit := sess.cachedReply(req.Sequence); hit {
 		return cachedStatus, cachedPayload, true

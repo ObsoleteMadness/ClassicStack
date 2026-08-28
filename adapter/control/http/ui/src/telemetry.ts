@@ -24,6 +24,8 @@ export type FinderEvent = {
 
 export type StateChange = { Component: string; From: string; To: string; Err?: string };
 
+export type SessionChange = { Component: string };
+
 export type LiveConn = 'connecting' | 'connected' | 'offline';
 
 export function isServerOffline(): boolean {
@@ -40,10 +42,11 @@ export const telemetry = {
   onLog: new Set<(r: LogRecord) => void>(),
   onMessage: new Set<(m: ServerMessage) => void>(),
   onFinder: new Set<(f: FinderEvent) => void>(),
+  onSession: new Set<(s: SessionChange) => void>(),
   onConn: new Set<(s: LiveConn) => void>(),
   start() {
     if (this.source) return;
-    const es = new EventSource('subscribe?topics=stats,state,log,message,finder');
+    const es = new EventSource('subscribe?topics=stats,state,log,message,finder,session');
     const setConn = (s: LiveConn): void => {
       if (this.conn === s) return;
       this.conn = s;
@@ -90,6 +93,14 @@ export const telemetry = {
       try {
         const rec = JSON.parse((e as MessageEvent).data) as FinderEvent;
         this.onFinder.forEach((cb) => cb(rec));
+      } catch {
+        /* ignore */
+      }
+    });
+    es.addEventListener('session', (e) => {
+      try {
+        const rec = JSON.parse((e as MessageEvent).data) as SessionChange;
+        this.onSession.forEach((cb) => cb(rec));
       } catch {
         /* ignore */
       }

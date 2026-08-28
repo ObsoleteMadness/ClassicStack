@@ -63,6 +63,11 @@ func init() {
 		if svc == nil {
 			return nil, nil
 		}
+		// Publish session open/close pings on the telemetry bus so the web UI's
+		// Sharing Monitor can refresh its EtherDFS tab without polling (mirrors reg_afp.go).
+		if ctx.Telemetry != nil {
+			svc.SetPublisher(ctx.Telemetry)
+		}
 
 		// Server identity is the shared Identity.Hostname (§4-bis), unless the section
 		// overrides it: EtherDFS advertises this name in AL_INSTALLCHK replies. The

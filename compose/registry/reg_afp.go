@@ -87,6 +87,13 @@ func init() {
 			return out
 		}
 		svc := afp.New(logger)
+		// Publish session open/close pings on the telemetry bus so the web UI's
+		// Sharing Monitor can refresh its AFP tab without polling. A nil bus.Bus
+		// wrapped in the Publisher interface is non-nil and would panic on Publish,
+		// so guard with an explicit nil check (mirrors reg_messenger.go).
+		if ctx.Telemetry != nil {
+			svc.SetPublisher(ctx.Telemetry)
+		}
 		// Server-level identity + bindings (§4): the AFP server section carries the
 		// advertised Chooser name and zone and which transport stacks to bind. An empty
 		// ServerName falls back to the shared Identity.Hostname (then the service's own

@@ -21,6 +21,11 @@ func init() {
 		m := ctx.Model
 		logger := ctx.Logger(ncp.Name)
 		svc := ncp.New(logger)
+		// Publish connection open/close pings on the telemetry bus so the web UI's
+		// Sharing Monitor can refresh its NCP tab without polling (mirrors reg_afp.go).
+		if ctx.Telemetry != nil {
+			svc.SetPublisher(ctx.Telemetry)
+		}
 		// Server-level identity: the NCP section carries an optional override; empty
 		// falls back to the shared §4-bis Identity hostname/description (upper-cased
 		// to a NetWare name by the service). InternalNetwork 0 = derive from MAC.

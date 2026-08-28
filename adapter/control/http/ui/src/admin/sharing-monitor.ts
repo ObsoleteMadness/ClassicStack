@@ -1,5 +1,5 @@
 import { api, type AFPSessionInfo, type EtherDFSSessionInfo, type NCPSessionInfo, type SMBSessionInfo } from '../api';
-import { telemetry } from '../telemetry';
+import { telemetry, type SessionChange } from '../telemetry';
 import { formatBytes } from './dom';
 import { escapeHtml, mountFloatingWindow, raise } from './floating-window';
 import './tabs';
@@ -48,7 +48,7 @@ function rateLabel(n: number): string {
 /** Sharing Monitor: live sessions per file-sharing protocol. */
 export class SharingMonitorWindow extends HTMLElement {
   private tab: Tab = 'AFP';
-  private timer: ReturnType<typeof setInterval> | null = null;
+  private onSession: ((s: SessionChange) => void) | null = null;
 
   connectedCallback(): void {
     this.classList.add('activity-window', 'sharing-monitor');
@@ -113,12 +113,15 @@ export class SharingMonitorWindow extends HTMLElement {
 
   private start(): void {
     this.stop();
-    this.timer = setInterval(() => void this.refresh(), 2500);
+    this.onSession = (s) => {
+      if (s.Component === this.tab) void this.refresh();
+    };
+    telemetry.onSession.add(this.onSession);
   }
 
   private stop(): void {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
+    if (this.onSession) telemetry.onSession.delete(this.onSession);
+    this.onSession = null;
   }
 
   private async refresh(): Promise<void> {

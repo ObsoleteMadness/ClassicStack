@@ -77,6 +77,7 @@ type Service struct {
 	auth        Authenticator
 
 	conns *connTable
+	pub   Publisher // telemetry-bus seam for connection open/close events; nil = no publishing
 
 	mu        sync.Mutex
 	running   bool
@@ -334,6 +335,33 @@ func (s *Service) busForSpec(spec fs.ShareSpec) bus.Bus {
 		return nil
 	}
 	return resolve(spec)
+}
+
+// Publisher is the telemetry-bus seam: NCP publishes a bus.SessionChanged when a
+// connection is created or destroyed, so a UI can refresh its session table
+// without polling. bus.Bus satisfies it; a nil Publisher disables publishing.
+// Kept narrow (Publish only), mirroring core/service/messenger's seam.
+type Publisher interface {
+	Publish(bus.Event)
+}
+
+// SetPublisher installs the telemetry-bus seam (compose wires ctx.Telemetry here).
+// A nil pub disables publishing. Idempotent; safe before or after Start.
+func (s *Service) SetPublisher(pub Publisher) {
+	s.mu.Lock()
+	s.pub = pub
+	s.mu.Unlock()
+}
+
+// publishSession emits a bus.SessionChanged for NCP, if a Publisher is wired.
+func (s *Service) publishSession() {
+	s.mu.Lock()
+	pub := s.pub
+	s.mu.Unlock()
+	if pub == nil {
+		return
+	}
+	pub.Publish(bus.SessionChanged{Component: "NCP"})
 }
 
 // SetEnabled records the configured-enabled flag (component.Enableable). The compose

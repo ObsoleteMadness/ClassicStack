@@ -67,6 +67,7 @@ type Service struct {
 	resolver func() ([]DriveSpec, error)
 
 	sessions *sessionTable
+	pub      Publisher // telemetry-bus seam for session open/close events; nil = no publishing
 }
 
 // New builds the EtherDFS service over an already-built EtherDFS port (the wire
@@ -94,7 +95,9 @@ func (s *Service) Name() string { return Name }
 // Stop tears down the per-client sessions, then stops the embedded port (closing
 // the link).
 func (s *Service) Stop(ctx context.Context) error {
-	s.sessions.closeAll()
+	if n := s.sessions.closeAll(); n > 0 {
+		s.publishSession()
+	}
 	// Definitive teardown: close each drive's FS backend to release any GC-invisible
 	// resource (zipfs handles, macgarden goroutine). A plain backend's Close is a no-op.
 	s.mu.Lock()
@@ -152,6 +155,33 @@ func (s *Service) SetDriveResolver(f func() ([]DriveSpec, error)) {
 	s.mu.Lock()
 	s.resolver = f
 	s.mu.Unlock()
+}
+
+// Publisher is the telemetry-bus seam: EtherDFS publishes a bus.SessionChanged
+// when a client session is created or reclaimed, so a UI can refresh its session
+// table without polling. bus.Bus satisfies it; a nil Publisher disables
+// publishing. Kept narrow (Publish only), mirroring core/service/messenger's seam.
+type Publisher interface {
+	Publish(bus.Event)
+}
+
+// SetPublisher installs the telemetry-bus seam (compose wires ctx.Telemetry here).
+// A nil pub disables publishing. Idempotent; safe before or after Start.
+func (s *Service) SetPublisher(pub Publisher) {
+	s.mu.Lock()
+	s.pub = pub
+	s.mu.Unlock()
+}
+
+// publishSession emits a bus.SessionChanged for EtherDFS, if a Publisher is wired.
+func (s *Service) publishSession() {
+	s.mu.Lock()
+	pub := s.pub
+	s.mu.Unlock()
+	if pub == nil {
+		return
+	}
+	pub.Publish(bus.SessionChanged{Component: "EtherDFS"})
 }
 
 // ApplyConfig hot-applies a reconfigure (component.Configurable), overriding the

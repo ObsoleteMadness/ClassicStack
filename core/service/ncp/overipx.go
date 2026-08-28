@@ -132,6 +132,7 @@ func (t *OverIPX) handleCreate(d *ipxproto.Datagram, ep endpoint, req *ncpproto.
 	t.svc.logging.Log(log.Debug, "NCP create connection",
 		log.Int("conn", int64(c.number)), log.Str("client", ep.String()))
 	t.svc.pushStats()
+	t.svc.publishSession()
 
 	r := ncpproto.Reply(req, c.number, ncpproto.CompletionSuccess)
 	r.Type = ncpproto.TypeReply
@@ -151,6 +152,7 @@ func (t *OverIPX) handleDestroy(d *ipxproto.Datagram, ep endpoint, req *ncpproto
 	delete(t.conns, ep)
 	t.mu.Unlock()
 	t.svc.pushStats()
+	t.svc.publishSession()
 	t.reply(d, ncpproto.Reply(req, num, ncpproto.CompletionSuccess), nil)
 }
 
@@ -217,9 +219,13 @@ func closeConnFiles(c *connection) {
 // closeCircuits tears down every live circuit's connection on service Stop
 // (circuitCloser). Open file handles are released so nothing leaks.
 func (t *OverIPX) closeCircuits() {
-	for _, c := range t.svc.conns.All() {
+	live := t.svc.conns.All()
+	for _, c := range live {
 		closeConnFiles(c)
 		t.svc.conns.Destroy(c.number)
+	}
+	if len(live) > 0 {
+		t.svc.publishSession()
 	}
 	t.mu.Lock()
 	t.conns = make(map[endpoint]*Conn)

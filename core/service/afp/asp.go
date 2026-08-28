@@ -250,6 +250,7 @@ func (s *Service) handleOpenSession(req atpRequest) {
 	}
 	reply.SessionID = sess.id
 	req.respond(s.rtr, reply.MarshalUserData(), nil)
+	s.publishSession()
 
 	// Start the per-session maintenance loop: it tickles the workstation to keep
 	// the session alive and reaps it if the client goes silent past the
@@ -276,6 +277,7 @@ func (s *Service) teardownSession(sess *session) {
 		sess.conn.Close()
 	}
 	s.sessions.close(sess.id)
+	s.publishSession()
 }
 
 // handleCloseSession tears down the session and replies empty (UserData 0). Any
