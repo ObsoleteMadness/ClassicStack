@@ -50,7 +50,7 @@ func main() {
 func run() error {
 	var (
 		network = flag.Uint("net", 0, "AppleTalk network number (0 = local segment)")
-		srcNode = flag.Uint("src", 0x01, "our LocalTalk source node (1..254)")
+		srcNode = flag.Uint("src", 0x01, "our LocalTalk source node (1..254) — with -claim (the default), this is only the desired first candidate for the LLAP node-claim; the node actually used may differ if it's taken")
 		dstNode = flag.Uint("dst", broadcastNode, "router node to query (0xFF = broadcast to any router)")
 		timeout = flag.Duration("timeout", 2*time.Second, "per-request reply timeout")
 		local   = flag.Bool("local", false, "GetLocalZones: only zones on our own network")
@@ -86,11 +86,11 @@ func run() error {
 
 	// Open the selected AppleTalk transport (LToUDP by default; -transport tashtalk or
 	// pcap selects the others) and wrap it in the client SDK's DDP endpoint + ATP requester.
-	dl, err := at.Open(uint16(*network), uint8(*srcNode))
+	dl, node, err := at.Open(uint16(*network), uint8(*srcNode))
 	if err != nil {
 		return err
 	}
-	ep := atalk.NewEndpoint(dl, atalk.Addr{Network: uint16(*network), Node: uint8(*srcNode)})
+	ep := atalk.NewEndpoint(dl, atalk.Addr{Network: uint16(*network), Node: node})
 	defer func() { _ = ep.Close() }()
 
 	dst := atalk.Addr{Network: uint16(*network), Node: uint8(*dstNode)}

@@ -33,6 +33,7 @@ type Options struct {
 	Device    string // tashtalk: serial device path (COM3, /dev/ttyUSB0)
 	Baud      uint   // tashtalk: line speed (0 → adapter default)
 	ListIface bool   // -list-ifaces: print capturable pcap NICs and exit (see PrintInterfaces)
+	Claim     bool   // ltoudp/tashtalk: run a real LLAP ENQ/ACK node-claim (default true)
 }
 
 // Flags registers the transport-selection flags on fs and returns the Options the
@@ -49,6 +50,10 @@ func Flags(fs *flag.FlagSet) *Options {
 		"tashtalk: serial line speed (0 → adapter default)")
 	fs.BoolVar(&o.ListIface, "list-ifaces", false,
 		"list the capturable pcap NICs (the names -iface accepts) and exit")
+	fs.BoolVar(&o.Claim, "claim", true,
+		"ltoudp/tashtalk: run a real LLAP ENQ/ACK node-claim for our address (-src is only the "+
+			"desired first candidate; adds up to ~2s on a quiet segment). -claim=false asserts "+
+			"-net/-src directly with no negotiation, the old behavior")
 	return o
 }
 
@@ -59,17 +64,26 @@ func Flags(fs *flag.FlagSet) *Options {
 func PrintInterfaces(w io.Writer) { link.PrintInterfaces(w) }
 
 // Open builds the selected transport as a DDP DatagramLink, delegating to client/link.
-// network and srcNode are this client's asserted AppleTalk address for the LocalTalk
-// framers (the EtherTalk framer broadcasts and ignores them). The caller closes the link.
-func (o *Options) Open(network uint16, srcNode uint8) (corelink.DatagramLink, error) {
+// network and srcNode are this client's AppleTalk address for the LocalTalk framers
+// (the EtherTalk framer broadcasts and ignores them); when o.Claim is set (the
+// default) srcNode is only the desired first LLAP node-claim candidate, and the
+// second return value is the node actually claimed (which may differ). With Claim
+// false, or on a non-LocalTalk transport, the returned node is srcNode unchanged.
+// The caller closes the link.
+func (o *Options) Open(network uint16, srcNode uint8) (corelink.DatagramLink, uint8, error) {
 	name := o.Iface
 	if o.Transport == link.KindTashTalk {
 		name = o.Device
 	}
 	opener := &link.Opener{
-		Spec: link.Spec{Kind: o.Transport, Name: name, Baud: o.Baud},
-		Net:  network,
-		Node: srcNode,
+		Spec:      link.Spec{Kind: o.Transport, Name: name, Baud: o.Baud},
+		Net:       network,
+		Node:      srcNode,
+		ClaimNode: o.Claim,
 	}
-	return opener.DatagramLinkDDP()
+	dl, err := opener.DatagramLinkDDP()
+	if err != nil {
+		return nil, 0, err
+	}
+	return dl, opener.Node, nil
 }

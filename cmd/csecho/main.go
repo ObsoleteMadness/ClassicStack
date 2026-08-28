@@ -44,7 +44,7 @@ func main() {
 func run() error {
 	var (
 		network = flag.Uint("net", 0, "AppleTalk network number we claim as our source (0 = the AppleTalk \"startup range\" placeholder — a strict peer may legitimately ignore requests from a node still asserting network 0; pass the segment's real network number, e.g. -net 1, if a peer that answers a real client doesn't answer this probe)")
-		srcNode = flag.Uint("src", 0x01, "our LocalTalk source node (1..254)")
+		srcNode = flag.Uint("src", 0x01, "our LocalTalk source node (1..254) — with -claim (the default), this is only the desired first candidate for the LLAP node-claim; the node actually used may differ if it's taken")
 		dstNode = flag.Uint("dst", 0xFF, "destination node (0xFF = broadcast to every node)")
 		count   = flag.Int("count", 1, "number of echo requests to send")
 		timeout = flag.Duration("timeout", 2*time.Second, "per-request reply timeout")
@@ -74,11 +74,11 @@ func run() error {
 	// pcap selects the others) and wrap it in the client SDK's DDP endpoint. A static Addr
 	// supplies our claimed network/node (no node-claim handshake — a probe client asserts
 	// one, as it may).
-	dl, err := at.Open(uint16(*network), uint8(*srcNode))
+	dl, node, err := at.Open(uint16(*network), uint8(*srcNode))
 	if err != nil {
 		return err
 	}
-	ep := atalk.NewEndpoint(dl, atalk.Addr{Network: uint16(*network), Node: uint8(*srcNode)})
+	ep := atalk.NewEndpoint(dl, atalk.Addr{Network: uint16(*network), Node: node})
 	defer func() { _ = ep.Close() }()
 
 	dst := atalk.Addr{Network: uint16(*network), Node: uint8(*dstNode)}

@@ -99,12 +99,23 @@ func ParseSpec(s string) (Spec, error) {
 // connection and handed to the scheme's factory through client.Options.
 type Opener struct {
 	Spec Spec
-	// Net / Node is this client's asserted AppleTalk address for the DDP framers. A
-	// probe client asserts one rather than running a node-claim handshake; the AFP
-	// client may run a real LLAP/AARP claim above the FrameLink instead (see
-	// client/atalk), in which case it opens a FrameLink and frames it itself.
+	// Net / Node is this client's AppleTalk address for the DDP framers. When
+	// ClaimNode is false (a static assert, no negotiation) both are used as given.
+	// When ClaimNode is true (LocalTalk transports only — ltoudp/tashtalk) Node is
+	// only the DESIRED first candidate for the LLAP ENQ/ACK node-claim;
+	// DatagramLinkDDP overwrites it with whatever node the claim actually accepted
+	// once it returns, so callers that read Node afterwards (e.g. to build a
+	// client/atalk.Addr) see the real claimed node.
 	Net  uint16
 	Node uint8
+	// ClaimNode, when true, makes DatagramLinkDDP run a real LLAP ENQ/ACK node-claim
+	// on a LocalTalk transport (ltoudp/tashtalk) instead of asserting Net/Node
+	// directly — the LocalTalk analogue of EtherTalk AARP, so this client behaves
+	// like a real node (collision-free, spec-conformant address) rather than
+	// guessing. It adds the claim's latency to the first send (up to ~2s on a quiet
+	// segment, per llap.DefaultProbeCount @ 250ms — an unanswered probe burst is what
+	// accepts the candidate). Ignored by transports other than ltoudp/tashtalk.
+	ClaimNode bool
 	// MAC, when non-zero, is the Ethernet source a raw-Ethernet client transport
 	// (SMB-over-IPX, EtherDFS, NBF) stamps. NewOpener fills this from the host NIC
 	// for pcap/tap (the same "be the host" default the server uses: WiFi APs drop
@@ -237,9 +248,19 @@ func (o *Opener) DatagramLinkDDP() (link.DatagramLink, error) {
 	}
 	switch o.Spec.Kind {
 	case KindLToUDP, "":
-		return openLToUDP(o.Spec.Name, o.Net, o.Node)
+		dl, node, err := openLToUDP(o.Spec.Name, o.Net, o.Node, o.ClaimNode)
+		if err != nil {
+			return nil, err
+		}
+		o.Node = node
+		return dl, nil
 	case KindTashTalk:
-		return openTashTalk(o.Spec.Name, o.Spec.Baud, o.Net, o.Node)
+		dl, node, err := openTashTalk(o.Spec.Name, o.Spec.Baud, o.Net, o.Node, o.ClaimNode)
+		if err != nil {
+			return nil, err
+		}
+		o.Node = node
+		return dl, nil
 	case KindPcap:
 		return openPcapDDP(o.Spec.Name, o.MAC, o.CapturePath, o.CaptureSnaplen)
 	case KindInmem:
