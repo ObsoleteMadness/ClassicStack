@@ -106,6 +106,7 @@ go build -tags "pcap fuse" -o csmount ./cmd/csmount   # macOS/Linux need fuse
 | **`csecho`** | AEP echo (AppleTalk “ping”). Default transport LToUDP; `-transport tashtalk` or `pcap` for others. |
 | **`csnbp`** | NBP lookup (`object:type@zone`), like netatalk `nbplkup`. Wildcards: `=` for object/type, `*` for this zone. |
 | **`csgetzones`** | ZIP zone list (`GetZoneList` / `-local` / `-my`), like netatalk `getzones`. |
+| **`cspap`** | Minimal PAP client: enumerates printer shares by NBP type and reads each one's status string. |
 
 ### IPX / NetBIOS / NetWare helpers
 

@@ -260,7 +260,7 @@ experimental" notice regardless of outcome. On any other OS, this binary is a st
 
 ## 3. AppleTalk diagnostics
 
-These three share the `atlink` transport flags (`cmd/internal/atlink`):
+These four share the `atlink` transport flags (`cmd/internal/atlink`):
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -269,6 +269,7 @@ These three share the `atlink` transport flags (`cmd/internal/atlink`):
 | `-device` | *(empty)* | tashtalk: serial device path (e.g. `COM3` or `/dev/ttyUSB0`). |
 | `-baud` | `0` | tashtalk: serial line speed (`0` → adapter default). |
 | `-list-ifaces` | `false` | List the capturable pcap NICs and exit. |
+| `-claim` | `true` | ltoudp/tashtalk: run a real LLAP ENQ/ACK node-claim for `-src` instead of asserting it directly. `-claim=false` restores the old static-assert behavior (requires an explicit `-src 1..254`). |
 
 ### `csecho`
 
@@ -280,8 +281,8 @@ csecho [flags]
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `-net` | `0` | AppleTalk network number (`0` = local segment). |
-| `-src` | `0x01` | Our LocalTalk source node (1–254). |
+| `-net` | `0` | AppleTalk network number we claim as our source (`0` = the AppleTalk "startup range" placeholder — a strict peer may ignore requests from it; pass the segment's real network number if a peer that answers a real client doesn't answer this probe). |
+| `-src` | `0` | Our LocalTalk source node. `0` (default) picks a random workstation-range candidate (1–127) for the LLAP node-claim (`-claim`, on by default); `1`–`254` requests a specific candidate instead — the node actually used may still differ if it's taken. Requires `-claim` when `0`. |
 | `-dst` | `0xFF` | Destination node (`0xFF` = broadcast to every node). |
 | `-count` | `1` | Number of echo requests to send. |
 | `-timeout` | `2s` | Per-request reply timeout. |
@@ -312,8 +313,8 @@ Resolves an NBP name to its registered addresses. Omitted fields wildcard: `=` f
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `-net` | `0` | AppleTalk network number (`0` = local segment). |
-| `-src` | `0x01` | Our LocalTalk source node (1–254). |
+| `-net` | `0` | AppleTalk network number we claim as our source (`0` = the AppleTalk "startup range" placeholder — a strict peer may ignore requests from it; pass the segment's real network number if a peer that answers a real client doesn't answer this probe). |
+| `-src` | `0` | Our LocalTalk source node. `0` (default) picks a random workstation-range candidate (1–127) for the LLAP node-claim (`-claim`, on by default); `1`–`254` requests a specific candidate instead — the node actually used may still differ if it's taken. Requires `-claim` when `0`. |
 | `-timeout` | `2s` | How long to collect replies. |
 | `-v` | `false` | Verbose wire trace to stderr. |
 | `-version` | `false` | Print version information and exit. |
@@ -338,8 +339,8 @@ csgetzones [flags]
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `-net` | `0` | AppleTalk network number (`0` = local segment). |
-| `-src` | `0x01` | Our LocalTalk source node (1–254). |
+| `-net` | `0` | AppleTalk network number (`0` = local segment). csgetzones queries routers, which must accept network-0 requests — that's the startup negotiation — so unlike csecho/csnbp there's no strict-peer caveat here. |
+| `-src` | `0` | Our LocalTalk source node. `0` (default) picks a random workstation-range candidate (1–127) for the LLAP node-claim (`-claim`, on by default); `1`–`254` requests a specific candidate instead — the node actually used may still differ if it's taken. Requires `-claim` when `0`. |
 | `-dst` | `0xFF` | Router node to query (`0xFF` = broadcast to any router). |
 | `-timeout` | `2s` | Per-request reply timeout. |
 | `-local` | `false` | `GetLocalZones` — only zones on our own network. |
@@ -353,6 +354,38 @@ csgetzones -my -dst 12
 ```
 
 **Exit status:** `1` on error (printed as `csgetzones: <err>`); `0` otherwise.
+
+---
+
+### `cspap`
+
+Minimal PAP (Printer Access Protocol) client: enumerates printer shares by NBP type and
+reports each one's status string — the same text the Classic Mac Chooser shows next to a
+LaserWriter icon. ATP-carried (DDP type 3); no PAP connection is opened, only a single
+SendStatus/Status transaction per printer.
+
+```text
+cspap [flags] [object]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `-net` | `0` | AppleTalk network number we claim as our source (`0` = the AppleTalk "startup range" placeholder — a strict peer may ignore requests from it; pass the segment's real network number if a peer that answers a real client doesn't answer this probe). |
+| `-src` | `0` | Our LocalTalk source node. `0` (default) picks a random workstation-range candidate (1–127) for the LLAP node-claim (`-claim`, on by default); `1`–`254` requests a specific candidate instead. Requires `-claim` when `0`. |
+| `-type` | `LaserWriter` | NBP type to browse. Pass `=` to browse every type in the zone — every match then gets a status query, including non-PAP entries, which will just time out. |
+| `-zone` | *(empty → this zone)* | AppleTalk zone to search. |
+| `-timeout` | `2s` | How long to collect NBP replies, and the per-printer PAP status timeout. |
+| `-status` | `true` | Query each printer's PAP status (`SendStatus`) after finding it. `-status=false` only enumerates names/addresses. |
+| `-v` | `false` | Verbose wire trace to stderr. |
+| `-version` | `false` | Print version information and exit. |
+
+```bash
+cspap                       # every LaserWriter-type share in this zone, with status
+cspap -type = -status=false # every NBP name in the zone, no status query
+```
+
+**Exit status:** `1` on error (printed as `cspap: <err>`); `0` otherwise (finding no printer
+shares is not an error).
 
 ---
 
@@ -515,7 +548,7 @@ tool's flags:
 |---|---|
 | `cmd/internal/cli` | `classicstack`, `classicstack-svc run`, `classicstackd run` (`-config`, `-http`, `-version`, `-list-ifaces`) |
 | `cmd/internal/buildinfo` | Every tool's `-version` output |
-| `cmd/internal/atlink` | `csecho`, `csnbp`, `csgetzones` (`-transport`, `-iface`, `-device`, `-baud`, `-list-ifaces`) |
+| `cmd/internal/atlink` | `csecho`, `csnbp`, `csgetzones`, `cspap` (`-transport`, `-iface`, `-device`, `-baud`, `-list-ifaces`, `-claim`) |
 | `cmd/internal/csconnect` | `csfs` (`cmd/csclient`), `csmount` (`-ifacetype`, `-iface`, `-fork`, `-mac`, `-transport`, `-frametype`/`-framing`, `-v`, `-list-ifaces`, `-version`, `-cache-ms`) |
 
 `csipxping`, `csncpinfo`, `csnetsend`, and `csnetview` declare their flags directly (no shared
@@ -532,7 +565,7 @@ just enough tags to reach the NIC:
 
 | Need | Tag |
 |---|---|
-| Raw Ethernet capture (any of csecho/csnbp/csgetzones/csipxping/csncpinfo/csnetsend/csnetview, csfs, csmount) | `pcap` |
+| Raw Ethernet capture (any of csecho/csnbp/csgetzones/cspap/csipxping/csncpinfo/csnetsend/csnetview, csfs, csmount) | `pcap` |
 | FUSE mount support in `csmount` on macOS/Linux | `fuse` (needs cgo + macFUSE/libfuse headers) |
 | Full desktop build (everything at once) | `all` |
 

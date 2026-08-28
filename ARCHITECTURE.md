@@ -214,7 +214,7 @@ isn't an adapter *for* the server — it's a peer consumer of the same `core/fs`
 | `cmd/classicstack-svc`, `cmd/classicstackd` | Windows service / Unix daemon wrappers around the same run-core |
 | `cmd/classicstack-tray` | macOS/Windows tray app |
 | `cmd/csfs`/`cmd/csclient`, `cmd/csmount` | File-client CLI and host-mount tool, both over `client/` |
-| `cmd/csecho`, `cmd/csnbp`, `cmd/csgetzones`, `cmd/csipxping`, `cmd/csncpinfo`, `cmd/csnetsend`, `cmd/csnetview` | AppleTalk/IPX/NetBIOS diagnostic tools |
+| `cmd/csecho`, `cmd/csnbp`, `cmd/csgetzones`, `cmd/cspap`, `cmd/csipxping`, `cmd/csncpinfo`, `cmd/csnetsend`, `cmd/csnetview` | AppleTalk/IPX/NetBIOS diagnostic tools |
 | `cmd/cs-tinygo` | The minimal TinyGo-safe core subset smoke target (§6) |
 | `cmd/internal/cli` | The shared run-core: flag/TOML/UCI parsing, `runtime.Load`/`Build`, the interactive/service/daemon entry points all call into this |
 | `cmd/internal/csconnect` | Shared CLI flag/URI plumbing between `csfs`/`csmount` |
