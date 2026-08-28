@@ -1,5 +1,5 @@
 import { api, type HostInfo, type Unit } from '../api';
-import { telemetry } from '../telemetry';
+import { telemetry, type LiveConn } from '../telemetry';
 import { btn, el, formatBytes } from './dom';
 import { alertError } from './prompt';
 import { kindLabel, type NotificationCentre } from './notifications';
@@ -295,17 +295,24 @@ export function mountControlPlane(
     refreshTimer = setTimeout(() => void refresh(), 150);
   };
   telemetry.onState.add(onState);
-  telemetry.onConn.add(() => paintConn());
+  // A reconnect (e.g. after a network blip) may have missed state transitions
+  // that happened while the SSE stream was down, so treat "back online" as a
+  // reason to re-fetch rather than trusting the stale cached units/host — this
+  // is what previously relied on the 5s poll eventually catching up.
+  const onConn = (s: LiveConn): void => {
+    paintConn();
+    if (s === 'connected') void refresh();
+  };
+  telemetry.onConn.add(onConn);
   telemetry.onStats.add(() => paintMetrics());
 
-  const poll = setInterval(() => void refresh(), 5000);
   void refresh();
 
   const obs = new MutationObserver(() => {
     if (document.body.contains(aside)) return;
-    clearInterval(poll);
     notify.onChange.delete(onNotices);
     telemetry.onState.delete(onState);
+    telemetry.onConn.delete(onConn);
     obs.disconnect();
   });
   obs.observe(document.body, { childList: true, subtree: true });
