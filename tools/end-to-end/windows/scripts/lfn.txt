@@ -1,0 +1,61 @@
+# ClassicStack SMB long-file-name (LFN) tests — Win32 only.
+#
+# Exercises ClassicStack's SMB long-name support: create files whose names
+# exceed 8.3, then enumerate the directory and confirm each long name comes back
+# intact along with its generated 8.3 short name. Run this on a Win32 guest
+# (NT / 95); on Win16 the DOS redirector only ever sees 8.3 names, so these
+# tests are meaningless there and this script is not shipped on the Win16 floppy.
+#
+# To run: rename this file to script.txt on the floppy (or pass it as the
+# second script), so SMBE2E.EXE picks it up. Results go to results.txt; each
+# enumerated entry is emitted in the standardized RESULT-FORMAT.md form, so the
+# harness can assert the long name == what was created and the short name is a
+# valid 8.3 mangle.
+
+# --- Mount ----------------------------------------------------------------
+Mount server="CLASSICSTACK" share="Foo" drive="N:"
+
+# --- Create a set of long-named files at the root ------------------------
+CreateDir name="LFN Test Folder"
+SetDir name="LFN Test Folder"
+
+CreateFile name="A Long File Name.txt"
+WriteFile name="A Long File Name.txt" data="long name one"
+StatFile name="A Long File Name.txt"
+
+CreateFile name="Report Q3 2026 (final).doc"
+WriteFile name="Report Q3 2026 (final).doc" data="long name two"
+StatFile name="Report Q3 2026 (final).doc"
+
+CreateFile name="mixed.Case.Multiple.Dots.dat"
+WriteFile name="mixed.Case.Multiple.Dots.dat" data="long name three"
+StatFile name="mixed.Case.Multiple.Dots.dat"
+
+CreateFile name="file with trailing spaces   .txt"
+StatFile name="file with trailing spaces   .txt"
+
+# --- Enumerate and confirm every long name round-trips -------------------
+# Each entry line carries name="..." (the LFN) and short="..." (the 8.3 alias);
+# the harness asserts the long names match what was created above.
+EnumerateDir
+
+# --- Long directory names too --------------------------------------------
+CreateDir name="Nested Long Directory Name"
+SetDir name="Nested Long Directory Name"
+CreateFile name="deep long name.txt"
+WriteFile name="deep long name.txt" data="deep"
+EnumerateDir
+SetDirRoot
+
+# --- Cleanup --------------------------------------------------------------
+SetDir name="LFN Test Folder"
+DeleteFile name="A Long File Name.txt"
+DeleteFile name="Report Q3 2026 (final).doc"
+DeleteFile name="mixed.Case.Multiple.Dots.dat"
+DeleteFile name="file with trailing spaces   .txt"
+SetDirRoot
+DeleteDir name="LFN Test Folder"
+
+# --- Teardown -------------------------------------------------------------
+Unmount
+Disconnect

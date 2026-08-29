@@ -1,0 +1,91 @@
+.TH CSNETSEND 1 "2026-08-26" "ClassicStack" "ClassicStack Manual"
+.SH NAME
+csnetsend \- send a NetBIOS Messenger (WinPopup) pop\-up message
+.SH SYNOPSIS
+.B csnetsend
+.B \-iface
+.I dev
+.B \-to
+.IR name , protocol
+.B \-text
+.I msg
+[\fIflags\fR]
+.SH DESCRIPTION
+.B csnetsend
+sends a NetBIOS Messenger service datagram \(em a classic Windows
+.B "net send"
+or WinPopup pop\-up \(em over a raw network interface.
+.PP
+Requires a build with the
+.B pcap
+tag (libpcap/Npcap) and privilege to open the network interface.
+.SH OPTIONS
+.TP
+.BI \-iface " dev"
+Interface to send from: a pcap or TUN/TAP device name.  Omit to
+auto\-detect the primary network interface.  Required (checked jointly with
+.B \-to
+and
+.BR \-text ).
+.TP
+.BI \-ifacetype " type"
+Interface type:
+.BR pcap " (default, libpcap/Npcap NIC) or " tap " (Linux TUN/TAP)."
+.TP
+.BI \-to " name,protocol"
+Recipient, as
+.IR name , protocol .
+.I protocol
+is
+.B nbf
+(NetBEUI) or
+.B nbipx
+(NetBIOS\-over\-IPX).  Required.
+.TP
+.BI \-from " name"
+Sender name (the From field).  Default:
+.BR CLASSICSTACK .
+.TP
+.BI \-text " message"
+Message text.  Required.
+.TP
+.BI \-mac " address"
+Source MAC for our virtual station.  Default: a random
+locally\-administered address.
+.TP
+.B \-v
+Verbose wire trace to stderr.
+.TP
+.B \-list\-ifaces
+List the capturable pcap network interfaces and exit.
+.TP
+.B \-version
+Print version information and exit.
+.SH EXIT STATUS
+.TP
+.B 0
+The message was sent successfully.
+.TP
+.B 1
+An error occurred, including missing
+.BR \-iface / \-to / \-text
+(printed as
+.BR "csnetsend: <error>" ).
+.SH EXAMPLES
+.EX
+csnetsend \-iface eth0 \-to WORKSTATION,nbf \-text "Server rebooting in 5 minutes"
+.EE
+.SH BUILDING
+.EX
+go build \-tags pcap \-o csnetsend ./cmd/csnetsend
+.EE
+.SH SEE ALSO
+.BR csnetview (1),
+.BR csipxping (1),
+.BR csncpinfo (1)
+.br
+Full flag reference: https://obsoletemadness.github.io/ClassicStack/docs/cli/
+.SH AUTHOR
+ClassicStack is developed by the ObsoleteMadness project and contributors.
+.SH LICENSE
+ClassicStack is released under the GNU General Public License v3.0 or later.

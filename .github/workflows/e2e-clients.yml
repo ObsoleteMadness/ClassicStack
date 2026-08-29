@@ -1,0 +1,115 @@
+name: E2E Clients
+
+# Builds the vintage-client test tools under tools/end-to-end and publishes
+# their disk images as artifacts. These are not part of the PR gate — they
+# produce the floppy images that get run by hand under an emulator (86Box for
+# the Windows clients, Snow/Mini vMac for the Mac client); see
+# tools/end-to-end/{windows,macos}/readme.md for the run procedure.
+
+on:
+  push:
+    branches:
+      - feature/refactor
+    paths:
+      - "tools/end-to-end/**"
+      - ".github/workflows/e2e-clients.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  win32:
+    name: Build Win32 SMB client (MSVC 1.2)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: cmd
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build SMBE2E.EXE + floppy image
+        working-directory: tools/end-to-end/windows/win32
+        run: build.bat floppy
+
+      - name: Upload disk image
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-win32-smb-disk
+          path: tools/end-to-end/windows/win32/SMBE2E1.img
+          if-no-files-found: error
+
+  win16:
+    name: Build Win16 SMB client (MSVC 1.5)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: cmd
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # build.bat hardcodes OTVDM=c:\otvdm\otvdm.exe: it runs NMAKE (and the
+      # CL driver's TNT-extended compiler passes) under otvdm, the only piece
+      # of the win16 toolchain that isn't committed under tools/msvc/win16
+      # (see tools/end-to-end/windows/readme.md's Toolchains section). Pin a
+      # version rather than tracking "latest" since this is a compiler-adjacent
+      # dependency other CI pins already treat the same way (TinyGo, ESP-IDF).
+      - name: Install otvdm
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "v0.9.0"
+          Invoke-WebRequest -Uri "https://github.com/otya128/winevdm/releases/download/$version/otvdm-$version.zip" -OutFile "$env:RUNNER_TEMP\otvdm.zip"
+          Expand-Archive -Path "$env:RUNNER_TEMP\otvdm.zip" -DestinationPath "$env:RUNNER_TEMP\otvdm-extracted"
+          Move-Item "$env:RUNNER_TEMP\otvdm-extracted\otvdm-$version" "C:\otvdm"
+          if (-not (Test-Path "C:\otvdm\otvdm.exe")) {
+            throw "C:\otvdm\otvdm.exe not found after extracting otvdm"
+          }
+
+      - name: Build SMBE2E.EXE + floppy image
+        working-directory: tools/end-to-end/windows/win16
+        run: build.bat floppy
+
+      - name: Upload disk image
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-win16-smb-disk
+          path: tools/end-to-end/windows/win16/SMBE2E1.img
+          if-no-files-found: error
+
+  macos:
+    name: Build macOS AFP client (Retro68)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # ghcr.io/autc04/retro68 is the official Retro68 cross-toolchain image
+      # (68k/PPC gcc + the hmount/hcopy/hattrib disk-image tools); only a
+      # "latest" tag is published upstream, rebuilt on every Retro68 merge.
+      # Mirrors the manual build recipe in tools/end-to-end/macos/readme.md,
+      # just with the container's toolchain file path instead of the WSL one.
+      #
+      # The image's default "multiversal" interfaces (Retro68's free, still-
+      # incomplete reimplementation of Apple's headers) don't implement
+      # pre-System-7 APIs like AppleTalk.h yet, which afp/atalk.h needs. The
+      # container's entrypoint switches to the real thing given
+      # INTERFACES=universal + INTERFACESFILE pointing at a MacBinary
+      # DiskCopy image of Apple's Universal Interfaces — tools/end-to-end/
+      # tools/mpw/MPW-GM.img.bin (pinned in-repo alongside the MSVC kits;
+      # see tools/end-to-end/.gitignore).
+      - name: Build AFPE2E.APPL + disk image
+        run: |
+          docker run --rm -v "$PWD/tools/end-to-end:/e2e" -w /e2e/macos \
+            -e INTERFACES=universal -e INTERFACESFILE=/e2e/tools/mpw/MPW-GM.img.bin \
+            ghcr.io/autc04/retro68:latest \
+            bash -c "mkdir -p build && cd build && cmake .. -DCMAKE_TOOLCHAIN_FILE=/Retro68-build/toolchain/m68k-apple-macos/cmake/retro68.toolchain.cmake && make"
+
+      - name: Upload disk image
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-macos-afp-disk
+          path: tools/end-to-end/macos/build/AFPE2E.dsk
+          if-no-files-found: error

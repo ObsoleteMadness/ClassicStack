@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.obsoletemadness.classicstack</string>
+	<key>CFBundleName</key>
+	<string>ClassicStack</string>
+	<key>CFBundleExecutable</key>
+	<string>classicstack</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>ClassicStack uses UDP multicast (LToUDP on 239.192.76.84:1954) and local broadcasts so AppleTalk routers, file servers, and classic clients on this LAN can find each other.</string>
+</dict>
+</plist>

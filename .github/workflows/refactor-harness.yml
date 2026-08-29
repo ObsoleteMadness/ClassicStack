@@ -1,0 +1,69 @@
+name: Refactor Harness CI
+
+# Phase 1 (greenfield) gates for the new core/adapter/compose rings. See
+# .refactor/01-PHASE-harness.md step A4. Runs alongside the legacy PR CI; the
+# two are independent until the cmd cutover in Phase 2.
+
+on:
+  push:
+    branches:
+      - feature/refactor
+  pull_request:
+    branches:
+      - main
+      - master
+      - feature/refactor
+
+permissions:
+  contents: read
+
+jobs:
+  harness:
+    name: Harness gates (build + vet + archtest + core tests)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Install libpcap headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpcap-dev
+
+      - name: Setup SPA
+        uses: ./.github/actions/setup-spa
+
+      - name: Run harness gates
+        shell: bash
+        run: bash scripts/ci/harness.sh
+
+  tinygo:
+    name: TinyGo amd64 gates (linux + windows)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Setup TinyGo
+        uses: acifani/setup-tinygo@v2
+        with:
+          # 0.41.0 cannot assemble a goroot from a Go 1.26 stdlib — it fails with
+          # "package internal/strconv is not in std", which 1.26 introduced. The
+          # runner resolves to 1.26 despite go.mod pinning 1.25.12, so track 0.41.1.
+          tinygo-version: "0.41.1"
+
+      - name: Run TinyGo amd64 build gates
+        shell: bash
+        run: bash scripts/ci/tinygo-gate.sh

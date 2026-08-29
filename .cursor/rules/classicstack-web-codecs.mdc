@@ -1,0 +1,11 @@
+---
+description: ClassicStack-web codecs stay pluggable; do not inline SIT/rez into the Go SPA
+globs: adapter/control/http/ui/**/*.{ts,tsx,css}
+alwaysApply: false
+---
+
+# Shared Finder codecs
+
+ClassicStack-web will split Finder UI from Macintosh codecs. The Go SPA must import expand/zip/resource-fork through ClassicStack-web (`classicstack-web/fs/expand`, `fs/codecs`, `fs/resource-fork`), not copy SIT/`dcmp`/rez into `adapter/control/http/ui`.
+
+To add or replace StuffIt decompression or rez decoding, register a codec with `registerArchiveCodec` / `registerRezCodec` in ClassicStack-web — do not special-case formats in `GoFinderHost` or `HttpCatalog`.

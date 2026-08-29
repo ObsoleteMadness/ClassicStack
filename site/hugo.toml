@@ -1,0 +1,59 @@
+baseURL = "https://obsoletemadness.github.io/ClassicStack/"
+languageCode = "en-us"
+locale = "en-us"
+title = "ClassicStack"
+theme = "github.com/alex-shpak/hugo-book"
+
+# Content lives in the real repo directories (docs/, spec/), not duplicated under
+# site/content — editing a file under ../docs updates the published site with no
+# separate copy to keep in sync. See ../docs/README.md (this directory) for how the
+# mounts below map onto the site's URL structure.
+[module]
+  [[module.mounts]]
+    source = "content"
+    target = "content"
+  [[module.mounts]]
+    source = "../docs"
+    target = "content/docs"
+  [[module.mounts]]
+    source = "../spec"
+    target = "content/spec"
+    excludeFiles = ["captures/**", "*.docx", "*.pdf", "*.doc"]
+  [[module.mounts]]
+    source = "../ARCHITECTURE.md"
+    target = "content/architecture.md"
+  [[module.mounts]]
+    source = "static"
+    target = "static"
+
+[params]
+  BookTheme = "auto"
+  BookToC = true
+  BookSection = "*"
+  BookRepo = "https://github.com/ObsoleteMadness/ClassicStack"
+  BookEditPath = "edit/feature/refactor"
+  BookSearch = true
+  BookComments = false
+
+[markup]
+  [markup.goldmark]
+    [markup.goldmark.renderer]
+      unsafe = true
+  [markup.tableOfContents]
+    startLevel = 1
+    endLevel = 3
+
+[outputs]
+  home = ["HTML"]
+  section = ["HTML"]
+  page = ["HTML"]
+
+[[menu.after]]
+  name = "GitHub"
+  url = "https://github.com/ObsoleteMadness/ClassicStack"
+  weight = 10
+
+[[menu.after]]
+  name = "Releases"
+  url = "https://github.com/ObsoleteMadness/ClassicStack/releases/latest"
+  weight = 20

@@ -15,10 +15,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -26,6 +28,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libpcap-dev
+
+      - name: Setup SPA
+        uses: ./.github/actions/setup-spa
 
       - name: Run unit tests
         shell: bash
@@ -36,10 +41,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -47,6 +54,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libpcap-dev
+
+      - name: Setup SPA
+        uses: ./.github/actions/setup-spa
 
       - name: Race-enabled tests
         run: go test -tags all -race -count=1 ./...
@@ -85,10 +95,12 @@ jobs:
           - "ipx netbeui smb"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -96,6 +108,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libpcap-dev
+
+      - name: Setup SPA
+        if: contains(matrix.tags, 'all')
+        uses: ./.github/actions/setup-spa
 
       - name: Build with tags="${{ matrix.tags }}"
         run: go build -tags "${{ matrix.tags }}" ./...
@@ -118,10 +134,12 @@ jobs:
             output: out/classicstack.exe
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -129,7 +147,10 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpcap-dev
+          sudo apt-get install -y libpcap-dev libfuse-dev
+
+      - name: Setup SPA
+        uses: ./.github/actions/setup-spa
 
       - name: Build classicstack (Linux/macOS)
         if: runner.os != 'Windows'
@@ -140,6 +161,10 @@ jobs:
           OUTPUT: ${{ matrix.output }}
         run: ${{ matrix.script }}
 
+      - name: Build csmount (Linux FUSE)
+        if: runner.os == 'Linux'
+        run: go build -tags "all fuse" -o out/csmount ./cmd/csmount
+
       - name: Build classicstack (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -148,3 +173,96 @@ jobs:
           BUILD_COMMIT: ${{ github.sha }}
           OUTPUT: ${{ matrix.output }}
         run: ${{ matrix.script }}
+
+  installer-windows:
+    name: Build Windows Installer (ISCC)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Setup SPA
+        uses: ./.github/actions/setup-spa
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          if (-not (Get-Command ISCC.exe -ErrorAction SilentlyContinue)) {
+            throw "ISCC.exe not found on PATH after installing Inno Setup"
+          }
+
+      - name: Build installer (bin + ISCC)
+        shell: pwsh
+        run: pwsh packaging/windows/build.ps1 -Version 0.0.0-pr.${{ github.run_number }}
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: classicstack-windows-installer-pr${{ github.event.pull_request.number }}
+          path: packaging/windows/Output/ClassicStack-Setup-*.exe
+          if-no-files-found: error
+
+  build-embedded:
+    name: Build Embedded (TinyGo)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Setup TinyGo
+        uses: acifani/setup-tinygo@v2
+        with:
+          # 0.41.0 cannot assemble a goroot from a Go 1.26 stdlib — it fails with
+          # "package internal/strconv is not in std", which 1.26 introduced. The
+          # runner resolves to 1.26 despite go.mod pinning 1.25.13, so track 0.41.1
+          # (see refactor-harness.yml's TinyGo amd64 gates job, fixed there first).
+          tinygo-version: "0.41.1"
+
+      # Pico builds run before WT32-ETH01: WT32-ETH01 needs the full ESP-IDF SDK
+      # (see below) and is not yet known-green, so it must not be able to abort
+      # the job before the Pico targets — which build clean today — get a chance
+      # to run.
+      - name: Build Pico
+        run: bash scripts/build_pico.sh pico
+
+      - name: Build Pico W
+        run: bash scripts/build_pico.sh picow
+
+      - name: Build Pico 2
+        run: bash scripts/build_pico.sh pico2
+
+      - name: Build Pico 2 W
+        run: bash scripts/build_pico.sh pico2w
+
+      # hardware/esp32/wt32eth01 cgo's directly against ESP-IDF's C headers
+      # (esp_eth.h, esp_wifi.h, ...) and links against its component libraries,
+      # so the SDK has to be on disk before TinyGo can compile it.
+      - name: Setup ESP-IDF
+        uses: espressif/install-esp-idf-action@v1
+        with:
+          version: "v5.3"
+        continue-on-error: true
+
+      # continue-on-error: the ESP-IDF headers alone are not sufficient yet --
+      # they #include a project-generated sdkconfig.h and expect the component
+      # .a libraries (libesp_eth.a, libesp_wifi.a, ...), both of which only
+      # exist after a real `idf.py build` of a matching component project.
+      # scripts/build_wt32eth01.sh documents this gap; tracked as follow-up
+      # work rather than blocking this job (or a release) on it.
+      - name: Build WT32-ETH01
+        run: bash scripts/build_wt32eth01.sh
+        continue-on-error: true
+

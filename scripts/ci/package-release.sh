@@ -30,6 +30,7 @@ if [[ "$target_os" == "linux" ]]; then
     cp "out/classicstackd" "$stage/classicstackd"
   fi
   cp README.md server.toml.example extmap.conf "$stage/"
+  mkdir -p "$stage/tools" && cp tools/wireshark/*.lua "$stage/tools/"
   cp -a dist/. "$stage/"
   tar -C release -czf "$archive_name" "$(basename "$stage")"
   echo "$archive_name"
@@ -84,6 +85,7 @@ if [[ "$target_os" == "macos" ]]; then
 EOF
 
   cp README.md server.toml.example extmap.conf "$stage/"
+  mkdir -p "$stage/tools" && cp tools/wireshark/*.lua "$stage/tools/"
   cp -a dist/. "$stage/"
   (cd release && zip -r "../$archive_name" "$(basename "$stage")")
   echo "$archive_name"

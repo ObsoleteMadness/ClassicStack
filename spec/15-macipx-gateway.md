@@ -101,6 +101,36 @@ Example — a RIP request a Mac sends right after the handshake:
 
 The client may emit IPX with `src net = 0` until it has learnt the real network number from a RIP reply. The gateway must forward this unchanged — overwriting `src net` would confuse the conversation.
 
+### Network discovery via RIP — GOLDEN (captures/nw41-macipxgw.pcapng)
+
+> **Golden**, captured from a real **NetWare 4.1** server running `MACIPXGW.NLM` against a Mac OS MacIPX client (`captures/nw41-macipxgw.pcapng`). Per CLAUDE.md #5 this observed behaviour is authoritative over the mars_nwe-derived assumptions where they differ.
+
+Immediately after the `0x20`/`0x23` register handshake the Mac broadcasts a **RIP Request for the wildcard network** (`0xFFFFFFFF`) from `src net = 0`, and the gateway answers with a **RIP Response**. The Mac adopts the network number from the **IPX header source network of that response** (not from any single RIP entry) — every frame the Mac sends afterwards carries that network. This is the mechanism by which the operator's configured IPX network reaches the client; the register reply never carries it.
+
+Golden exchange (client assigned `7a:00:00:00:03:3e`, gateway MacIPX network `0x00000010`):
+
+```
+Mac → gw   RIP Request (frame 18)
+  00 01                 RIP op = Request
+  ff ff ff ff           entry network = wildcard (ask for all routes)
+  ...                   IPX src net = 0, src node = 7a:00:00:00:03:3e, src sock = 0x4000
+
+gw → Mac   RIP Response (frame 19)   IPX src NET = 00 00 00 10, src node = 00:00:00:00:00:01, src sock = 0x0453
+  00 02                 RIP op = Response
+  be ef ca fe 00 02 00 07   network 0xbeefcafe  hops 2  ticks 7   (one hop further)
+  00 00 00 03 00 01 00 06   network 0x00000003  hops 1  ticks 6   (directly served)
+  05 29 48 c3 00 01 00 06   network 0x052948c3  hops 1  ticks 6
+  b3 e0 b8 70 00 01 00 06   network 0xb3e0b870  hops 1  ticks 6
+  6a 09 18 3d 00 01 00 06   network 0x6a09183d  hops 1  ticks 6
+```
+
+Observations that shape the implementation:
+
+- **The response is addressed FROM the gateway's MacIPX network (`0x10`) and node `00:00:00:00:00:01`.** The Mac keys on this source network, so the gateway MUST stamp the reply's IPX source network with the network it announces. (ClassicStack does this by giving the IPX mini-router that network as its wire identity, so `router.Send` fills the source network on the responder's reply.)
+- **The gateway answers the wildcard with its full route table** (every network it knows), not just its own. A minimal gateway that returns only its own network still lets the Mac learn its network (the source-network field is what matters), but a complete table matches real MACIPXGW.
+- **Metric over MacIPX is hops 1 / ticks 6 for a directly-served network** — note the *native* RIP on the same wire advertised the same networks at ticks 2 (see the `ipxrip` frames); the larger tick count over MacIPX reflects the added LToUDP/DDP hop cost. The Mac does not key on the exact tick value. ClassicStack's RIP responder advertises hops 1 / ticks 2 (mars_nwe `ins_rip_buff`), which the client accepts.
+- The gateway answers **every** RIP request, not just the first (the golden capture shows 4 request/response pairs during one session).
+
 ### Listen / register-socket (opcode 0x10)
 
 Used by the client to tell the gateway which IPX sockets it wants *broadcast* traffic forwarded for. Unicast IPX addressed to the client's assigned node already reaches the gateway via per-node dispatch, so 0x10 is only relevant for broadcasts.

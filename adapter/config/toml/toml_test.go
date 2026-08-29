@@ -1,0 +1,524 @@
+package toml
+
+import (
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/ObsoleteMadness/ClassicStack/core/config"
+	"github.com/ObsoleteMadness/ClassicStack/core/port"
+)
+
+// TestPortSectionRoundTrip proves the real *port.Section — with the slice-B
+// per-transport fields (mac, seed network/zone) — survives a TOML marshal/unmarshal
+// cycle, so an [EtherTalk] table in server.toml decodes back to the same section the
+// port factory reads. It registers the port schema the way the compose registry does.
+func TestPortSectionRoundTrip(t *testing.T) {
+	config.Register(config.SectionSchema{
+		Key: "EtherTalk",
+		New: func() config.Section { return &port.EtherTalkSection{Base: port.Base{SKey: "EtherTalk"}} },
+	})
+
+	m := config.NewModel()
+	want := &port.EtherTalkSection{
+		Base:       port.Base{SKey: "EtherTalk", Iface: "eth0", IsEnabled: true, MAC: "00:11:22:aa:bb:cc"},
+		SeedFields: port.SeedFields{SeedNetwork: 10, SeedNetworkEnd: 20, SeedZone: "Engineering"},
+	}
+	m.Set(want)
+
+	c := New()
+	data, err := c.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got config.Model
+	if err := c.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	sec, ok := got.Get("EtherTalk")
+	if !ok {
+		t.Fatal("EtherTalk section missing after round-trip")
+	}
+	if !reflect.DeepEqual(sec, want) {
+		t.Fatalf("port section round-trip: got %+v want %+v", sec, want)
+	}
+}
+
+// TestTashTalkSerialRoundTrip proves the serial binding a TashTalk port now owns
+// (Section.Device/Baud) survives the TOML cycle — serial is a port property, not a
+// named interface, so [[tashtalk]] carries device/baud directly.
+func TestTashTalkSerialRoundTrip(t *testing.T) {
+	config.Register(config.SectionSchema{
+		Key:      "TashTalk",
+		New:      func() config.Section { return &port.TashTalkSection{Base: port.Base{SKey: "TashTalk"}} },
+		Repeated: true,
+	})
+
+	m := config.NewModel()
+	want := &port.TashTalkSection{
+		Base:         port.Base{SKey: "TashTalk", Name: "tt-attic", IsEnabled: true},
+		SerialFields: port.SerialFields{Device: "/dev/ttyUSB0", Baud: 57600},
+		SeedFields:   port.SeedFields{SeedNetwork: 8, SeedZone: "Attic"},
+	}
+	m.AddInstance(want)
+
+	c := New()
+	data, err := c.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got config.Model
+	if err := c.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	sec, ok := got.Instance("TashTalk", "tt-attic")
+	if !ok {
+		t.Fatal("TashTalk instance missing after round-trip")
+	}
+	if !reflect.DeepEqual(sec, want) {
+		t.Fatalf("TashTalk serial round-trip: got %+v want %+v", sec, want)
+	}
+}
+
+// TestTransportSectionOmitsIrrelevantFields locks in typed per-transport sections:
+// a NetBEUI row must not emit IPX framing / AppleTalk seed / serial keys, and an
+// EtherTalk row must not emit IPX framing or serial keys.
+func TestTransportSectionOmitsIrrelevantFields(t *testing.T) {
+	config.Register(config.SectionSchema{
+		Key:      "NetBEUI",
+		New:      func() config.Section { return &port.NetBEUISection{Base: port.Base{SKey: "NetBEUI"}} },
+		Repeated: true,
+	})
+	config.Register(config.SectionSchema{
+		Key:      "EtherTalk",
+		New:      func() config.Section { return &port.EtherTalkSection{Base: port.Base{SKey: "EtherTalk"}} },
+		Repeated: true,
+	})
+
+	m := config.NewModel()
+	m.AddInstance(&port.NetBEUISection{
+		Base:          port.Base{SKey: "NetBEUI", Iface: "br-lan", IsEnabled: true},
+		CaptureFields: port.CaptureFields{Capture: "netbeui.pcap"},
+	})
+	m.AddInstance(&port.EtherTalkSection{
+		Base:          port.Base{SKey: "EtherTalk", Iface: "br-lan", IsEnabled: true, MAC: "DE:AD:BE:EF:CA:FE"},
+		SeedFields:    port.SeedFields{SeedNetwork: 3, SeedNetworkEnd: 5, SeedZone: "EtherTalk Network"},
+		CaptureFields: port.CaptureFields{Capture: "ethertalk.pcap"},
+	})
+
+	data, err := New().Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	doc := string(data)
+	for _, key := range []string{"ipx_frame_type", "device =", "baud =", "pace_ms"} {
+		if strings.Contains(doc, key) {
+			t.Errorf("transport TOML emitted irrelevant key %q; got:\n%s", key, doc)
+		}
+	}
+	if strings.Contains(doc, "name = ''") {
+		t.Errorf("empty instance name should be omitted; got:\n%s", doc)
+	}
+	if !strings.Contains(doc, "capture = 'netbeui.pcap'") {
+		t.Errorf("NetBEUI should emit its capture path; got:\n%s", doc)
+	}
+	if !strings.Contains(doc, "seed_zone = 'EtherTalk Network'") {
+		t.Errorf("EtherTalk should emit seed_zone; got:\n%s", doc)
+	}
+}
+
+// TestIPXFrameTypeRoundTrip proves an [[ipx]] port's frame-type selection
+// (Section.IPXFrameType) survives the TOML cycle, so ipx_frame_type in server.toml
+// decodes back to the same section the IPX port factory reads.
+func TestIPXFrameTypeRoundTrip(t *testing.T) {
+	config.Register(config.SectionSchema{
+		Key:      "IPX",
+		New:      func() config.Section { return &port.IPXSection{Base: port.Base{SKey: "IPX"}} },
+		Repeated: true,
+	})
+
+	m := config.NewModel()
+	want := &port.IPXSection{
+		Base:             port.Base{SKey: "IPX", Name: "ipx-lab", Iface: "br-lan", IsEnabled: true},
+		IPXFrameFields:   port.IPXFrameFields{IPXFrameType: "802.3"},
+		IPXNetworkFields: port.IPXNetworkFields{IPXNetwork: 0x10},
+	}
+	m.AddInstance(want)
+
+	c := New()
+	data, err := c.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(data), "ipx_frame_type = '802.3'") {
+		t.Errorf("marshalled TOML should carry ipx_frame_type; got:\n%s", data)
+	}
+	if !strings.Contains(string(data), "ipx_network =") {
+		t.Errorf("marshalled TOML should carry ipx_network; got:\n%s", data)
+	}
+	var got config.Model
+	if err := c.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	sec, ok := got.Instance("IPX", "ipx-lab")
+	if !ok {
+		t.Fatal("IPX instance missing after round-trip")
+	}
+	if !reflect.DeepEqual(sec, want) {
+		t.Fatalf("IPX frame-type round-trip: got %+v want %+v", sec, want)
+	}
+}
+
+// fakeSection is a registered component section for the round-trip test.
+type fakeSection struct {
+	SKey  string `toml:"-"`
+	Iface string `toml:"iface"`
+	Port  int64  `toml:"port"`
+	On    bool   `toml:"on"`
+}
+
+func (s *fakeSection) Key() string { return s.SKey }
+func (s *fakeSection) Clone() config.Section {
+	cp := *s
+	return &cp
+}
+func (s *fakeSection) Validate() error { return nil }
+
+func registerFake(key string) {
+	config.Register(config.SectionSchema{
+		Key: key,
+		New: func() config.Section { return &fakeSection{SKey: key} },
+	})
+}
+
+// fakeVolume is a repeated (named-instance) section for the array-of-tables test.
+type fakeVolume struct {
+	VName   string   `toml:"name"`
+	Path    string   `toml:"path"`
+	RO      bool     `toml:"read_only"`
+	Allowed []string `toml:"allowed_users"`
+}
+
+func (s *fakeVolume) Key() string          { return "FakeVolumes" }
+func (s *fakeVolume) InstanceName() string { return s.VName }
+func (s *fakeVolume) Clone() config.Section {
+	cp := *s
+	cp.Allowed = append([]string(nil), s.Allowed...)
+	return &cp
+}
+func (s *fakeVolume) Validate() error { return nil }
+
+func registerFakeVolumes() {
+	config.Register(config.SectionSchema{
+		Key:      "FakeVolumes",
+		Repeated: true,
+		New:      func() config.Section { return &fakeVolume{} },
+	})
+}
+
+func TestRoundTrip(t *testing.T) {
+	registerFake("Alpha")
+	registerFake("Beta")
+
+	m := config.NewModel()
+	m.Identity = config.Identity{Hostname: "CLASSICSTACK", Workgroup: "MYGROUP", Description: "test server"}
+	m.Logging = config.LoggingSection{Level: "debug"}
+	m.Router = config.RouterSection{DefaultZone: "MyZone", Members: []string{"et-lab", "tt-attic"}}
+	m.SetInterface(config.InterfaceSection{Name: "br-lan", Kind: config.IfaceKindBridge, Addr: "10.0.0.1", Default: true})
+	m.Set(&fakeSection{SKey: "Alpha", Iface: "eth0", Port: 548, On: true})
+	m.Set(&fakeSection{SKey: "Beta", Iface: "eth1", Port: 139})
+
+	c := New()
+	data, err := c.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var got config.Model
+	if err := c.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if got.Identity != m.Identity {
+		t.Errorf("Identity: got %+v want %+v", got.Identity, m.Identity)
+	}
+	if got.Logging != m.Logging {
+		t.Errorf("Logging: got %+v want %+v", got.Logging, m.Logging)
+	}
+	if got.HTTP != m.HTTP {
+		t.Errorf("HTTP: got %+v want %+v", got.HTTP, m.HTTP)
+	}
+	if !reflect.DeepEqual(got.Client, m.Client) {
+		t.Errorf("Client: got %+v want %+v", got.Client, m.Client)
+	}
+	if got.FUSE != m.FUSE {
+		t.Errorf("FUSE: got %+v want %+v", got.FUSE, m.FUSE)
+	}
+	if !reflect.DeepEqual(got.Router, m.Router) {
+		t.Errorf("Router: got %+v want %+v", got.Router, m.Router)
+	}
+	if !reflect.DeepEqual(got.Interfaces, m.Interfaces) {
+		t.Errorf("Interfaces: got %+v want %+v", got.Interfaces, m.Interfaces)
+	}
+	for _, key := range []string{"Alpha", "Beta"} {
+		want, _ := m.Get(key)
+		gotSec, ok := got.Get(key)
+		if !ok {
+			t.Errorf("section %s missing after round-trip", key)
+			continue
+		}
+		if !reflect.DeepEqual(want, gotSec) {
+			t.Errorf("section %s: got %+v want %+v", key, gotSec, want)
+		}
+	}
+}
+
+// TestInterfaceNamespaceRoundTrip proves the named interface namespace survives a
+// TOML [[interface]] array-of-tables round-trip — a nic, a serial, and a wifi
+// entry decode back to the same Interfaces map.
+func TestInterfaceNamespaceRoundTrip(t *testing.T) {
+	m := config.NewModel()
+	m.SetInterface(config.InterfaceSection{Name: "eth0", Kind: config.IfaceKindNIC, Addr: "10.0.0.2"})
+	m.SetInterface(config.InterfaceSection{Name: "ttyUSB-attic", Kind: config.IfaceKindSerial, Device: "/dev/ttyUSB0", Baud: 1000000})
+	m.SetInterface(config.InterfaceSection{Name: "wlan0", Kind: config.IfaceKindWifi, SSID: "AppleNet", Key: "secret"})
+
+	c := New()
+	data, err := c.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got config.Model
+	if err := c.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(got.Interfaces, m.Interfaces) {
+		t.Fatalf("Interfaces round-trip:\n got  %+v\n want %+v", got.Interfaces, m.Interfaces)
+	}
+}
+
+// TestInterfaceMarshalOmitsIrrelevantFields locks in the omitempty shape: a
+// namespace entry with only a Device set emits its device but NOT the serial/wifi
+// fields that do not apply to it, so server.toml stays free of dead keys like baud.
+func TestInterfaceMarshalOmitsIrrelevantFields(t *testing.T) {
+	m := config.NewModel()
+	m.SetInterface(config.InterfaceSection{Name: "eth0", Device: `\Device\NPF_{ABC}`})
+
+	data, err := New().Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	doc := string(data)
+	if !strings.Contains(doc, "device = ") {
+		t.Errorf("interface should emit its device; got:\n%s", doc)
+	}
+	for _, key := range []string{"baud", "ssid", "backend"} {
+		if strings.Contains(doc, key) {
+			t.Errorf("interface emitted irrelevant key %q; got:\n%s", key, doc)
+		}
+	}
+}
+
+// TestLegacyBridgeMigratesOnLoad proves a pre-M11 [bridge] block is folded into the
+// interface namespace as a default bridge entry, and is not re-emitted on Marshal.
+func TestLegacyBridgeMigratesOnLoad(t *testing.T) {
+	const legacy = "[bridge]\nname = 'br-lan'\naddr = '10.0.0.1'\n"
+	var m config.Model
+	if err := New().Unmarshal([]byte(legacy), &m); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	got, ok := m.Interface("br-lan")
+	if !ok {
+		t.Fatal("legacy [bridge] was not migrated into the namespace")
+	}
+	if !got.Default || got.EffectiveKind() != config.IfaceKindBridge {
+		t.Fatalf("migrated entry not a default bridge: %+v", got)
+	}
+	// Re-marshalling must not resurrect a [bridge] table.
+	data, err := New().Marshal(&m)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(data), "[bridge]") {
+		t.Errorf("[bridge] should no longer be emitted; got:\n%s", data)
+	}
+}
+
+func TestRepeatedSectionRoundTrip(t *testing.T) {
+	registerFakeVolumes()
+
+	m := config.NewModel()
+	m.AddInstance(&fakeVolume{VName: "public", Path: "/srv/public", Allowed: []string{"alice"}})
+	m.AddInstance(&fakeVolume{VName: "private", Path: "/srv/private", RO: true})
+
+	c := New()
+	data, err := c.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var got config.Model
+	if err := c.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	list := got.List("FakeVolumes")
+	if len(list) != 2 {
+		t.Fatalf("got %d instances, want 2 (data:\n%s)", len(list), data)
+	}
+	// Order is preserved.
+	pub := list[0].(*fakeVolume)
+	priv := list[1].(*fakeVolume)
+	if pub.VName != "public" || pub.Path != "/srv/public" || len(pub.Allowed) != 1 || pub.Allowed[0] != "alice" {
+		t.Errorf("public round-trip: %+v", pub)
+	}
+	if priv.VName != "private" || priv.Path != "/srv/private" || !priv.RO {
+		t.Errorf("private round-trip: %+v", priv)
+	}
+}
+
+func TestHTTPOmittedDefaults(t *testing.T) {
+	c := New()
+	var got config.Model
+	if err := c.Unmarshal([]byte("[identity]\nhostname = \"x\"\n"), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.HTTP.Enabled || got.HTTP.Addr != config.DefaultHTTPAddr {
+		t.Fatalf("omitted [http]: %+v, want enabled on %s", got.HTTP, config.DefaultHTTPAddr)
+	}
+}
+
+func TestHTTPDisabledSticks(t *testing.T) {
+	c := New()
+	var got config.Model
+	if err := c.Unmarshal([]byte("[http]\nenabled = false\n"), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.HTTP.Enabled {
+		t.Fatal("enabled = false did not stick")
+	}
+	if got.HTTP.Addr != config.DefaultHTTPAddr {
+		t.Fatalf("blank addr should default to %s, got %q", config.DefaultHTTPAddr, got.HTTP.Addr)
+	}
+}
+
+func TestClientOmittedDefaultsDisabled(t *testing.T) {
+	c := New()
+	var got config.Model
+	if err := c.Unmarshal([]byte("[identity]\nhostname = \"x\"\n"), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Client.Enabled {
+		t.Fatalf("omitted [Client] should be disabled, got %+v", got.Client)
+	}
+}
+
+func TestClientRoundTrip(t *testing.T) {
+	m := config.NewModel()
+	m.Client = config.ClientSection{
+		Enabled:        true,
+		Iface:          "br-lan",
+		Services:       []string{"afp", "smb", "ncp", "etherdfs"},
+		MaxIdleMinutes: 10,
+		Mount:          true,
+		LogFile:        "client.log",
+	}
+	c := New()
+	data, err := c.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "[Client]") {
+		t.Fatalf("Marshal should emit [Client]; got:\n%s", data)
+	}
+	var got config.Model
+	if err := c.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Client, m.Client) {
+		t.Fatalf("Client round-trip: got %+v want %+v", got.Client, m.Client)
+	}
+}
+
+func TestClientLowercaseAlias(t *testing.T) {
+	c := New()
+	var got config.Model
+	doc := "[client]\nenabled = true\niface = \"br-lan\"\nmount = true\n"
+	if err := c.Unmarshal([]byte(doc), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Client.Enabled || got.Client.Iface != "br-lan" || !got.Client.Mount {
+		t.Fatalf("[client] alias: %+v", got.Client)
+	}
+}
+
+func TestFUSEOmittedDefaults(t *testing.T) {
+	c := New()
+	var got config.Model
+	if err := c.Unmarshal([]byte("[identity]\nhostname = \"x\"\n"), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.FUSE.MountTimeoutSeconds != config.DefaultFUSEMountTimeoutSeconds {
+		t.Fatalf("omitted [FUSE] timeout = %d, want %d", got.FUSE.MountTimeoutSeconds, config.DefaultFUSEMountTimeoutSeconds)
+	}
+}
+
+func TestFUSERoundTrip(t *testing.T) {
+	m := config.NewModel()
+	m.FUSE = config.FUSESection{MountTimeoutSeconds: 45}
+	c := New()
+	data, err := c.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "[FUSE]") {
+		t.Fatalf("Marshal should emit [FUSE]; got:\n%s", data)
+	}
+	var got config.Model
+	if err := c.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.FUSE != m.FUSE {
+		t.Fatalf("FUSE round-trip: got %+v want %+v", got.FUSE, m.FUSE)
+	}
+}
+
+func TestFUSELowercaseAlias(t *testing.T) {
+	c := New()
+	var got config.Model
+	if err := c.Unmarshal([]byte("[fuse]\nmount_timeout_seconds = 8\n"), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.FUSE.MountTimeoutSeconds != 8 {
+		t.Fatalf("[fuse] alias: %+v", got.FUSE)
+	}
+}
+
+func TestFUSEVolumesRoundTrip(t *testing.T) {
+	config.RegisterFUSEVolumes()
+	m := config.NewModel()
+	want := &config.FUSEVolumeSection{
+		Remote:     "smb://foo:pass@foohost,smb/share",
+		Mountpoint: "/Volumes/share",
+		ReadOnly:   true,
+	}
+	m.AddInstance(want)
+	c := New()
+	data, err := c.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "[[fusevolumes]]") {
+		t.Fatalf("Marshal should emit [[fusevolumes]]; got:\n%s", data)
+	}
+	var got config.Model
+	if err := c.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	sec, ok := got.Instance(config.FUSEVolumesKey, "/Volumes/share")
+	if !ok {
+		t.Fatal("FUSE volume missing after round-trip")
+	}
+	if !reflect.DeepEqual(sec, want) {
+		t.Fatalf("FUSE volume round-trip: got %+v want %+v", sec, want)
+	}
+}

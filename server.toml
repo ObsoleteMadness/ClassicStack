@@ -1,112 +1,154 @@
-[Logging]
-level = 'debug'
-parse_packets = true
-log_traffic = false
-
-[Router]
-
-[Bridge]
-mode = 'pcap'
-device = '\Device\NPF_{9354BA7F-DE41-4A33-88F4-408A0F4A3C02}'
-hw_address = 'DE:AD:BE:EF:CA:FE'
-bridge_mode = 'auto'
-
-[LToUdp]
+[AFP]
 enabled = true
-interface = '0.0.0.0'
-seed_network = 1
-seed_zone = 'LToUDP Network'
+server_name = 'ClassicStack'
+zone = 'EtherTalk Network'
+transports = ['ddp']
+login_message = 'Welcome to ClassicStack - enjoy your stay.'
 
-[TashTalk]
-port = ''
-seed_network = 2
-seed_zone = 'TashTalk Network'
-
-[EtherTalk]
-seed_network_min = 3
-seed_network_max = 5
-seed_zone = 'EtherTalk Network'
-desired_network = 3
-desired_node = 253
-
-[Capture]
-localtalk = './captures/afp-localtalk.pcap'
-ethertalk = './captures/afp-ethertalk.pcap'
-ipx = './captures/ipx.pcap'
-netbeui = './captures/netbeui.pcap'
-snaplen = 65535
-
-[MacIP]
+[Client]
 enabled = true
-mode = 'pcap'
-nat_subnet = '192.168.100.0/24'
-lease_file = 'leases.txt'
-dhcp_relay = true
-nameserver = '1.1.1.1'
+iface = 'br-lan'
+services = ['afp', 'smb', 'ncp', 'etherdfs']
+max_idle_minutes = 10
+mount = true
+log_file = 'client.log'
+capture = 'client-afp.pcap'
 
-[IPX]
+[EtherDFS]
 enabled = true
-framing = 'ethernet_ii'
+capture = 'etherdfs.pcap'
+
+[FUSE]
+mount_timeout_seconds = 30
 
 [IPXGW]
 enabled = true
-bindings = ['ClassicStack:EtherTalk Network']
+ipx_network = 3
+bindings = ['ClassicStackIPXGW:EtherTalk Network']
 
-[NetBEUI]
+[MacIP]
 enabled = true
+mode = 'nat'
+zone = 'EtherTalk Network'
+gateway_ip = '192.168.100.1'
+network = '192.168.100.0'
+nameserver = '8.8.8.8'
+broadcast = '192.168.100.255'
+subnet_mask = '255.255.255.0'
+interface = 'br-lan'
+default_gateway = '192.168.0.1'
+
+[NCP]
+enabled = true
+server_name = 'Netware'
+description = 'Netware Test share'
 
 [NetBIOS]
+transports = ['netbeui', 'ipx']
+
+[Netboot]
 enabled = true
-transports = ['ipx', 'netbeui']
+payload = './netboot/ChainDisk.bin'
+block_size = 256
+pace_ms = 2
+chain_pace_ms = 10
+name = '0000'
+zone = '*'
+
+[ProxyAARP]
+enabled = false
+tunnel_interface = ''
+egress_interface = ''
+egress_mac = ''
 
 [SMB]
 enabled = true
-nbt_binding = ':139'
-server_name = 'ClassicStack'
-workgroup = 'WORKGROUP'
+transports = ['netbeui', 'ipx', 'nbt', 'tcp']
+tcp_addr = '::445'
 
-[SMB.Volumes]
-[SMB.Volumes.Public]
-name = 'Public'
-path = 'C:\Mac'
-fs_type = 'local_fs'
+[adminauth]
+user = 'admin'
+salt = '0023bfac16cdcddbbcbcae1779d9fa18'
+hash = 'ff05b74ea38440edef8ea1d7034f118b6fe706bce44ef37e1a9c0c1728b2a74c'
 
-[AFP]
-enabled = true
-name = 'ClassicStack'
-zone = 'EtherTalk Network'
-protocols = 'ddp,tcp'
-binding = ':548'
-extension_map = 'extmap.conf'
-cnid_backend = 'sqlite'
-use_decomposed_names = true
-appledouble_mode = 'modern'
-
-[AFP.Volumes]
-[AFP.Volumes.Default]
-name = 'Welcome'
-path = './dist/Sample Volume'
-read_only = true
-
-[AFP.Volumes.MacGarden]
-name = 'Mac Garden'
-fs_type = 'macgarden'
-
-[AFP.Volumes.TestVolume]
+[[afpvolumes]]
 name = 'Test Volume'
-path = 'C:\Mac\Test'
-appledouble_mode = 'modern'
+fs_type = 'local_fs'
+path = './dist/Sample Volume'
+size_limit = 50000
 
-[AFP.Volumes.Volume68k]
-name = 'Volume 68K'
-path = 'C:\Mac\Volume68K'
-appledouble_mode = 'legacy'
+[[etherdfsdrives]]
+name = 'C'
+fs_type = 'local_fs'
+path = './dist/Sample Volume'
 
-[Shortname]
-windows_shortnames = true
-backend = 'memory'
-
-[WebUI]
+[[ethertalk]]
+iface = 'br-lan'
 enabled = true
-bind = '127.0.0.1:8089'
-tls = true
+seed_network = 3
+seed_network_end = 5
+seed_zone = 'EtherTalk Network'
+capture = 'ethertalk.pcap'
+
+[http]
+enabled = true
+addr = ':1984'
+
+[identity]
+hostname = 'classicstack'
+workgroup = 'WORKGROUP'
+description = 'ClassicStack file server'
+
+[[interface]]
+name = 'br-lan'
+kind = 'bridge'
+default = true
+backend = 'pcap'
+device = 'en100'
+
+[[ipx]]
+iface = 'br-lan'
+enabled = true
+ipx_frame_type = 'ethernet_ii'
+ipx_frame_types = ['ethernet_ii', '802.3', '802.2']
+capture = 'ipx.pcap'
+
+[logging]
+level = 'debug'
+path = 'classicstack.log'
+
+[[ltoudp]]
+enabled = true
+seed_network = 1
+seed_network_end = 1
+seed_zone = 'LToUDP Network'
+capture = 'ltoudp-netboot.pcap'
+pace_ms = 5
+
+[[ncpvolumes]]
+name = 'Netware'
+fs_type = 'local_fs'
+path = './dist/Sample Volume'
+
+[[netbeui]]
+iface = 'br-lan'
+enabled = true
+capture = 'netbeui.pcap'
+
+[router]
+default_zone = 'EtherTalk Network'
+members = ['EtherTalk', 'LToUDP', 'TashTalk']
+
+[[smbshares]]
+name = 'SMB_Share'
+description = 'Test share'
+fs_type = 'local_fs'
+path = './dist/Sample Volume'
+
+[[tashtalk]]
+enabled = true
+device = '/dev/tty.usbserial-1140'
+baud = 1000000
+seed_network = 2
+seed_zone = 'TashTalk Network'
+capture = 'tashtalk.pcap'

@@ -49,14 +49,18 @@ The UDP socket requires specific configuration to work reliably across platforms
 
 | Option | Value | Reason |
 |---|---|---|
-| `SO_REUSEADDR` | 1 (enabled) | Allows multiple processes on the same machine to bind to `0.0.0.0:1954` simultaneously |
-| `IP_ADD_MEMBERSHIP` | Join `239.192.76.84` on default interface | Enables reception of multicast traffic |
+| `SO_REUSEADDR` | 1 (enabled) | Allows reuse of the local port (Windows: sufficient to share `0.0.0.0:1954`) |
+| `SO_REUSEPORT` | 1 (enabled; POSIX) | Required on Darwin (and recommended by [ltoudp.md](ltoudp.md)) so Mini vMac / a second ClassicStack can bind UDP 1954 at the same time |
+| `IP_ADD_MEMBERSHIP` | Join `239.192.76.84` on every host LAN interface | Enables reception of multicast traffic |
+| `IP_MULTICAST_IF` | Default-route LAN NIC (else first LAN NIC) | Pins outbound TTL-1 packets to Ethernet/Wi-Fi, not VPN/AirDrop |
 | `IP_MULTICAST_TTL` | 1 | Prevents traffic from escaping the local network |
 | `IP_MULTICAST_LOOP` | 1 (enabled) | Ensures the socket receives its own outbound multicast packets (required for self-filtering to work) |
 
 The socket is bound to `0.0.0.0:1954`, not to the multicast group address. This is the correct POSIX behavior for receiving multicast: bind to the wildcard address, then join the multicast group.
 
-The multicast group is joined on the default interface (interface `nil` / `0.0.0.0`). The OS selects the default multicast interface based on the routing table. This may or may not match the `intfAddr` hint provided at construction; see Windows notes below.
+When no bind address is configured, the group is joined on every up, multicast-capable IPv4 **LAN** interface (Wi-Fi, Ethernet, bridges). VPN/point-to-point (`utun`), Apple Wireless Direct Link (`awdl`/`llw`), and tunnel (`gif`/`stf`) interfaces are skipped: TTL 1 packets sent there never reach other machines on the operator's LAN. Outbound multicast is pinned with `IP_MULTICAST_IF` to the default-route LAN NIC when that NIC is in the join set, otherwise the first LAN NIC. Loopback is still joined so two processes on one host share the segment.
+
+A configured `Interface` IPv4 address still joins and pins that one interface only.
 
 ### Windows-Specific: SO_REUSEADDR
 
@@ -118,7 +122,7 @@ Two router processes on the same machine can communicate over LToUDP:
 
 1. Both bind to `0.0.0.0:1954`.
 2. Both join `239.192.76.84`.
-3. `SO_REUSEADDR` allows both to bind to the same port.
+3. `SO_REUSEADDR` + `SO_REUSEPORT` allow both to bind to the same port (Darwin needs `SO_REUSEPORT`; `SO_REUSEADDR` alone yields EADDRINUSE).
 4. `IP_MULTICAST_LOOP` ensures each socket receives frames sent by the other.
 5. Sender ID filtering ensures each socket discards its own frames.
 
@@ -154,12 +158,24 @@ LToUDP wraps the base LocalTalk port:
 - **Multicast on Windows:** Windows requires explicit `IP_ADD_MEMBERSHIP` and `IP_MULTICAST_LOOP` configuration. Using high-level multicast APIs like `net.ListenMulticastUDP` may not work reliably — use raw socket configuration with platform-specific `SO_REUSEADDR`.
 - **Multiple processes on one machine:** `SO_REUSEADDR` on Windows does **not** have the same semantics as on Linux. On Windows, `SO_REUSEADDR` allows any process (including potentially malicious ones) to bind to the same port and receive a copy of the traffic. `SO_EXCLUSIVEADDRUSE` prevents this but prevents multiple legitimate processes from sharing the port. For this application (simulated LocalTalk), the shared-port behavior of `SO_REUSEADDR` is the desired one, so `SO_EXCLUSIVEADDRUSE` should not be set.
 - **Windows Firewall:** Outbound multicast UDP to `239.192.76.84:1954` may be blocked by Windows Firewall. An inbound firewall rule for UDP port 1954 may need to be added to receive multicast from other machines.
-- **Virtual network adapters:** If the machine has multiple network adapters (e.g. Ethernet + WiFi + Hyper-V virtual switch), the OS may select a non-obvious default multicast interface. On Windows, the default route's interface is used for multicast. If the default multicast join fails and LToUDP falls back to enumerating adapters, it now skips adapters whose Windows operational status is not `Up` and pins outbound multicast to the first joined adapter.
+- **Virtual network adapters:** If the machine has multiple network adapters (e.g. Ethernet + WiFi + Hyper-V virtual switch), the OS may select a non-obvious default multicast interface. On Windows, the default route's interface is used for multicast. LToUDP enumerates adapters, skips those that are not `Up` or are point-to-point, and pins outbound multicast to the default-route LAN adapter when it is in the join set.
+
+---
+
+## macOS Local Network privacy
+
+Sending or receiving LToUDP multicast is a local-network operation ([TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy)). On macOS 15+:
+
+- A command-line tool started from Terminal or SSH is **auto-allowed**.
+- A process spawned by another app (IDE, Finder) uses **that app's** Local Network privilege. If that parent was denied — or never prompted — outbound multicast is dropped with no error and other machines will not see this router.
+- `classicstack` binaries built on Darwin embed an `Info.plist` (`NSLocalNetworkUsageDescription`) in the Mach-O `__TEXT,__info_plist` section so a launched binary can present a usage string. Opening the LToUDP socket also `connect()`s UDP to the group (discard port) to trigger the system prompt (TN3179: there is no explicit API).
+- The Application Firewall (System Settings → Network → Firewall) is a separate gate: it can block **incoming** UDP 1954. Other machines seeing **us** is outbound multicast (Local Network); us seeing **them** also needs the firewall to allow incoming datagrams.
+
+If peers on the same L2 segment cannot see ClassicStack: allow Local Network for the responsible app (the IDE if you `go run` from it, or ClassicStack if you launch a built binary), and allow incoming connections if the firewall dialog appeared.
 
 ---
 
 ## TODO / Known Limitations
 
-- **No interface binding for multicast join:** The multicast group is always joined on the default interface. An implementor wanting to restrict LToUDP to a specific NIC would need to pass the interface to `IP_ADD_MEMBERSHIP`.
 - **Sender ID is process PID:** This works correctly as long as each process has a unique PID, which is always true on a single machine. However, if two machines happen to have processes with the same PID, their sender IDs will collide and one will discard frames from the other. Using a random 4-byte sender ID generated at startup would be more robust.
 - **No authentication or encryption:** LToUDP transmits LocalTalk frames in plaintext UDP. Any machine on the local network can join the multicast group and inject or observe traffic.

@@ -1,0 +1,133 @@
+.TH CLASSICSTACKD 1 "2026-08-26" "ClassicStack" "ClassicStack Manual"
+.SH NAME
+classicstackd \- run ClassicStack as a Unix/macOS background daemon
+.SH SYNOPSIS
+.B classicstackd
+.I command
+[\fIflags\fR]
+.SH DESCRIPTION
+.B classicstackd
+wraps the same run\-core as
+.BR classicstack (1)
+for background operation on Linux and macOS, with no init\-system dependency
+required.  On macOS it can additionally install itself as a per\-user
+LaunchAgent.  On Windows, this binary is a stub that prints a message
+directing you to
+.BR classicstack\-svc (1)
+and exits with status 1.
+.SH COMMANDS
+.TP
+.BI start " " "\-config " path " [\-pidfile " p "] [\-log " p "]"
+Daemonizes: re\-executes itself as
+.B "run \-config <path>"
+in a new session, redirecting stdout/stderr to the log file and writing the
+child's PID to the PID file.  Fails if a live PID is already on file.
+.TP
+.BI stop " [\-pidfile " p "]"
+Sends SIGTERM to the recorded PID and waits up to 20 seconds for it to exit.
+Removes a stale PID file if the process is already gone.
+.TP
+.BI status " [\-pidfile " p "]"
+Reports one of:
+.B running (pid N) ,
+.BR "not running" ,
+or
+.BR "not running (stale PID N)" .
+.TP
+.BI run " \-config " path
+Runs in the foreground with a signal\-cancelled context \(em the same runtime
+as
+.BR "classicstack \-config " path .
+This is what
+.B start
+execs into the background, and what a systemd unit or other supervisor should
+invoke directly.
+.TP
+.BI install " \-config " path " [\-log " p "]"
+.B macOS only:
+writes and loads a per\-user LaunchAgent
+.RI ( ~/Library/LaunchAgents/com.obsoletemadness.classicstack.plist )
+with
+.B RunAtLoad
+and
+.B KeepAlive
+set.  On other Unix platforms this prints guidance to use
+.B start
+or a native init\-system unit instead, and installs nothing.
+.TP
+.B uninstall
+(alias
+.BR remove )
+.B macOS only:
+unloads and removes the LaunchAgent installed by
+.BR install .
+On other Unix platforms this prints guidance to use
+.B stop
+instead.
+.TP
+.B version
+Prints version information (see
+.BR classicstack (1)
+for the output format).
+.TP
+.BR help ", " \-h ", " \-\-help
+Prints usage.
+.SH OPTIONS
+.TP
+.BI \-config " path"
+Path to the TOML config file.  Required for
+.BR start ", " install ", and " run .
+.TP
+.BI \-pidfile " path"
+Path to the PID file.  Default:
+.IR /var/run/classicstack.pid .
+.TP
+.BI \-log " path"
+Path to the daemon log file (used by
+.B start
+and
+.BR install ).  Default:
+.IR /var/log/classicstack.log .
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+An operational error (already running, not running, timeout waiting for
+stop, etc.), printed as
+.BR "classicstackd <command>: <error>" .
+.TP
+.B 2
+No command given, or the command is not recognized; usage is printed.
+.SH FILES
+.TP
+.I /var/run/classicstack.pid
+Default PID file (see
+.BR \-pidfile ).
+.TP
+.I /var/log/classicstack.log
+Default log file (see
+.BR \-log ).
+.TP
+.I ~/Library/LaunchAgents/com.obsoletemadness.classicstack.plist
+macOS LaunchAgent installed by
+.B classicstackd install
+(label
+.BR com.obsoletemadness.classicstack ).
+.SH EXAMPLES
+.EX
+sudo classicstackd start \-config /etc/classicstack/server.toml
+classicstackd status
+sudo classicstackd stop
+classicstackd install \-config /etc/classicstack/server.toml   # macOS login item
+.EE
+.SH SEE ALSO
+.BR classicstack (1),
+.BR launchctl (1)
+.br
+Full flag reference: https://obsoletemadness.github.io/ClassicStack/docs/cli/
+.SH AUTHOR
+ClassicStack is developed by the ObsoleteMadness project and contributors.
+.SH LICENSE
+ClassicStack is released under the GNU General Public License v3.0 or later.

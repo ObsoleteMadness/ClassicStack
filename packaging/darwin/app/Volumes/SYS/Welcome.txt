@@ -1,0 +1,10 @@
+Welcome to ClassicStack!
+
+This is the "SYS" volume, exported over NCP (Novell NetWare 3.x bindery)
+for NETx/VLM DOS clients.
+
+You can edit or remove this share, or add your own, from the web admin UI:
+click "Open Interface" in the ClassicStack menu bar item.
+
+This folder lives at:
+~/Library/Application Support/ClassicStack/Volumes/SYS

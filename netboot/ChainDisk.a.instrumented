@@ -1,0 +1,1455 @@
+;__________________________________________________________________________________________________
+;
+;   File:       ChainDisk.a
+;
+;   Contains:   An AppleTalk NetBoot payload ("boot image") that installs a
+;               streaming network block driver, serving a full-size read/write
+;               HFS volume from the ClassicStack netboot server over ChainBoot
+;               EBP (spec/19-netboot.md Part B).
+;
+;               This is an ALTERNATE implementation to ChainLoader.a. Both
+;               install the same EBP driver; they differ in HOW they take
+;               control of the boot:
+;
+;                 ChainLoader.a  scans the stack for the ROM's _Read return
+;                                address, rewrites it, tears down .netBOOT and
+;                                .ATBOOT with _DrvrRemove, and re-executes the
+;                                _Read trap. That requires the ROM to have
+;                                pushed a _Read return address on the stack and
+;                                to live within ROMBase..ROMBase+$4000 — an
+;                                assumption that holds on the Macintosh Classic
+;                                but not in general (verified false on the
+;                                LC 475: no _Read return address is on the
+;                                stack at any of the 15 call sites).
+;
+;                 ChainDisk.a    (this file) does none of that. It implements
+;                                the boot-image entry contract that Apple's own
+;                                .ATBOOT driver defines, and lets .netBOOT run
+;                                to completion exactly as designed.
+;
+;               THE CONTRACT (Apple, SuperMario os/netboot/):
+;
+;               ATBoot.c calls the downloaded image as a C function:
+;
+;                   ((j_code)(buffer))(command, g, &var1, &var2)
+;
+;               declared in ATBootEqu.h as
+;
+;                   short (*j_code)(short command, DGlobals *g,
+;                                   int **var1, int **var2)
+;
+;               NetBoot.c's DOREAD drives three calls, in this order:
+;
+;                 1  getBootBlocks   During the ROM's _Read of the boot blocks.
+;                                    Return 1KB of boot blocks. ATBoot.c copies
+;                                    ur.userRec.bootBlocks to the caller's
+;                                    buffer after we return, so we write our
+;                                    blocks into the DGlobals user record.
+;                 2  getSysVol       Immediately after, same _Read. Install a
+;                                    driver and a drive queue entry, ready to
+;                                    mount. Return the DQE pointer in var2.
+;                 3  mountSysVol     After _InitFS, via the ToExtFS hook that
+;                                    .netBOOT installs for us. _MountVol the
+;                                    drive. Return the VCB in var1, DQE in var2.
+;
+;               Everything this payload needs is reachable through documented
+;               traps — _DrvrInstall, _AddDrive, _MountVol, _Open, _Control —
+;               so nothing here depends on ROM layout, ROM version, or machine
+;               model. The structure follows BootWrapper.a (Elliot Nunn's
+;               RAM-disk payload, which is contract-conformant); the network
+;               driver body is ChainLoader.a's EBP state machine, carrying over
+;               every wire-level and driver-correctness fix recorded in
+;               spec/19-netboot.md.
+;
+;   Written by: ClassicStack, after Elliot Nunn's NetBoot project
+;               (https://github.com/elliotnunn/NetBoot), used with permission
+;               under the MIT License; and Apple's SuperMario os/netboot
+;               sources for the boot-image entry contract.
+;
+;   Licence:    GPL-3.0-or-later, dual-licensed MIT for the portions derived
+;               from Elliot Nunn's NetBoot (BootWrapper.a, ChainLoader.a).
+;               See netboot/license.
+;__________________________________________________________________________________________________
+
+; ---- Boot image entry csCodes (NetBoot.h) --------------------------------
+kGetBootBlocks      equ     1
+kGetSysVol          equ     2
+kMountSysVol        equ     3
+
+; ---- DGlobals field offsets (ATBootEqu.h) --------------------------------
+; typedef struct {
+;   short     netBootRefNum;        +0
+;   short     error;                +2
+;   Ptr       netimageBuffer;       +4
+;   unsigned  netImageSignature[4]; +8
+;   AddrBlock netServerAddr;        +24   <- the ABP server we downloaded from
+;   BootPktRply ur;                 +28   <- +18 into it is userRec ...
+;   ...
+; } DGlobals;
+; BootPktRply: Command(1) pversion(1) osID(2) userData(4) blockSize(2)
+;              imageID(2) result(2) imageSize(4) = 18 bytes, then userRecord.
+; userRecord:  serverName[33] serverZone[33] serverVol[32] serverAuthMeth(2)
+;              sharedSysDirID(4) userDirID(4) finderInfo[8](4) = 138, then
+;              bootBlocks[138].
+kDGServerAddr       equ     24
+kDGUserRec          equ     28+18           ; = 46, start of userRecord
+kDGBootBlocks       equ     kDGUserRec+138  ; = 184, userRec.bootBlocks
+
+; ---- Our unit number -----------------------------------------------------
+; We install at our OWN unit number rather than stealing .netBOOT's, so
+; .netBOOT stays alive and functional for the rest of the boot (it is what
+; calls us back at mountSysVol).
+myUnitNum           equ     52
+myDRefNum           equ     ~myUnitNum
+
+; ---- .MPP control csCodes (Interfaces/AIncludes/AppleTalk.a) -------------
+; closeSkt was coded as 249 here, which is loadNBP — the socket was never
+; actually closed. Taken verbatim from Apple's equates.
+kWriteDDP           equ     246             ; Write out DDP packet
+kCloseSkt           equ     247             ; Close DDP socket
+kOpenSkt            equ     248             ; Open DDP socket
+
+; ---- .MPP queue-element field offsets (AppleTalk.a) ----------------------
+kIORefNum           equ     $18
+kCSCode             equ     $1A
+kDDPSocket          equ     $1C             ; socket number
+kDDPChecksumFlag    equ     $1D
+kDDPListener        equ     $1E             ; socket listener / WDS pointer
+kMPPRefNum          equ     -10             ; .MPP driver refnum (unit 9)
+
+; ---- EBP wire constants (spec/19-netboot.md Part B) ----------------------
+kBootSocket         equ     10              ; BOOTSOCKET, DDP type BOOTDDPTYPE
+kBootDDPType        equ     10
+kBlocksPerChunk     equ     32              ; server clamps chain reads to 32
+kBytesPerBlock      equ     512
+kInitialWaitMsec    equ     10000
+kSubsequentWaitMsec equ     1000
+
+
+Code
+
+;__________________________________________________________________________________________________
+;
+; Entry point. The whole payload is entered here, three times, by ATBoot.c.
+;
+;   4(SP)   command (the csCode; pushed as a long by C)
+;   8(SP)   DGlobals *g
+;  12(SP)   int **var1      (mountSysVol: return the VCB here)
+;  16(SP)   int **var2      (getSysVol/mountSysVol: return the DQE here)
+;
+; Return 0 in D0 for success, non-zero for failure. NetBoot.c maps a positive
+; result to noDriveErr (fatal) and a negative one to offLinErr (retry).
+;__________________________________________________________________________________________________
+
+            cmp.l   #kGetBootBlocks,4(SP)
+            beq     getBootBlocks
+            cmp.l   #kGetSysVol,4(SP)
+            beq     getSysVol
+            cmp.l   #kMountSysVol,4(SP)
+            beq     mountSysVol
+
+            move.l  #-1,D0                  ; unknown csCode: non-fatal
+            rts
+
+
+;__________________________________________________________________________________________________
+;
+; getBootBlocks — the ROM is reading blocks 0 and 1 of "the disk".
+;
+; We are still running inside .ATBOOT's control call, on a machine with no
+; network driver installed yet, so we fetch the boot blocks synchronously with
+; a bare-bones EBP exchange (open .MPP, open our socket, ask for blocks 0-1,
+; spin until they land) rather than through the not-yet-installed driver.
+;
+; ATBoot.c copies ur.userRec.bootBlocks (138 bytes) into the caller's buffer
+; AFTER we return, so we deposit the boot blocks there rather than writing the
+; caller's buffer ourselves.
+;
+; The first thing we do is salvage the server address out of DGlobals, because
+; it is the only place the address exists and .ATBOOT is about to go away.
+;__________________________________________________________________________________________________
+
+getBootBlocks
+            movem.l A2-A4/D3-D4,-(SP)
+
+    ; --- Salvage the ABP server address (DGlobals.netServerAddr) ----------
+    ; AddrBlock is {u16 aNet; u8 aNode; u8 aSocket} packed into a long.
+    ; Build a DDP address struct for _Control writeDDP:
+    ;   +0 checksum(2) +2 ? ... the .MPP address struct we send is
+    ;   {u16 net, u8 node, u8 socket, u8 ddpType} at the tail; we lay it out
+    ;   the same way ChainLoader does (gSaveAddr[16], fields at 7/11/13/15)
+    ;   so DrvrCopyAddrStruct can BlockMove it wholesale.
+            move.l  8+20(SP),A0             ; (+20 = the movem we just pushed)
+            move.l  kDGServerAddr(A0),D0    ; AddrBlock
+            lea     gSaveAddr,A0
+            move.b  #kBootDDPType,15(A0)    ; DDP protocol type
+            move.b  D0,13(A0)               ; socket
+            lsr.w   #4,D0
+            lsr.w   #4,D0
+            move.b  D0,11(A0)               ; node
+            swap    D0
+            move.w  D0,7(A0)                ; network
+
+    ; --- Bring up .MPP and our DDP socket --------------------------------
+            bsr     OpenNetwork
+            tst.w   D0
+            bne     .netFail
+
+    ; --- Read blocks 0-1 into gBootBlockBuf ------------------------------
+            moveq.l #0,D3                   ; D3 = starting block
+            moveq.l #2,D4                   ; D4 = block count
+            lea     gBootBlockBuf,A2
+            bsr     SyncChainRead
+            tst.w   D0
+            bne     .netFail
+
+    ; --- Hand the structured part to .ATBOOT's user record ---------------
+            move.l  8+20(SP),A1
+            lea     kDGBootBlocks(A1),A1    ; -> ur.userRec.bootBlocks
+            lea     gBootBlockBuf,A0
+            move.l  #138,D0
+            dc.w    $A22E                   ; _BlockMoveData
+
+    ; --- System 7: executable boot blocks need all 1KB, not 138 bytes ----
+    ; Identical treatment to BootWrapper.a: if BBVersion says the boot blocks
+    ; are executable from offset 2, the 138 declarative bytes .netBOOT copies
+    ; are not enough. Patch a stub over them that copies the full 1KB into
+    ; place and jumps to it.
+            move.b  6(A1),D0                ; BBVersion
+            cmp.b   #$44,D0
+            beq.s   .executableBB
+            and.b   #$C0,D0
+            cmp.b   #$C0,D0
+            beq.s   .executableBB
+            bra.s   .ok
+
+.executableBB                               ; leave bytes 6,7 intact
+            move.l  #$60000004,2(A1)        ; BB+2:  BRA.W BB+8
+            move.w  #$4EB9,8(A1)            ; BB+8:  JSR fixBB
+            lea     fixBB,A0
+            move.l  A0,10(A1)
+
+            move.l  A1,A0                   ; flush icache via _BlockMove
+            move.l  #138,D0
+            dc.w    $A02E
+
+.ok         moveq.l #0,D0
+            movem.l (SP)+,A2-A4/D3-D4
+            rts
+
+.netFail    moveq.l #-1,D0                  ; negative = non-fatal, ROM retries
+            movem.l (SP)+,A2-A4/D3-D4
+            rts
+
+; The patched boot blocks JSR here; restore the real 1KB and enter it.
+fixBB
+            move.l  (SP)+,A1
+            sub.l   #14,A1                  ; rewind to the start of the BB
+            lea     gBootBlockBuf,A0
+            move.l  #$400,D0
+            dc.w    $A02E                   ; _BlockMove
+            jmp     2(A1)                   ; jump to the fixed-up BB
+
+
+;__________________________________________________________________________________________________
+;
+; getSysVol — install the streaming driver and a drive queue entry.
+;
+; Register conventions (following BootWrapper.a):
+;   A2 = our DQE    A3 = DCE handle    A4 = the relocated driver
+;__________________________________________________________________________________________________
+
+getSysVol
+            link    A6,#-$32
+            movem.l A2-A4/D3,-(SP)
+
+    ; --- Relocate the driver out of the netBOOT heap block ---------------
+    ; Our current home is a heap pointer owned by .ATBOOT; it disappears when
+    ; the boot proceeds, and leaving it there would fragment the system heap.
+    ; Copy everything from BufPtrCopy onward down under BufPtr, then shrink
+    ; this block to just the start-time code.
+            lea     Code,A0
+            dc.w    $A021                   ; _GetPtrSize -> D0
+
+            sub.l   #BufPtrCopy-Code,D0     ; D0 = bytes to relocate
+            sub.l   D0,$10C                 ; BufPtr -= that
+            move.l  $10C,A4                 ; A4 = new home
+
+            lea     BufPtrCopy,A0
+            move.l  A4,A1
+            dc.w    $A22E                   ; _BlockMoveData
+
+            lea     Code,A0                 ; truncate to reduce fragmentation
+            move.l  #BufPtrCopy-Code,D0
+            dc.w    $A020                   ; _SetPtrSize
+
+    ; --- Install in the unit table ---------------------------------------
+            move.l  #myDRefNum,D0
+            dc.w    $A43D                   ; _DrvrInstall ReserveMem
+            bne     .error
+
+            move.l  $11C,A0                 ; UTableBase
+            add.l   #myUnitNum*4,A0
+            move.l  (A0),A3                 ; A3 = DCE handle
+
+            move.l  A3,A0
+            dc.w    $A029                   ; _HLock
+
+    ; --- Populate the DCE that _DrvrInstall left empty --------------------
+            move.l  (A3),A0                 ; A0 = DCE ptr
+
+            lea     gMyDCE-BufPtrCopy(A4),A1
+            move.l  A0,(A1)                 ; remember it: IODone needs it
+
+            move.l  A4,0(A0)                ; dCtlDriver = pointer, not handle
+
+            move.w  0(A4),D0                ; drvrFlags
+            and.w   #~$0040,D0              ; clear dRAMBased: treat as pointer
+            move.w  D0,4(A0)                ; dCtlFlags
+
+            move.w  2(A4),$22(A0)           ; drvrDelay  -> dCtlDelay
+            move.w  4(A4),$24(A0)           ; drvrEMask  -> dCtlEMask
+            move.w  6(A4),$26(A0)           ; drvrMenu   -> dCtlMenu
+
+    ; --- Open it ----------------------------------------------------------
+            lea     -$32(A6),A0
+            bsr     ClearBlock
+            lea     DrvrNameString,A1
+            move.l  A1,$12(A0)              ; ioNamePtr
+            dc.w    $A000                   ; _Open
+            bne     .error
+
+    ; --- Build a drive queue entry ---------------------------------------
+            move.l  #$16,D0
+            dc.w    $A71E                   ; _NewPtr ,Sys,Clear
+            bne     .error
+            add.l   #4,A0                   ; flags live at negative offset
+            move.l  A0,A2
+
+            move.l  4+16(A6),A1             ; tell our caller (var2)
+            move.l  A2,(A1)
+
+    ; --- Pick an unused drive number (BootUtils.a:AddMyDrive) -------------
+            lea     $308,A0                 ; DrvQHdr
+            moveq   #4,D3                   ; start at drive 4
+.checkDrvNum
+            move.l  2(A0),A1                ; qHead
+.checkDrv   cmp.w   6(A1),D3                ; dqDrive taken?
+            beq.s   .nextDrvNum
+            cmp.l   6(A0),A1                ; qTail reached?
+            beq.s   .gotDrvNum
+            move.l  0(A1),A1                ; qLink
+            bra.s   .checkDrv
+.nextDrvNum addq.w  #1,D3
+            bra.s   .checkDrvNum
+.gotDrvNum
+
+    ; --- Populate the DQE -------------------------------------------------
+            move.l  #$80080000,-4(A2)       ; flags: non-ejectable, ours
+            move.w  #1,4(A2)                ; qType
+            move.w  #0,$A(A2)               ; dQFSID = native fs
+            move.l  gDiskBlocks-BufPtrCopy(A4),D0
+            swap    D0
+            move.l  D0,$C(A2)               ; dQDrvSz / dQDrvSz2
+
+            lea     gDQEAddr,A0
+            move.l  A2,(A0)
+
+            move.l  A2,A0                   ; A0 = DQE
+            move.w  D3,D0
+            swap.w  D0                      ; D0.H = drive number
+            move.w  #myDRefNum,D0           ; D0.L = driver refnum
+            dc.w    $A04E                   ; _AddDrive
+            bne     .error
+
+            lea     gDriveNum,A0
+            move.w  D3,(A0)
+
+    ; --- Hand the DDP socket over to the driver's listener ----------------
+    ; getBootBlocks opened socket 10 with BootSockListener, which lives in the
+    ; part of this payload that is about to be freed. Close it and reopen with
+    ; DrvrSockListener — at its RELOCATED address, because that is the copy
+    ; that will still exist when a packet arrives.
+            lea     -$32(A6),A0
+            bsr     ClearBlock
+            move.w  #-10,$18(A0)            ; ioRefNum = .MPP
+            move.w  #kCloseSkt,kCSCode(A0)  ; was 249 = loadNBP, so the socket
+                                            ; was never closed and the openSkt
+                                            ; below failed with ddpSktErr
+            move.b  #kBootSocket,$1C(A0)
+            dc.w    $A004                   ; _Control
+
+            lea     -$32(A6),A0
+            bsr     ClearBlock
+            move.w  #-10,$18(A0)            ; ioRefNum = .MPP
+            move.w  #kOpenSkt,kCSCode(A0)
+            move.b  #kBootSocket,kDDPSocket(A0)
+            lea     DrvrSockListener-BufPtrCopy(A4),A1
+            move.l  A1,$1E(A0)              ; listener (relocated address)
+            dc.w    $A004                   ; _Control
+            bne     .error
+
+    ; --- Work around the .netBOOT ToExtFS hook's hardcoded drive 4 --------
+            bsr     FixDriveNumBug
+
+            movem.l (SP)+,A2-A4/D3
+            unlk    A6
+            moveq.l #0,D0
+            rts
+
+.error      movem.l (SP)+,A2-A4/D3
+            unlk    A6
+            moveq.l #1,D0                   ; positive = fatal
+            rts
+
+
+;__________________________________________________________________________________________________
+;
+; mountSysVol — the file system is up; mount our volume.
+;
+; .netBOOT's ToExtFS hook calls .ATBOOT, which calls us here. We must not
+; deadlock the file system queue we were called from, so we set it aside for
+; the duration of the _MountVol (BootWrapper.a does the same).
+;__________________________________________________________________________________________________
+
+mountSysVol
+            link    A6,#-$32
+            movem.l A2-A4/D3,-(SP)
+
+            lea     gDriveNum,A0
+            move.w  (A0),D3
+
+    ; System 7 wants MountVol to return the right vRefNum, so reuse the
+    ; parameter block already at the head of the FS queue.
+            move.l  $366,A0                 ; FSQTail
+
+            move.w  $360,-(SP)              ; save FSBusy
+            move.l  $362,-(SP)              ; save FSQHead
+            move.l  $366,-(SP)              ; save FSQTail
+            clr.w   $360
+            clr.l   $362
+            clr.l   $366
+
+            bsr     ClearBlock
+            move.w  D3,$16(A0)              ; ioVRefNum = ioDrvNum
+            dc.w    $A00F                   ; _MountVol
+            bne     .error
+
+            move.l  (SP)+,$366              ; restore the FS queue
+            move.l  (SP)+,$362
+            move.w  (SP)+,$360
+
+    ; Report the VCB (var1) and the DQE (var2) back to .ATBOOT.
+            move.l  4+12(A6),A1
+            move.l  $356+2,A0               ; VCBQHdr.qHead
+            move.l  A0,(A1)
+
+            move.l  4+16(A6),A1
+            lea     gDQEAddr,A0
+            move.l  (A0),(A1)
+
+            movem.l (SP)+,A2-A4/D3
+            unlk    A6
+            moveq.l #0,D0
+            rts
+
+; The FS queue MUST be put back even on failure — leaving it zeroed wedges the
+; file system for good, which is far worse than a failed mount (the ROM can
+; still fall back to another boot device).
+.error      move.l  (SP)+,$366
+            move.l  (SP)+,$362
+            move.w  (SP)+,$360
+            movem.l (SP)+,A2-A4/D3
+            unlk    A6
+            moveq.l #1,D0
+            rts
+
+
+;__________________________________________________________________________________________________
+;
+; The .netBOOT ToExtFS hook checks for drive number 4 specifically. On a
+; machine that already has more than two drives (Mini vMac, any Mac with a
+; hard disk) our drive gets a higher number and the hook never calls us.
+;
+; Head-patch the hook to test OUR drive number. We cannot patch it at
+; getSysVol time because .netBOOT installs it later (in DOREAD, after the
+; getBootBlocks control call returns), so we take a one-shot patch on
+; _MountVol to gain control at the right moment.
+;
+; (This is the one place we touch ROM code, and it is a data-driven scan for
+; a documented low-memory global — not a return-address or ROM-layout guess.
+; Verbatim from BootWrapper.a, which is proven on Classic and Mini vMac.)
+;__________________________________________________________________________________________________
+
+kBystanderTrap      equ     $A00F           ; _MountVol
+
+FixDriveNumBug
+    ; Find .netBOOT's refnum, then its drive.
+            lea     -$32(A6),A0             ; borrow our caller's frame
+            bsr     ClearBlock
+            lea     NetBootName,A1
+            move.l  A1,$12(A0)              ; ioNamePtr
+            dc.w    $A000                   ; _Open
+            bne     .fail
+            move.w  $18(A0),D0              ; ioRefNum
+
+            lea     $308,A1                 ; DrvQHdr
+            lea     2(A1),A0                ; treat qHead as a qLink
+.findLoop   move.l  (A0),A0
+            cmp.w   8(A0),D0                ; dQRefNum == .netBOOT?
+            beq.s   .found
+            cmp.l   6(A1),A0                ; qTail?
+            beq.s   .fail
+            bra.s   .findLoop
+.found      move.w  6(A0),D0                ; dqDrive
+
+            lea     gTheirDriveNum,A0
+            move.w  D0,(A0)
+
+            cmp.w   #4,D0                   ; drive 4 works unpatched
+            beq.s   .fail                   ; (.fail == just return)
+
+    ; Install the one-shot _MountVol patch.
+            move.w  #kBystanderTrap,D0
+            dc.w    $A346                   ; _GetOSTrapAddress
+            lea     gOrigBystanderTrap,A1
+            move.l  A0,(A1)
+
+            move.w  #kBystanderTrap,D0
+            lea     OneshotPatch,A0
+            dc.w    $A247                   ; _SetOSTrapAddress
+.fail       rts
+
+
+; Our _MountVol patch: install the ToExtFS head patch, then remove itself.
+OneshotPatch
+            clr.l   -(SP)
+            movem.l D0/D1/A0/A1,-(SP)       ; save the OS-trap registers
+
+            move.l  $3F2,A0                 ; ToExtFS
+            lea     gOrigExtFS,A1
+            move.l  A0,(A1)
+            lea     ToExtFSPatch,A0
+            move.l  A0,$3F2
+
+            lea     gOrigBystanderTrap,A0   ; unhook ourselves
+            move.l  (A0),A0
+            move.l  A0,16(SP)
+            move.w  #kBystanderTrap,D0
+            dc.w    $A047                   ; _SetTrapAddress
+
+            movem.l (SP)+,D0/D1/A0/A1
+            rts
+
+
+; Our head patch on the ToExtFS hook.
+ToExtFSPatch
+            movem.l A0-A4/D1-D2,-(SP)       ; same registers the real hook saves
+
+            cmp.b   #$F,$6+1(A0)            ; a _MountVol call? (ioTrap+1)
+            bne.s   .return
+
+            lea     gTheirDriveNum,A1       ; OUR drive number, not 4
+            move.w  (A1),D0
+            cmp.w   $16(A0),D0              ; ioDrvNum
+            bne.s   .return
+
+            lea     gOrigExtFS,A1           ; rejoin the hook past the bad test
+            move.l  (A1),A1
+.scan       add.l   #2,A1                   ; find "lea DrvQHdr,A2" or similar
+            cmp.w   #$308,2(A1)
+            bne.s   .scan
+            jmp     (A1)
+
+.return     movem.l (SP)+,A0-A4/D1-D2
+            rts
+
+
+;__________________________________________________________________________________________________
+;
+; Synchronous EBP helpers, used ONLY at getBootBlocks time (before the driver
+; exists). Once the driver is installed everything goes through its async
+; state machine instead.
+;__________________________________________________________________________________________________
+
+; OpenNetwork — open .MPP and our DDP socket with the boot-time listener.
+; Returns D0 = 0 on success.
+OpenNetwork
+            link    A6,#-$32
+            lea     -$32(A6),A0
+            bsr     ClearBlock
+            pea     MPPName
+            move.l  (SP)+,$12(A0)           ; ioNamePtr
+            dc.w    $A000                   ; _Open
+            tst.w   D0
+            bne.s   .out
+
+    ; .ATBOOT's get_image closed socket 10 before calling us, but close it
+    ; defensively anyway — and with the RIGHT csCode this time.
+            lea     -$32(A6),A0
+            bsr     ClearBlock
+            move.w  #kMPPRefNum,kIORefNum(A0)
+            move.w  #kCloseSkt,kCSCode(A0)
+            move.b  #kBootSocket,kDDPSocket(A0)
+            dc.w    $A004                   ; _Control (result ignored)
+
+    ; Re-clear the PB: _Open left its own results all over it, and every other
+    ; _Control site in this file clears before use. This one did not, and it
+    ; never set ioRefNum either — it inherited whatever _Open happened to leave.
+            lea     -$32(A6),A0
+            bsr     ClearBlock
+            move.w  #kMPPRefNum,kIORefNum(A0)
+            move.w  #kOpenSkt,kCSCode(A0)
+            move.b  #kBootSocket,kDDPSocket(A0)
+            pea     BootSockListener
+            move.l  (SP)+,kDDPListener(A0)  ; listener
+            dc.w    $A004                   ; _Control
+            tst.w   D0                      ; openSkt result was never checked:
+                                            ; a failure fell through to .out and
+                                            ; getBootBlocks only tested D0, so a
+                                            ; deaf socket looked like success
+.out        unlk    A6
+            rts
+
+
+; SyncChainRead — fetch D4 blocks starting at block D3 into (A2), spinning
+; until they all arrive or we give up. Returns D0 = 0 on success.
+;
+; This is deliberately the simplest possible implementation: one request, a
+; bounded spin, retry a few times. It only ever runs once, for 2 blocks, at
+; a point in the boot where nothing else is happening.
+SyncChainRead
+            movem.l A2-A3/D3-D6,-(SP)
+
+            lea     gBootDest,A0
+            move.l  A2,(A0)                 ; where the listener puts blocks
+            lea     gBootCount,A0
+            move.w  D4,(A0)
+
+            moveq.l #4,D5                   ; retries
+.attempt
+            lea     gBootGot,A0             ; clear the progress bitmap
+            clr.l   (A0)
+
+            lea     gExpectHdr,A0           ; arm the filter for $81 <seq>
+            move.w  #$8100,(A0)
+            addq.w  #1,2(A0)
+
+    ; Build the 16-byte chain read request.
+            lea     gQuery,A0
+            move.w  #$8000,(A0)+            ; cmd 128, flag 0
+            move.w  gExpectHdr+2,(A0)+      ; seq
+            move.l  gListenerHits,(A0)+     ; imageNum = listener-entry count
+                                            ; (forensic; server logs it as diag=)
+            move.l  D3,(A0)+                ; block offset
+            move.l  D4,(A0)+                ; block count
+
+            bsr     SendQuery16
+
+    ; Spin until every block has landed (or we time out). The listener runs at
+    ; interrupt level and fills gBootGot behind our back, so all we do is poll.
+            move.l  $16A,D0                 ; Ticks
+            add.l   #180,D0                 ; deadline: ~3 seconds
+            move.l  D0,D6                   ; deadline lives in a register — see below
+
+    ; THE BUG THAT BROKE NETBOOT (fixed 2026-08). This loop used to read:
+    ;
+    ;   .spin   move.l  D0,-(SP)            ; stash the deadline
+    ;           bsr     AllBlocksIn         ; D0 = 0 once every block has landed
+    ;           tst.l   D0                  ; set Z from the result...
+    ;           move.l  (SP)+,D0            ; ...then CLOBBER it restoring D0
+    ;           beq.s   .done
+    ;
+    ; move.l is not flag-transparent on the 68000: it sets N and Z from the
+    ; value moved. The beq therefore tested "is the DEADLINE zero?", and the
+    ; deadline is Ticks+180 — never zero. .done was unreachable dead code, so
+    ; every read spun the full 3 s and retried regardless of what had already
+    ; arrived. That is the flat ~3.03 s request cadence visible in every
+    ; capture, and it made a perfectly healthy receive path look deaf.
+    ;
+    ; Keeping the deadline in D6 (added to the entry/exit movem) lets tst.l
+    ; feed beq directly. Note only a move to an ADDRESS register leaves the
+    ; flags alone, which is why the drive-number scan's "move.l 0(A1),A1"
+    ; loop in FixDriveNumBug was always correct.
+.spin       bsr     AllBlocksIn
+            tst.l   D0
+            beq.s   .done
+            cmp.l   $16A,D6                 ; deadline still ahead?
+            bhi.s   .spin
+
+            dbra    D5,.attempt
+            moveq.l #-1,D0                  ; gave up
+            bra.s   .out
+
+.done       moveq.l #0,D0
+.out        lea     gExpectHdr,A0           ; disarm the filter
+            clr.w   (A0)
+            movem.l (SP)+,A2-A3/D3-D6
+            rts
+
+
+; AllBlocksIn — D0.L = 0 iff bits 0..gBootCount-1 are all set in gBootGot.
+; Clobbers D0-D2.
+AllBlocksIn
+            moveq.l #0,D1
+            move.w  gBootCount,D1
+            moveq.l #-1,D2
+            lsl.l   D1,D2                   ; D2 = ~mask (count < 32 here)
+            not.l   D2                      ; D2 = mask of the wanted bits
+            move.l  gBootGot,D0
+            and.l   D2,D0
+            eor.l   D2,D0                   ; 0 once every wanted bit is set
+            rts
+
+
+; SendQuery16 — synchronous writeDDP of the 16 bytes at gQuery.
+SendQuery16
+            movem.l A0-A1/D0-D2,-(SP)
+
+            lea     gSaveAddr,A0            ; the address struct .MPP wants
+            lea     gAddr,A1
+            moveq.l #16,D0
+            dc.w    $A22E                   ; _BlockMoveData
+
+            lea     gWDS,A0
+            clr.w   (A0)+                   ; reserved
+            pea     gAddr
+            move.l  (SP)+,(A0)+
+            move.w  #16,(A0)+               ; length
+            pea     gQuery
+            move.l  (SP)+,(A0)+
+            clr.w   (A0)+                   ; terminator
+
+            lea     gMyPB,A0
+            bsr     ClearBlock
+            move.w  #-10,$18(A0)            ; ioRefNum = .MPP
+            move.w  #246,$1A(A0)            ; csCode = writeDDP
+            move.b  #kBootSocket,$1C(A0)
+            move.b  #1,$1D(A0)              ; checksumFlag
+            pea     gWDS
+            move.l  (SP)+,$1E(A0)
+            dc.w    $A004                   ; _Control (sync)
+
+            movem.l (SP)+,A0-A1/D0-D2
+            rts
+
+
+; BootSockListener — the boot-time socket listener. Same register contract as
+; DrvrSockListener below; it only has to handle cmd 129 read data.
+BootSockListener
+    ; Forensic tallies (gListenerHits). Kept deliberately: getSysVol and
+    ; mountSysVol drive DrvrSockListener, which has this same structure and is
+    ; far less exercised than getBootBlocks, so the next failure on that path
+    ; is diagnosable without another instrument-rebuild-reboot cycle. Cost is
+    ; four instructions on the receive path; this is a boot-time driver, not a
+    ; hot loop.
+    ;
+    ; MUST go through an address register. PC-relative addressing is READ-ONLY
+    ; on the 68000, so "addq.l #1,gListenerHits" cannot assemble as written —
+    ; vasm silently falls back to an ABSOLUTE-long write to the LINK-TIME
+    ; offset. The payload runs from a heap block at an arbitrary address, so
+    ; that scribbled on low memory ($510) and left the counter permanently
+    ; zero, which silently invalidated two rounds of diag= readings and sent
+    ; the investigation down a blind alley. Every global in this payload is
+    ; reached PC-relative via lea for exactly this reason; writes must load
+    ; the address into a register first.
+    ;
+    ; A3 is ours to clobber (Inside AppleTalk: A3 and D2/D3 are free to the
+    ; listener; A0/A1/A2/A4 and D0/D1 belong to .MPP).
+            lea     gListenerHits,A3
+            addq.b  #1,(A3)                 ; byte0: every entry
+            lea     gHdr,A3                 ; even-aligned landing pad: the RHA
+            moveq.l #4,D3                   ; leaves the payload at an ODD
+            jsr     (A4)                    ; address, and a move.l off it is
+            bne.s   .rdPktFail              ; an address error on a real 68000
+            move.l  gHdr,D2
+
+            move.l  gExpectHdr,D3           ; filter: $81 and the seq must match
+            eor.l   D2,D3
+            swap    D3
+            clr.b   D3
+            bne.s   .filterRej
+
+            swap    D2                      ; D2.L low byte = blkIndex
+            and.l   #kBlocksPerChunk-1,D2
+
+            move.l  gBootDest,A3            ; dest = base + blkIndex*512
+            move.l  D2,D3
+            asl.l   #8,D3
+            add.l   D3,D3
+            add.l   D3,A3
+            move.l  #kBytesPerBlock,D3
+            jsr     2(A4)                   ; ReadRest — consumes the packet
+            bne.s   .rdRestFail             ; once consumed, never re-trash
+
+            lea     gBootGot,A0             ; mark it received
+            move.l  (A0),D1
+            bset.l  D2,D1
+            move.l  D1,(A0)
+            rts
+
+; --- Forensic tallies, one byte each, packed MSB-first into gListenerHits:
+;       byte0 = listener entries       byte1 = ReadPacket(4) failed
+;       byte2 = header filter reject   byte3 = ReadRest(512) short/failed
+;     SyncChainRead ships the long out as the request's imageNum, which the
+;     server logs as diag=. A healthy getBootBlocks reads 0xNN000000: entries
+;     climbing by the block count each burst, all three failure bytes zero.
+;     Counters are never reset, so read the DELTA between consecutive
+;     requests, not the absolute value.
+.rdRestFail lea     gListenerHits,A3        ; byte3: ReadRest(512) short/failed
+            addq.b  #1,3(A3)
+            rts                             ; packet already consumed
+
+.rdPktFail  lea     gListenerHits,A3        ; byte1: ReadPacket(4) failed
+            addq.b  #1,1(A3)
+            bra.s   .trash
+
+.filterRej  lea     gListenerHits,A3        ; byte2: header did not match filter
+            addq.b  #1,2(A3)
+
+.trash      moveq.l #0,D3
+            jmp     2(A4)                   ; ReadRest nothing
+
+
+;__________________________________________________________________________________________________
+; Shared utility.
+;__________________________________________________________________________________________________
+
+ClearBlock
+            move.w  #$32/2-1,D0
+.loop       clr.w   (A0)+
+            dbra    D0,.loop
+            lea     -$32(A0),A0
+            rts
+
+
+MPPName         dc.b    4, '.MPP', 0
+                even
+NetBootName     dc.b    8, '.netBOOT', 0
+                even
+DrvrNameString  dc.b    9, '.netChain', 0
+                even
+
+gDriveNum           dc.w    0
+gDQEAddr            dc.l    0
+gTheirDriveNum      dc.w    0
+gOrigBystanderTrap  dc.l    0
+gOrigExtFS          dc.l    0
+
+; Boot-time-only scratch (does not need to survive relocation).
+gBootDest           dc.l    0
+gBootCount          dc.w    0
+gBootGot            dc.l    0
+; Forensic tallies for the boot-time listener, four packed bytes:
+;   [entries][ReadPacket-fail][filter-reject][ReadRest-fail]
+; Shipped out in each request's imageNum field; the server logs it as diag=.
+; EBP has no diagnostic channel, and imageNum is unused by this implementation
+; (we serve a single image), so it is free real estate — the same trick the
+; earlier ChainLoader used to smuggle out ioPosMode/ioPosOffset. See
+; BootSockListener for how to read the packed value.
+gListenerHits       dc.l    0
+                    even
+gBootBlockBuf       dcb.b   1024
+
+
+;__________________________________________________________________________________________________
+;
+; Everything above this line runs once, at boot-image entry time, and stays in
+; the .netBOOT heap block until it is released. Everything below is copied
+; under BufPtr by getSysVol and lives for the whole session.
+;
+;__________________________________________________________________________________________________
+
+BufPtrCopy
+
+
+;__________________________________________________________________________________________________
+;
+; The streaming network block driver.
+;
+; Ported from ChainLoader.a with its accumulated fixes intact; see
+; spec/19-netboot.md Part B for the wire protocol and the history behind each
+; of these. Behavioural differences from ChainLoader are marked [ChainDisk].
+;__________________________________________________________________________________________________
+
+DrvrBase
+            dc.w    $4F00           ; dReadEnable dWritEnable dCtlEnable dStatEnable dNeedLock
+            dc.w    0               ; delay
+            dc.w    0               ; evt mask
+            dc.w    0               ; menu
+
+            dc.w    DrvrOpen-DrvrBase
+            dc.w    DrvrPrime-DrvrBase
+            dc.w    DrvrControl-DrvrBase
+            dc.w    DrvrStatus-DrvrBase
+            dc.w    DrvrClose-DrvrBase
+DrvrName    dc.b    9, '.netChain', 0
+            even
+
+; --- Driver globals (relocated with the code) -----------------------------
+gMyDCE      dc.l    0
+gExpectHdr  dc.l    0               ; $8100/$8300 <seq>: the packet filter
+gProgress   dc.l    0               ; per-chunk received-block bitmap
+gHdr        dc.l    0               ; even-aligned landing pad for the reply header
+
+; Forensic tallies for the DRIVER phase, four packed bytes:
+;   [Prime _Read][Prime _Write][Prime other trap][SendWrite entries]
+; Shipped out in each READ request's imageNum field (the server logs it as
+; diag=); reads are the only thing that reaches the wire once the System is
+; up, so a write-side fault has to be smuggled out on a read.
+;
+; This is the driver-phase twin of gListenerHits, which is boot-scratch and
+; therefore stops being reachable once DrvrBase is relocated -- which is why
+; every diag= in the getSysVol/mountSysVol phase has read 0x00000000.
+;
+; Counters are never reset: read the DELTA between consecutive requests. All
+; bumps go through an address register because PC-relative addressing is
+; read-only on the 68000 (see BootSockListener for the full account of how
+; that silently broke the first instrument).
+gDrvrDiag   dc.l    0
+; Volume size in 512-byte blocks. EBP has no "how big is the disk?" query, so
+; the SERVER stamps this field before serving: it scans the payload for the
+; 8-byte cookie 'CSDSKSZ\0' and overwrites the long that follows. The cookie
+; is checked rather than a fixed offset so the payload can be re-assembled
+; freely. If it is left at 0 the driver still works — the Device Manager just
+; reports a zero-size drive, which stops some Finder operations from working.
+gDiskCookie dc.b    'CSDSKSZ',0
+gDiskBlocks dc.l    0
+gQuery      dcb.b   20
+gWDS        dcb.b   2+4+2+4+2+4+2
+gMyPB       dcb.b   $32+2
+            odd
+gSaveAddr   dcb.b   16              ; the salvaged server address
+gAddr       dcb.b   16              ; working copy for each send
+            even
+
+; Time Manager task
+tmLink      dc.l    0
+tmType      dc.w    0
+tmAddr      dc.l    0
+tmCount     dc.l    0
+
+; a0 = iopb, a1 = dce on entry to all driver routines.
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+DrvrOpen
+            lea     gMyDCE,A2
+            move.l  A1,(A2)
+            move.w  #0,$10(A0)      ; ioResult
+            rts
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+DrvrPrime
+; Convert ioPosOffset to a block offset (wide positioning supported).
+            btst.b  #0,$2C(A0)              ; ioPosMode & kUseWidePositioning
+            bne.s   .wide
+
+; Decode ioPosMode the way a proven block driver does (bbraun's romdrv):
+; fsFromStart takes ioPosOffset, fsAtMark takes the mark (dCtlPosition),
+; fsFromMark adds the two. WE maintain the mark at IODone — that is the
+; Inside Macintosh contract, and a driver that skips it sees a mark stuck at
+; 0 forever, sending every fsAtMark cache flush to block 0.
+.notwide    move.w  $2C(A0),D0              ; ioPosMode
+            and.w   #$F,D0
+            cmp.w   #1,D0                   ; fsFromStart?
+            beq.s   .fromStart
+            cmp.w   #3,D0                   ; fsFromMark?
+            beq.s   .fromMark
+            move.l  $10(A1),D0              ; fsAtMark: the mark
+            bra.s   .gotD0
+.fromMark   move.l  $10(A1),D0              ; the mark...
+            add.l   $2E(A0),D0              ; ...+ the relative offset
+            bra.s   .gotD0
+.fromStart  move.l  $2E(A0),D0              ; absolute byte offset
+            bra.s   .gotD0
+.wide       move.l  $2E(A0),D0
+            or.l    $32(A0),D0
+.gotD0      ror.l   #4,D0                   ; D0 /= 512
+            ror.l   #5,D0
+            move.l  D0,$2E(A0)              ; ioPosOffset = block offset
+
+            move.w  #1,$10(A0)              ; ioResult = pending
+
+; Forensic: tally the dispatch by trap type before taking it. ioTrap is the
+; WORD at $6 (Apple SysEqu.a: "ioTrap EQU $6 ; the trap [word]"), so 7(A0) is
+; its low byte -- $02 for _Read ($A002), $03 for _Write ($A003). A2 is free
+; here; A0 is the PB and must survive.
+            move.l  A2,-(SP)
+            lea     gDrvrDiag,A2
+            cmp.b   #2,7(A0)                ; ioTrap == _Read?
+            beq.s   .diagRead
+            cmp.b   #3,7(A0)                ; ioTrap == _Write?
+            beq.s   .diagWrite
+            addq.b  #1,2(A2)                ; byte2: neither _Read nor _Write
+            bra.s   .diagDone
+.diagRead   addq.b  #1,(A2)                 ; byte0: _Read
+            bra.s   .diagDone
+.diagWrite  addq.b  #1,1(A2)                ; byte1: _Write
+.diagDone   move.l  (SP)+,A2
+
+            cmp.b   #2,7(A0)                ; ioTrap == _Read?
+            bne     DrvrSendWrite
+            bra     DrvrSendRead
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+DrvrReSendRead
+; Time Manager task.
+            lea     tmLink,A0
+            dc.w    $A059                           ; _RmvTime
+
+            move.l  gMyDCE,A1
+            move.l  6+2(A1),D0                      ; qHead — a stale timer can
+            bne.s   .live                           ; fire after IODone emptied
+            rts                                     ; the queue; a dead PB is
+.live       move.l  D0,A0                           ; not safe to touch
+
+            and.l   #-kBlocksPerChunk*kBytesPerBlock,$28(A0)   ; truncate ioActCount
+
+DrvrSendRead
+; Entered from Prime, the socket listener or the Time Manager. A0 = PB.
+            lea     gExpectHdr,A2
+            clr.w   (A2)+                           ; filter disabled until sent
+            addq.w  #1,(A2)                         ; bump the sequence word
+            lea     gProgress,A2
+            clr.l   (A2)
+
+            bsr.s   DrvrCopyAddrStruct
+
+            lea     gQuery,A2
+            move.w  #$8000,(A2)+                    ; cmd 128, flag 0
+            move.w  gExpectHdr+2,(A2)+              ; seq
+; [ChainDisk] imageNum carries gDrvrDiag out to the server, which logs it as
+; diag=. ChainLoader repurposed this same field as a position diagnostic; the
+; bug that chased is fixed, and the field is free again (we serve one image).
+            move.l  gDrvrDiag,(A2)+
+
+            move.l  $28(A0),D0                      ; [ioActCount bytes
+            lsr.l   #4,D0
+            lsr.l   #5,D0                           ;  / 512]
+            add.l   $2E(A0),D0                      ; + ioPosOffset (blocks)
+            move.l  D0,(A2)+                        ; -> offset
+
+            move.l  $24(A0),D0                      ; [ioReqCount
+            sub.l   $28(A0),D0                      ;  - ioActCount]
+            lsr.l   #4,D0
+            lsr.l   #5,D0                           ; / 512
+            move.l  D0,(A2)+                        ; -> length
+
+            lea     gWDS,A2
+            clr.w   (A2)+                           ; reserved
+            pea     gAddr
+            move.l  (SP)+,(A2)+
+            move.w  #16,(A2)+
+            pea     gQuery
+            move.l  (SP)+,(A2)+
+            clr.w   (A2)+                           ; terminator
+
+            move.l  A0,-(SP)
+            lea     gMyPB,A0
+            bsr     DrvrClearBlock
+            pea     DrvrDidSendRead
+            move.l  (SP)+,$C(A0)            ; ioCompletion
+            move.w  #-10,$18(A0)            ; ioRefNum = .MPP
+            move.w  #246,$1A(A0)            ; csCode = writeDDP
+            move.b  #kBootSocket,$1C(A0)
+            move.b  #1,$1D(A0)              ; checksumFlag
+            pea     gWDS
+            move.l  (SP)+,$1E(A0)
+            dc.w    $A404                   ; _Control ,async
+            move.l  (SP)+,A0
+            rts
+
+DrvrCopyAddrStruct
+; NOTE: clobbers D0 (moveq #16, then _BlockMoveData returns noErr in D0).
+; Callers that computed something into D0 must recompute after this — see
+; DrvrSendWrite, where missing that sent every write to block 0.
+            movem.l A0-A1,-(SP)
+            lea     gSaveAddr,A0
+            lea     gAddr,A1
+            moveq.l #16,D0
+            dc.w    $A22E                   ; _BlockMoveData
+            movem.l (SP)+,A0-A1
+            rts
+
+DrvrDidSendRead
+; Completion routine: enabling the filter HERE (not in DrvrSendRead) is what
+; keeps a fast server reply from being accepted before the send completed.
+            lea     gExpectHdr,A0
+            move.w  #$8100,(A0)
+            move.l  #kInitialWaitMsec,D0
+
+DrvrInstallReSendRead
+; D0 = wait time. Clobbers freely.
+            lea     tmLink,A0
+            pea     DrvrReSendRead
+            move.l  (SP)+,tmAddr-tmLink(A0)
+            move.l  D0,-(SP)
+            dc.w    $A058                   ; _InsTime
+            move.l  (SP)+,D0
+            dc.w    $A05A                   ; _PrimeTime
+            rts
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+DrvrReSendWrite
+; Time Manager task.
+            lea     tmLink,A0
+            dc.w    $A059                   ; _RmvTime
+
+            move.l  gMyDCE,A1
+            move.l  6+2(A1),D0              ; qHead — bail on a stale timer
+            bne.s   .live
+            rts
+.live       move.l  D0,A0
+
+            sub.l   #kBytesPerBlock,$28(A0)
+            and.l   #-kBlocksPerChunk*kBytesPerBlock,$28(A0)
+
+DrvrSendWrite
+; Entered from Prime, the socket listener or the Time Manager. A0 = PB.
+; D1 = block index within the chunk.
+; Forensic: byte3 counts entries here. If Prime's _Write tally (byte1) climbs
+; but this does not, the branch itself is at fault; if both climb and no cmd
+; $82 appears on the wire, the fault is between here and _Control.
+            move.l  A2,-(SP)
+            lea     gDrvrDiag,A2
+            addq.b  #1,3(A2)
+            move.l  (SP)+,A2
+
+            move.l  $28(A0),D1
+            lsr.l   #5,D1
+            lsr.l   #4,D1
+            move.l  D1,D0
+            and.l   #kBlocksPerChunk-1,D1
+
+            move.l  $28(A0),D2
+            add.l   #kBytesPerBlock,D2
+            cmp.l   $24(A0),D2
+            beq.s   .lastBlock
+; Flag the last block of each CHUNK, not just of the whole request: the
+; server commits and acks a chunk only on the flag, so unflagged intermediate
+; chunks are silently dropped window by window.
+            cmp.w   #kBlocksPerChunk-1,D1
+            bne.s   .notLastBlock
+.lastBlock  bset    #7,D1
+.notLastBlock
+
+; D0 = first block of the chunk.
+            and.l   #-kBlocksPerChunk,D0
+            add.l   $2E(A0),D0
+
+; The first-block test must ignore bit 7: a single-block chunk has D1 = $80,
+; and a plain tst would skip this and leave a stale seq in the filter.
+            move.l  D1,D2
+            and.l   #kBlocksPerChunk-1,D2
+            bne.s   .notFirstBlockOfChunk
+            lea     gExpectHdr,A2
+; Bump the seq but keep reception DISABLED until the send completes: enabling
+; here let a fast ack race the _Control completion, after which
+; DrvrDidReceiveWrite saw ioActCount still 0 and re-entered DrvrSendWrite on
+; the still-queued gMyPB — double-enqueueing one PB hangs .MPP outright.
+; DrvrInstallReSendWrite arms $8300 once the chunk's final block is out.
+            clr.w   (A2)+
+            addq.w  #1,(A2)
+.notFirstBlockOfChunk
+
+            bsr     DrvrCopyAddrStruct
+
+; DrvrCopyAddrStruct trashed D0, so recompute the chunk base. Without this
+; every write goes out with hunkStart = 0 and lands on the boot blocks.
+; (DrvrSendRead computes its offset after the bsr, which is why reads were
+; never affected.)
+            move.l  $28(A0),D0              ; ioActCount (bytes)
+            lsr.l   #5,D0
+            lsr.l   #4,D0                   ; / 512 = blocks
+            and.l   #-kBlocksPerChunk,D0    ; rounded down to a chunk
+            add.l   $2E(A0),D0              ; + ioPosOffset (blocks)
+
+            lea     gQuery,A2
+            move.b  #$82,(A2)+              ; cmd 130
+            move.b  D1,(A2)+                ; block index (bit7 = last of chunk)
+            move.w  gExpectHdr+2,(A2)+      ; seq
+            clr.l   (A2)+                   ; [ChainDisk] imageNum = 0
+            move.l  D0,(A2)+                ; hunkStart
+
+            lea     gWDS,A2
+            clr.w   (A2)+                   ; reserved
+            pea     gAddr
+            move.l  (SP)+,(A2)+
+
+            move.w  #12,(A2)+               ; header
+            pea     gQuery
+            move.l  (SP)+,(A2)+
+
+            move.w  #kBytesPerBlock,(A2)+   ; body
+            move.l  $20(A0),D0              ; ioBuffer
+            add.l   $28(A0),D0              ; + ioActCount
+            move.l  D0,(A2)+
+
+            clr.w   (A2)+                   ; terminator
+
+            move.l  A0,-(SP)
+            lea     gMyPB,A0
+            bsr     DrvrClearBlock
+            pea     DrvrDidSendWrite
+            move.l  (SP)+,$C(A0)            ; ioCompletion
+            move.w  #-10,$18(A0)            ; ioRefNum = .MPP
+            move.w  #246,$1A(A0)            ; csCode = writeDDP
+            move.b  #kBootSocket,$1C(A0)
+            move.b  #1,$1D(A0)              ; checksumFlag
+            pea     gWDS
+            move.l  (SP)+,$1E(A0)
+            dc.w    $A404                   ; _Control ,async
+            move.l  (SP)+,A0
+            rts
+
+DrvrDidSendWrite
+            move.l  gMyDCE,A0
+            move.l  6+2(A0),A0              ; qHead — the request may have
+            move.l  A0,D0                   ; completed while in flight
+            bne.s   .live
+            rts
+.live
+            movem.l $24(A0),D0/D1           ; D0 = ioReqCount, D1 = ioActCount
+            add.l   #kBytesPerBlock,D1
+            move.l  D1,$28(A0)
+
+            cmp.l   D0,D1
+            beq.s   DrvrInstallReSendWrite
+; The chunk-boundary test must mask the ADVANCED ioActCount (D1), not the
+; constant ioReqCount: masking the latter never paused at a boundary, so
+; multi-chunk writes streamed on without awaiting any ack.
+            and.l   #(kBlocksPerChunk-1)*kBytesPerBlock,D1
+            beq.s   DrvrInstallReSendWrite
+            bra     DrvrSendWrite
+
+DrvrInstallReSendWrite
+            lea     gExpectHdr,A0
+            move.w  #$8300,(A0)             ; chunk fully sent — accept the ack
+            lea     tmLink,A0
+            pea     DrvrReSendWrite
+            move.l  (SP)+,tmAddr-tmLink(A0)
+            dc.w    $A058                   ; _InsTime
+            move.l  #kInitialWaitMsec,D0
+            dc.w    $A05A                   ; _PrimeTime
+            rts
+
+DrvrClearBlock
+            move.w  #$32/2-1,D0
+.loop       clr.w   (A0)+
+            dbra    D0,.loop
+            lea     -$32(A0),A0
+            rts
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; DrvrSockListener — the DDP socket listener.
+;
+; Registers on entry (Inside AppleTalk):
+;   A0,A1  .MPP internals; preserve until after ReadRest
+;   A2     .MPP locals; the RHA is at offset 1 from A2
+;   A3     first byte past the DDP header
+;   A4     ReadPacket; ReadRest starts 2 bytes in
+;   D0     destination socket
+;   D1     bytes remaining after the DDP header
+;   D2,D3  free
+;
+; ReadPacket/ReadRest: A3 = buffer, D3 = length; D3 = 0 on exit iff the
+; requested length was read exactly. ReadRest may be called ONCE per packet.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+DrvrSockListener
+; Read the 4-byte header into an EVEN-aligned buffer. The RHA leaves the DDP
+; payload at an odd address (odd RHA base + 3-byte LLAP + 5/13-byte DDP
+; header), so reading it in place with move.l is an address error on a real
+; 68000. Lenient emulators hide this; accurate ones Sad Mac 0F/0002 on the
+; very first packet.
+            lea     gHdr,A3
+            moveq.l #4,D3
+            jsr     (A4)                    ; ReadPacket
+            bne     DrvrTrashPacket
+            move.l  gHdr,D2
+
+            move.l  gExpectHdr,D3           ; filter: command byte and seq
+            eor.l   D2,D3
+            swap    D3
+            clr.b   D3
+            bne     DrvrTrashPacket
+
+            movem.l A0-A1/D0-D2,-(SP)
+            lea     tmLink,A0
+            dc.w    $A059                   ; _RmvTime
+            movem.l (SP)+,A0-A1/D0-D2
+
+            btst    #25,D2                  ; $83 = write ack, $81 = read data
+            bne.s   DrvrDidReceiveWrite
+
+DrvrDidReceiveRead
+            swap    D2
+            and.l   #kBlocksPerChunk-1,D2   ; D2 = block index within the chunk
+
+            move.l  gMyDCE,A3
+            move.l  6+2(A3),A3              ; dCtlQHdr.qHead
+            move.l  A3,D3                   ; a stale or duplicate reply after
+            beq     DrvrTrashPacket         ; IODone must not ReadRest via a
+                                            ; dead PB
+            move.l  $28(A3),D3              ; ioActCount...
+            lsr.l   #5,D3
+            lsr.l   #4,D3                   ; ...in blocks
+            and.l   #-kBlocksPerChunk,D3    ; ...rounded to a chunk
+            add.l   D2,D3                   ; ...plus this block
+            asl.l   #8,D3
+            add.l   D3,D3                   ; = byte offset within the buffer
+
+            move.l  $20(A3),A3              ; ioBuffer
+            add.l   D3,A3
+            move.l  #kBytesPerBlock,D3
+            jsr     2(A4)                   ; ReadRest
+; ReadRest consumes the packet even on a length error, and a duplicate is only
+; detectable after it has run. Jumping to DrvrTrashPacket from here would call
+; ReadRest a SECOND time, wrecking .MPP's read state and sending the next jump
+; wild. Once it has run, just rts.
+            bne.s   .consumed
+
+            lea     gProgress,A1            ; skip the rest if this is a repeat
+            move.l  (A1),D1
+            bset.l  D2,D1
+            beq.s   .fresh
+.consumed   rts
+.fresh      move.l  D1,(A1)
+
+            move.l  gMyDCE,A0
+            move.l  6+2(A0),A0              ; dCtlQHdr.qHead
+
+            move.l  $28(A0),D0              ; advance ioActCount
+            add.l   #kBytesPerBlock,D0
+            move.l  D0,$28(A0)
+            cmp.l   $24(A0),D0
+            beq.s   DrvrIODone
+
+            addq.l  #1,D1                   ; bitmap all ones -> next chunk
+            beq     DrvrSendRead            ; (A0 = PB)
+
+            move.l  #kSubsequentWaitMsec,D0
+            bra     DrvrInstallReSendRead
+
+DrvrDidReceiveWrite
+            moveq.l #0,D3
+            jsr     2(A4)                   ; ReadRest (discard)
+
+            move.l  gMyDCE,A0
+            move.l  6+2(A0),A0              ; qHead
+            move.l  A0,D0                   ; a stale ack after IODone
+            bne.s   .live
+            rts
+.live
+            movem.l $24(A0),D0/D1           ; D0 = ioReqCount, D1 = ioActCount
+            cmp.l   D0,D1
+            blo     DrvrSendWrite
+            ; else fall through to DrvrIODone
+
+DrvrIODone
+            lea     gExpectHdr,A1           ; disable the listener
+            clr.w   (A1)
+
+            move.l  gMyDCE,A1
+; Maintain the mark: Inside Macintosh makes the DRIVER responsible for
+; dCtlPosition. Final position = start block (Prime converted it) * 512 +
+; ioReqCount, handed back in ioPosOffset too, the way real block drivers do.
+            move.l  6+2(A1),D0              ; the completing PB
+            beq.s   .noPB
+            move.l  D0,A0
+            move.l  $2E(A0),D0              ; block offset
+            asl.l   #8,D0
+            add.l   D0,D0                   ; back to bytes
+            add.l   $24(A0),D0              ; + ioReqCount = the new mark
+            move.l  D0,$10(A1)              ; dCtlPosition
+            move.l  D0,$2E(A0)              ; ioPosOffset
+.noPB
+            moveq   #0,D0
+            move.l  $8FC,A0                 ; jIODone (D0 = result, A1 = DCE)
+            jmp     (A0)
+
+DrvrTrashPacket
+            moveq.l #0,D3
+            jmp     2(A4)                   ; ReadRest nothing
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+DrvrControl
+            cmp.w   #21,$1A(A0)             ; kDriveIcon
+            beq.s   .icon
+            cmp.w   #22,$1A(A0)             ; kMediaIcon
+            beq.s   .icon
+            move.w  #-17,$10(A0)            ; controlErr
+            bra     DrvrFinish
+.icon       lea     DrvrIcon,A2
+            move.l  A2,$1C(A0)
+            clr.w   $10(A0)
+            bra     DrvrFinish
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+DrvrStatus
+            cmp.w   #6,$1A(A0)              ; fmtLstCode
+            beq.s   .fmtLst
+            cmp.w   #8,$1A(A0)              ; drvStsCode
+            beq.s   .drvSts
+            move.w  #-18,$10(A0)            ; statusErr
+            bra     DrvrFinish
+
+.fmtLst     move.l  gDiskBlocks,D0
+            lsl.l   #5,D0                   ; blocks -> bytes
+            lsl.l   #4,D0
+            move.w  #1,$1C(A0)
+            move.l  $1C+2(A0),A2
+            move.l  D0,0(A2)
+            move.l  #$40000000,4(A2)
+            move.w  #0,$10(A0)
+            bra     DrvrFinish
+
+.drvSts     move.w  #0,$1C(A0)              ; track number
+            move.l  #$80080000,$1C+2(A0)    ; same flags as the DQE
+            move.w  #0,$10(A0)
+            bra     DrvrFinish
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+DrvrClose
+            move.w  #0,$10(A0)
+            rts
+
+DrvrFinish
+            move.w  6(A0),D1                ; ioTrap
+            btst    #9,D1                   ; noQueueBit
+            bne.s   .noIODone
+            move.l  $8FC,-(SP)              ; jIODone
+.noIODone   rts
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+DrvrIcon
+            dcb.l   19,0
+            dc.l    %11111111111111111111111111111111
+            dc.l    %10000000000000000000000000000001
+            dc.l    %10000000000000001000000000000001
+            dc.l    %10010010010010011001001001001001
+            dc.l    %10010010010010000001001001001001
+            dc.l    %10010010010010000001001001001001
+            dc.l    %10010010010010010001001001001001
+            dc.l    %10010010010010001001001001001001
+            dc.l    %10010010010010010001001001001001
+            dc.l    %10010010010010001001001001001001
+            dc.l    %10010010010010010001001001001001
+            dc.l    %10000000000000000000000000000001
+            dc.l    %11111111111111111111111111111111
+            dcb.l   18,0
+            dcb.l   13,$FFFFFFFF
+            dc.b    22, 'AppleTalk NetBoot Disk', 0
+            even
+
+DrvrEnd
+CodeEnd

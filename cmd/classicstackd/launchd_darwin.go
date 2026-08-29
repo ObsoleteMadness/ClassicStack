@@ -53,7 +53,7 @@ func cmdInstall(args []string) error {
 	// Reload to pick up changes if it was already loaded, then load.
 	_ = exec.Command("launchctl", "unload", plistPath).Run()
 	if out, err := exec.Command("launchctl", "load", "-w", plistPath).CombinedOutput(); err != nil {
-		return fmt.Errorf("launchctl load: %v: %s", err, string(out))
+		return fmt.Errorf("launchctl load: %w: %s", err, string(out))
 	}
 
 	fmt.Printf("installed LaunchAgent %s (config %s)\n", plistPath, f.config)

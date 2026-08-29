@@ -1,0 +1,67 @@
+# WT32-ETH01 ClassicStack Configuration
+
+[identity]
+hostname = "wt32eth01-classic"
+workgroup = "WORKGROUP"
+description = "ClassicStack WT32-ETH01 Embedded Server"
+
+[logging]
+Level = "info"
+
+[router]
+default_zone = "EtherTalk Network"
+members = ["EtherTalk", "LToUDP"]
+
+[bridge]
+Name = "eth0"
+Kind = "nic"
+
+# Interface Namespace
+[[interface]]
+Name = "eth0"
+Kind = "nic"
+Proto = "dhcp"
+
+[[interface]]
+Name = "wifi0"
+Kind = "wifi"
+Proto = "dhcp"
+SSID = "your-wifi-ssid"
+Key = "your-wifi-password"
+
+[[interface]]
+Name = "tty2"
+Kind = "serial"
+Device = "UART1"
+Baud = 1000000
+
+# Transports
+[[ethertalk]]
+iface = "eth0"
+enabled = true
+
+[[ltoudp]]
+enabled = true
+
+[[tashtalk]]
+iface = "tty2"
+enabled = true
+
+# File Shares (pointing to SD card /data directory)
+[[afpvolumes]]
+name = "Data"
+fs_type = "fatfs"
+path = "/data"
+read_only = false
+
+[[smbshares]]
+name = "data"
+description = "SD Card Share"
+fs_type = "fatfs"
+path = "/data"
+read_only = false
+
+[WebUI]
+enabled = true
+bind = "0.0.0.0:8080"
+tls = false

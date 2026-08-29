@@ -1,0 +1,285 @@
+# Design: Named Port Instances over an Interface Namespace
+
+> Status: **proposed** (design agreed, not yet implemented). Extends
+> [00-DESIGN.md](00-DESIGN.md) §2 (the link adapter / `FrameLink` seam) and §4/§9d
+> (the shared Bridge). Supersedes the singleton-port + single-`Model.Bridge` shape
+> that M3–M10 built on.
+
+## 1. Motivation
+
+Today each transport is a **singleton**: one `[EtherTalk]`, one `[LToUDP]`, one
+`[TashTalk]`, one `[IPX]` section, each building exactly one component under a
+fixed key. That cannot express the configurations a real router serves:
+
+- **Multiple TashTalk dongles**, each on its own serial port, each bridging a
+  *different* physical LocalTalk segment into the router.
+- **Multiple EtherTalk interfaces**, each bound to a different NIC, each its own
+  AppleTalk network, all joined to the one AppleTalk router.
+- The same for **IPX** — several interfaces, each its own segment — except IPX
+  ports join the **IPX router**, not the AppleTalk router.
+
+The unifying observation (from the design steer): **a serial port is an interface
+too — just not a *network* interface.** "A port instance, with a name, bound to an
+interface, that is a member of a router" is the general concept. The interface may
+be a NIC, a serial device, a named bridge, or nothing (a multicast/tunnel
+segment). Which router it joins is a property of the port *type*, not the
+instance.
+
+This is squarely the **Adaptable** pillar — "no hard-coded assumptions about the
+physical interface" — taken to its conclusion: not only is the link an adapter,
+but *which* link and *how many* are config, and the interface a port binds to is a
+first-class named entity.
+
+## 2. The two structural changes
+
+### 2a. Ports become named, repeated instances
+
+A transport section is no longer a singleton in `Model.Sections`; it is a
+**repeated (named-instance) section** in `Model.Lists`, exactly like AFP volumes
+and SMB shares already are. The machinery exists today:
+`config.NamedSection` (adds `InstanceName()`), `Model.Lists`,
+`Model.AddInstance`, and the codec's TOML array-of-tables / UCI repeated-block
+round-trip.
+
+```toml
+[[EtherTalk]]
+name = "et-lab"            # InstanceName(): the router member + UI/control handle
+iface = "eth0"            # references an interface by NAME (see §3)
+seed_network = 10
+seed_zone = "Lab"
+
+[[EtherTalk]]
+name = "et-dmz"
+iface = "eth1"
+seed_network = 20
+
+[[TashTalk]]
+name = "tt-printer"
+iface = "ttyS-printer"    # a SERIAL interface, by name
+seed_network = 30
+
+[[TashTalk]]
+name = "tt-attic"
+iface = "ttyUSB-attic"
+
+[[IPX]]
+name = "ipx-lan"
+iface = "eth0"            # IPX member — joins the IPX router, not AppleTalk
+```
+
+`port.Section` gains an instance `name` and implements `NamedSection`; `Key()`
+keeps returning the shared schema key (`"EtherTalk"`), `InstanceName()` returns
+the per-instance name. The runport already derives `Component.Name()` — today from
+`sec.SKey`; it will derive from the instance name so each instance is an
+independently addressable component (start/stop/restart/stats per instance).
+
+### 2b. Interfaces become a named namespace (bridges included)
+
+Today there is one global `Model.Bridge InterfaceSection`, and
+`EffectiveInterface` folds it in as the inherited default. The steer:
+
+> we also have the concept of a shared bridge. the bridge could have a name too
+> and that's the iface referenced?
+
+So generalise: there is a **namespace of named interfaces**, and a port's `iface`
+field references one *by name*. Members of the namespace:
+
+- **NIC** — a physical/virtual network interface (`eth0`). pcap/tap/rawsock/etc.
+- **Serial** — a UART/serial device (`COM3`, `/dev/ttyUSB0`). tashtalk/ppp/slip.
+- **Bridge** — a *named* virtual interface aggregating one or more NICs (the
+  current shared Bridge, now one named entry among possibly several).
+- **(none)** — multicast/tunnel segments (LToUDP) that bind no host interface;
+  `iface` is then a transport-specific address (the IPv4 bind addr), not a
+  namespace reference.
+
+```toml
+[[Interface]]
+name = "br-lan"
+kind = "bridge"
+members = ["eth0", "eth1"]   # bridge-specific
+
+[[Interface]]
+name = "ttyUSB-attic"
+kind = "serial"
+device = "/dev/ttyUSB0"
+baud = 1000000
+
+[[Interface]]
+name = "eth0"
+kind = "nic"
+```
+
+A port's `iface = "br-lan"` then means "bind to the interface named br-lan",
+whatever kind it is. The current bridge-inheritance behaviour (empty iface →
+inherit the global bridge) is re-expressed as: a port with no `iface` inherits a
+configured **default interface** (which may be a bridge); a port that names one
+overrides. `EffectiveInterface` keeps that resolution but resolves against the
+namespace rather than a single `Model.Bridge`.
+
+### 2c. Interface kind is explicit (not inferred)
+
+Decision (agreed): the interface carries an explicit **`kind`** field
+(`nic | serial | bridge`, with multicast/none implied by a port that references no
+interface) rather than inferring it from the port type. Rationale: a port type no
+longer implies a single medium (EtherTalk could in principle run over a bridge or
+a raw NIC; the namespace entry is the authority), and an explicit kind lets the
+compose layer pick the right **opener** (pcap vs serial vs rawsock) from the
+*interface*, not the port. It also future-proofs new transports.
+
+This means the per-port `Bindable`/`InterfaceProvider` story shifts: the port
+declares *which interface name* it wants; the **interface** declares its kind and
+the parameters an opener needs (device path, baud, bridge members). The opener
+selection moves from "the EtherTalk factory always uses pcap" to "look up the
+named interface, dispatch on its kind."
+
+## 3. How this lands on the existing seams
+
+### 3a. `FrameLink` is unchanged — it is already the right abstraction
+
+Nothing about `core/link.FrameLink` (`Read`/`Write`/`Close`) changes. The backends
+already exist as `adapter/link/*` packages presenting it (pcap real; ltoudp,
+tashtalk real; tap/ppp/slip/driversnet stubs). What changes is **who picks which
+opener**: instead of the EtherTalk factory hard-wiring pcap and the LToUDP/TashTalk
+factories hard-wiring their adapter, an **interface-kind → opener** table maps a
+resolved interface to the right `adapter/link/*` opener. The `LinkOpener` seam
+(injected at the cmd edge, keeping cgo out of compose) stays; it grows from "the
+pcap opener" into "the opener registry keyed by interface kind."
+
+> **Status (landed, M11.c):** the dispatch lives in `compose/registry/dispatch.go`.
+> `BuildContext` now carries TWO cmd-edge-injected openers: `Opener` (NIC FrameLink,
+> pcap) for kind=nic/bridge, and `Serial` (`SerialOpener`: device+baud →
+> `io.ReadWriteCloser`) for kind=serial. A factory resolves its instance's effective
+> interface and dispatches on `EffectiveKind()`: EtherTalk uses `nicLinkOpener`;
+> TashTalk uses `serialLinkOpener` + a `SerialFramer` (tashtalk.NewStream); LToUDP
+> rides its own multicast adapter (no device kind) but still gates on the `Opener`
+> "backends enabled" flag. A nil opener for the relevant kind → the inert-but-routed
+> form (graceful degradation preserved).
+
+### 3b. Shared serial opener (the original UART question, now subsumed)
+
+`tashtalk`, `ppp`, `slip` each open their own UART today. With interfaces named and
+typed, a `kind = "serial"` interface owns the device parameters (device, baud,
+parity) and a single `adapter/serial` opener returns the `io.ReadWriteCloser`;
+`tashtalk`/`ppp`/`slip` become **framers over that byte stream** (each supplying
+its escape rules), not device owners. This is the clean home for the
+serial-opener split — it falls out of treating serial as an interface kind.
+
+> **Status (landed, M11.c):** `adapter/serial` is the one shared serial opener
+> (`Open(Config{Device,Baud}) (io.ReadWriteCloser, error)`; it owns the
+> jacobsa/go-serial dependency + the Windows `\\.\COMn` name mapping). `tashtalk`
+> is now a framer over the byte stream (`NewStream(io.ReadWriteCloser)`); it imports
+> no serial library. ppp/slip are still stubs (their framer conversion is deferred,
+> as agreed — converting incomplete code would be speculative).
+
+### 3c. Registry: one factory → N components
+
+Today `registry.Build(name, ctx)` builds one component. Repeated ports need the
+supervisor to enumerate instances (`Model.Lists[key]`) and build **one component
+per instance**, addressed by instance name. Options to settle at implementation
+time:
+
+- a per-instance `Build(key, instanceName, ctx)`, or
+- a factory that returns a *slice* of components for its key, or
+- the supervisor iterating instances and calling the existing factory with the
+  instance's section selected in the context.
+
+The AFP-volume / SMB-share path already solved "N instances from one schema key"
+at the *service* level; this applies the same pattern to *ports*.
+
+### 3d. Router membership is EXPLICIT, by instance name
+
+Which router a port *can* join is a property of the port type:
+
+- EtherTalk / LToUDP / TashTalk → the **AppleTalk router**.
+- IPX → the **IPX router** (mini-router).
+- NetBEUI → the **NetBEUI mini-router**.
+
+But *whether* an enabled instance joins is **declared explicitly, by name** — it is
+NOT inferred from "the port is enabled." The AppleTalk router section carries a
+**`members`** list naming the port instances that join it:
+
+```toml
+[[EtherTalk]]
+name = "et-lab"
+iface = "eth0"
+[[TashTalk]]
+name = "tt-attic"
+iface = "ttyUSB-attic"
+
+[Router]
+members = ["et-lab", "tt-attic"]   # these join the AppleTalk router
+default_zone = "Lab"
+```
+
+Semantics (decided):
+
+- **An enabled instance NOT in `members` runs standalone** — it comes up and
+  receives/sends on its own segment, but is not part of the router: no RTMP/ZIP
+  participation, no inter-port forwarding. (The legacy `[Router].ports` had this
+  standalone notion; we keep it but key it on instance names.)
+- **Empty / unspecified `members` means NONE join** — membership is opt-IN, not
+  opt-out. This deliberately DIVERGES from the legacy default ("empty = bind every
+  enabled transport"). The greenfield stance is explicit-over-implicit: a config
+  must name its router members, so what the router does is never a surprise
+  inferred from which ports happen to be enabled. The cost — a fresh config gets
+  no routing until `members` is populated — is accepted; tooling/first-run setup
+  should seed `members` with the enabled instances rather than relying on a
+  defaulted "all".
+- The same shape applies per router type (the IPX router gets its own
+  `members`-style list); a port's type still constrains which router's list it may
+  legally appear in.
+
+The existing router-port wiring already keys on the component name, so naming
+instances in `members` slots them in without the router learning about transports.
+
+> **Status (landed, M11.d):** `config.RouterSection.Members []string` +
+> `IsMember(instance)`; the compose runtime selects only listed ports as router
+> members and attaches them at Start (the router rejects attach while stopped, §3),
+> detaching at Stop. Unlisted enabled ports run standalone; empty `members` = none.
+> The IPX/NetBEUI mini-routers get their own `members`-style lists when their
+> device-link injection lands (same shape, different router).
+
+## 4. Migration / compatibility
+
+- The legacy `internal/app` config (`[LToUdp]`, `[TashTalk]`, `[EtherTalk]`
+  singletons) and the legacy web UI use the old keys; this is the **new** stack's
+  config and does not have to match byte-for-byte (00-DESIGN §"greenfield"). A
+  one-instance array-of-tables is the natural upgrade of a singleton section.
+- A singleton with no `name` can default its instance name to the schema key
+  (`EtherTalk` → instance `"EtherTalk"`), so a minimal config still works and the
+  conformance harness keeps a deterministic name.
+- **Router-membership default flips** vs legacy: legacy empty `[Router].ports`
+  meant "bind every enabled transport"; the new empty `members` means "none join"
+  (D9). A migrated config that relied on the old default must list its members
+  explicitly. First-run/setup tooling should populate `members` from the enabled
+  instances so a fresh install still routes.
+
+## 5. Decisions captured
+
+| # | Decision | Rationale |
+|---|---|---|
+| D1 | Ports are **named repeated instances** (`Model.Lists` + `NamedSection`) | Real routers have several drops per transport; machinery already exists (AFP/SMB). |
+| D2 | Applies to **IPX** too, but IPX joins the **IPX router** | "Named port bound to an interface, member of a router" is general; the router differs by type. |
+| D3 | Interfaces are a **named namespace**; a port's `iface` references one by name | Generalises the single `Model.Bridge`; a bridge is just one named interface. |
+| D4 | A **bridge is a named interface** | Lets several bridges exist and ports reference any of them by name. |
+| D5 | Interface **kind is explicit** (`nic`/`serial`/`bridge`) | Port type no longer implies one medium; the interface drives opener selection; future-proof. |
+| D6 | `FrameLink` and the `LinkOpener` seam are **unchanged**; opener selection moves to an **interface-kind → opener** table | The abstraction is already correct; only the dispatch generalises. |
+| D7 | Serial becomes an **interface kind** with a shared `adapter/serial` opener; tashtalk/ppp/slip are framers over the byte stream | Removes per-adapter `serial.Open` duplication; the right home for the UART split. |
+| D8 | Router membership is **explicit by instance name** via `[Router].members` (per router type); an enabled instance not listed runs standalone | Explicit-over-implicit: the router's behaviour is never inferred from which ports are enabled. |
+| D9 | **Empty `members` = NONE join** (opt-in) | Diverges from legacy "empty = all"; no surprise routing. First-run setup seeds members rather than defaulting to all. |
+
+## 6. Out of scope (here)
+
+- Node-claim (LLAP ENQ/ACK on LocalTalk, AARP on EtherTalk) remains deferred as in
+  M3/M10; named instances do not change that.
+- The IPX/NetBEUI device-link injection (TODO follow-on (2)) should be implemented
+  **on top of** this model (named IPX instances) rather than against the singleton
+  shape, to avoid building something we immediately re-shape.
+
+> **Status (landed, M11.e — M11 closeout):** IPX/NetBEUI device-link injection landed on
+> the named-instance shape — `NewInstanceFromOpener` (restartable) + `nicLinkOpener`
+> dispatch + raw FrameLink (no framer; the ports self-encapsulate). The IPX/NetBEUI
+> mini-routers are not yet composed, so their per-router `members` lists are deferred to
+> when those mini-routers join compose (the `SetDeliveryCallback` cross-wire is the seam).
+> With this, **M11 is complete**: every transport runs as a named instance over a typed
+> interface namespace, with kind-driven openers and explicit AppleTalk-router membership.

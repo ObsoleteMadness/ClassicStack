@@ -1,0 +1,106 @@
+.TH CLASSICSTACK 1 "2026-08-26" "ClassicStack" "ClassicStack Manual"
+.SH NAME
+classicstack \- AppleTalk Phase 2 router and AFP/SMB/NCP/EtherDFS file server
+.SH SYNOPSIS
+.B classicstack
+[\fB\-config\fR \fIpath\fR]
+[\fB\-http\fR \fIaddr\fR]
+[\fB\-version\fR]
+[\fB\-list\-ifaces\fR]
+.SH DESCRIPTION
+.B classicstack
+is the interactive entry point of ClassicStack: an AppleTalk Phase 2 router and
+classic LAN services stack.  It loads
+.I server.toml
+into the configuration model, builds and supervises the runtime (ports,
+router, and services), optionally serves the web\-admin control API, and runs
+until interrupted with SIGINT or SIGTERM.
+.PP
+A second interrupt while the first shutdown is still in progress forces an
+immediate exit
+.RB ( "classicstack: second interrupt received, forcing exit" ).
+.PP
+Which protocols and ports are actually available (AFP, SMB, NCP, EtherDFS,
+MacIP, MacIPX, NetBIOS/Messenger, EtherTalk/LToUDP/TashTalk/NetBEUI/IPX ports)
+is decided at build time by Go build tags, not by flags.  A
+.I server.toml
+section for a component that was not compiled in is simply ignored.
+.SH OPTIONS
+.TP
+.BI \-config " path"
+Path to the config file: TOML, or UCI for an
+.I /etc/config
+path or a
+.I *.uci
+file.  Default:
+.IR server.toml ", resolved relative to the current directory."
+.TP
+.BI \-http " addr"
+Override the
+.B [http]
+listen address from
+.IR server.toml .
+Empty (the default) leaves the configured value, or
+.B :1984
+if none is set.  Setting this flag enables the web UI even if disabled in the
+config file.
+.TP
+.B \-version
+Print version information and exit.  Output is
+.RS
+.EX
+classicstack <version>
+commit: <commit>
+built: <date>
+go: <go runtime version>
+.EE
+.RE
+.TP
+.B \-list\-ifaces
+List the capturable pcap network interfaces \(em the names an
+.B [EtherTalk]
+/
+.B [MacIP]
+/\|.\|.\|. interface accepts \(em and exit.  Requires a build with the
+.B pcap
+tag and libpcap/Npcap installed; otherwise prints a hint to that effect.
+.SH EXIT STATUS
+.TP
+.B 0
+Clean shutdown after the run context was cancelled.
+.TP
+.B 1
+A startup or runtime error occurred (printed as
+.BR "classicstack: <error>" ).
+.SH FILES
+.TP
+.I server.toml
+Default configuration file, auto\-loaded from the current directory if
+present.  See
+.BR server.toml.example
+in the repository for a fully commented template.
+.SH EXAMPLES
+.EX
+cp server.toml.example server.toml
+\&./classicstack
+\&./classicstack \-config /etc/classicstack/server.toml
+\&./classicstack \-http :1984
+\&./classicstack \-list\-ifaces
+.EE
+.SH BUILDING
+.EX
+go build \-tags all \-o classicstack ./cmd/classicstack
+.EE
+.SH SEE ALSO
+.BR classicstackd (1),
+.BR csfs (1),
+.BR csmount (1)
+.br
+Full flag reference: https://obsoletemadness.github.io/ClassicStack/docs/cli/
+.SH AUTHOR
+ClassicStack is developed by the ObsoleteMadness project and contributors.
+.SH LICENSE
+ClassicStack is released under the GNU General Public License v3.0 or later.
+See the
+.I NOTICE
+file in the source distribution for third\-party attributions.

@@ -1,0 +1,86 @@
+.TH CSNETVIEW 1 "2026-08-26" "ClassicStack" "ClassicStack Manual"
+.SH NAME
+csnetview \- enumerate SMB servers via the master browser
+.SH SYNOPSIS
+.B csnetview
+[\fIflags\fR]
+.SH DESCRIPTION
+.B csnetview
+enumerates SMB servers on a segment by querying the elected master browser
+with
+.BR NetServerEnum2 ,
+like a genuine Windows
+.B "net view"
+\(em not merely a passive sniff of browser announcements.  It shares its
+discovery code with
+.BR "csfs discover smb" .
+.PP
+Requires a build with the
+.B pcap
+tag (libpcap/Npcap) and privilege to open the network interface.
+.PP
+For each configured carrier (NBF, NB\-IPX)
+.B csnetview
+runs three passes: solicit\-and\-sniff for announcements, find\-the\-master
+(via
+.BR __MSBROWSE__ / workgroup
+.B <1D>
+plus
+.BR GetBackupList ),
+then
+.B NetServerEnum2
+against the elected master, merging and de\-duplicating the results.
+.SH OPTIONS
+.TP
+.BI \-iface " name"
+Interface to browse on: a pcap or TUN/TAP device name.  Omit to
+auto\-detect the primary network interface.
+.TP
+.BI \-ifacetype " type"
+Interface type:
+.BR pcap " (default, libpcap/Npcap NIC) or " tap " (Linux TUN/TAP)."
+.TP
+.BI \-timeout " duration"
+How long to listen per carrier after soliciting.  Default:
+.BR 4s .
+.TP
+.B \-v
+Verbose wire trace to stderr.
+.TP
+.B \-list\-ifaces
+List the capturable pcap network interfaces and exit.
+.TP
+.B \-version
+Print version information and exit.
+.SH OUTPUT
+For each carrier, prints a header, either an "unavailable"/"no master
+browser answered" note or the elected master and its backup list, then a
+results table with columns SERVER, CARRIERS, SOURCE, and ROLE\-COMMENT, and a
+final count of servers discovered.
+.SH EXIT STATUS
+.TP
+.B 0
+Normal completion.  An empty result set is reported inline in the output,
+not as a failure.
+.TP
+.B 1
+An error occurred (printed as
+.BR "csnetview: <error>" ).
+.SH EXAMPLES
+.EX
+csnetview \-iface eth0
+.EE
+.SH BUILDING
+.EX
+go build \-tags pcap \-o csnetview ./cmd/csnetview
+.EE
+.SH SEE ALSO
+.BR csnetsend (1),
+.BR csipxping (1),
+.BR csncpinfo (1)
+.br
+Full flag reference: https://obsoletemadness.github.io/ClassicStack/docs/cli/
+.SH AUTHOR
+ClassicStack is developed by the ObsoleteMadness project and contributors.
+.SH LICENSE
+ClassicStack is released under the GNU General Public License v3.0 or later.

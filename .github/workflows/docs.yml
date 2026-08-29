@@ -1,0 +1,102 @@
+name: Docs Site
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "docs/**"
+      - "spec/**"
+      - "ARCHITECTURE.md"
+      - "site/**"
+      - "core/protocol/**"
+      - "core/service/**"
+      - "client/**"
+      - "core/csnet/**"
+      - "core/binaryprimitives/**"
+      - "core/config/**"
+      - "core/fs/**"
+      - "core/encoding/**"
+      - "core/link/**"
+      - "core/buf/**"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build (Hugo)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Generate API reference (gomarkdoc)
+        run: |
+          set -euo pipefail
+          go install github.com/princjef/gomarkdoc/cmd/gomarkdoc@v1.1.0
+
+          # Packages meant for external reuse: protocol codecs, file/network
+          # services, the client SDK, and the shared support packages.
+          # adapter/* and cmd/* are ClassicStack's own composition/CLI layer,
+          # not reuse surface, so they're excluded.
+          MODULE=$(go list -m)
+          PKGS=$(go list -tags all \
+            ./core/protocol/... ./core/service/... ./client/... \
+            ./core/csnet/... ./core/binaryprimitives/... ./core/config/... \
+            ./core/fs/... ./core/encoding/... ./core/link/... ./core/buf/... \
+            | sed "s|^$MODULE/|./|")
+
+          mkdir -p site/content/reference
+          gomarkdoc --tags all -o 'site/content/reference/{{.Dir}}.md' $PKGS
+
+          # gomarkdoc's output carries no Hugo frontmatter; add a minimal one
+          # per page, titled from the "# <pkg>" heading gomarkdoc already wrote.
+          find site/content/reference -name '*.md' ! -name '_index.md' -print0 |
+            while IFS= read -r -d '' f; do
+              title=$(grep -m1 '^# ' "$f" | sed 's/^# //')
+              { printf -- '---\ntitle: "%s"\n---\n\n' "$title"; cat "$f"; } > "$f.tmp"
+              mv "$f.tmp" "$f"
+            done
+
+      - name: Set up Hugo
+        uses: peaceiris/actions-hugo@v3
+        with:
+          hugo-version: "0.165.0"
+          extended: true
+
+      - name: Build site
+        working-directory: site
+        env:
+          HUGO_ENVIRONMENT: production
+        run: hugo --minify --gc -d ../public
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

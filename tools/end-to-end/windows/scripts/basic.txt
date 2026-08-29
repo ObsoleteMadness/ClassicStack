@@ -1,0 +1,60 @@
+# ClassicStack SMB end-to-end workflow (Win16 / Win32).
+#
+# Drives the full discovery -> mount -> file/directory -> unmount path against
+# ClassicStack's SMB server through the real Windows redirector. Enumeration and
+# mount go through the WNet API; every file operation goes through the ordinary
+# file APIs on the mapped drive, so each op traverses MS-redirector -> SMB ->
+# ClassicStack exactly as Explorer/File Manager would. No resource forks: SMB
+# has no fork concept, so this mirrors the macOS basic.txt minus the WriteFork
+# steps.
+#
+# Results (PASS/FAIL/DEBUG lines) go to results.txt next to the .EXE; the run
+# header records the client platform (win16/win32). See
+# tools/end-to-end/RESULT-FORMAT.md for the output contract.
+
+# --- Discovery ------------------------------------------------------------
+# EnumerateServers/EnumerateShares report supported=0 on Win16 (the Windows 3.1
+# WNet API has no enumeration) and run for real on Win32.
+EnumerateServers
+EnumerateShares server="CLASSICSTACK"
+
+# --- Mount ----------------------------------------------------------------
+# Maps \\CLASSICSTACK\Foo to N:. The share name matches [[smbshares]].name in
+# server.toml; guest/anonymous access (no user=/pass=).
+Mount server="CLASSICSTACK" share="Foo" drive="N:"
+EnumerateVolume
+
+# --- File tasks at the share root ----------------------------------------
+CreateFile name="e2e.txt"
+WriteFile name="e2e.txt" data="hello from SMBE2E"
+StatFile name="e2e.txt"
+RenameFile old="e2e.txt" new="e2e2.txt"
+CreateDir name="dest"
+MoveFile name="e2e2.txt" toDir="dest"
+SetDir name="dest"
+CopyFile name="e2e2.txt" to="e2ecopy.txt"
+DeleteFile name="e2ecopy.txt"
+SetDirRoot
+
+# --- Subdirectory: run the same file tasks one level down -----------------
+CreateDir name="sub"
+SetDir name="sub"
+CreateFile name="e2e.txt"
+WriteFile name="e2e.txt" data="hello from the subdirectory"
+RenameFile old="e2e.txt" new="e2e2.txt"
+CopyFile name="e2e2.txt" to="e2ecopy.txt"
+DeleteFile name="e2ecopy.txt"
+EnumerateDir
+SetDirRoot
+
+# --- Directory tasks ------------------------------------------------------
+RenameDir old="sub" new="subren"
+CopyDir name="subren" to="subcopy"
+EnumerateVolume
+DeleteDir name="subcopy"
+DeleteDir name="subren"
+DeleteDir name="dest"
+
+# --- Teardown -------------------------------------------------------------
+Unmount
+Disconnect

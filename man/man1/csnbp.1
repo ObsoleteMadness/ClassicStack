@@ -1,0 +1,93 @@
+.TH CSNBP 1 "2026-08-26" "ClassicStack" "ClassicStack Manual"
+.SH NAME
+csnbp \- AppleTalk Name Binding Protocol (NBP) lookup client
+.SH SYNOPSIS
+.B csnbp
+[\fIflags\fR]
+[\fIobject\fR:\fItype\fR@\fIzone\fR]
+.SH DESCRIPTION
+.B csnbp
+resolves an AppleTalk Name Binding Protocol (NBP) name pattern to its
+registered network/node addresses, like netatalk's
+.BR nbplkup .
+It uses DDP type 2, socket 2.
+.PP
+The pattern argument is optional; omitted fields wildcard:
+.B =
+for the object or type field,
+.B *
+for the zone field (meaning "this zone").  The default pattern when no
+argument is given is
+.BR =:=@* ,
+i.e. every name registered in this zone.
+.SH OPTIONS
+.TP
+.BI \-net " number"
+AppleTalk network number.
+.B 0
+(the default) means the local segment.
+.TP
+.BI \-src " node"
+Our LocalTalk source node, 1\(en254.  Default:
+.BR 1 .
+.TP
+.BI \-timeout " duration"
+How long to collect replies.  Default:
+.BR 2s .
+.TP
+.B \-v
+Verbose wire trace to stderr.
+.TP
+.B \-version
+Print version information and exit.
+.PP
+The following transport flags are shared with
+.BR csecho (1)
+and
+.BR csgetzones (1):
+.TP
+.BI \-transport " kind"
+AppleTalk transport:
+.BR ltoudp " (default), " tashtalk ", or " pcap .
+.TP
+.BI \-iface " name"
+For
+.BR ltoudp ,
+the local IPv4 interface address; for
+.BR pcap ,
+the NIC device name.
+.TP
+.BI \-device " path"
+For
+.BR tashtalk ,
+the serial device path.
+.TP
+.BI \-baud " rate"
+For
+.BR tashtalk ,
+the serial line speed (0 = adapter default).
+.TP
+.B \-list\-ifaces
+List the capturable pcap network interfaces and exit.
+.SH EXIT STATUS
+.TP
+.B 0
+Normal completion, even if no replies were received.
+.TP
+.B 1
+An error occurred (printed as
+.BR "csnbp: <error>" ).
+.SH EXAMPLES
+.EX
+csnbp "=:AFPServer@*"
+csnbp                       # everything in this zone
+.EE
+.SH SEE ALSO
+.BR csecho (1),
+.BR csgetzones (1)
+.br
+Full flag reference: https://obsoletemadness.github.io/ClassicStack/docs/cli/
+.SH AUTHOR
+ClassicStack is developed by the ObsoleteMadness project and contributors.
+.SH LICENSE
+ClassicStack is released under the GNU General Public License v3.0 or later.

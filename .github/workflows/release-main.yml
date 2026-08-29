@@ -1,8 +1,13 @@
 name: Release On Main
 
+# Only ever runs from a version tag (vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rcN,
+# e.g. v1.0.0-rc1) -- pushing to main no longer auto-cuts a "dev-<sha>" prerelease.
+# scripts/ci/compute-release-metadata.sh enforces this too (fails closed if the
+# triggering ref isn't a matching tag), so a workflow_dispatch run picked from a
+# branch fails fast rather than publishing a release. PR builds still produce
+# downloadable workflow artifacts (see pr-ci.yml) without needing a tag.
 on:
   push:
-    branches: [main]
     tags: ['v*']
   workflow_dispatch:
 
@@ -26,7 +31,7 @@ jobs:
       build: ${{ steps.meta.outputs.build }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -102,10 +107,12 @@ jobs:
             output: out/classicstack-router.exe
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -114,6 +121,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libpcap-dev
+
+      - name: Setup SPA
+        if: matrix.variant == 'all'
+        uses: ./.github/actions/setup-spa
 
       - name: Build binary (Linux/macOS)
         if: runner.os != 'Windows'
@@ -157,17 +168,49 @@ jobs:
           BUILD_VARIANT: ${{ matrix.variant }}
         run: ${{ matrix.package_script }}
 
-      - name: Upload build artifact
+  installer-windows:
+    name: Build Windows Installer (ISCC)
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Setup SPA
+        uses: ./.github/actions/setup-spa
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          if (-not (Get-Command ISCC.exe -ErrorAction SilentlyContinue)) {
+            throw "ISCC.exe not found on PATH after installing Inno Setup"
+          }
+
+      - name: Build installer (bin + ISCC)
+        shell: pwsh
+        run: pwsh packaging/windows/build.ps1 -Version ${{ needs.version.outputs.build_version }}
+
+      - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.archive_name }}
+          name: classicstack-windows-installer
+          path: packaging/windows/Output/ClassicStack-Setup-*.exe
+          if-no-files-found: error
 
   release:
     name: Publish GitHub Release
     needs:
       - version
       - build
+      - installer-windows
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -186,3 +229,4 @@ jobs:
           files: |
             release-artifacts/**/*.zip
             release-artifacts/**/*.tar.gz
+            release-artifacts/**/*.exe

@@ -1,0 +1,70 @@
+# ClassicStack AFP end-to-end workflow.
+#
+# Drives the full discovery -> mount -> file/fork/directory -> unmount path
+# against ClassicStack over AppleTalk. The client mounts the share as a real
+# Mac volume (PBVolumeMount) and then exercises it with ordinary File Manager
+# traps, so every operation traverses the real AppleShare client -> AFP ->
+# ClassicStack path exactly as the Finder would.
+#
+# Results (PASS/FAIL/DEBUG lines) go to results.txt on the app's own volume;
+# the run header records the AppleTalk driver version.
+
+# --- Discovery ------------------------------------------------------------
+ListZones
+ListServers
+EnumerateShares server="ClassicStack"
+
+# --- Mount ----------------------------------------------------------------
+MountVolume server="ClassicStack" volume="Test Volume"
+EnumerateVolume
+
+# --- File tasks at the volume root ---------------------------------------
+CreateFile name="e2e.txt" type="TEXT" creator="ttxt"
+WriteFile name="e2e.txt" data="hello from AFPE2E"
+WriteFork name="e2e.txt" fork="resource" data="resource fork bytes"
+RenameFile old="e2e.txt" new="e2e-renamed.txt"
+CreateDir name="dest"
+MoveFile name="e2e-renamed.txt" toDir="dest"
+SetDir name="dest"
+CopyFile name="e2e-renamed.txt" to="e2e-copy.txt"
+DeleteFile name="e2e-copy.txt"
+SetDirRoot
+
+# --- Subdirectory: run the same file tasks one level down -----------------
+CreateDir name="sub"
+SetDir name="sub"
+CreateFile name="e2e.txt" type="TEXT" creator="ttxt"
+WriteFile name="e2e.txt" data="hello from the subdirectory"
+WriteFork name="e2e.txt" fork="resource" data="sub resource fork"
+RenameFile old="e2e.txt" new="e2e-renamed.txt"
+CopyFile name="e2e-renamed.txt" to="e2e-copy.txt"
+DeleteFile name="e2e-copy.txt"
+EnumerateDir
+SetDirRoot
+
+# --- Directory tasks ------------------------------------------------------
+RenameDir old="sub" new="sub-renamed"
+CopyDir name="sub-renamed" to="sub-copy"
+EnumerateVolume
+DeleteDir name="sub-copy"
+DeleteDir name="sub-renamed"
+DeleteDir name="dest"
+
+# --- Teardown -------------------------------------------------------------
+UnmountVolume
+Disconnect
+
+# --- MacIPX placeholders (not yet implemented; report + continue) ---------
+# GetMacIPXVersion
+# GetIPXAddress
+
+# --- Future: MacTCP -------------------------------------------------------
+# Reference sample code: C:\mac\SampleCode\TCP (TCPPB/dnr/GetMyIPAddr).
+# When MacTCP support lands, the workflow will be roughly:
+#   OpenMacTCP
+#   ShowTCPAddress
+#   PingHost host="ClassicStack"
+#   TCPConnect host="google.com" port=80
+#   TCPClose
+# These commands are not registered yet; leaving them here as the planned
+# vocabulary so the script grows the same way the AFP path did.

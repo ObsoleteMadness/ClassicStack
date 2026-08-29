@@ -13,7 +13,8 @@ import (
 	"golang.org/x/sys/windows/svc/eventlog"
 	"golang.org/x/sys/windows/svc/mgr"
 
-	"github.com/ObsoleteMadness/ClassicStack/internal/app"
+	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/buildinfo"
+	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/cli"
 )
 
 const (
@@ -26,7 +27,7 @@ const (
 )
 
 func main() {
-	version := app.Version{Version: BuildVersion, Commit: BuildCommit, Date: BuildDate}
+	version := cli.Version{Version: BuildVersion, Commit: BuildCommit, Date: BuildDate}
 
 	// When the SCM launches the service it runs the binary with no extra
 	// arguments; svc.IsWindowsService() detects that session so a bare
@@ -63,12 +64,13 @@ Usage:
   classicstack-svc stop                     stop the registered service
   classicstack-svc status                   report the service state
   classicstack-svc run -config <path>       run in this console (debugging)
+  classicstack-svc version                  print version information
 `)
 }
 
 // dispatch routes a verb to its handler. -config is parsed inline (only
 // install/run consume it).
-func dispatch(cmd string, args []string, version app.Version) error {
+func dispatch(cmd string, args []string, version cli.Version) error {
 	switch cmd {
 	case "install":
 		cfg, err := configArg(args)
@@ -87,6 +89,9 @@ func dispatch(cmd string, args []string, version app.Version) error {
 	case "run":
 		cfg, _ := configArg(args) // empty is allowed (server.toml auto-load)
 		return runService(cfg, version)
+	case "version":
+		buildinfo.Print(os.Stdout, "classicstack-svc", version.Version, version.Commit, version.Date)
+		return nil
 	case "-h", "--help", "help":
 		usage()
 		return nil
@@ -282,7 +287,20 @@ func stateString(s svc.State) string {
 // runService runs the stack under the SCM via svc.Run. cfgPath may be empty
 // (server.toml auto-load). When not running under the SCM (console run for
 // debugging) svc.Run fails, so we fall back to running the stack directly.
-func runService(cfgPath string, version app.Version) error {
+func runService(cfgPath string, version cli.Version) error {
+	// The SCM always starts services with CWD %SystemRoot%\System32 (there is
+	// no working-directory field in CreateService), so anything that resolves
+	// a relative path against the process CWD — extmap.conf's DefaultExtMapPath,
+	// [Client].log_file, etc. — would silently miss. cfgPath is already
+	// absolute (configArg ran it through filepath.Abs), so anchoring CWD to
+	// its directory makes those relative paths resolve alongside server.toml
+	// (e.g. CommonApplicationData\ClassicStack) instead of System32.
+	if cfgPath != "" {
+		if err := os.Chdir(filepath.Dir(cfgPath)); err != nil {
+			return fmt.Errorf("changing to config directory: %w", err)
+		}
+	}
+
 	h := &serviceHandler{cfgPath: cfgPath, version: version}
 
 	elog, err := eventlog.Open(serviceName)
@@ -303,13 +321,13 @@ func runService(cfgPath string, version app.Version) error {
 // runForeground runs the stack with a signal-cancelled context. It is split
 // out so the os.Exit in runService's caller does not skip the signal-context
 // cleanup (the deferred stop runs when this function returns).
-func runForeground(cfgPath string, version app.Version) error {
+func runForeground(cfgPath string, version cli.Version) error {
 	ctx, stop := signalContext()
 	defer stop()
-	return app.Run(ctx, runArgs(cfgPath), version)
+	return cli.Run(ctx, runArgs(cfgPath), version)
 }
 
-// runArgs builds the argument slice handed to app.Run from the config path.
+// runArgs builds the argument slice handed to cli.Run from the config path.
 func runArgs(cfgPath string) []string {
 	if cfgPath == "" {
 		return nil

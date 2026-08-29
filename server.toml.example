@@ -1,155 +1,521 @@
-[Bridge]
-# Shared raw-link settings used by EtherTalk, MacIP, IPX, and NetBEUI.
-mode = "pcap"                  # pcap, tap, or tun
-device = '\\Device\\NPF_{1DFDAA9C-7DD4-40F8-B6D4-9298C273D654}'
-hw_address = "DE:AD:BE:EF:CA:FE" # host/bridge MAC used by raw-link consumers
-bridge_mode = "auto"           # auto, ethernet, or wifi frame adaptation mode
+# ClassicStack configuration (server.toml)
+#
+# Copy this file to server.toml and edit. The interactive binary auto-loads
+# ./server.toml; override with `classicstack -config /path/to/server.toml`.
+# A MISSING file is fine — the stack boots on the built-in default model.
+#
+# Format is TOML, parsed and re-emitted by adapter/config/toml. NOTE: when the
+# web-admin UI (or any control-plane Save) rewrites this file it KEEPS only the
+# values, dropping comments, and backs up the previous version to
+# server.toml.NNNN first. So treat hand-written comments here as a reference,
+# not something the running server preserves.
+#
+# Sections come in three shapes:
+#   - well-known singletons:   [identity] [logging] [http] [Client] [FUSE] [router] [adminauth]
+#   - the interface namespace: repeated [[interface]] array-of-tables — the UPLINK
+#                              bridge(s) only (pcap/tap/raw). Serial and multicast
+#                              are NOT interfaces; their ports carry their own binding.
+#   - ports:                   repeated [[ethertalk]] [[ltoudp]] [[tashtalk]]
+#                                       [[ipx]] [[netbeui]] (lower-case, array-of-tables)
+#   - file-service shares:     repeated [[afpvolumes]] / [[smbshares]] / [[ncpvolumes]]
+#                              plus auto-mounted client volumes as [[fusevolumes]]
+#
+# The layering: a bridge/uplink INTERFACE is just the wire. A PORT is a transport
+# stack bound to it (EtherTalk→bridge, LToUDP→host multicast, TashTalk→a serial tty,
+# IPX/NetBEUI→bridge), each opening its own capture stream + filter. SERVICES ride
+# ports (NetBIOS, AFP, SMB, NCP). The router has ports as members.
+#
+# Repeated sections use TOML array-of-tables ([[name]]) so a port can have several
+# named instances (e.g. two TashTalk dongles) — but the default is a single instance
+# of each. The table key is the LOWER-CASED schema key; the per-instance `name`
+# distinguishes instances (blank = the lone default, named after the schema key).
+#
+# A build only honours the sections whose component was compiled in (build tags
+# afp, smb, ipx, netbeui, macip, webui, … or `all`). An unknown section is
+# ignored, so a config can carry sections a slim build does not use.
 
-[Router]
-# Which transports the AppleTalk router binds to. List the transport section
-# names ("LToUdp", "TashTalk", "EtherTalk") the router should participate in.
-# An enabled transport that is NOT listed runs standalone: it still comes up and
-# receives (and can be captured), but it is not part of the AppleTalk router —
-# no RTMP/ZIP and no inter-port forwarding. Leave ports empty (or omit this
-# whole section) to bind every enabled transport, which is the default.
-#   ports = ["LToUdp", "EtherTalk"]   # TashTalk would then run standalone
-ports = []
 
-[LToUdp]
-# LocalTalk over UDP Settings (used by Mini vMac UDP builds and SNOW emu)
-enabled = true                 # Enable LToUDP - true for on, false for off
-interface = "0.0.0.0"          # local IPv4 interface/address for multicast join+send (0.0.0.0 = auto)
-seed_network = 1               # LToUDP seed network number
-seed_zone = "LToUDP Network"   # LToUDP seed zone name
+# --- Server identity (§4-bis) ------------------------------------------------
+# One identity owned by no single service. hostname is also the AFP server name
+# and, when NetBIOS/SMB is enabled, the NetBIOS computer name (then capped at 15
+# bytes). workgroup is the SMB workgroup / browse domain.
+[identity]
+hostname = "classicstack"
+workgroup = "WORKGROUP"
+description = "ClassicStack file server"
 
-[TashTalk]
-# TashTalk is a PIC-based RS422 LocalTalk to serial adaptor
-port = ""                      # blank to disable, otherwise the serial port to use (eg COM1, /dev/ttyAMA0)
-seed_network = 2               # TashTalk seed network number
-seed_zone = "TashTalk Network" # TashTalk seed zone name
 
-[EtherTalk]
-# EtherTalk is a pcap-based network bridge
-bridge_host_mac = ""           # optional host adapter MAC for Wi-Fi bridge shim. Defaults to hw_address when blank.
-filter = ""                    # optional pcap BPF filter override
-seed_network_min = 3           # EtherTalk seed network minimum
-seed_network_max = 5           # EtherTalk seed network maximum
+# --- Logging -----------------------------------------------------------------
+# Level is trace | debug | info | warn | error. (Field key is capitalised "Level"
+# because LoggingSection carries no toml tag — the codec emits the Go field
+# name; both "Level" and lowercase are accepted on read.)
+#   path  optional log file the process logger appends to, in addition to
+#         stderr (blank = stderr only). Relative paths resolve against the
+#         process's working directory. Takes effect on the next restart.
+[logging]
+Level = "info"
+# path = "classicstack.log"
+
+
+# --- AppleTalk router (§3d) --------------------------------------------------
+# members lists, by PORT NAME, the AppleTalk transport ports that JOIN the router
+# (RTMP/ZIP + inter-port forwarding). Each such port carries its own seed zone +
+# network range (below), which define that segment. A port NOT listed still comes
+# up and serves its own segment, but standalone. An EMPTY members list means NO
+# port joins (explicit-over-implicit — there is no "bind everything" default).
+# Port names default to the section key ("EtherTalk", "LToUDP", "TashTalk") unless
+# a port sets its own `name`.
+[router]
+default_zone = "EtherTalk Network"
+members = ["EtherTalk", "LToUDP"]
+
+
+# --- Interface namespace: the uplink bridge(s) -------------------------------
+# The ONE interface concept: a bridge/uplink over a host NIC (pcap/tap/raw). An
+# EtherTalk / IPX / NetBEUI port binds a bridge by name via its `iface`; a port
+# that names none inherits the bridge flagged `default = true` (at most one).
+# Serial (TashTalk) and multicast (LToUDP) are NOT interfaces — those ports carry
+# their own binding (see below), so nothing for them appears here.
+#   Name     alias the ports reference (e.g. br-lan)
+#   Kind     bridge (pcap/tap/raw over a host NIC)
+#   Device   the host adaptor (pcap device; on Windows a "\Device\NPF_{GUID}")
+#   Backend  pcap (default) | tap | raw
+#   hw_address  station MAC stamped on pcap inject (EtherTalk/IPX/NetBEUI/EtherDFS).
+#               Blank = the NIC's own hardware address (required on WiFi / Npcap:
+#               APs drop frames sourced from any other MAC). Set a value only to
+#               spoof a distinct station on wired Ethernet (e.g. DE:AD:BE:EF:CA:FE).
+#   default  true marks the bridge un-bound ports inherit
+[[interface]]
+Name = "br-lan"
+Kind = "bridge"
+Backend = "pcap"
+default = true
+# Device = "eth0"                 # host NIC (empty = resolve at open time)
+# hw_address = "DE:AD:BE:EF:CA:FE"  # opt-in spoof; leave blank on WiFi
+
+
+# --- Ports -------------------------------------------------------------------
+# Every port shares one section shape (a superset; each reads only the fields
+# that apply to it). Common fields:
+#   name             per-instance identity (blank = the lone default instance,
+#                    whose name falls back to the section key — EtherTalk, LToUDP…)
+#   enabled          true/false
+#   seed_network     AppleTalk seed network number (0 = non-seed: learn from a peer)
+#   seed_network_end upper bound of an extended-network range (0 = single number)
+#   seed_zone        default zone this port seeds (blank = non-seed / inherit)
+# Per-port binding (only the fields that apply to the transport):
+#   iface            EtherTalk/IPX/NetBEUI: the bridge to bind (blank = the default)
+#   mac              station MAC (blank = interface hw_address, else the NIC's own).
+#                    On WiFi leave blank so injected frames use the host MAC.
+#   device / baud    TashTalk: the host serial tty + line speed (serial is a PORT
+#                    property, not an interface)
+#   ipx_frame_type   IPX: Ethernet encapsulation for OUTBOUND frames — one of
+#                    "ethernet_ii" (DIX 0x8137), "802.3" (raw Novell), or "802.2"
+#                    (IEEE LLC). Blank defaults to ethernet_ii, which MacIPX speaks.
+#                    Inbound frames are accepted in every framing regardless.
+#   ipx_network      IPX: network number for this segment (also on [IPXGW]).
+#                    0 = local/unknown on the Ethernet mini-router; MacIPX treats
+#                    0 as 0x10 (MACIPXGW default). Same TOML key on both.
+#   capture          pcap file to tee this port's wire traffic to (blank = off).
+#                    Capture is a property of the port that owns the segment; it is
+#                    written with the transport's data-link type (Ethernet for
+#                    EtherTalk/IPX/NetBEUI, DLT_LTALK for LToUDP/TashTalk) so
+#                    Wireshark dissects it. Needs -tags pcap for NIC transports.
+#   capture_snaplen  bytes stored per frame (0 = the full frame)
+
+# EtherTalk — DDP over raw Ethernet (libpcap/Npcap; needs -tags pcap to capture).
+# Binds the uplink bridge.
+[[ethertalk]]
+iface = "br-lan"
+enabled = true
+seed_network = 3
+seed_network_end = 5
 seed_zone = "EtherTalk Network"
+# capture = "ethertalk.pcap"   # uncomment to dump this port's frames
 
-[MacIP]
-# MacIP Gateway Settings. Allows TCP over DDP.
-enabled = false                # true to enable MacIP gateway
-mode = "pcap"                  # pcap or nat
-zone = ""                      # MacIP gateway zone, defaults to EtherTalk zone
-nat_subnet = ""                # in NAT mode, the subnet to use (eg 192.168.100.0/24)
-nat_gw = ""                    # in NAT mode, the IP address to use for the gateway
-lease_file = "leases.txt"      # in NAT mode, persist DHCP leases to this file
-ip_gateway = "192.168.0.1"     # upstream/default gateway on the IP-side network
-dhcp_relay = true              # convert MacTCP auto-config to DHCP requests
-nameserver = "1.1.1.1"         # DNS nameserver
-filter = ""                    # optional pcap BPF filter override
+# LToUDP — LocalTalk over UDP multicast (239.192.76.84:1954). No NIC privilege
+# needed; the simplest transport. Host-wide; no interface. `iface`, if set, is an
+# optional local bind ADDRESS (blank = join on every multicast-capable interface).
+[[ltoudp]]
+enabled = true
+seed_network = 1
+seed_zone = "LToUDP Network"
+# capture = "ltoudp.pcap"      # uncomment to dump this port's LLAP frames
 
-[IPXGW]
-# AppleTalk-to-IPX gateway (the gateway side of Novell's MacIPX client).
-# Discovery-only at this stage: registers NBP names of type "IPX Gateway"
-# in the AppleTalk zones the router serves. Once enabled, MacIPX clients
-# can see the gateway in their control panel — useful for capturing the
-# wire protocol the client speaks once it picks us.
+# TashTalk — a PIC-based RS422 LocalTalk-to-serial adaptor. The port owns its own
+# serial line: set device/baud here (no serial interface).
+[[tashtalk]]
 enabled = false
-# Optional explicit bindings as "Object:Zone" pairs. Omit to register one
-# binding per zone the router knows about (object name = zone name).
-# bindings = ["EtherTalk Network:EtherTalk Network", "LToUDP Network:LToUDP Network"]
+device = "/dev/ttyAMA0"
+baud = 1000000
+seed_network = 2
+seed_zone = "TashTalk Network"
 
-[AFP]
-# Apple Filing Protocol server settings
-enabled = true                 # true to enable AFP server
-name = "ClassicStack"              # Server name. Max 31 characters.
-zone = "EtherTalk Network"     # AppleTalk zone to advertise the server in
-protocols = "ddp,tcp"          # Comma-separated: ddp, tcp, or both
-binding = ":548"               # When TCP is enabled, the bind address
-extension_map = "extmap.conf"  # Netatalk-compatible extension mapping file
-cnid_backend = "sqlite"        # CNID backend: sqlite or memory
-use_decomposed_names = true    # Encode host-reserved filename characters using 0xNN tokens
-appledouble_mode = "modern"    # "modern" (._ sidecars, Netatalk 4.x) or "legacy" (.appledouble folder)
+# IPX — Novell IPX over Ethernet (a NetBIOS/SMB transport, not an AppleTalk
+# router member; build tag `ipx`). Binds the bridge; inherits the default when blank.
+# Station MAC is the IPX node ID: blank mac/hw_address uses the host NIC (required
+# on WiFi). Only one IPX server instance can run per NIC.
+#   ipx_frame_type  Ethernet encapsulation for OUTBOUND frames — ethernet_ii
+#                   (default, MacIPX-compatible) | 802.3 | 802.2
+#   ipx_network     IPX network number for this segment (0 = local/unknown).
+#                   Same key as [IPXGW].ipx_network — set both to the same value
+#                   when MacIPX clients should see the Ethernet IPX segment.
+[[ipx]]
+iface = "br-lan"
+enabled = false
+# ethernet_ii (default, MacIPX-compatible) | 802.3 | 802.2
+ipx_frame_type = "ethernet_ii"
+# ipx_network = 0x10
 
-[AFP.Volumes.TestVolume]
-# Each AFP volume gets an [AFP.Volumes.<key>] section.
-name = "Test Volume"           # Volume name. Max 31 characters.
-path = 'C:\Mac\Test'           # Host path. Use literal strings on Windows to skip TOML escapes.
-fs_type = "local_fs"           # Filesystem backend: local_fs (default) or macgarden
-appledouble_mode = "modern"    # Per-volume override; falls back to AFP.appledouble_mode
-rebuild_desktop_db = false     # Rebuild the desktop DB from resource forks at startup
+# NetBEUI — NBF over 802.2 LLC (a NetBIOS/SMB transport; build tag `netbeui`).
+# Same station-MAC rule as IPX: blank = host NIC; one instance per NIC.
+[[netbeui]]
+iface = "br-lan"
+enabled = false
 
-[AFP.Volumes.Volume68k]
-name = "Volume 68K"
-path = 'C:\Mac\Volume68K'
+
+# --- MacIP gateway (build tag `macip`) ---------------------------------------
+# IP-over-AppleTalk for classic MacTCP / MacIP clients (DDP type 22, socket 72).
+# Rides the AppleTalk router so any LocalTalk/EtherTalk segment in
+# [router].members reaches it, and publishes an "IPGATEWAY" NBP name (object =
+# gateway_ip) so Macs find it. Section key is exact-case: [MacIP].
+# See spec/14-macip-gateway.md.
+#
+# AppleTalk / lease-pool side (advertised to clients):
+#   enabled       gate the gateway on/off
+#   mode          "bridge" (proxy-ARP onto an existing subnet; default) or
+#                 "nat" (hand out a private subnet and NAT upstream)
+#   zone          AppleTalk zone for the IPGATEWAY NBP name (blank = router
+#                 default / first zone)
+#   gateway_ip    IPv4 identity advertised to clients (also the NBP object name)
+#   network       subnet base (blank = derived from gateway_ip + subnet_mask)
+#   nameserver    DNS server advertised to clients (blank = unset)
+#   broadcast     subnet broadcast (blank = derived)
+#   subnet_mask   mask advertised to clients (blank = 255.255.255.0)
+#   host_count    lease-pool slot count incl. the two reserved slots — the network
+#                 address (.0) and the gateway (.1); clients are leased from .2 up (0 = 254)
+#
+# IP-side egress (adapter/macipgw; empty interface = AppleTalk-only):
+#   interface        [[interface]] NAME to bridge IP traffic onto (e.g. br-lan)
+#   host_mac         Ethernet MAC for proxy-ARP / sourced frames (blank = auto)
+#   host_ip          host's own IPv4 on the uplink (blank = auto)
+#   default_gateway  upstream router for off-subnet bridge egress (blank = auto)
+#   dhcp_relay       true = relay DHCP for client addresses instead of the
+#                    static pool. Fabricates per-Mac MACs — does not work on WiFi.
+#
+# On WiFi use Example B (mode = "nat", dhcp_relay = false). Bridge mode injects
+# IP/ARP on the wire; APs drop frames not sourced from the host NIC.
+#
+# Pick ONE of the two examples below (only one [MacIP] section is allowed).
+
+# Example A — bridge (proxy-ARP onto the existing LAN subnet).
+# Clients get addresses on 192.168.0.0/24; the gateway answers ARP for them on
+# br-lan. Off-subnet traffic uses default_gateway (or auto-detected). Set
+# dhcp_relay = true to have the LAN DHCP server assign addresses instead of
+# the static pool.
+[MacIP]
+enabled = false
+mode = "bridge"
+zone = ""
+gateway_ip = "192.168.0.50"
+network = "192.168.0.0"
+nameserver = "192.168.0.1"
+broadcast = "192.168.0.255"
+subnet_mask = "255.255.255.0"
+host_count = 0
+interface = "br-lan"
+# host_mac = ""              # blank = auto-detect from interface
+# host_ip = ""               # blank = auto-detect from interface
+default_gateway = "192.168.0.1"
+dhcp_relay = false
+
+# Example B — NAT (private client subnet, host OS NATs upstream).
+# Use this on WiFi. Clients get addresses on 192.168.100.0/24; outbound traffic
+# is NATed through the host's own IP — no pcap inject, no host route needed.
+# Uncomment this block and remove Example A above to use it.
+# [MacIP]
+# enabled = true
+# mode = "nat"
+# zone = "EtherTalk Network"
+# gateway_ip = "192.168.100.1"
+# network = "192.168.100.0"
+# nameserver = "8.8.8.8"
+# broadcast = "192.168.100.255"
+# subnet_mask = "255.255.255.0"
+# host_count = 0
+# interface = "br-lan"
+# # host_mac = ""
+# # host_ip = ""
+# default_gateway = "192.168.0.1"   # uplink router (informational in NAT mode)
+# dhcp_relay = false
+
+
+# --- MacIPX gateway (build tag `ipxgw`) --------------------------------------
+# The AppleTalk-to-IPX gateway — the AppleTalk-side counterpart of Novell's
+# MACIPXGW.NLM that the Classic Mac OS MacIPX client connects to. It rides the
+# AppleTalk router on DDP socket 78 (so any LocalTalk/EtherTalk segment in
+# [router].members reaches it) and publishes "IPX Gateway" NBP names so Macs
+# discover it in the MacIPX control panel. Section key is exact-case: [IPXGW].
+#   enabled      gate the gateway on/off
+#   ipx_network  the IPX network number announced to clients (0 = 0x10, the
+#                default MACIPXGW uses)
+#   bindings     "Object:Zone" NBP names to advertise (empty = one "IPX Gateway"
+#                name per zone the router knows). See spec/15-macipx-gateway.md.
+[IPXGW]
+enabled = false
+ipx_network = 0
+bindings = []
+
+
+# --- AFP server (build tag `afp`) --------------------------------------------
+# Singleton server-level settings: the advertised Chooser identity, the
+# transport bindings, and the opt-in login greeting.
+#   server_name    Chooser/NBP name (blank = identity.hostname, then "ClassicStack")
+#   zone           AppleTalk zone to advertise into (blank = router default)
+#   transports     which stacks to bind: "ddp" (classic) / "tcp" (modern, DSI);
+#                  empty = bind all built transports
+#   tcp_addr       DSI/TCP listen address (":548"); blank = no DSI/TCP.
+#                  See spec/21-dsi.md.
+#   login_message  opt-in greeting clients display when mounting a volume
+#                  (FPGetSrvrMsg login message; max 199 chars; blank = none)
+# [AFP]
+# server_name = ""
+# zone = ""
+# transports = ["ddp"]
+# tcp_addr = ""
+# login_message = "Welcome to ClassicStack."
+
+
+# --- AFP volumes (build tag `afp`) -------------------------------------------
+# One [[afpvolumes]] table per exported volume. The AFP service is present when
+# built; it serves the volumes listed here (zero volumes = no shares).
+#   name           volume display name (max 31 chars)
+#   path           host directory
+#   fs_type        filesystem backend: local_fs (default), memfs, …
+#   fork_backend   appledouble | ads | xattr | hfs | native | auto (blank = default)
+#                  native = the host's own layout (ads on Windows, hfs on macOS,
+#                  xattr on Linux)
+#   filename_codec wire↔store name codec (blank = default)
+#   read_only      true makes the whole volume read-only
+#   allowed_users  access allow-list (empty = guest/world)
+#   options        backend-specific "key=value" params (e.g. for an image backend)
+#   size_limit     volume size REPORTED to clients, in MiB (0/unset = 512).
+#                  Classic Macs derive their allocation-block size from this
+#                  (≈ size/65536), so it sets the Finder's "size on disk"
+#                  granularity: 512 → 8 KiB blocks, 2047 → 32 KiB. Presentation
+#                  only — it does not limit what the host stores.
+[[afpvolumes]]
+name = "Public"
 fs_type = "local_fs"
-appledouble_mode = "legacy"
-rebuild_desktop_db = false
+path = "/srv/afp/public"
+read_only = false
 
-[Logging]
-level = "debug"
-parse_packets = true
-log_traffic = false
-
-[Capture]
-# Write a pcap-format capture of in-flight frames for offline analysis in
-# Wireshark. Empty path disables that transport. LocalTalk captures use
-# DLT_LTALK (114); EtherTalk captures use DLT_EN10MB (1).
-localtalk = ""                 # e.g. "captures/classicstack-localtalk.pcap"
-ethertalk = ""                 # e.g. "captures/classicstack-ethertalk.pcap"
-ipx = ""                       # e.g. "captures/classicstack-ipx.pcap"
-snaplen = 65535                # per-frame snap length
-
-# [IPX]
-# enabled = false
-# interface = ""                # blank: reuse [EtherTalk] device
-# framing = "ethernet_ii"        # ethernet_ii|raw_802_3|llc|snap
-# internal_network = ""          # 8 hex digits; blank: 00000001
-# filter = ""                   # optional pcap BPF filter override (default: ipx)
-
-# [NetBEUI]
-# enabled = false
-# interface = ""                # blank: reuse [EtherTalk] device
-# filter = ""                   # optional pcap BPF filter override (default: llc)
-
-# [NetBIOS]
-# enabled = false
-# transports = ["netbeui", "ipx", "tcp"]
-# scope_id = ""
-
-# [SMB]
-# enabled = false
-# nbt_binding = ":139"
-# direct_binding = ""             # ":445" enables direct SMB; SMB1 conventionally NBT-only
-# guest_ok = false
-# server_name = "CLASSICSTACK"
-# workgroup = "WORKGROUP"
-
-# Each SMB share gets a [SMB.Volumes.<key>] section, mirroring
-# [AFP.Volumes.<key>]. fs_type selects a pkg/vfs backend.
-# [SMB.Volumes.Public]
-# name = "Public"
-# path = 'C:\Public'
+# [[afpvolumes]]
+# name = "Archive"
 # fs_type = "local_fs"
+# path = "/srv/afp/archive"
+# read_only = true
+# allowed_users = ["alice", "bob"]
+
+
+# --- SMB shares (build tag `smb`) --------------------------------------------
+# One [[smbshares]] table per exported share. Mirrors [[afpvolumes]] with an
+# extra `description` (the NetShareEnum remark). An SMB share and an AFP volume
+# on the SAME host path share a mutation bus so each sees the other's changes.
+#
+# meta_backend selects the share's MetaEngine — the single mandatory facade for
+# derived DOS/AFP names, CNIDs, and DOS attributes (read-only/hidden/system/
+# archive) the host filesystem cannot represent. There is no "off"/passthrough
+# value: 8.3 name derivation for DOS/Win16 clients is always on. Values:
+# empty (default — picks per-platform: "xattr" on Linux, "ads" on an NTFS-backed
+# Windows share, else "metastore"), "metastore" (the universal fallback, works on
+# any host), "xattr" (Linux: a ClassicStack-private xattr key; falls back to a
+# .dosattr sidecar when the host doesn't support xattrs), "ads" (Windows/NTFS: a
+# ClassicStack-private alternate data stream; falls back to a sidecar when the
+# host isn't NTFS-backed). CNID tracking always rides the share's metastore.Store
+# regardless of meta_backend. metastore/metastore_path configure ONLY the
+# "metastore" backend's own store (default: an in-memory store snapshotted to
+# "<path>/.classicstack/meta.snapshot"; metastore = "sqlite" persists to
+# "<path>/.classicstack/meta.db" instead, or metastore_path overrides the
+# location). See spec/16-storage-seam.md.
+[[smbshares]]
+name = "public"
+description = "Public share"
+fs_type = "local_fs"
+path = "/srv/smb/public"
+read_only = false
+# meta_backend = ""
+
+
+# --- NCP (Novell NetWare 3.x, build tag `ncp`) --------------------------------
+# The NCP file service rides IPX (socket 0x0451) and advertises itself via SAP
+# (socket 0x0452) so NETx/VLM clients discover it — it needs an enabled [[ipx]]
+# port above. Server name / description default to [identity]; InternalNetwork
+# is the NetWare internal IPX network clients learn via SAP then RIP GetLocalTarget
+# (0 = derive from the station MAC). See spec/17-ncp.md.
+[NCP]
+# server_name = ""          # empty = [identity].hostname (upper-cased)
+# description = ""          # empty = [identity].description
+# internal_network = 0      # decimal; 0 = auto-derive from MAC
+
+# One [[ncpvolumes]] table per exported NetWare volume. Mirrors
+# [[afpvolumes]]/[[smbshares]]; an NCP volume on the SAME host path as an AFP/SMB
+# share shares a mutation bus so each sees the other's changes. Bindery login
+# validates against the same user store AFP/SMB use (guest if none).
+#   name           NetWare volume name (upper-case, e.g. SYS; client maps SYS:)
+#   path           host directory
+#   fs_type        filesystem backend: local_fs (default), memfs, …
+#   read_only      true makes the whole volume read-only
+#   allowed_users  access allow-list (empty = guest/world)
+[[ncpvolumes]]
+name = "SYS"
+fs_type = "local_fs"
+path = "/srv/ncp/sys"
+read_only = false
+
+
+# --- EtherDFS (The Ethernet DOS File System) ---------------------------------
+# A DOS client (the EtherDFS TSR) maps a remote directory to a drive letter over
+# raw Ethernet frames (EtherType 0xEDF5) — no IP/TCP/NetBIOS. EtherDFS is BOTH the
+# wire endpoint and the file server, so its singleton [etherdfs] section carries
+# the NIC binding, and [[etherdfsdrives]] maps drive letters to backends.
+# There is NO authentication: any client that can reach the server's MAC may use
+# any drive (gated only by read_only / allowed_users). Blank mac = host NIC MAC
+# (required on WiFi); only one EtherDFS instance can run per NIC. See spec/18-etherdfs.md.
+[EtherDFS]
+enabled = true
+iface = "br-lan"          # the bridge/uplink to bind (empty = the default interface)
+# mac = "00:11:22:aa:bb:cc"   # optional station MAC override (empty = the NIC's own)
+# server_name = ""        # advertised in install checks (empty = [identity].hostname)
+# capture = "etherdfs.pcap"  # uncomment to dump this port's frames (EtherType 0xEDF5)
+# capture_snaplen = 0        # bytes stored per frame (0 = the full frame)
+
+# One drive per [[etherdfsdrives]] entry. Fields mirror the other file services:
+#   name           DOS drive letter (A–Z; the DOS client maps it as that letter)
+#   path           host directory
+#   fs_type        filesystem backend: local_fs (default), memfs, …
+#   meta_backend   names/CNID/DOS-attribute backend (see [[smbshares]] above):
+#                  empty (per-platform default) | metastore | xattr | ads
+#   read_only      true makes the whole drive read-only
+#   allowed_users  access allow-list (empty = guest/world)
+[[etherdfsdrives]]
+name = "E"
+fs_type = "local_fs"
+path = "/srv/dosfiles"
+read_only = false
+# meta_backend = ""
+
+
+# --- Netboot (classic Mac ROM network boot, build tag `netboot`) --------------
+# Serves the AppleTalk Boot Protocol (ABP) that the `.netBOOT`/`.ATBOOT` ROM
+# drivers speak (Mac Classic, IIci, SuperMario-era ROMs), plus Elliot Nunn's
+# ChainBoot extension that streams a full-size read/write HFS image to the
+# chain-loaded driver. Rides the AppleTalk router on DDP sockets 10 (boot) and
+# 11 (ChainBoot), so any LocalTalk/EtherTalk segment in [router].members serves
+# boots. Discovery is NBP type "BootServer" (any object matched). The payload's
+# Snefru self-authentication trailer is appended at load when missing.
+# Section keys are exact-case: [Netboot], not [netboot].
+# See spec/19-netboot.md.
+#
+# Two serving shapes:
+#   RAM disk  — payload = a BootWrapper/romdrv-style driver stub, image = the
+#               (read-only) HFS disk image; the server concatenates and hashes
+#               them at load. Or point payload at a fully pre-built file and
+#               omit image. Size limit ~2 MB and ≤ ¼ of client RAM.
+#   ChainBoot — payload = ChainDisk.bin or ChainLoader.bin (block_size 256),
+#               disk = a full-size HFS image streamed read/WRITE over Elliot
+#               Nunn's extension; no size limit, one booted client at a time.
+#               ChainDisk is the portable payload: it implements the boot-image
+#               entry contract Apple's .ATBOOT defines rather than taking over
+#               the ROM, so it does not depend on ROM layout (ChainLoader's
+#               stack scan is Classic-specific). The server stamps ChainDisk's
+#               volume-size field from disk= at load. See spec/19 Part C.
+# [Netboot]
+# enabled = true
+# payload = "/srv/netboot/BootWrapper.bin"  # boot payload or driver stub (ABP)
+# image = "/srv/netboot/system607.dsk"      # RAM-disk image appended to the stub
+# block_size = 512          # ABP block size: 512 for RAM-disk payloads,
+#                           # 256 for ChainLoader (0 = 512)
+# disk = "/srv/netboot/system71.dsk"  # ChainBoot streamed image (excludes image=)
+# pace_ms = 2               # ABP block-send inter-packet delay (0 = 2 ms)
+# chain_pace_ms = 10        # ChainBoot read-reply BASE inter-packet delay (0 = 10 ms;
+#                           # real LocalTalk is ~18 ms/frame). The server backs off
+#                           # automatically on chunk-read retries, so this rarely
+#                           # needs tuning.
+# name = "0000"             # NBP object shown in the registry (matching is any-object)
+# zone = "*"                # NBP zone to register in
+
+# --- Web-admin UI ------------------------------------------------------------
+# Served by default on :1984 (this host). Set enabled = false to turn it off.
+# -http on the command line overrides addr and implies enabled.
+[http]
+enabled = true
+addr = ":1984"
+
+
+# --- In-process file client --------------------------------------------------
+# ClassicStack is not only a server. When enabled, this process also acts as a
+# file *client*: it scans the LAN at startup for AFP / SMB / NCP / EtherDFS
+# servers, tracks connections and open volumes, and the operator Finder
+# (GET /finder/state, GET/POST /finder/discover, GET /finder/mounted) reads that
+# state. Default is disabled so a server does not open outbound client sockets
+# unless the operator opts in.
+#
+#   enabled           gate the client on/off (default false)
+#   iface             [[interface]] NAME to bind (e.g. br-lan). Empty = the
+#                     default interface.
+#   name              NetBIOS/SMB name the outbound client presents when
+#                     browsing/connecting (calling name + browse station name).
+#                     Empty = the server's own [identity] hostname.
+#   mac               Ethernet source address the outbound client presents.
+#                     Empty = the interface's hw_address, or the host NIC's own
+#                     MAC. Set this when the client and the server's own ports
+#                     share one interface, to give the client a distinct station.
+#   services          schemes to probe and connect: "afp", "smb", "ncp",
+#                     "etherdfs". Empty = all four.
+#   max_idle_minutes  unused remote session idle time before disconnect
+#                     (default 10)
+#   mount             true = allow FUSE (macFUSE/libfuse) or WinFsp host mounts
+#                     of remote volumes the client opens
+#   log_file          extra log path for client/Finder traffic (blank = none;
+#                     lines still go to the process logger)
+[Client]
+enabled = false
+iface = "br-lan"
+# name = "CLASSICSTACK"
+# mac = "02:00:00:00:00:01"
+services = ["afp", "smb", "ncp", "etherdfs"]
+max_idle_minutes = 10
+mount = false
+# log_file = "client.log"
+
+# --- FUSE / WinFsp host mounts ------------------------------------------------
+# Connect timeout for host mounts, plus volumes to attach at startup.
+# Auto-mount requires [Client] enabled = true and mount = true, and a binary
+# built with FUSE (macFUSE/libfuse, -tags fuse) or WinFsp on Windows.
+#
+#   mount_timeout_seconds  how long to wait to connect to the remote server
+#                          (default 30). Auto-mount retries until this deadline.
+#
+# Each [[fusevolumes]] row is one auto-mounted share:
+#   remote       client URI (scheme://[user[:pass]@]server[,transport]/volume)
+#   mountpoint   host directory or Windows drive letter
+#   read_only    true = mount read-only
+[FUSE]
+mount_timeout_seconds = 30
+
+# [[fusevolumes]]
+# remote = "smb://user:pass@foohost,smb/share"
+# mountpoint = "/Volumes/share"
 # read_only = false
 
-# [Shortname]
-# enabled = false
-# backend = "memory"             # memory|sqlite
-# db_path = "shortname.db"
-
-# [VFSBus]
-# subscriber_buffer = 256
-# drop_warn_interval = "30s"
-
-# [WebUI]
-# Management web UI: a dashboard showing per-service status/statistics and a
-# configuration editor. Requires a binary built with -tags webui (included in
-# -tags all). Saving from the UI rewrites this file and removes comments,
-# backing up the previous version to server.toml.NNNN first.
-# enabled = false
-# bind = "127.0.0.1:8080"          # IP:PORT to listen on; loopback by default
-# tls = true                       # serve HTTPS; self-signed when no cert/key given
-# cert_pem = ""                    # path to PEM certificate; blank: self-signed
-# key_pem = ""                     # path to PEM private key; blank: self-signed
+# --- Web-admin credential (§4-ter) -------------------------------------------
+# [adminauth] is written by the FIRST-RUN setup of the web-admin UI (it stores a
+# username + a salted PBKDF2-SHA256 hash, never a cleartext password). Do not
+# author it by hand — leaving it absent is what marks the server "needs setup".
+# (HTTP Basic over the listen address; run it over loopback or behind TLS.)
+#
+# [adminauth]
+# user = "admin"
+# salt = "…hex…"
+# hash = "…hex…"

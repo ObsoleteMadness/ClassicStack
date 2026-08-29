@@ -1,0 +1,32 @@
+name: Setup SPA
+description: Build the Vite SPA (Finder UI from the ClassicStack-web submodule) for go:embed.
+
+runs:
+  using: composite
+  steps:
+    # The Finder UI comes from the third_party/classicstack-web submodule, which
+    # Vite aliases into this tree (see adapter/control/http/ui). Callers must
+    # check out with `submodules: recursive`; fail loudly rather than let tsc
+    # report a wall of unresolved classicstack-web/* imports.
+    - name: Check ClassicStack-web submodule
+      shell: bash
+      run: |
+        if [[ ! -f third_party/classicstack-web/src/ui/finder-window.ts ]]; then
+          echo "::error::third_party/classicstack-web is empty. Check out with 'submodules: recursive'." >&2
+          exit 1
+        fi
+        echo "spa: ClassicStack-web at $(git -C third_party/classicstack-web rev-parse --short HEAD)"
+
+    - name: Setup Node
+      uses: actions/setup-node@v7
+      with:
+        node-version: "22"
+        cache: npm
+        # spa.sh installs in both trees, so key the cache off both lockfiles.
+        cache-dependency-path: |
+          adapter/control/http/ui/package-lock.json
+          third_party/classicstack-web/package-lock.json
+
+    - name: Build SPA
+      shell: bash
+      run: bash scripts/ci/spa.sh

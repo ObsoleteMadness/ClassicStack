@@ -1,0 +1,577 @@
+package control
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/ObsoleteMadness/ClassicStack/core/auth"
+	"github.com/ObsoleteMadness/ClassicStack/core/bus"
+	"github.com/ObsoleteMadness/ClassicStack/core/config"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
+)
+
+type fakeSection struct{ key string }
+
+func (s fakeSection) Key() string           { return s.key }
+func (s fakeSection) Clone() config.Section { return fakeSection{key: s.key} }
+func (s fakeSection) Validate() error       { return nil }
+
+type fakeSupervisor struct {
+	model               *config.Model
+	units               []Unit
+	hostnameConstraints []string
+	lastName            string
+	lastSetKey          string
+}
+
+func (s *fakeSupervisor) Model() *config.Model { return s.model }
+
+func (s *fakeSupervisor) Reconfigure(_ context.Context, name string, section config.Section) error {
+	s.lastName = name
+	s.lastSetKey = section.Key()
+	return nil
+}
+
+func (s *fakeSupervisor) AddInstance(_ context.Context, owner string, section config.NamedSection) error {
+	s.lastName = owner
+	s.lastSetKey = section.Key()
+	if s.model != nil {
+		s.model.AddInstance(section)
+	}
+	return nil
+}
+
+func (s *fakeSupervisor) RemoveInstance(_ context.Context, owner, key, instanceName string) error {
+	s.lastName = owner
+	s.lastSetKey = key
+	if s.model != nil {
+		s.model.RemoveInstance(key, instanceName)
+	}
+	return nil
+}
+
+func (s *fakeSupervisor) Start(context.Context, string) error   { return nil }
+func (s *fakeSupervisor) Stop(context.Context, string) error    { return nil }
+func (s *fakeSupervisor) Restart(context.Context, string) error { return nil }
+func (s *fakeSupervisor) Status() []Unit                        { return s.units }
+func (s *fakeSupervisor) HostnameConstraints() []string         { return s.hostnameConstraints }
+func (s *fakeSupervisor) ListInterfaces() ([]InterfaceInfo, error) {
+	return []InterfaceInfo{{Name: "eth0", Addr: "10.0.0.1"}}, nil
+}
+func (s *fakeSupervisor) ListFSTypes() []string { return []string{"memfs"} }
+func (s *fakeSupervisor) ReplaceModel(_ context.Context, m *config.Model) error {
+	if m != nil {
+		s.model = m
+	}
+	return nil
+}
+func (s *fakeSupervisor) SetInterface(_ context.Context, iface config.InterfaceSection) error {
+	if s.model != nil {
+		s.model.SetInterface(iface)
+	}
+	return nil
+}
+func (s *fakeSupervisor) RemoveInterface(_ context.Context, name string) error {
+	if s.model != nil && s.model.Interfaces != nil {
+		delete(s.model.Interfaces, name)
+	}
+	return nil
+}
+func (s *fakeSupervisor) SetWellKnown(_ context.Context, key string, section []byte) error {
+	if s.model == nil {
+		return nil
+	}
+	switch key {
+	case config.IdentityKey:
+		return json.Unmarshal(section, &s.model.Identity)
+	case "Router":
+		return json.Unmarshal(section, &s.model.Router)
+	case "Logging":
+		return json.Unmarshal(section, &s.model.Logging)
+	case config.HTTPKey:
+		return json.Unmarshal(section, &s.model.HTTP)
+	case config.ClientKey:
+		return json.Unmarshal(section, &s.model.Client)
+	case config.FUSEKey:
+		return json.Unmarshal(section, &s.model.FUSE)
+	default:
+		return errors.New("unknown well-known key")
+	}
+}
+func (s *fakeSupervisor) SetAdminAuth(a config.AdminAuth) {
+	if s.model != nil {
+		s.model.AdminAuth = a
+	}
+}
+
+type fakeCodec struct{ marshalErr error }
+
+func (c fakeCodec) Marshal(*config.Model) ([]byte, error) {
+	if c.marshalErr != nil {
+		return nil, c.marshalErr
+	}
+	return []byte("cfg"), nil
+}
+func (fakeCodec) Unmarshal([]byte, *config.Model) error { return nil }
+
+type fakeStore struct {
+	data []byte
+	err  error
+}
+
+func (s *fakeStore) Load() ([]byte, error) { return s.data, nil }
+func (s *fakeStore) Save(data []byte) (string, error) {
+	if s.err != nil {
+		return "", s.err
+	}
+	s.data = append([]byte(nil), data...)
+	return "rev-1", nil
+}
+
+func TestPlane_StatusAndReconfigure(t *testing.T) {
+	m := config.NewModel()
+	sup := &fakeSupervisor{model: m, units: []Unit{{Name: "placeholder", Running: true}}}
+	p := New(sup, fakeCodec{}, &fakeStore{}, bus.New(8))
+
+	st := p.Status()
+	if len(st) != 1 || st[0].Name != "placeholder" || !st[0].Running {
+		t.Fatalf("Status() = %#v", st)
+	}
+
+	if err := p.Reconfigure(context.Background(), "placeholder", fakeSection{key: "AFP"}); err != nil {
+		t.Fatalf("Reconfigure() error = %v", err)
+	}
+	if sup.lastName != "placeholder" || sup.lastSetKey != "AFP" {
+		t.Fatalf("Reconfigure() did not delegate to supervisor: name=%q key=%q", sup.lastName, sup.lastSetKey)
+	}
+}
+
+func TestPlane_UserAdminUnavailableWithoutStore(t *testing.T) {
+	// fakeSupervisor does NOT implement UserAdmin → every user op is unavailable.
+	p := New(&fakeSupervisor{model: config.NewModel()}, fakeCodec{}, &fakeStore{}, bus.New(8))
+	if _, err := p.Users(); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Users() err = %v, want ErrUnavailable", err)
+	}
+	if err := p.SetUser("a", "p"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("SetUser() err = %v, want ErrUnavailable", err)
+	}
+	if err := p.SetUserDisabled("a", true); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("SetUserDisabled() err = %v, want ErrUnavailable", err)
+	}
+	if err := p.RemoveUser("a"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("RemoveUser() err = %v, want ErrUnavailable", err)
+	}
+}
+
+// userSupervisor is a fakeSupervisor that also implements UserAdmin, proving the
+// plane delegates user ops when the surface is present.
+type userSupervisor struct {
+	fakeSupervisor
+	users    []UserInfo
+	lastSet  string
+	disabled map[string]bool
+}
+
+func (s *userSupervisor) Users() ([]UserInfo, error) { return s.users, nil }
+func (s *userSupervisor) SetUser(name, _ string) error {
+	s.lastSet = name
+	s.users = append(s.users, UserInfo{Name: name})
+	return nil
+}
+func (s *userSupervisor) SetUserDisabled(name string, d bool) error {
+	if s.disabled == nil {
+		s.disabled = map[string]bool{}
+	}
+	s.disabled[name] = d
+	return nil
+}
+func (s *userSupervisor) RemoveUser(name string) error {
+	for i, u := range s.users {
+		if u.Name == name {
+			s.users = append(s.users[:i], s.users[i+1:]...)
+		}
+	}
+	return nil
+}
+
+func TestPlane_UserAdminDelegates(t *testing.T) {
+	sup := &userSupervisor{fakeSupervisor: fakeSupervisor{model: config.NewModel()}}
+	p := New(sup, fakeCodec{}, &fakeStore{}, bus.New(8))
+
+	if err := p.SetUser("alice", "pw"); err != nil {
+		t.Fatal(err)
+	}
+	if sup.lastSet != "alice" {
+		t.Fatalf("SetUser not delegated (lastSet=%q)", sup.lastSet)
+	}
+	users, err := p.Users()
+	if err != nil || len(users) != 1 || users[0].Name != "alice" {
+		t.Fatalf("Users() = %v, err %v", users, err)
+	}
+	if err := p.SetUserDisabled("alice", true); err != nil || !sup.disabled["alice"] {
+		t.Fatalf("SetUserDisabled not delegated (err=%v disabled=%v)", err, sup.disabled)
+	}
+	if err := p.RemoveUser("alice"); err != nil {
+		t.Fatal(err)
+	}
+	if users, _ := p.Users(); len(users) != 0 {
+		t.Fatalf("RemoveUser left %d users", len(users))
+	}
+}
+
+func TestPlane_SaveRejectsInvalidHostname(t *testing.T) {
+	m := config.NewModel()
+	m.Identity = config.Identity{Hostname: "bad/name"} // path separator → baseline fail
+	sup := &fakeSupervisor{model: m}
+	store := &fakeStore{}
+	p := New(sup, fakeCodec{}, store, bus.New(2))
+
+	if _, err := p.Save(context.Background()); err == nil {
+		t.Fatal("Save should reject a hostname with a path separator")
+	}
+	if store.data != nil {
+		t.Fatal("invalid model must not reach the store")
+	}
+}
+
+func TestPlane_SaveNetBIOSHostnameRuleGated(t *testing.T) {
+	const longName = "THIS-NAME-IS-WAY-TOO-LONG" // > 15 bytes, baseline-legal
+
+	// NetBIOS NOT enabled (no such unit) → the ≤15-byte rule does not apply; Save OK.
+	mOff := config.NewModel()
+	mOff.Identity = config.Identity{Hostname: longName}
+	pOff := New(&fakeSupervisor{model: mOff}, fakeCodec{}, &fakeStore{}, bus.New(2))
+	if _, err := pOff.Save(context.Background()); err != nil {
+		t.Fatalf("Save with NetBIOS off should accept a long hostname: %v", err)
+	}
+
+	// The "netbios" hostname constraint is active → the ≤15-byte rule applies; Save
+	// rejected. The constraint is reported by the supervisor (aggregated from the
+	// component implementing HostnameConstrainer) — the plane names no service.
+	mOn := config.NewModel()
+	mOn.Identity = config.Identity{Hostname: longName}
+	supOn := &fakeSupervisor{model: mOn, hostnameConstraints: []string{config.HostnameConstraintNetBIOS}}
+	pOn := New(supOn, fakeCodec{}, &fakeStore{}, bus.New(2))
+	if _, err := pOn.Save(context.Background()); err == nil {
+		t.Fatal("Save with the netbios hostname constraint active should reject an over-length hostname")
+	}
+
+	// Constraint NOT active → rule does not apply; Save OK.
+	mDis := config.NewModel()
+	mDis.Identity = config.Identity{Hostname: longName}
+	supDis := &fakeSupervisor{model: mDis, hostnameConstraints: nil}
+	pDis := New(supDis, fakeCodec{}, &fakeStore{}, bus.New(2))
+	if _, err := pDis.Save(context.Background()); err != nil {
+		t.Fatalf("Save with no netbios constraint should accept a long hostname: %v", err)
+	}
+}
+
+// secretSection is a minimal config.SecretMasker + NamedSection: one named instance
+// carrying a single secret value, so the plane's Config-mask / Reconfigure-unmask path
+// can be exercised without importing a file-service package. MaskedClone redacts the
+// value; Unmask restores config.RedactedSecret from the prior instance.
+type secretSection struct {
+	key    string
+	name   string
+	secret string
+}
+
+func (s *secretSection) Key() string           { return s.key }
+func (s *secretSection) InstanceName() string  { return s.name }
+func (s *secretSection) Validate() error       { return nil }
+func (s *secretSection) Clone() config.Section { cp := *s; return &cp }
+func (s *secretSection) MaskedClone() config.Section {
+	cp := *s
+	if cp.secret != "" {
+		cp.secret = config.RedactedSecret
+	}
+	return &cp
+}
+func (s *secretSection) Unmask(prev config.Section) config.Section {
+	cp := *s
+	if cp.secret == config.RedactedSecret {
+		if pv, ok := prev.(*secretSection); ok {
+			cp.secret = pv.secret
+		} else {
+			cp.secret = ""
+		}
+	}
+	return &cp
+}
+
+// recordingSupervisor captures the section handed to Reconfigure so a test can assert
+// the plane unmasked it before delegating.
+type recordingSupervisor struct {
+	fakeSupervisor
+	gotSection config.Section
+}
+
+func (s *recordingSupervisor) Reconfigure(_ context.Context, name string, section config.Section) error {
+	s.lastName = name
+	s.gotSection = section
+	return nil
+}
+
+// TestPlane_ConfigMasksSecrets asserts Config() redacts a SecretMasker section's secret
+// and leaves the live model untouched (mask operates on a clone).
+func TestPlane_ConfigMasksSecrets(t *testing.T) {
+	m := config.NewModel()
+	m.AddInstance(&secretSection{key: "AFPVolumes", name: "Public", secret: "hunter2"})
+	sup := &fakeSupervisor{model: m}
+	p := New(sup, fakeCodec{}, &fakeStore{}, bus.New(2))
+
+	cfg, err := p.Config()
+	if err != nil {
+		t.Fatalf("Config(): %v", err)
+	}
+	got := cfg.List("AFPVolumes")[0].(*secretSection)
+	if got.secret != config.RedactedSecret {
+		t.Fatalf("Config() did not mask the secret: %q", got.secret)
+	}
+	// Live model still holds the cleartext.
+	if live := m.List("AFPVolumes")[0].(*secretSection); live.secret != "hunter2" {
+		t.Fatalf("Config() mutated the live model: %q", live.secret)
+	}
+}
+
+// TestPlane_ReconfigureUnmasksSecrets asserts a blind round-trip (submitting the masked
+// sentinel) restores the stored secret, while a genuine edit is kept.
+func TestPlane_ReconfigureUnmasksSecrets(t *testing.T) {
+	m := config.NewModel()
+	m.AddInstance(&secretSection{key: "AFPVolumes", name: "Public", secret: "hunter2"})
+	sup := &recordingSupervisor{fakeSupervisor: fakeSupervisor{model: m}}
+	p := New(sup, fakeCodec{}, &fakeStore{}, bus.New(2))
+
+	// Blind round-trip: submit the masked sentinel → stored secret restored.
+	in := &secretSection{key: "AFPVolumes", name: "Public", secret: config.RedactedSecret}
+	if err := p.Reconfigure(context.Background(), "Public", in); err != nil {
+		t.Fatalf("Reconfigure(): %v", err)
+	}
+	if got := sup.gotSection.(*secretSection).secret; got != "hunter2" {
+		t.Fatalf("Reconfigure did not unmask the secret: %q", got)
+	}
+
+	// Genuine edit: a non-sentinel value is passed through verbatim.
+	edit := &secretSection{key: "AFPVolumes", name: "Public", secret: "newpw"}
+	if err := p.Reconfigure(context.Background(), "Public", edit); err != nil {
+		t.Fatalf("Reconfigure(edit): %v", err)
+	}
+	if got := sup.gotSection.(*secretSection).secret; got != "newpw" {
+		t.Fatalf("Reconfigure clobbered an edited secret: %q", got)
+	}
+}
+
+// TestPlane_SetAdminRoundTrip asserts SetAdmin stamps the credential into the model,
+// flips AdminConfigured, and persists through the store (the auto-save first-run uses).
+func TestPlane_SetAdminRoundTrip(t *testing.T) {
+	m := config.NewModel()
+	sup := &fakeSupervisor{model: m}
+	store := &fakeStore{}
+	p := New(sup, fakeCodec{}, store, bus.New(2))
+
+	if p.AdminConfigured() {
+		t.Fatal("fresh model should report no admin configured")
+	}
+
+	salt := make([]byte, auth.SaltLen)
+	for i := range salt {
+		salt[i] = byte(i + 3)
+	}
+	cred := auth.DeriveCredential("pw", salt)
+	a := config.AdminAuth{User: "admin", SaltHex: cred.SaltHex(), HashHex: cred.HashHex()}
+
+	rev, err := p.SetAdmin(context.Background(), a)
+	if err != nil {
+		t.Fatalf("SetAdmin: %v", err)
+	}
+	if rev != "rev-1" {
+		t.Fatalf("SetAdmin revision = %q, want rev-1", rev)
+	}
+	if !p.AdminConfigured() {
+		t.Fatal("AdminConfigured should be true after SetAdmin")
+	}
+	if m.AdminAuth.User != "admin" || !m.AdminAuth.Verify("admin", "pw") {
+		t.Fatalf("model AdminAuth not stamped/verifying: %+v", m.AdminAuth)
+	}
+	if store.data == nil {
+		t.Fatal("SetAdmin should have persisted the model to the store")
+	}
+}
+
+// TestPlane_SetAdminRejectsInvalid asserts SetAdmin validates before persisting — a
+// model with a bad existing section (or here, a bad admin username) is not written.
+func TestPlane_SetAdminRejectsInvalid(t *testing.T) {
+	m := config.NewModel()
+	store := &fakeStore{}
+	p := New(&fakeSupervisor{model: m}, fakeCodec{}, store, bus.New(2))
+
+	bad := config.AdminAuth{User: "ad\x00min", SaltHex: "00", HashHex: "00"}
+	if _, err := p.SetAdmin(context.Background(), bad); err == nil {
+		t.Fatal("SetAdmin should reject an invalid credential")
+	}
+	if store.data != nil {
+		t.Fatal("invalid credential must not reach the store")
+	}
+}
+
+func TestPlane_SubscribeStateTopic(t *testing.T) {
+	tb := bus.New(4)
+	sup := &fakeSupervisor{model: config.NewModel()}
+	p := New(sup, fakeCodec{}, &fakeStore{}, tb)
+
+	ch, unsub := p.Subscribe(bus.TopicState)
+	defer unsub()
+
+	tb.Publish(bus.StateChanged{Component: "x", From: "stopped", To: "running"})
+
+	select {
+	case ev := <-ch:
+		if ev.Topic() != bus.TopicState {
+			t.Fatalf("topic = %q, want %q", ev.Topic(), bus.TopicState)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("timed out waiting for state event")
+	}
+}
+
+func TestPlane_SaveAndDiagnostics(t *testing.T) {
+	sup := &fakeSupervisor{model: config.NewModel()}
+	store := &fakeStore{}
+	p := New(sup, fakeCodec{}, store, bus.New(2))
+
+	rev, err := p.Save(context.Background())
+	if err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if rev != "rev-1" || string(store.data) != "cfg" {
+		t.Fatalf("Save() = (%q, %q), want (rev-1, cfg)", rev, string(store.data))
+	}
+
+	_, derr := p.Diagnostics().ListZones(context.Background())
+	if !errors.Is(derr, ErrUnavailable) {
+		t.Fatalf("Diagnostics().ListZones() error = %v, want ErrUnavailable", derr)
+	}
+}
+
+// auditSink collects log records so management-action Info lines can be asserted.
+type auditSink struct {
+	recs []log.Record
+}
+
+func (s *auditSink) Write(rec log.Record) {
+	copyRec := rec
+	copyRec.Fields = append([]log.Field(nil), rec.Fields...)
+	s.recs = append(s.recs, copyRec)
+}
+func (s *auditSink) Min() log.Level { return log.Info }
+func (s *auditSink) Close() error   { return nil }
+
+func (s *auditSink) hasMsg(msg string) bool {
+	for _, r := range s.recs {
+		if r.Msg == msg {
+			return true
+		}
+	}
+	return false
+}
+
+type parseCodec struct {
+	unmarshalErr error
+}
+
+func (c parseCodec) Marshal(*config.Model) ([]byte, error) { return []byte("ok"), nil }
+func (c parseCodec) Unmarshal(data []byte, m *config.Model) error {
+	if c.unmarshalErr != nil {
+		return c.unmarshalErr
+	}
+	// Minimal: accept any bytes; leave m empty (Validate still succeeds).
+	_ = data
+	_ = m
+	return nil
+}
+
+func TestPlane_ValidateAndApplyConfig(t *testing.T) {
+	sup := &fakeSupervisor{model: config.NewModel()}
+	store := &fakeStore{}
+	p := New(sup, parseCodec{}, store, bus.New(4))
+
+	if err := p.ValidateConfig([]byte("x = 1")); err != nil {
+		t.Fatalf("ValidateConfig: %v", err)
+	}
+
+	rev, err := p.ApplyConfigBytes(context.Background(), []byte("x = 1"))
+	if err != nil {
+		t.Fatalf("ApplyConfigBytes: %v", err)
+	}
+	if rev != "rev-1" {
+		t.Fatalf("revision = %q", rev)
+	}
+	if sup.model == nil {
+		t.Fatal("ReplaceModel did not install a model")
+	}
+
+	bad := New(sup, parseCodec{unmarshalErr: errors.New("bad toml")}, store, bus.New(4))
+	if err := bad.ValidateConfig([]byte("nope")); err == nil {
+		t.Fatal("ValidateConfig expected parse error")
+	}
+	if _, err := bad.ApplyConfigBytes(context.Background(), []byte("nope")); err == nil {
+		t.Fatal("ApplyConfigBytes expected parse error")
+	}
+}
+
+func TestPlane_SchemasUsesDescriber(t *testing.T) {
+	sup := &fakeSupervisor{model: config.NewModel()}
+	p := New(sup, fakeCodec{}, &fakeStore{}, bus.New(4))
+	p.SetSchemaDescriber(func() []config.SectionInfo {
+		return []config.SectionInfo{{
+			Key: "Demo", DisplayName: "Demo Proto",
+			Capabilities: []string{config.CapCapture},
+			Fields:       []config.FieldInfo{{Key: "Capture", DisplayName: "Capture file", Type: "string"}},
+		}}
+	})
+	got := p.Schemas()
+	if len(got) != 1 || got[0].DisplayName != "Demo Proto" || len(got[0].Fields) != 1 {
+		t.Fatalf("Schemas() = %#v", got)
+	}
+}
+
+// TestPlane_ManagementActionsLogInfo asserts Start/Stop/Restart and configuration
+// changes emit Info audit lines (the trail the web-UI Logs tab shows).
+func TestPlane_ManagementActionsLogInfo(t *testing.T) {
+	sup := &fakeSupervisor{model: config.NewModel()}
+	sink := &auditSink{}
+	p := New(sup, fakeCodec{}, &fakeStore{}, bus.New(4))
+	p.SetLogger(log.New("control", sink))
+
+	ctx := context.Background()
+	if err := p.Start(ctx, "AFP"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := p.Stop(ctx, "AFP"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := p.Restart(ctx, "AFP"); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	if err := p.Reconfigure(ctx, "AFP", fakeSection{key: "AFP"}); err != nil {
+		t.Fatalf("Reconfigure: %v", err)
+	}
+	if _, err := p.Save(ctx); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	for _, want := range []string{
+		"control: started",
+		"control: stopped",
+		"control: restarted",
+		"control: configuration applied",
+		"control: configuration saved",
+	} {
+		if !sink.hasMsg(want) {
+			t.Errorf("missing Info log %q; got %#v", want, sink.recs)
+		}
+	}
+}

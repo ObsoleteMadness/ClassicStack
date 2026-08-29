@@ -117,13 +117,13 @@ Client                              Server
 
 ### 4b. Multi-step UAMs — FPLoginCont
 
-`Randnum Exchange`, `2-Way Randnum`, and the DH-family UAMs require more than one round trip. After `FPLogin` returns result code `kFPAuthContinue` (5), the client sends `FPLoginCont`:
+`Randnum Exchange`, `2-Way Randnum`, and the DH-family UAMs require more than one round trip. After `FPLogin` returns result code `kFPAuthContinue` (-5001), the client sends `FPLoginCont`:
 
 ```
 Client                              Server
   │                                   │
   │── FPLogin ─────────────────────────►│
-  │◄─ kFPAuthContinue (5) + challenge ─│  server sends random number
+  │◄─ kFPAuthContinue (-5001) + challenge ─│  server sends random number
   │                                   │
   │── FPLoginCont ─────────────────────►│
   │   • ID (from previous reply)      │
@@ -212,7 +212,78 @@ Client                              Server
   │◄─ acknowledgement ─────────────────│
 ```
 
-The server may also issue an `ASPAttention` packet (AFP attention code `0x4000` = server is shutting down) to prompt the client to disconnect gracefully.
+The server may also end a session itself: it announces the shutdown with an `ASPAttention` and then sends a server-initiated `ASPCloseSession` (see "Server Messages & Attention" below). The AFP attention word's shutdown flag is bit 15 (`0x8000`) — an earlier revision of this document said `0x4000`, which an observed capture of a real AppleShare server disproved (see `errata.md`, "AFP attention codes / FPGetSrvrMsg").
+
+---
+
+## Server Messages & Attention
+
+AFP has a server→client notification path: the ASP **Attention** packet. The server uses it to tell a workstation "something happened"; when the attention word carries the *server message* flag, the client fetches the text with `FPGetSrvrMsg` and displays it in a dialog. All of the following is from an observed capture of a real AppleShare server.
+
+### Capability advertisement
+
+The `FPGetSrvrInfo` / `ASPGetStatus` reply's `Flags` word must set **bit 3 (`0x0008`, SupportsSrvrMsg)**. Without it clients neither fetch the login greeting nor honour message attentions.
+
+### FPGetSrvrMsg (command 38)
+
+```
+Request:  cmd(1)=38  pad(1)  MessageType(2)  MessageBitmap(2)
+Reply:    MessageType(2)  MessageBitmap(2)  PascalString(message)
+```
+
+- `MessageType` 0 = **login message** (greeting): the client requests it unprompted right after `FPOpenVol` and shows it once per mount.
+- `MessageType` 1 = **server message**: requested after each attention with the message flag.
+- `MessageBitmap` bit 0 = message as text (bit 1 = UTF-8, AFP 3.x only). The observed server always answers with bitmap `0x0001`.
+- The message is a MacRoman Pascal string, at most 199 bytes. No pending message answers a zero-length string.
+
+### ASP Attention wire form
+
+An ATP **TReq** from the server's session socket to the client's *workstation session socket* (the socket the client opened the session from), control `0x40` (ALO — XO is **not** set), bitmap `0x01`. The ASP payload rides entirely in the 4 ATP user bytes:
+
+```
+[0] SPFunction = 8 (Attention)   [1] SessionID   [2:3] AttentionCode
+```
+
+The client acknowledges with a TResp carrying 4 zero user bytes.
+
+Attention code bits (netatalk's AFPATTN_* names):
+
+| bit(s) | mask | meaning |
+|---|---|---|
+| 15 | `0x8000` | server is shutting down |
+| 14 | `0x4000` | server crashed (no clean shutdown) |
+| 13 | `0x2000` | server message waiting — fetch with `FPGetSrvrMsg` type 1 |
+| 12 | `0x1000` | do not attempt reconnection |
+| 0–11 | `0x0FFF` | minutes until the announced shutdown (0 = now) |
+
+Observed words: `0x2000` (plain message), `0xB001` (shutdown in 1 minute, message, no reconnect), `0xB000` (shutdown now, message, no reconnect).
+
+### Message push sequence
+
+```
+Client                              Server
+  │◄─ ASPAttention (0x2000) ──────────│  message waiting
+  │── TResp ack ──────────────────────►│
+  │── FPGetSrvrMsg (type 1) ──────────►│
+  │◄─ type 1, bitmap 0x0001, text ────│  client shows the dialog
+```
+
+### Disconnect-with-warning sequence (two-phase)
+
+```
+Client                              Server
+  │◄─ ASPAttention (0xB001) ──────────│  shutdown in 1 min + message
+  │── FPGetSrvrMsg (type 1) ──────────►│
+  │◄─ warning text ───────────────────│  server keeps serving the countdown
+  │            … 1 minute …           │
+  │◄─ ASPAttention (0xB000) ──────────│  shutdown NOW + message
+  │── FPGetSrvrMsg (type 1) ──────────►│
+  │◄─ warning text ───────────────────│
+  │◄─ ASPCloseSession (TReq) ─────────│  server-initiated close:
+  │── TResp ack ──────────────────────►│  user bytes 01 | SessionID | 00 00
+```
+
+ClassicStack implements this surface as: the `[AFP] login_message` config option (type 0 greeting), the management-plane `SendMessage`/`Disconnect` actions (`core/service/afp/message.go`), and a service `Stop()` that announces `0xA000` (shutdown + message), keeps serving through a short fetch grace, then sends the server-initiated CloseSession per session.
 
 ---
 

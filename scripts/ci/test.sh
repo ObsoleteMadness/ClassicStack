@@ -13,6 +13,7 @@ tag_sets=(
   "afp sqlite_cnid"
   "all"
   "ipx netbeui smb"
+  "netboot router"
   "webui"
 )
 

@@ -1,0 +1,346 @@
+package registry
+
+import (
+	"fmt"
+	"io"
+	"sort"
+	"sync"
+
+	"github.com/ObsoleteMadness/ClassicStack/core/auth"
+	"github.com/ObsoleteMadness/ClassicStack/core/bus"
+	"github.com/ObsoleteMadness/ClassicStack/core/component"
+	"github.com/ObsoleteMadness/ClassicStack/core/config"
+	"github.com/ObsoleteMadness/ClassicStack/core/link"
+	"github.com/ObsoleteMadness/ClassicStack/core/log"
+	"github.com/ObsoleteMadness/ClassicStack/core/port"
+	"github.com/ObsoleteMadness/ClassicStack/core/router"
+)
+
+// userStoreBuilder is the build-tagged user-store constructor (reg_auth.go, built
+// under afp||smb||all) assigned at init. It is a hook so this ALWAYS-compiled file can
+// expose BuildUserStore regardless of build tags: a build with no file service leaves
+// it nil and BuildUserStore returns (nil, nil) — "no user administration in this
+// build", the same graceful degradation the supervisor's nil-store path expects.
+var userStoreBuilder func(*config.Model) (auth.UserStore, error)
+
+// buildClientHook is the build-tagged Client factory wrapper (reg_client.go, built
+// under webui||all) assigned at init. When unset, BuildClient returns (nil, false, nil)
+// so a headless build carries no in-process file client.
+var buildClientHook func(*BuildContext, map[string]component.Component) (component.Component, bool, error)
+
+// BuildUserStore constructs the configured user store, or (nil, nil) when no file
+// service was built (the hook is unset). The compose root calls it once and hands the
+// store to the supervisor (SetUserStore, for the web UI's user CRUD) and to each file
+// service (SetAuthenticator). Always compiled so the runtime can wire users without a
+// build-tag dependency on the file services.
+func BuildUserStore(m *config.Model) (auth.UserStore, error) {
+	if userStoreBuilder == nil {
+		return nil, nil
+	}
+	return userStoreBuilder(m)
+}
+
+// ClientDeps returns supervisor start-order edges for the Client component: every
+// built file service the client may list locally should be running first.
+func ClientDeps(comps map[string]component.Component) []string {
+	want := []string{"AFP", "SMB", "NCP", "EtherDFS"}
+	out := make([]string, 0, len(want))
+	for _, name := range want {
+		if _, ok := comps[name]; ok {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// BuildClient constructs the in-process file client when reg_client.go is linked
+// (webui||all). comps is the map from the first runtime build pass.
+func BuildClient(ctx *BuildContext, comps map[string]component.Component) (component.Component, bool, error) {
+	if buildClientHook == nil {
+		return nil, false, nil
+	}
+	return buildClientHook(ctx, comps)
+}
+
+// LinkOpener opens a raw L2 FrameLink for a NIC by name, applying the caller-supplied
+// kernel BPF filter to the handle. It is the seam by which a port factory obtains a real
+// device link WITHOUT core/ or this registry importing the pcap/cgo adapter: the compose
+// runtime root selects the concrete opener (libpcap under the `pcap` tag, a stub
+// otherwise) at the cmd edge and injects it here — exactly as the config Store/Codec are
+// injected rather than imported. It is called per Start (a fresh handle each time) so a
+// reopened port gets a new link. nil means no NIC backend in this build → NIC ports come
+// up inert-but-routed (the graceful-degradation contract of BuildContext).
+//
+// bpf is the transport's own capture filter (each NIC transport owns one — EtherTalk
+// captures AppleTalk, NetBEUI captures NBF, IPX captures IPX): a promiscuous handle sees
+// ALL NIC traffic, so without a per-transport filter every port's read loop is fed every
+// other protocol's frames (and, historically, the EtherTalk filter starved NetBEUI/IPX
+// of their own traffic entirely). An empty bpf captures everything (userland demux only).
+type LinkOpener func(iface, bpf string) (link.FrameLink, error)
+
+// SerialParams are the line settings a SerialOpener applies. Baud 0 means "the
+// opener's default". NoFlowControl disables RTS/CTS, which is otherwise ON — the
+// TashTalk adapter must be able to throttle the 1 Mbit/s host link while it clocks a
+// frame onto LocalTalk at 230.4 kbaud, or its receive buffer overruns and frames are
+// dropped (the reference implementation, tashrouter, opens with rtscts=True too).
+type SerialParams struct {
+	Baud          uint
+	NoFlowControl bool
+}
+
+// SerialOpener opens a serial device (by path + line settings) and returns the raw
+// byte stream — NOT a FrameLink. The transport framer (tashtalk today) wraps the
+// stream into a FrameLink. It is the §3b/D7 "shared serial opener" injected at the
+// cmd edge (adapter/serial) so this registry imports no serial library. nil →
+// serial-kind ports come up inert.
+type SerialOpener func(device string, params SerialParams) (io.ReadWriteCloser, error)
+
+// SerialFramer wraps an open serial byte stream into a core/link.FrameLink for one
+// serial transport (tashtalk.NewStream). A factory whose interface kind is serial
+// pairs the injected SerialOpener with its own SerialFramer: open the device once,
+// frame the stream. Separating the two keeps the device-open (cgo-ish, cmd-edge
+// injected) from the pure-Go framing (the adapter), per the kind→opener split.
+type SerialFramer func(io.ReadWriteCloser) (link.FrameLink, error)
+
+// BuildContext carries everything a factory needs to build a FULLY-WIRED component:
+// the config model plus the shared collaborators a component binds to (§14). It
+// replaces the bare *config.Model the factory used to receive — that signature
+// could only build inert/unrouted components, which is why ports came up with a nil
+// router and the macip factory returned a placeholder. The compose runtime root
+// populates the collaborators (building the shared Router first) and hands one
+// BuildContext to every factory, so a port/service is born already bound to the
+// router rather than wired up afterwards through setters.
+//
+// A field is nil when its collaborator is not available in this build/config (e.g.
+// Router is nil if the router component is not registered, or for a unit test that
+// builds one component in isolation). A factory must tolerate a nil collaborator by
+// building the inert/standalone form — the same graceful degradation the model-only
+// path had.
+type BuildContext struct {
+	// Model is the shared, editable config model. Always set.
+	Model *config.Model
+	// Router is the shared AppleTalk router instance every DDP port and service
+	// binds to (ports via router.Router, services via router.ServiceRouter +
+	// RegisterService). nil when the router is not in this build. The runtime root
+	// builds it before any dependent factory so this is populated for them.
+	Router *router.RouterImpl
+	// Telemetry is the bus stats/state/log are published on. May be nil.
+	Telemetry bus.Bus
+	// Opener builds a raw NIC FrameLink for a port's configured interface (kind nic
+	// or bridge). nil when no NIC backend is in this build (e.g. a tag-free / TinyGo
+	// build, or a unit test): a NIC port factory then builds the inert form. The
+	// runtime root injects the concrete opener (pcap or its stub) at the cmd edge.
+	Opener LinkOpener
+	// Serial opens a serial byte stream for a port whose interface kind is serial
+	// (device path + baud). nil when no serial backend is in this build: a serial
+	// port factory then builds the inert form. Injected at the cmd edge
+	// (adapter/serial) alongside Opener, so the kind→opener dispatch (M11.c/D6) can
+	// pick NIC vs serial from the resolved interface rather than the port type.
+	Serial SerialOpener
+	// DefaultDevice resolves the host's PRIMARY (default-route) NIC to the pcap device
+	// name a NIC port should open when its effective interface names none — the server
+	// "Easy mode" auto-NIC. It is injected at the cmd edge (pcap.ListDevices +
+	// core/hostinfo.PrimaryDevice) so this registry stays pcap-free, mirroring Opener.
+	// nil (a tag-free build, or a test) disables auto-detection: an unnamed NIC port
+	// stays inert-but-routed exactly as before. nicLinkOpener calls it only as a
+	// fallback, so a configured iface always wins.
+	DefaultDevice func() (string, error)
+	// HostMAC resolves the real hardware address of a pcap device so a NIC port that
+	// names no mac / hw_address can stamp the host NIC's own MAC (required on WiFi:
+	// APs drop frames sourced from any other address). Injected at the cmd edge
+	// (pcap.ListDevices + hostinfo.HardwareAddrForDevice). nil (tests / no-pcap builds)
+	// leaves the zero-MAC fallback — EtherTalk stays broadcast-only, IPX/NetBEUI/
+	// EtherDFS stamp 00:00:00:00:00:00. A configured section mac or interface
+	// hw_address always wins; this is only the empty-config auto-detect.
+	HostMAC func(device string) ([6]byte, error)
+	// LogLevel is the shared process log threshold. Logger() uses it for the
+	// stderr sink so [Logging] Level changes retune every component live.
+	// Nil falls back to a fresh LevelVar from LevelFor().
+	LogLevel *log.LevelVar
+	// Instance is the per-instance name a REPEATED port factory should build (§M11):
+	// a transport is a repeated section, so the runtime calls the factory once per
+	// instance with Instance set to that instance's name, and the factory resolves
+	// its section via port.InstanceFromModel(Model, key, Instance). Empty means the
+	// singleton/default instance (a non-port factory, or a port config that still
+	// uses a single section), so existing factories keep working unchanged.
+	Instance string
+	// LogSinks are EXTRA log sinks the cmd edge installs on every component logger
+	// (in addition to the stderr sink BuildContext.Logger builds at the configured
+	// level) — e.g. the web-UI in-memory ring buffer that feeds the log viewer. nil
+	// (the default) means stderr only. The per-component threshold still comes from
+	// [Logging] Level via LevelFor; each extra sink enforces its own Min().
+	LogSinks []log.Sink
+	// Components is the map of components already built in the current runtime pass.
+	// The Client factory reads it so the in-process file client can resolve live local
+	// shares (AFP/SMB/NCP/EtherDFS). nil during an isolated Build (conformance tests).
+	Components map[string]component.Component
+}
+
+// Factory builds a fully-wired component from its BuildContext. Returns the
+// component or an error; a disabled section yields (nil, nil).
+type Factory func(*BuildContext) (component.Component, error)
+
+var (
+	mu        sync.RWMutex
+	factories = map[string]Factory{}
+	// portKeys marks the registry keys that are REPEATED port schemas (§M11): the
+	// runtime expands each into one component per named instance in Model.Lists[key],
+	// rather than building a single component under the key. A key absent here is a
+	// singleton (one component, BuildContext.Instance empty).
+	portKeys = map[string]bool{}
+)
+
+// Register records a name->factory mapping. Call from a build-tagged init(): a component whose
+// build tag is absent never registers, so the supervisor simply cannot Build it (the §8
+// replacement for *_disabled.go). A later Register for the same name replaces the earlier one
+// (last wins), allowing a build to override a default.
+func Register(name string, f Factory) {
+	mu.Lock()
+	defer mu.Unlock()
+	factories[name] = f
+}
+
+// RegisterPort records a REPEATED port factory under its schema key: the runtime
+// expands it into one component per named instance (Instances), each built with
+// BuildContext.Instance set. Otherwise identical to Register. Call from a port
+// package's build-tagged init().
+func RegisterPort(key string, f Factory) {
+	mu.Lock()
+	defer mu.Unlock()
+	factories[key] = f
+	portKeys[key] = true
+}
+
+// IsPort reports whether key was registered as a repeated port schema.
+func IsPort(key string) bool {
+	mu.RLock()
+	defer mu.RUnlock()
+	return portKeys[key]
+}
+
+// Build constructs the named component from the context. ok=false means the name was never
+// registered (a clean not-found, NOT an error — the caller logs "requested but not built").
+// A registered factory that returns (nil, nil) for a disabled section yields (nil, true, nil).
+//
+// For a repeated port key the name is the SCHEMA key and ctx.Instance selects which
+// instance to build; the runtime drives this once per instance (see Instances). A
+// singleton leaves ctx.Instance empty.
+func Build(name string, ctx *BuildContext) (component.Component, bool, error) {
+	mu.RLock()
+	f, ok := factories[name]
+	mu.RUnlock()
+	if !ok {
+		return nil, false, nil
+	}
+	c, err := f(ctx)
+	return c, true, err
+}
+
+// ComponentID identifies one component to build: its registry Key plus, for a
+// repeated port, the Instance name (empty for a singleton). Name is the identity the
+// built component reports and the supervisor addresses it by.
+type ComponentID struct {
+	Key      string // registry/schema key ("EtherTalk", "AFP", "Router")
+	Instance string // repeated-port instance name ("et-lab"); "" for a singleton
+	Name     string // component identity: Instance for a port, else Key
+}
+
+// Instances expands the registered components against the model into the full set
+// of components to build: a singleton yields one ComponentID (Name == Key); a
+// repeated port key yields one per named instance in Model.Lists[key]. A repeated
+// port with NO instances in the model yields none (nothing enabled to build) —
+// callers that want a default singleton must add an instance. Order is deterministic
+// (Names() is sorted; instances keep model/document order).
+func Instances(m *config.Model) []ComponentID {
+	var out []ComponentID
+	for _, key := range Names() {
+		if !IsPort(key) {
+			out = append(out, ComponentID{Key: key, Name: key})
+			continue
+		}
+		for _, s := range m.List(key) {
+			inst := ""
+			if ns, ok := s.(config.NamedSection); ok {
+				inst = ns.InstanceName()
+			}
+			if inst == "" {
+				inst = key
+			}
+			out = append(out, ComponentID{Key: key, Instance: inst, Name: inst})
+		}
+	}
+	return out
+}
+
+// sectionMACFor resolves a port instance's station MAC as a fixed [6]byte (the form
+// the frame-port constructors take). Precedence:
+//  1. the port's own section mac (explicit spoof — still valid on wired Ethernet)
+//  2. the bound interface's shared HWAddress (one identity for every raw-link consumer)
+//  3. the host NIC's real MAC via BuildContext.HostMAC (WiFi / Npcap: APs drop any
+//     other source address; blank config means "be the host")
+//  4. the zero MAC — EtherTalk then stays broadcast-only; IPX/NetBEUI/EtherDFS stamp
+//     00:00:00:00:00:00. nil ctx / nil HostMAC skip step 3 so tests keep that fallback.
+func sectionMACFor(ctx *BuildContext, sec *port.Section, iface config.InterfaceSection) [6]byte {
+	if mac, ok := parseMAC6(sec.MAC); ok {
+		return mac
+	}
+	if mac, ok := parseMAC6(iface.HWAddress); ok {
+		return mac
+	}
+	if ctx == nil || ctx.HostMAC == nil {
+		return [6]byte{}
+	}
+	device := effectivePcapDevice(ctx, iface)
+	if device == "" {
+		return [6]byte{}
+	}
+	mac, err := ctx.HostMAC(device)
+	if err != nil || mac == ([6]byte{}) {
+		scope := ""
+		if sec != nil {
+			scope = sec.InstanceName()
+		}
+		errMsg := "unknown"
+		if err != nil {
+			errMsg = err.Error()
+		}
+		ctx.Logger(scope).Log2(log.Warn, "host NIC MAC not detected; set mac or hw_address", log.Str("device", device), log.Str("err", errMsg))
+		return [6]byte{}
+	}
+	scope := ""
+	if sec != nil {
+		scope = sec.InstanceName()
+	}
+	ctx.Logger(scope).Log2(log.Info, "using host NIC MAC", log.Str("device", device), log.Str("mac", formatMAC6(mac)))
+	return mac
+}
+
+// formatMAC6 renders a 6-byte MAC as colon-separated uppercase hex.
+func formatMAC6(mac [6]byte) string {
+	return fmt.Sprintf("%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5])
+}
+
+// parseMAC6 parses a colon/dash-separated MAC string into a fixed [6]byte, reporting
+// ok=false for an empty or malformed value (so callers can chain fallbacks).
+func parseMAC6(s string) ([6]byte, bool) {
+	if s == "" {
+		return [6]byte{}, false
+	}
+	mac, err := port.ParseMAC(s)
+	if err != nil {
+		return [6]byte{}, false
+	}
+	return mac, true
+}
+
+// Names returns the registered component names, sorted for deterministic iteration.
+func Names() []string {
+	mu.RLock()
+	out := make([]string, 0, len(factories))
+	for name := range factories {
+		out = append(out, name)
+	}
+	mu.RUnlock()
+	sort.Strings(out)
+	return out
+}

@@ -40,10 +40,30 @@ All LocalTalk frames use the LLAP header:
 |---|---|---|
 | `0x01` | Short-header DDP | DDP short-header datagram |
 | `0x02` | Long-header DDP | DDP long-header datagram |
-| `0x81` | LLAP ENQ | None (3-byte frame only) |
-| `0x82` | LLAP ACK | None (3-byte frame only) |
+| `0x81` | LLAP ENQ (lapENQ) | None (3-byte frame only) |
+| `0x82` | LLAP ACK (lapACK) | None (3-byte frame only) |
 
 Minimum frame length is 3 bytes (header only, for ENQ/ACK). Minimum DDP frame is longer.
+
+### RTS / CTS are NOT carried over LToUDP
+
+On real LocalTalk hardware, `lapRTS` (`0x84`) / `lapCTS` (`0x85`) implement carrier-sense
+media arbitration below the encapsulated layer, run by the SCC. Over the software
+transports there is no shared medium to arbitrate, and the
+[LToUDP spec](https://github.com/lampmerchant/ltoudp/blob/main/ltoudp.md) is explicit:
+
+> LLAP RTS (request to send) and CTS (clear to send) packets must never be transmitted over
+> LToUDP. […] if the LLAP packet is an RTS, then the LToUDP stack should respond with a
+> synthesised CTS and not transmit the RTS over the UDP socket.
+
+So the CTS is synthesised **locally by the SENDING stack** (the Mac's own LToUDP
+implementation), before anything reaches the wire — it is not a frame any peer answers.
+Our framer therefore needs **no** RTS/CTS logic: we never originate an RTS (our outbound
+path emits DDP data + ENQ/ACK only), and we are never the party that must synthesise a CTS
+for the emulator (its stack does that for itself). Confirmed on the wire: healthy real
+captures (`captures/localtalk.pcap`, `afp-localtalk.pcap`) contain **zero** `0x85` frames
+and thousands of directed `0x01`/`0x02` data frames delivered with no per-frame handshake.
+TashTalk likewise runs any arbitration in the dongle's SCC; the host stays out of it.
 
 ---
 

@@ -1,0 +1,11 @@
+Welcome to ClassicStack!
+
+This is the "Public" share, exported over both AFP (for classic Macs) and
+SMB (for Windows/DOS clients) from the same folder on this machine — files
+you drop here show up on both.
+
+You can edit or remove this share, or add your own, from the web admin UI
+at http://localhost:1984.
+
+This folder lives at:
+C:\ProgramData\ClassicStack\Volumes\Public

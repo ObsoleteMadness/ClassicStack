@@ -1,0 +1,64 @@
+.TH CLASSICSTACK\-TRAY 1 "2026-08-26" "ClassicStack" "ClassicStack Manual"
+.SH NAME
+classicstack\-tray \- menu bar status app for ClassicStack (macOS, Windows)
+.SH SYNOPSIS
+.B classicstack\-tray
+[\fB\-http\fR \fIaddr\fR]
+.SH DESCRIPTION
+.B classicstack\-tray
+is a menu bar / system tray status item that reports whether the
+ClassicStack process is running and offers
+.BR "Open Interface" ", " Start ", " Restart ", and " Shutdown
+against the running instance's web\-admin control API.  It also watches the
+control API's event stream and raises a native notification for incoming
+NetBIOS Messenger / AFP server messages and error\-level log lines \(em the
+same feed the web admin's notification bell reads.
+.PP
+.B Quit
+closes only the tray application; ClassicStack itself keeps running.  Use
+.B Shutdown
+to actually stop the server.
+.PP
+This is a GUI application, not a command\-line tool: after the one
+.B \-http
+flag is parsed it runs an event loop until quit from its menu.  There is no
+Linux build of this tool; it is compiled only for macOS (packaged into
+.B ClassicStack.app
+alongside
+.BR classicstackd (1),
+see
+.B "make app\-darwin"
+in the source tree) and Windows (where it drives
+.BR classicstack\-svc (1)).
+.SH OPTIONS
+.TP
+.BI \-http " addr"
+Control API address to monitor.  Empty (the default) uses
+.IR server.toml \(aqs
+default of
+.BR :1984 .
+A bare
+.B :port
+value is treated as
+.BR http://127.0.0.1:port .
+.SH BEHAVIOR
+The tray polls the control API's
+.B /status
+endpoint every 5 seconds.  A
+.B 409
+response means the admin account has not been set up yet
+(setup mode); a
+.B 401
+from a
+.BR Start / Restart / Shutdown
+action prompts for admin credentials, which are then cached in the platform
+credential store (macOS Keychain, or the Windows Credential Manager).
+.SH SEE ALSO
+.BR classicstack (1),
+.BR classicstackd (1)
+.br
+Full description: https://obsoletemadness.github.io/ClassicStack/docs/cli/
+.SH AUTHOR
+ClassicStack is developed by the ObsoleteMadness project and contributors.
+.SH LICENSE
+ClassicStack is released under the GNU General Public License v3.0 or later.

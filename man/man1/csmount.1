@@ -1,0 +1,137 @@
+.TH CSMOUNT 1 "2026-08-26" "ClassicStack" "ClassicStack Manual"
+.SH NAME
+csmount \- mount an AFP, SMB, NCP, or EtherDFS share as a host filesystem
+.SH SYNOPSIS
+.B csmount
+[\fIflags\fR]
+.I uri mountpoint
+.SH DESCRIPTION
+.B csmount
+mounts a remote share as a native host filesystem: WinFsp on Windows, macFUSE
+on macOS, or libfuse on Linux.  It shares its connection flags, URI grammar,
+and fork\-handling model with
+.BR csfs (1).
+Press Ctrl\-C to unmount cleanly.
+.PP
+.I mountpoint
+is a drive letter such as
+.B X:
+or an empty directory on Windows, an empty directory on Linux, or (on macOS)
+a path such as
+.I /Volumes/Classic
+that must
+.B not
+already exist \(em macFUSE creates that leaf itself.
+.PP
+On an OS other than Windows, macOS, or Linux this binary is a stub that
+prints a message and exits with status 1.  On macOS/Linux built without the
+.B fuse
+tag, mounting always fails with a message pointing at the required rebuild.
+.SH OPTIONS
+.TP
+.BI \-ifacetype " type"
+Transport:
+.BR ltoudp ", " tashtalk ", " pcap ", or " tcp ,
+validated against the URI's scheme.
+.TP
+.BI \-iface " name"
+Interface: an IPv4 address (ltoudp), a pcap device name, a serial device
+(tashtalk), or a hostname (tcp).  For pcap, omit to auto\-detect the primary
+network interface.
+.TP
+.BI \-transport " carrier"
+SMB pcap sub\-carrier:
+.BR ipx " (default), " nbipx ", or " nbf .
+.TP
+.BI \-mac " address"
+Virtual\-station MAC address for raw\-Ethernet carriers.  Default: random.
+.TP
+.BI \-fork " backend"
+Host fork container.  Accepted values differ by platform:
+.RS
+.IP \(bu 2
+.B Windows:
+.BR appledouble ", " applesingle ", " macbinary ", " derez ", " passthrough ", "
+.BR native ", " ads ", or " nofork .
+.B native
+(equivalent to
+.BR ads )
+exposes the resource fork, Finder info, and comment as NTFS SFM alternate
+data streams
+.RI ( :AFP_Resource ", " :AFP_AfpInfo ", " :Comments ).
+.IP \(bu 2
+.B macOS/Linux
+(built with
+.BR \-tags\ fuse ,
+requires cgo):
+.BR appledouble ", " applesingle ", " macbinary ", " derez ", " passthrough ", "
+.BR native ", " hfs ", " xattr ", " ads ", or " nofork .
+.BR passthrough / native / hfs / xattr / ads
+(and the empty default) map to host extended attributes
+.RI ( com.apple.FinderInfo " + " com.apple.ResourceFork
+on macOS;
+.I user.org.netatalk.Metadata
++ resource fork on Linux).  Any other value falls back to
+.I ._name
+/
+.I .rdump
+sidecar files.
+.RE
+.TP
+.BI \-cache\-ms " n"
+WinFsp
+.B FileInfoTimeout
+in milliseconds (Windows only; accepted but undocumented elsewhere).  Default
+is WinFsp's own default (about 1000).
+.B 0
+disables the FSD metadata cache;
+.B \-1
+is infinite and also enables kernel data caching.
+.TP
+.BR \-v ", " \-verbose
+Print the client wire trace to stderr: NBP + AFP, plus WinFsp
+.B Behaviour*
+call names on Windows or FUSE operation names on macOS/Linux (ATP tracing is
+always suppressed for this tool).
+.TP
+.B \-list\-ifaces
+List the capturable pcap network interfaces and exit.
+.TP
+.B \-version
+Print version information and exit.
+.SH EXIT STATUS
+.TP
+.B 0
+Normal exit after a Ctrl\-C unmount (prints
+.BR unmounted ).
+.TP
+.B 1
+A connect or mount failure.
+.TP
+.B 2
+A flag\-parse or usage error (wrong argument count).
+.SH EXAMPLES
+.EX
+csmount \-ifacetype tcp afp://server/Volume /Volumes/Classic          # macOS
+csmount \-fork appledouble afp://vmac1/System\e 7.5.3 /mnt/sys75        # Linux
+csmount smb://server,nbf/Share M:                                     # Windows
+csmount ncp://SERVER/SYS N:                                           # Windows
+.EE
+.SH BUILDING
+.EX
+go build \-tags "pcap fuse" \-o csmount ./cmd/csmount   # macOS/Linux
+go build \-tags pcap \-o csmount.exe ./cmd/csmount      # Windows
+.EE
+.SH NOTES
+On Linux,
+.B csmount
+always prints a one\-line notice that FUSE support is experimental and has
+not been tested, regardless of outcome.
+.SH SEE ALSO
+.BR csfs (1)
+.br
+Full flag reference: https://obsoletemadness.github.io/ClassicStack/docs/cli/
+.SH AUTHOR
+ClassicStack is developed by the ObsoleteMadness project and contributors.
+.SH LICENSE
+ClassicStack is released under the GNU General Public License v3.0 or later.

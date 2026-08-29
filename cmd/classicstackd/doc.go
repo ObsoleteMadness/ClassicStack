@@ -2,7 +2,7 @@
 Command classicstackd runs ClassicStack as a background daemon on Unix.
 
 It shares the same run-core as the interactive classicstack binary
-(internal/app). It does not depend on any init system: `start` re-execs
+(cmd/internal/cli). It does not depend on any init system: `start` re-execs
 itself detached into a new session, writes a PID file, and redirects output
 to a log file; `stop` signals that PID; `run` stays in the foreground.
 

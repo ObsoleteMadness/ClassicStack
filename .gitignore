@@ -11,6 +11,27 @@
 # Locally built command binaries (extensionless on Unix)
 /classicstack
 /classicstackd
+/csclient
+/csmount
+
+
+# Local build output (make build-local / scripts/build-local.sh)
+/bin/
+
+# Local/CI packaging output (make app-darwin, scripts/ci/package-release.sh)
+/dist/
+
+# Windows installer build output (packaging/windows/build.ps1 -> ISCC) and the
+# bundled vendor redistributables it stages from (see redist/README.md) — the
+# .exe half is already covered by the *.exe rule above.
+/packaging/windows/Output/
+/packaging/windows/redist/*.msi
+
+# macOS Finder metadata
+.DS_Store
+
+# Local run logs (client.log, server logs)
+*.log
 
 # Test binary, built with `go test -c`
 *.test
@@ -27,6 +48,13 @@ vendor/
 # Go workspace file
 go.work
 go.work.sum
+
+# Hugo build output and the gomarkdoc-generated API reference pages (docs.yml
+# regenerates both on every build; only site/content/reference/_index.md is
+# hand-written and tracked).
+/public/
+/site/content/reference/*
+!/site/content/reference/_index.md
 
 # env file
 .env
@@ -48,5 +76,25 @@ go.work.sum
 .captures/
 captures/
 
+# Auth store (SQLite users DB) — runtime state.
+users.db
+
 server.toml.[0-9]*
 
+
+# Python bytecode cache (tools/hfs helpers)
+__pycache__/
+
+# Vite SPA (hashed bundles). Source is adapter/control/http/ui; run `make spa`.
+adapter/control/http/spa/assets/
+adapter/control/http/spa/icons/
+
+# Node.js dependencies (root or package-local)
+node_modules/
+client-afp.pcap
+etherdfs.pcap
+ethertalk.pcap
+ipx.pcap
+ltoudp-netboot.pcap
+netbeui.pcap
+tashtalk.pcap

@@ -33,6 +33,7 @@ Well-known socket numbers referenced by services:
 | 2 | NBP |
 | 4 | Echo |
 | 6 | ZIP |
+| 72 | MacIP Gateway — see [14-macip-gateway.md](14-macip-gateway.md) |
 
 Well-known DDP type numbers:
 
@@ -44,6 +45,7 @@ Well-known DDP type numbers:
 | 4 | Echo |
 | 5 | RTMP Request |
 | 6 | ZIP |
+| 22 | MacIP IP-in-DDP data — see [14-macip-gateway.md](14-macip-gateway.md) |
 | 0x4E (78) | MacIPX Gateway — see [15-macipx-gateway.md](15-macipx-gateway.md) (observation-driven) |
 
 ### Port Interface
@@ -99,6 +101,7 @@ Maps zone names (case-insensitive, AppleTalk case folding) to sets of network ra
 | [03-rtmp.md](03-rtmp.md) | Routing Table Maintenance Protocol | 1 | 1, 5 |
 | [04-zip.md](04-zip.md) | Zone Information Protocol | 6 | 3, 6 |
 | [05-aging.md](05-aging.md) | Routing Table Aging | (timer only) | — |
+| [14-macip-gateway.md](14-macip-gateway.md) | MacIP Gateway (AppleTalk ↔ IPv4) | 72 | 3 (ATP), 22 |
 | [15-macipx-gateway.md](15-macipx-gateway.md) | MacIPX Gateway (AppleTalk ↔ IPX) | 78 (0x4E) | 0x4E |
 
 ## Port Implementations

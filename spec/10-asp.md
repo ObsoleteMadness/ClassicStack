@@ -152,6 +152,11 @@ UserData[2-3]= 0
 ATP Data     = empty
 ```
 
+Workstation-initiated tickles go to the **SLS**, not the SSS (Inside AppleTalk 11-15).
+System 7 AppleShare ignores Tickle on the session socket and then ends the session
+after the 2-minute maintenance timeout. Server-initiated tickles still arrive on the
+workstation session socket (WSS).
+
 ---
 
 ## Two-Phase Write Protocol (ASPUserWrite → FPWrite)
@@ -258,6 +263,32 @@ aspSizeErr      = -1073   Command block exceeds aspMaxCmdSize
 ---
 
 ## Implementation Notes
+
+### Implementation (M7 dispatch spine)
+
+The ASP server lives in `core/service/afp` over the migrated `core/protocol/asp`
++ `core/protocol/atp` codecs:
+
+- `atp.go` — the ATP transaction responder: decodes inbound TReqs and splits a
+  reply into up to 8 sequenced TResp packets honouring the requester's bitmap,
+  sending each via `router.Reply` (which addresses it back to the originator and
+  sets the reply `SrcSocket` to the socket the client sent to).
+- `asp.go` — the session table (ids 1–255) and the SPFunction demux running the
+  responsibilities below. The spine uses **one DDP socket** (251) for both the
+  SLS exchanges and all per-session commands, demuxing by session id (the
+  single-socket model), so no dynamic SSS allocation is needed; the OpenSession
+  reply returns this same socket as the SSS.
+- `dispatch.go` + `handlers.go` — the AFP command demux and the starter command
+  set over the §9 Volumes (see [AFP_Connection_Flow.md](AFP_Connection_Flow.md)).
+- `write.go` — the two-phase ASPWrite data path: a `pendingWriteTable` keyed by
+  the transaction id the server stamps into the aspDataWrite TReq it sends, so
+  the workstation's TResp data correlates back to the in-flight FPWrite. `asp.go`
+  `handleWrite` runs phase 1 (parse the FPWrite reqCount, send the aspDataWrite),
+  `handleDataResponse` runs phase 2b→3 (accumulate TResp data by sequence, run
+  the FPWrite on EOM, reply to the original aspWrite). `atp.go` `parseATPResponse`
+  decodes the inbound TResp the spine previously dropped.
+
+The periodic server→workstation tickle is not yet wired in this spine.
 
 ### Server responsibilities
 

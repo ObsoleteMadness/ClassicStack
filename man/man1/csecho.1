@@ -1,0 +1,108 @@
+.TH CSECHO 1 "2026-08-26" "ClassicStack" "ClassicStack Manual"
+.SH NAME
+csecho \- AppleTalk Echo Protocol (AEP) ping client
+.SH SYNOPSIS
+.B csecho
+[\fIflags\fR]
+.SH DESCRIPTION
+.B csecho
+sends AppleTalk Echo Protocol (AEP) requests, the AppleTalk equivalent of
+.BR ping (8)
+(and netatalk's
+.BR aecho ).
+It uses DDP type 4, socket 4.  The default destination,
+.BR 0xFF ,
+broadcasts to every node on the segment so every reachable AppleTalk host
+replies.
+.SH OPTIONS
+.TP
+.BI \-net " number"
+AppleTalk network number.
+.B 0
+(the default) means the local segment.
+.TP
+.BI \-src " node"
+Our LocalTalk source node, 1\(en254.  Default:
+.BR 1 .
+.TP
+.BI \-dst " node"
+Destination node.
+.B 0xFF
+(the default) broadcasts to every node.
+.TP
+.BI \-count " n"
+Number of echo requests to send.  Default:
+.BR 1 .
+.TP
+.BI \-timeout " duration"
+Per\-request reply timeout.  Default:
+.BR 2s .
+.TP
+.BI \-data " string"
+Echo payload string.  Default:
+.BR "ClassicStack csecho" .
+.TP
+.B \-v
+Verbose wire trace to stderr.
+.TP
+.B \-version
+Print version information and exit.
+.PP
+The following transport flags are shared with
+.BR csnbp (1)
+and
+.BR csgetzones (1):
+.TP
+.BI \-transport " kind"
+AppleTalk transport:
+.BR ltoudp " (default), " tashtalk ", or " pcap .
+.TP
+.BI \-iface " name"
+For
+.BR ltoudp ,
+the local IPv4 interface address (default: all multicast interfaces); for
+.BR pcap ,
+the NIC device name.
+.TP
+.BI \-device " path"
+For
+.BR tashtalk ,
+the serial device path, e.g.
+.I COM3
+or
+.IR /dev/ttyUSB0 .
+.TP
+.BI \-baud " rate"
+For
+.BR tashtalk ,
+the serial line speed.
+.B 0
+(the default) uses the adapter's own default.
+.TP
+.B \-list\-ifaces
+List the capturable pcap network interfaces (the names
+.B \-iface
+accepts) and exit.
+.SH EXIT STATUS
+.TP
+.B 0
+At least one reply was received.
+.TP
+.B 1
+No replies were received across all attempts, or another error occurred
+(printed as
+.BR "csecho: <error>" ).
+.SH EXAMPLES
+.EX
+csecho \-dst 0xFF \-count 5
+csecho \-transport tashtalk \-device /dev/ttyUSB0 \-dst 12
+.EE
+.SH SEE ALSO
+.BR csnbp (1),
+.BR csgetzones (1)
+.br
+Full flag reference: https://obsoletemadness.github.io/ClassicStack/docs/cli/
+.SH AUTHOR
+ClassicStack is developed by the ObsoleteMadness project and contributors.
+.SH LICENSE
+ClassicStack is released under the GNU General Public License v3.0 or later.

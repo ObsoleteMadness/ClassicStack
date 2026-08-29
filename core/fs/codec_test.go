@@ -1,0 +1,235 @@
+package fs
+
+import (
+	"bytes"
+	"errors"
+	"testing"
+)
+
+// TestMacRomanUTF8_TrademarkRoundTrip is the codec-level form of the old
+// service/afp TestWriteAFPName_EncodesToMacRoman / enumerate MacRoman cases:
+// "tm™" stores as UTF-8 and re-encodes to MacRoman with the trademark byte 0xAA.
+func TestMacRomanUTF8_TrademarkRoundTrip(t *testing.T) {
+	c := NewMacRomanUTF8FilenameCodec()
+
+	// Wire is MacRoman: 't','m',0xAA  (™ == 0xAA in MacRoman)
+	wire := []byte{'t', 'm', 0xAA}
+	stored, err := c.Decode(wire, WireMacRoman)
+	if err != nil {
+		t.Fatalf("Decode error: %v", err)
+	}
+	if string(stored) != "tm™" {
+		t.Fatalf("stored = %q, want %q", string(stored), "tm™")
+	}
+	back, err := c.Encode(stored, WireMacRoman)
+	if err != nil {
+		t.Fatalf("Encode error: %v", err)
+	}
+	if !bytes.Equal(back, wire) {
+		t.Fatalf("MacRoman roundtrip = %x, want %x", back, wire)
+	}
+}
+
+// TestReservedCharTokenRoundTrip is the codec-level form of the old
+// TestHostTokenRoundTrip_WhenEnabled: a wire '/' is escaped to the "0x2F"
+// token in the store and restored on the way out.
+func TestReservedCharTokenRoundTrip(t *testing.T) {
+	c := NewMacRomanUTF8FilenameCodec()
+
+	stored, err := c.Decode([]byte("Hello/World"), WireUTF8)
+	if err != nil {
+		t.Fatalf("Decode error: %v", err)
+	}
+	if string(stored) != "Hello0x2FWorld" {
+		t.Fatalf("stored = %q, want %q", string(stored), "Hello0x2FWorld")
+	}
+	back, err := c.Encode(stored, WireUTF8)
+	if err != nil {
+		t.Fatalf("Encode error: %v", err)
+	}
+	if string(back) != "Hello/World" {
+		t.Fatalf("reserved-char roundtrip = %q, want %q", string(back), "Hello/World")
+	}
+}
+
+// TestControlCharTokenStaysEscapedForDOSWire proves a classic Mac "Icon\r"
+// marker file's raw CR — always-reserved, so every backend escapes it as the
+// "0x0D" store token regardless of ReservedPOSIX/ReservedNTFS — unescapes back
+// to the true control byte for AFP's Mac clients (WireMacRoman/WireUTF8), but
+// stays literal "0x0D" text for SMB/NCP's DOS clients (WireANSI/WireUTF16),
+// which cannot represent a raw control character in a filename. Before this,
+// Encode unescaped unconditionally: a real capture showed the server handing
+// Windows Explorer a name containing a raw CR, and Explorer refused to copy it
+// ("The filename you specified is invalid or too long") — NT 3.51 File
+// Manager crashed merely listing the share.
+func TestControlCharTokenStaysEscapedForDOSWire(t *testing.T) {
+	c := NewIdentityFilenameCodec()
+
+	stored, err := c.Decode([]byte("Icon\r"), WireUTF8)
+	if err != nil {
+		t.Fatalf("Decode error: %v", err)
+	}
+	if string(stored) != "Icon0x0D" {
+		t.Fatalf("stored = %q, want %q", string(stored), "Icon0x0D")
+	}
+
+	afpBack, err := c.Encode(stored, WireUTF8)
+	if err != nil {
+		t.Fatalf("Encode(WireUTF8) error: %v", err)
+	}
+	if string(afpBack) != "Icon\r" {
+		t.Fatalf("AFP (WireUTF8) roundtrip = %q, want %q (raw CR restored)", afpBack, "Icon\r")
+	}
+
+	for _, w := range []WireEncoding{WireANSI, WireUTF16} {
+		smbBack, err := c.Encode(stored, w)
+		if err != nil {
+			t.Fatalf("Encode(%v) error: %v", w, err)
+		}
+		roundTripped, err := c.Decode(smbBack, w)
+		if err != nil {
+			t.Fatalf("Decode(%v) error: %v", w, err)
+		}
+		if string(roundTripped) != "Icon0x0D" {
+			t.Fatalf("SMB/NCP (%v) roundtrip = %q, want literal %q (CR kept escaped)", w, roundTripped, "Icon0x0D")
+		}
+		if bytes.ContainsRune(smbBack, '\r') {
+			t.Fatalf("SMB/NCP (%v) wire bytes %x contain a raw CR — Windows cannot represent that", w, smbBack)
+		}
+	}
+}
+
+// TestWindowsSafeCodecEscapesReservedPunctuationAtWrite proves the
+// "windows-safe" codec (SMB's default, see core/service/smb.ShareSection.fsSpec)
+// escapes a Win32-reserved character in storage the moment a name is written,
+// unlike "identity" (ReservedPOSIX), which only escapes what the POSIX store
+// itself rejects and so leaves e.g. a Mac-originated '|' (legal on HFS) raw in
+// the stored name — a byte an SMB client could never have created locally, but
+// that "identity" would still hand back to one verbatim on a listing.
+func TestWindowsSafeCodecEscapesReservedPunctuationAtWrite(t *testing.T) {
+	id := NewIdentityFilenameCodec()
+	stored, err := id.Decode([]byte("Report|Final"), WireUTF8)
+	if err != nil {
+		t.Fatalf("identity Decode error: %v", err)
+	}
+	if string(stored) != "Report|Final" {
+		t.Fatalf("identity stored = %q, want the '|' left raw (POSIX permits it)", stored)
+	}
+
+	ws := NewWindowsSafeFilenameCodec()
+	wsStored, err := ws.Decode([]byte("Report|Final"), WireUTF8)
+	if err != nil {
+		t.Fatalf("windows-safe Decode error: %v", err)
+	}
+	if string(wsStored) != "Report0x7CFinal" {
+		t.Fatalf("windows-safe stored = %q, want %q ('|' escaped at write time)", wsStored, "Report0x7CFinal")
+	}
+	back, err := ws.Encode(wsStored, WireANSI)
+	if err != nil {
+		t.Fatalf("windows-safe Encode(WireANSI) error: %v", err)
+	}
+	if string(back) != "Report0x7CFinal" {
+		t.Fatalf("windows-safe SMB roundtrip = %q, want literal %q ('|' kept escaped)", back, "Report0x7CFinal")
+	}
+}
+
+// TestWindowsSafeCodecLeavesWildcardsAlone proves '*' and '?' are NOT escaped
+// by the "windows-safe" codec despite being Win32-illegal in an actual
+// filename: on the SMB wire they are FIND_FIRST2/SMB_COM_SEARCH wildcard
+// metacharacters, and resolveSearchPath's wildcard/pattern split (trans2.go)
+// runs on the string Decode produces. Regression test for the codec's first
+// cut, which reused ReservedNTFS (escapes '*'/'?' too): every FIND_FIRST2
+// "*" request decoded to the inert token "0x2A" before the wildcard/pattern
+// split ever saw a '*', so resolveSearchPath treated it as an exact-name
+// lookup for a file literally called "0x2A" — no share ever had one, so
+// every listing came back empty (status success, zero entries) and SMB
+// clients saw a share with no files at all.
+func TestWindowsSafeCodecLeavesWildcardsAlone(t *testing.T) {
+	ws := NewWindowsSafeFilenameCodec()
+	for _, pattern := range []string{"*", "*.txt", "Report?.doc"} {
+		stored, err := ws.Decode([]byte(pattern), WireANSI)
+		if err != nil {
+			t.Fatalf("Decode(%q) error: %v", pattern, err)
+		}
+		if string(stored) != pattern {
+			t.Fatalf("Decode(%q) = %q, want the wildcard left untouched", pattern, stored)
+		}
+	}
+}
+
+// TestSMBWireEncodings exercises the new WireANSI / WireUTF16 paths the SMB
+// service threads from its dialect/Unicode flag. Only the identity codec
+// advertises them; macroman-utf8 must report ErrWireUnsupported.
+func TestSMBWireEncodings(t *testing.T) {
+	id := NewIdentityFilenameCodec()
+
+	// UTF-16 (SMB NT): round-trip a name with a non-ASCII rune.
+	utf16Wire := mustEncode(t, id, mustDecode(t, id, []byte("café-Ä"), WireUTF8), WireUTF16)
+	gotStored, err := id.Decode(utf16Wire, WireUTF16)
+	if err != nil {
+		t.Fatalf("Decode UTF16 error: %v", err)
+	}
+	if string(gotStored) != "café-Ä" {
+		t.Fatalf("utf16 stored = %q, want %q", string(gotStored), "café-Ä")
+	}
+
+	// ANSI (SMB legacy/DOS, CP437): "café" -> 'c','a','f',0x82 ; round-trip.
+	ansiStored, err := id.Decode([]byte{'c', 'a', 'f', 0x82}, WireANSI)
+	if err != nil {
+		t.Fatalf("Decode ANSI error: %v", err)
+	}
+	if string(ansiStored) != "café" {
+		t.Fatalf("ansi stored = %q, want %q", string(ansiStored), "café")
+	}
+	ansiBack, err := id.Encode(ansiStored, WireANSI)
+	if err != nil {
+		t.Fatalf("Encode ANSI error: %v", err)
+	}
+	if !bytes.Equal(ansiBack, []byte{'c', 'a', 'f', 0x82}) {
+		t.Fatalf("ansi roundtrip = %x", ansiBack)
+	}
+
+	// macroman-utf8 does not advertise UTF-16/ANSI -> fail loudly.
+	mc := NewMacRomanUTF8FilenameCodec()
+	if _, err := mc.Decode([]byte{0x41, 0x00}, WireUTF16); !errors.Is(err, ErrWireUnsupported) {
+		t.Fatalf("macroman-utf8 UTF16 err = %v, want ErrWireUnsupported", err)
+	}
+}
+
+// TestUTF16TruncatedIsUnrepresentable: an odd-length UTF-16 wire name is a bad
+// name (ErrUnrepresentable), not a panic or silent drop.
+func TestUTF16TruncatedIsUnrepresentable(t *testing.T) {
+	id := NewIdentityFilenameCodec()
+	_, err := id.Decode([]byte{0x41, 0x00, 0x42}, WireUTF16)
+	if !errors.Is(err, ErrUnrepresentable) {
+		t.Fatalf("err = %v, want ErrUnrepresentable", err)
+	}
+}
+
+// TestWireAdvertisement: a codec must reject charsets it does not list in Wire().
+func TestWireAdvertisement(t *testing.T) {
+	mc := NewMacRomanUTF8FilenameCodec()
+	for _, w := range []WireEncoding{WireANSI, WireUTF16} {
+		if _, err := mc.Encode(StoredName("x"), w); !errors.Is(err, ErrWireUnsupported) {
+			t.Fatalf("Encode(%v) err = %v, want ErrWireUnsupported", w, err)
+		}
+	}
+}
+
+func mustDecode(t *testing.T, c FilenameCodec, wire []byte, w WireEncoding) StoredName {
+	t.Helper()
+	s, err := c.Decode(wire, w)
+	if err != nil {
+		t.Fatalf("Decode(%v) error: %v", w, err)
+	}
+	return s
+}
+
+func mustEncode(t *testing.T, c FilenameCodec, stored StoredName, w WireEncoding) []byte {
+	t.Helper()
+	b, err := c.Encode(stored, w)
+	if err != nil {
+		t.Fatalf("Encode(%v) error: %v", w, err)
+	}
+	return b
+}

@@ -31,12 +31,31 @@ The serial port name is platform-dependent:
 After opening the serial port, the host sends an initialization sequence to reset the TashTalk hardware:
 
 ```
-send: [0x00] × 1024 followed by [0x02]
+send: [0x00] × 1024, then [0x02] followed by [0x00] × 32, then [0x03] [0x00]
 ```
 
-That is: 1024 null bytes to flush any partial state, then the byte `0x02` as a port reset command. The TashTalk firmware interprets `0x02` as a reset signal and initializes to a known state.
+That is: 1024 null bytes to flush any partial device state, then a **complete 33-byte set-node-address command** (`0x02` plus a 32-byte all-zero node bitmap), then `0x03 0x00`.
+
+> **`0x02` is NOT a bare reset byte.** It is the opcode of a 33-byte command whose 32-byte payload is a 256-bit bitmap of the node addresses the hardware should receive (see "Node Address Filter" below). Sending `0x02` on its own leaves the firmware consuming the *next 32 bytes on the wire* as bitmap data, desynchronising the command stream. An earlier revision of this document described `0x02` as a standalone reset; that was wrong, and an implementation written to it transmitted normally but received nothing.
 
 After sending the initialization sequence, the host starts the base LocalTalk port (which begins LLAP node acquisition) and then starts the serial read goroutine.
+
+---
+
+## Node Address Filter (required for inbound traffic)
+
+TashTalk filters inbound frames **in hardware** against a 256-bit node-address bitmap. The bitmap starts **empty**, so until the host arms it the device forwards no frames at all — the host sees a completely silent line while its own transmits go out normally.
+
+The host must therefore send a set-node-address command as soon as LLAP node acquisition claims a node:
+
+```
+byte 0:      0x02                (set-node-address opcode)
+bytes 1..32: node bitmap         (bit `node` = byte node/8, bit node%8)
+```
+
+For the default LocalTalk node `0xFE` (254) this sets bit 254 — byte 31, bit 6 — and clears the rest. A node value of 0 writes an all-zero bitmap, disabling reception. Valid node addresses are 1..254 (255 is the LLAP broadcast address and is not assignable).
+
+The command must be re-sent whenever the claimed node changes.
 
 ---
 
@@ -112,7 +131,9 @@ for each byte b received:
 
 The minimum valid LLAP frame is 5 bytes (3-byte LLAP header + at least 2 bytes of content). Frames shorter than 5 bytes are silently discarded.
 
-The current implementation does not validate the `0x01` frame start marker for inbound frames; it accumulates bytes after seeing the start byte without re-checking it mid-stream. An implementor may choose to enforce the start marker.
+**The `0x01` start marker is HOST→DEVICE ONLY.** The device does NOT prefix its frames with it; inbound frames are delimited solely by the `0x00 0xFD` end-of-frame escape. The receiver must therefore accumulate bytes **unconditionally** from the first byte received, and MUST NOT wait for a start marker.
+
+> Do not "tighten" this by enforcing a start marker inbound. A refactor did exactly that — adding an IDLE state that waited for `0x01` before accumulating — and the port then transmitted normally while receiving **nothing at all**, because the state machine sat in IDLE discarding every inbound byte forever.
 
 ---
 
@@ -186,5 +207,7 @@ On `Stop()`:
 
 - **No outbound escape encoding:** Outbound frames are sent as raw bytes after a `0x01` start marker, without escape encoding. This works because the TashTalk firmware is designed to receive frames this way, but it means the host-to-device protocol is asymmetric with the device-to-host protocol. Future hardware revisions or alternative firmware could require escape encoding in both directions.
 - **No reconnection logic:** If the TashTalk hardware is unplugged while the router is running, the serial port will return errors and the read goroutine will spin on errors. A future implementation could detect hardware disconnection and attempt to reopen the port.
-- **No hardware flow control:** The implementation does not enable RTS/CTS or any other hardware flow control. At 1 Mbit/s the USB serial buffer should be sufficient for LocalTalk frame sizes, but if overrun errors occur, flow control could be enabled.
+- **Hardware flow control (RTS/CTS) is enabled.** The host link runs at 1 Mbit/s while TashTalk clocks frames onto LocalTalk at 230.4 kbaud, so the adapter must be able to throttle the host or its receive buffer overruns mid-frame — and a truncated LLAP frame simply fails FCS and disappears. The reference implementation, `tashrouter`, opens its port with `rtscts=True` for the same reason. It can be disabled per-port with `no_flow_control = true` for an adapter whose CTS line is not wired.
+
+  Note this is the **serial line's** RTS/CTS, which is distinct from the **LLAP protocol's** RTS/CTS handshake that precedes a directed LocalTalk frame. The latter is handled by the TashTalk hardware, so the host never synthesises it — see [09-port-localtalk-base.md](09-port-localtalk-base.md).
 - **Shared medium visibility:** Unlike LToUDP (where all participants see all frames), TashTalk only delivers to the host the frames that the TashTalk hardware decides to pass up. Specifically, frames on the physical LocalTalk bus addressed to other nodes may or may not be visible depending on the firmware. The AARP-equivalent process (LLAP ENQ/ACK) depends on the hardware forwarding those control frames to the host.

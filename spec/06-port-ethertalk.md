@@ -82,6 +82,23 @@ The DDP payload follows directly after the 8-byte LLC/SNAP prefix, as a **long-h
 - **EtherTalk broadcast:** `09:00:07:FF:FF:FF`
 - **EtherTalk multicast prefix:** `09:00:07:00:00:xx` where `xx` is 0x00–0xFC
 
+### Station MAC (source address on inject)
+
+Every outbound EtherTalk/AARP frame is sourced from **one** station MAC — the
+EtherTalk port's configured `mac`, else the bound `[[interface]].hw_address`, else
+the NIC's own hardware address (auto-detected from the pcap device). TashTalk and
+LToUDP clients have no Ethernet identity; the AppleTalk router forwards their DDP
+onto EtherTalk, which stamps that same station MAC. External peers AARP the
+router's AppleTalk node and unicast to that MAC.
+
+Leaving `mac` / `hw_address` blank is the WiFi path: access points (and Npcap on
+Windows) drop frames whose Ethernet source is not the associated station MAC.
+Setting either field is **opt-in spoofing**, useful on wired Ethernet so
+ClassicStack appears as a distinct station from the host OS stack.
+
+Do not use a spoofed MAC on WiFi. AARP still claims one AppleTalk node against
+the host MAC; that is enough for the router to reach LocalTalk clients.
+
 ### Zone Multicast Address Calculation
 
 The EtherTalk multicast address for a zone is derived from the zone name:
@@ -346,6 +363,7 @@ The port runs 6 goroutines total:
 - **Promiscuous mode:** Npcap supports promiscuous mode on most adapters. Some virtual adapters (Hyper-V virtual switch, VirtualBox host-only) may silently ignore or block promiscuous mode; datagrams from other nodes may not be visible.
 - **Multicast reception:** Some Windows network adapters and drivers do not pass multicast frames to the application even in promiscuous mode. The implementation uses the EtherTalk broadcast address for all outbound multicast/broadcast traffic to maximize compatibility, but inbound multicast filtering at the driver level is outside the router's control.
 - **Loopback interface:** The Windows loopback adapter (`\Device\NPF_Loopback`) does not support standard Ethernet frame formats. It should not be used as an EtherTalk port.
+- **WiFi source-MAC filter:** Managed-mode WiFi (and Npcap on Windows) forwards only frames sourced from the associated NIC MAC. Configure a blank `mac` / `hw_address` so ClassicStack stamps the host MAC. A spoofed station address is dropped by the AP.
 
 ---
 
