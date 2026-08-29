@@ -32,6 +32,7 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/pcap"
 	"github.com/ObsoleteMadness/ClassicStack/adapter/macipgw/nat"
+	"github.com/ObsoleteMadness/ClassicStack/core/csnet"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 	"github.com/ObsoleteMadness/ClassicStack/core/service/macip"
 )
@@ -95,15 +96,15 @@ func New(cfg Config, ownsIP func(macip.IPv4) bool, log *slog.Logger) (*Egress, e
 		log.Warn("macipgw: dhcp_relay is not supported in nat mode (clients would get real-LAN addresses instead of the NAT pool); disabling dhcp_relay", "iface", cfg.Interface)
 		cfg.DHCPRelay = false
 	}
-	gwIP := net.ParseIP(cfg.GatewayIP).To4()
-	netIP := net.ParseIP(cfg.Network).To4()
-	mask := net.ParseIP(cfg.SubnetMask).To4()
+	gwIP := parseOptionalIPv4(cfg.GatewayIP)
+	netIP := parseOptionalIPv4(cfg.Network)
+	mask := parseOptionalIPv4(cfg.SubnetMask)
 	var ipNet *net.IPNet
 	if netIP != nil && mask != nil {
 		ipNet = &net.IPNet{IP: netIP.Mask(net.IPMask(mask)), Mask: net.IPMask(mask)}
 	}
-	hostIP := net.ParseIP(cfg.HostIP).To4()
-	defGW := net.ParseIP(cfg.DefaultGateway).To4()
+	hostIP := parseOptionalIPv4(cfg.HostIP)
+	defGW := parseOptionalIPv4(cfg.DefaultGateway)
 
 	e := &Egress{
 		cfg:     cfg,
@@ -359,6 +360,20 @@ func toIPv4(ip net.IP) macip.IPv4 {
 		copy(out[:], v)
 	}
 	return out
+}
+
+// parseOptionalIPv4 parses a dotted-quad config field via csnet.ParseIPv4 — the same
+// parser core/service/macip's own config validation now uses, so a malformed address
+// can no longer be silently accepted by one side and rejected by the other. An empty
+// or invalid field is nil, not an error: every field this backs (GatewayIP, Network,
+// SubnetMask, HostIP, DefaultGateway) is optional at this layer and validated (if the
+// operator set it) up in macip.Section.Validate before New is ever called.
+func parseOptionalIPv4(s string) net.IP {
+	ip, err := csnet.ParseIPv4(s)
+	if err != nil {
+		return nil
+	}
+	return net.IP(ip[:])
 }
 
 // macipBPFFilter is the kernel-side capture filter for the IP-side link: ARP plus

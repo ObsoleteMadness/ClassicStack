@@ -253,3 +253,45 @@ func TestNew_bindsDefaultInterfaceFromModel(t *testing.T) {
 		t.Fatalf("New(src) got %+v, want pcap/en0 from src.Model() (not a CLI SetLinkConfig)", got)
 	}
 }
+
+// Characterization tests for parseMAC6/formatMAC6's current behavior, captured
+// before core/csnet (P0) consolidates MAC parsing across the repo — see the "MAC
+// string parsing has 4 independent implementations" review finding. parseMAC6
+// wraps net.ParseMAC, whose accepted forms (net/mac.go) already include bare
+// unseparated hex alongside colon/dash/dot-separated — an earlier pass of this
+// review incorrectly assumed net.ParseMAC rejects bare hex; it doesn't.
+func TestParseMAC6(t *testing.T) {
+	want := [6]byte{0x00, 0x11, 0x22, 0xAA, 0xBB, 0xCC}
+	cases := []string{
+		"00:11:22:AA:BB:CC",
+		"00:11:22:aa:bb:cc",
+		"00-11-22-AA-BB-CC",
+		"001122AABBCC",
+		"  00:11:22:AA:BB:CC  ",
+	}
+	for _, in := range cases {
+		got, err := parseMAC6(in)
+		if err != nil {
+			t.Fatalf("parseMAC6(%q): unexpected error: %v", in, err)
+		}
+		if got != want {
+			t.Errorf("parseMAC6(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestParseMAC6_Rejects(t *testing.T) {
+	cases := []string{"", "00:11:22:AA:BB", "not-a-mac"}
+	for _, in := range cases {
+		if _, err := parseMAC6(in); err == nil {
+			t.Errorf("parseMAC6(%q): expected error, got none", in)
+		}
+	}
+}
+
+func TestFormatMAC6(t *testing.T) {
+	mac := [6]byte{0x00, 0x11, 0x22, 0xAA, 0xBB, 0xCC}
+	if got, want := formatMAC6(mac), "00:11:22:AA:BB:CC"; got != want {
+		t.Errorf("formatMAC6(%v) = %q, want %q", mac, got, want)
+	}
+}

@@ -1,12 +1,12 @@
 package ncp
 
 import (
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
+	clientlink "github.com/ObsoleteMadness/ClassicStack/client/link"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 	ipxport "github.com/ObsoleteMadness/ClassicStack/core/port/ipx"
 	ipxproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx"
@@ -96,13 +96,11 @@ type ipxTransport struct {
 // RandomMAC generates a locally-administered, unicast MAC for the client's virtual IPX
 // station. The client is a distinct station on the segment the pcap device bridges, NOT
 // the host itself, so it presents its own node address rather than borrow the host
-// NIC's MAC (which would collide). The first octet has the locally-administered bit set
-// and the group bit clear; the rest are random.
+// NIC's MAC (which would collide). Delegates to client/link.RandomMAC, the shared
+// implementation every client-ring RandomMAC now converges on; kept as a wrapper here
+// since it is part of this package's public API.
 func RandomMAC() [6]byte {
-	var mac [6]byte
-	_, _ = rand.Read(mac[:])
-	mac[0] = (mac[0] | 0x02) &^ 0x01 // locally-administered, unicast
-	return mac
+	return clientlink.RandomMAC()
 }
 
 // DialIPX builds an NCP-over-IPX transport over the pcap FrameLink fl in the default

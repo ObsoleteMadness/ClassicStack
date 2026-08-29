@@ -2,13 +2,13 @@ package finder
 
 import (
 	"fmt"
-	"net"
 	"strings"
 
 	"github.com/ObsoleteMadness/ClassicStack/client"
 	clientlink "github.com/ObsoleteMadness/ClassicStack/client/link"
 	"github.com/ObsoleteMadness/ClassicStack/client/uri"
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
+	"github.com/ObsoleteMadness/ClassicStack/core/csnet"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
 )
 
@@ -193,12 +193,10 @@ func (s *Service) configuredInterface() config.InterfaceSection {
 }
 
 func parseMAC6(s string) ([6]byte, error) {
-	hw, err := net.ParseMAC(strings.TrimSpace(s))
-	if err != nil || len(hw) != 6 {
+	mac, err := csnet.ParseMAC(s)
+	if err != nil {
 		return [6]byte{}, fmt.Errorf("finder: invalid hw_address %q", s)
 	}
-	var mac [6]byte
-	copy(mac[:], hw)
 	return mac, nil
 }
 

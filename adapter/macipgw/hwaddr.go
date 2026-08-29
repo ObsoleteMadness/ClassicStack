@@ -1,10 +1,10 @@
 package macipgw
 
 import (
-	"encoding/hex"
 	"fmt"
 	"net"
-	"strings"
+
+	"github.com/ObsoleteMadness/ClassicStack/core/csnet"
 )
 
 // macIPOUI is the locally administered prefix used to fabricate a stable per-Mac
@@ -12,17 +12,15 @@ import (
 // administered). Mirrors the legacy pkg/hwaddr.MacIPOUI.
 var macIPOUI = [3]byte{0x02, 0x00, 0x00}
 
-// parseEthernet accepts 12 hex digits with optional ':' or '-' separators.
+// parseEthernet accepts colon-, dash-, or bare-hex 6-octet addresses (also
+// dot-separated, via csnet.ParseMAC). Delegates to csnet.ParseMAC, the shared
+// implementation core/port/adapter/client parsers now converge on.
 func parseEthernet(s string) (net.HardwareAddr, error) {
-	normalized := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(s), ":", ""), "-", "")
-	if len(normalized) != 12 {
-		return nil, fmt.Errorf("ethernet address: want 12 hex digits, got %d", len(normalized))
-	}
-	b, err := hex.DecodeString(normalized)
+	mac, err := csnet.ParseMAC(s)
 	if err != nil {
 		return nil, fmt.Errorf("ethernet address: %w", err)
 	}
-	return net.HardwareAddr(b), nil
+	return net.HardwareAddr(mac[:]), nil
 }
 
 // fabricateMACForAT builds a stable locally administered Ethernet MAC from an

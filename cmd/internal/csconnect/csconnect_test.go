@@ -161,3 +161,57 @@ func TestParseGlobalFlagsCacheMs(t *testing.T) {
 		t.Error("CacheMsSet should be false when -cache-ms is omitted")
 	}
 }
+
+// Characterization tests for ParseMAC/RandomMAC's current behavior, captured
+// before core/csnet (P0) consolidates MAC parsing across the repo — see the "MAC
+// string parsing has 4 independent implementations" review finding. ParseMAC
+// wraps net.ParseMAC directly; its doc comment's claim of "colon-, dash-, or
+// bare-hex" support is accurate — net.ParseMAC (net/mac.go) already accepts all
+// three forms (plus dot-separated). An earlier pass of this review incorrectly
+// flagged this comment as stale; it isn't.
+func TestParseMAC(t *testing.T) {
+	want := [6]byte{0x00, 0x11, 0x22, 0xAA, 0xBB, 0xCC}
+	cases := []string{"00:11:22:AA:BB:CC", "00:11:22:aa:bb:cc", "00-11-22-AA-BB-CC", "001122AABBCC"}
+	for _, in := range cases {
+		got, err := ParseMAC(in)
+		if err != nil {
+			t.Fatalf("ParseMAC(%q): unexpected error: %v", in, err)
+		}
+		if got != want {
+			t.Errorf("ParseMAC(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestParseMAC_Rejects(t *testing.T) {
+	cases := []string{"", "00:11:22:AA:BB", "not-a-mac"}
+	for _, in := range cases {
+		if _, err := ParseMAC(in); err == nil {
+			t.Errorf("ParseMAC(%q): expected error, got none", in)
+		}
+	}
+}
+
+// RandomMAC moved to client/link (see client/link/random_test.go).
+
+func TestStationMAC(t *testing.T) {
+	pinned, err := StationMAC("00:11:22:AA:BB:CC")
+	if err != nil {
+		t.Fatalf("StationMAC(pinned): unexpected error: %v", err)
+	}
+	if want := [6]byte{0x00, 0x11, 0x22, 0xAA, 0xBB, 0xCC}; pinned != want {
+		t.Errorf("StationMAC(pinned) = %v, want %v", pinned, want)
+	}
+
+	random, err := StationMAC("")
+	if err != nil {
+		t.Fatalf("StationMAC(\"\"): unexpected error: %v", err)
+	}
+	if random[0]&0x02 == 0 {
+		t.Errorf("StationMAC(\"\") = %v: locally-administered bit not set", random)
+	}
+
+	if _, err := StationMAC("not-a-mac"); err == nil {
+		t.Error("StationMAC(invalid): expected error, got none")
+	}
+}

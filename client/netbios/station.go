@@ -1,7 +1,6 @@
 package netbios
 
 import (
-	"crypto/rand"
 	"fmt"
 	"strings"
 	"time"
@@ -41,14 +40,11 @@ func OpenerFor(ifaceType, device string, mac [6]byte) (*link.Opener, error) {
 // RandomMAC generates a locally-administered, unicast MAC for the client's virtual
 // station. A datagram client is a distinct station ON the segment the pcap device
 // bridges, NOT the host, so it presents its own node address rather than borrowing the
-// host NIC's MAC (which would collide with the host's own networking). The first octet
-// has the locally-administered bit set and the group bit clear (the IEEE convention for a
-// synthetic unicast address); the rest is random. Mirrors client/smb.RandomMAC.
+// host NIC's MAC (which would collide with the host's own networking). Delegates to
+// client/link.RandomMAC, the shared implementation every client-ring RandomMAC now
+// converges on; kept as a wrapper here since it is part of this package's public API.
 func RandomMAC() [6]byte {
-	var mac [6]byte
-	_, _ = rand.Read(mac[:])
-	mac[0] = (mac[0] | 0x02) &^ 0x01 // locally-administered, unicast
-	return mac
+	return link.RandomMAC()
 }
 
 // DefaultStationName derives a stable-ish NetBIOS workstation name from a MAC, so two

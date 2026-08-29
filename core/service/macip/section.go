@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
+	"github.com/ObsoleteMadness/ClassicStack/core/csnet"
 )
 
 // SectionKey is the config-section / registry name for the MacIP gateway. It matches
@@ -207,19 +208,10 @@ func RegisterSection() {
 }
 
 // ParseIPv4 parses a dotted-quad string into an IPv4. ok is false for a malformed
-// address. Reflection-free (no net package — core stays TinyGo-clean).
+// address. Delegates to core/csnet.ParseIPv4, the shared implementation core/adapter
+// IPv4 parsers now converge on (desktop wraps net.ParseIP; TinyGo hand-rolls it, so
+// this package stays TinyGo-clean either way).
 func ParseIPv4(s string) (IPv4, bool) {
-	parts := strings.Split(s, ".")
-	if len(parts) != 4 {
-		return IPv4{}, false
-	}
-	var ip IPv4
-	for i, p := range parts {
-		n, err := strconv.Atoi(p)
-		if err != nil || n < 0 || n > 255 {
-			return IPv4{}, false
-		}
-		ip[i] = byte(n)
-	}
-	return ip, true
+	ip, err := csnet.ParseIPv4(s)
+	return IPv4(ip), err == nil
 }

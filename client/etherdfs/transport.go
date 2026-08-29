@@ -17,12 +17,12 @@
 package etherdfs
 
 import (
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
+	clientlink "github.com/ObsoleteMadness/ClassicStack/client/link"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 	proto "github.com/ObsoleteMadness/ClassicStack/core/protocol/etherdfs"
 )
@@ -82,13 +82,11 @@ type frameTransport struct {
 // RandomMAC generates a locally-administered, unicast MAC for the client's virtual
 // station. The client is a distinct station on the segment the pcap device bridges, NOT
 // the host itself, so it presents its own address rather than borrow the host NIC's MAC
-// (which would collide). The first octet has the locally-administered bit set and the
-// group bit clear; the rest are random.
+// (which would collide). Delegates to client/link.RandomMAC, the shared implementation
+// every client-ring RandomMAC now converges on; kept as a wrapper here since it is part
+// of this package's public API (client/etherdfs/e2e_test.go, test/e2e/*).
 func RandomMAC() [6]byte {
-	var mac [6]byte
-	_, _ = rand.Read(mac[:])
-	mac[0] = (mac[0] | 0x02) &^ 0x01 // locally-administered, unicast
-	return mac
+	return clientlink.RandomMAC()
 }
 
 // DialFrame builds an EtherDFS transport over the pcap FrameLink fl. srcMAC is this

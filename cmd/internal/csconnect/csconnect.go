@@ -8,10 +8,8 @@ package csconnect
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -19,6 +17,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/client"
 	clientlink "github.com/ObsoleteMadness/ClassicStack/client/link"
 	"github.com/ObsoleteMadness/ClassicStack/client/uri"
+	"github.com/ObsoleteMadness/ClassicStack/core/csnet"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 )
 
@@ -192,39 +191,25 @@ func OpenerFor(cfg Config, target uri.Target) (*clientlink.Opener, error) {
 
 // ParseMAC parses a colon-, dash-, or bare-hex MAC address into a 6-byte array for the
 // virtual-station source node of a raw-Ethernet transport (SMB-over-IPX). An empty -mac
-// flag never reaches here (the transport then synthesises a random one).
+// flag never reaches here (the transport then synthesises a random one). Delegates to
+// core/csnet.ParseMAC, the shared implementation core/port/adapter/client parsers now
+// converge on.
 func ParseMAC(s string) ([6]byte, error) {
-	hw, err := net.ParseMAC(s)
-	if err != nil || len(hw) != 6 {
+	mac, err := csnet.ParseMAC(s)
+	if err != nil {
 		return [6]byte{}, fmt.Errorf("invalid -mac %q: want a 6-byte MAC (aa:bb:cc:dd:ee:ff)", s)
 	}
-	var mac [6]byte
-	copy(mac[:], hw)
 	return mac, nil
-}
-
-// RandomMAC returns a synthetic locally-administered unicast station MAC — the shared
-// convention across the client ring (client/ncp.RandomMAC, client/smb, client/etherdfs,
-// client/netbios) and the raw-Ethernet probe tools. A client/probe is a distinct station
-// on the segment the pcap device bridges, NOT the host itself, so it presents its own node
-// address rather than borrow the host NIC's identity (which would collide, and on Windows
-// cannot even be resolved from an "\Device\NPF_{GUID}" name). The first octet has the
-// locally-administered bit set and the group bit clear; the rest are random.
-func RandomMAC() [6]byte {
-	var mac [6]byte
-	_, _ = rand.Read(mac[:])
-	mac[0] = (mac[0] | 0x02) &^ 0x01 // locally-administered, unicast
-	return mac
 }
 
 // StationMAC resolves the source-node MAC a raw-Ethernet probe should send from: the
 // explicit -mac flag when the user pinned one, else a synthetic locally-administered MAC
-// (RandomMAC). It is the single source of truth for the "-mac (default: random
+// (link.RandomMAC). It is the single source of truth for the "-mac (default: random
 // locally-administered)" flag shared by csipxping / csncpinfo / csnetsend, so a probe
 // never borrows the host NIC's identity by default.
 func StationMAC(macFlag string) ([6]byte, error) {
 	if macFlag == "" {
-		return RandomMAC(), nil
+		return clientlink.RandomMAC(), nil
 	}
 	return ParseMAC(macFlag)
 }

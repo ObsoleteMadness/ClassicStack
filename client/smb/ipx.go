@@ -1,12 +1,12 @@
 package smb
 
 import (
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
+	clientlink "github.com/ObsoleteMadness/ClassicStack/client/link"
 	"github.com/ObsoleteMadness/ClassicStack/client/trace"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
@@ -136,14 +136,12 @@ type ipxTransport struct {
 // virtual IPX station. The client is a distinct station ON the segment the pcap device
 // bridges, NOT the host itself, so it must present its own node address rather than
 // borrow the host NIC's MAC — otherwise it collides with the host's own networking
-// identity and two client instances on one NIC clash. The first octet has the
-// locally-administered bit set (bit 1) and the group bit clear (bit 0), the IEEE
-// convention for a synthetic unicast address; the remaining 5 octets are random.
+// identity and two client instances on one NIC clash. Delegates to client/link.RandomMAC,
+// the shared implementation every client-ring RandomMAC now converges on; kept as a
+// wrapper here since it is part of this package's public API (client/smb/nbf_e2e_test.go,
+// client/smb/nbipx_e2e_test.go, test/e2e/*).
 func RandomMAC() [6]byte {
-	var mac [6]byte
-	_, _ = rand.Read(mac[:])
-	mac[0] = (mac[0] | 0x02) &^ 0x01 // locally-administered, unicast
-	return mac
+	return clientlink.RandomMAC()
 }
 
 // DialIPXOpts carries optional per-Dial overrides for the direct-hosted IPX transport.
