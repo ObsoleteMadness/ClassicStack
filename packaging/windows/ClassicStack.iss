@@ -13,6 +13,8 @@
 ;              installed, otherwise self-starts classicstack-svc.exe under
 ;              the signed-in user with its own config under %LOCALAPPDATA%
 ;              (see cmd/classicstack-tray/launcher_windows.go)
+;   - wiresharklua  copy tools/wireshark/*.lua (the protocol dissectors) into
+;              this user's Wireshark "Personal Lua Plugins" folder
 ;
 ; Configuration (server.toml, extmap.conf, sample share folders) lives under
 ; CommonApplicationData (C:\ProgramData\ClassicStack) rather than per-user
@@ -41,6 +43,7 @@
 #define RedistDir "redist"
 #define ConfigDirName "ClassicStack"
 #define TrayExe SourceBinDir + "\classicstack-tray.exe"
+#define WiresharkLuaDir "..\..\tools\wireshark"
 #define NpcapInstaller RedistDir + "\npcap-installer.exe"
 #define WinFspInstaller RedistDir + "\winfsp-installer.msi"
 
@@ -86,6 +89,7 @@ Name: "winfsp"; Description: "Install WinFsp (required for csmount to mount AFP/
 #ifexist TrayExe
 Name: "tray"; Description: "Start ClassicStack Tray at sign-in (monitors the Windows service if installed, otherwise runs ClassicStack itself under your account)"; Flags: unchecked
 #endif
+Name: "wiresharklua"; Description: "Install Wireshark Lua dissectors for ClassicStack protocols into your Wireshark plugins folder"; Flags: unchecked
 
 [Files]
 ; Command-line tools — always installed.
@@ -108,6 +112,12 @@ Source: "{#TrayExe}"; DestDir: "{app}"; Flags: ignoreversion
 ; Reference docs, copied alongside the binaries.
 Source: "..\..\README.md";              DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\server.toml.example";    DestDir: "{app}"; Flags: ignoreversion
+
+; Wireshark Lua dissectors — opt-in, copied to this user's "Personal Lua
+; Plugins" folder (%APPDATA%\Wireshark\plugins) rather than {app}, since
+; Wireshark only auto-loads plugins from its own per-user/global plugin
+; directories.
+Source: "{#WiresharkLuaDir}\*.lua"; DestDir: "{userappdata}\Wireshark\plugins"; Flags: ignoreversion; Tasks: wiresharklua
 
 ; CommonApplicationData: seeded once, never overwritten on upgrade/reinstall
 ; so hand-edited config and web-admin Saves survive.

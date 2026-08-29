@@ -21,6 +21,8 @@ if (Test-Path 'out/classicstack-svc.exe') {
     Copy-Item 'out/classicstack-svc.exe' "$stage/classicstack-svc.exe"
 }
 Copy-Item README.md,server.toml.example,extmap.conf $stage
+New-Item -ItemType Directory -Path "$stage/tools" -Force | Out-Null
+Copy-Item tools/wireshark/*.lua "$stage/tools/"
 Get-ChildItem -Path dist -Force | Copy-Item -Destination $stage -Recurse -Force
 Compress-Archive -Path $stage -DestinationPath $archiveName -Force
 
