@@ -15,10 +15,10 @@ import (
 
 var errLocalTalkUnsupported = errors.New("link: LToUDP/TashTalk are not supported on this build")
 
-func openLToUDP(_ string, _ uint16, _ uint8) (link.DatagramLink, error) {
-	return nil, errLocalTalkUnsupported
+func openLToUDP(_ string, _ uint16, srcNode uint8, _ bool) (link.DatagramLink, uint8, error) {
+	return nil, srcNode, errLocalTalkUnsupported
 }
 
-func openTashTalk(_ string, _ uint, _ uint16, _ uint8) (link.DatagramLink, error) {
-	return nil, errLocalTalkUnsupported
+func openTashTalk(_ string, _ uint, _ uint16, srcNode uint8, _ bool) (link.DatagramLink, uint8, error) {
+	return nil, srcNode, errLocalTalkUnsupported
 }
