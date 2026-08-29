@@ -111,7 +111,7 @@ func TestEncodeTooLong(t *testing.T) {
 func TestChecksumVerified(t *testing.T) {
 	enc, _ := sample().Encode(nil)
 	// Manually set a valid checksum over the bytes following the checksum field.
-	sum := checksum(enc[4:])
+	sum := Checksum(enc[4:])
 	enc[2] = byte(sum >> 8)
 	enc[3] = byte(sum)
 	if _, err := Decode(enc); err != nil {

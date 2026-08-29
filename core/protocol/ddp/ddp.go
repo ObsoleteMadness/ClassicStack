@@ -41,10 +41,12 @@ var (
 	ErrTooLong = errors.New("ddp: data exceeds MaxDataLength")
 )
 
-// checksum is the AppleTalk DDP checksum over the bytes following the checksum
-// field. Kept here so Decode can validate a non-zero checksum and so callers can
-// compute one; it mirrors the legacy protocol/ddp.Checksum exactly.
-func checksum(data []byte) uint16 {
+// Checksum is the AppleTalk DDP checksum over the bytes following the checksum
+// field (rotate-left-1-and-add). Decode uses it to validate a non-zero checksum;
+// exported so link-layer framers (e.g. adapter/link/framing's LocalTalk, when
+// CalcChecksum is enabled) can stamp one on outbound long-header frames without
+// keeping their own byte-for-byte copy of this algorithm.
+func Checksum(data []byte) uint16 {
 	var v uint16
 	for _, b := range data {
 		v += uint16(b)
@@ -102,7 +104,7 @@ func Decode(b []byte) (Datagram, error) {
 		return Datagram{}, ErrBadLength
 	}
 	if sum := bp.BE16(b[2:4]); sum != 0 {
-		if got := checksum(b[4:]); got != sum {
+		if got := Checksum(b[4:]); got != sum {
 			return Datagram{}, ErrBadLength
 		}
 	}

@@ -640,21 +640,7 @@ func stampChecksum(longHeader []byte) {
 	if len(longHeader) <= 4 {
 		return
 	}
-	sum := ddpChecksum(longHeader[4:])
+	sum := ddp.Checksum(longHeader[4:])
 	longHeader[2] = byte(sum >> 8)
 	longHeader[3] = byte(sum)
-}
-
-// ddpChecksum mirrors the AppleTalk DDP checksum (core ddp keeps its copy
-// unexported); it is the rotate-add over the post-checksum bytes.
-func ddpChecksum(data []byte) uint16 {
-	var v uint16
-	for _, b := range data {
-		v += uint16(b)
-		v = (v&0x7FFF)<<1 | (v>>15)&1
-	}
-	if v == 0 {
-		return 0xFFFF
-	}
-	return v
 }

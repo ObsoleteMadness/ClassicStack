@@ -124,6 +124,52 @@ func TestLocalTalk_StampsSourceNodeAndBroadcast(t *testing.T) {
 	}
 }
 
+// TestLocalTalk_CalcChecksumStampsWire pins the current CalcChecksum behavior
+// before stampChecksum/ddpChecksum are refactored to call ddp.Checksum directly
+// (P1: deleting the byte-for-byte ddpChecksum mirror of ddp's unexported
+// checksum). With CalcChecksum unset, a long-header frame's checksum field
+// stays zero (checksum disabled, per ddp.Encode); with it set, the field is
+// stamped with the AppleTalk rotate-add checksum over the post-checksum body,
+// and that stamped value matches ddp.Checksum computed independently.
+func TestLocalTalk_CalcChecksumStampsWire(t *testing.T) {
+	dg := ddp.Datagram{
+		DestNetwork: 0x1234, SrcNetwork: 0x5678, // differ → long header
+		DestNode: 0x10, SrcNode: 0x20,
+		DestSocket: 253, SrcSocket: 254, DDPType: 2,
+		Data: []byte("checksum-me"),
+	}
+
+	off := (&LocalTalk{Addr: NewStaticAddr(0x00CC, 0x42)}).mustLink(t)
+	frame, err := off.encode(dg)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	longHeader := frame[llapHdrLen:]
+	if longHeader[2] != 0 || longHeader[3] != 0 {
+		t.Fatalf("CalcChecksum unset: checksum field = %02X%02X, want 0000", longHeader[2], longHeader[3])
+	}
+
+	on := (&LocalTalk{Addr: NewStaticAddr(0x00CC, 0x42), CalcChecksum: true}).mustLink(t)
+	frame, err = on.encode(dg)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	longHeader = frame[llapHdrLen:]
+	got := uint16(longHeader[2])<<8 | uint16(longHeader[3])
+	if got == 0 {
+		t.Fatal("CalcChecksum:true left the checksum field zero")
+	}
+	if want := ddp.Checksum(longHeader[4:]); got != want {
+		t.Fatalf("stamped checksum = %#04x, want %#04x (ddp.Checksum over the same body)", got, want)
+	}
+
+	// The stamped frame still decodes cleanly (ddp.Decode verifies a non-zero
+	// checksum against the same body).
+	if _, err := on.decode(frame); err != nil {
+		t.Fatalf("decode of checksummed frame: %v", err)
+	}
+}
+
 // TestLocalTalk_SkipsControlFrames proves an LLAP ENQ/ACK frame is skipped by
 // ReadDatagram (not mis-parsed as DDP): a control frame followed by a real DDP
 // frame yields the DDP datagram, with the control frame silently consumed.
