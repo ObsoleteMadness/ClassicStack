@@ -6,6 +6,7 @@ import (
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
+	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 )
 
 // buildPathReq assembles a cmd(1) pad(1) volID(2) dirID(4) ... pathType(1)
@@ -30,7 +31,7 @@ func TestGetFileParms(t *testing.T) {
 		b := []byte{cmd, 0}
 		b = bp.AppendBE16(b, volID)
 		b = bp.AppendBE32(b, 2) // root dirID
-		b = bp.AppendBE16(b, fileBitmapDataForkLen)
+		b = bp.AppendBE16(b, protocol.FileBitmapDataForkLen)
 		b = append(b, PathTypeUTF8Names)
 		return appendPascal(b, name)
 	}

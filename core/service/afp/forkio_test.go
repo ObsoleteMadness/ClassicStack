@@ -5,6 +5,7 @@ import (
 
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 
+	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/asp"
 )
 
@@ -48,7 +49,7 @@ func TestForkIO_OpenWriteReadClose(t *testing.T) {
 	openFork := []byte{cmdOpenFork, forkFlagData}
 	openFork = bp.AppendBE16(openFork, volID)
 	openFork = bp.AppendBE32(openFork, 2) // dirID root
-	openFork = bp.AppendBE16(openFork, fileBitmapDataForkLen)
+	openFork = bp.AppendBE16(openFork, protocol.FileBitmapDataForkLen)
 	openFork = bp.AppendBE16(openFork, accessRead|accessWrite)
 	openFork = append(openFork, PathTypeUTF8Names)
 	openFork = putPString(openFork, []byte("doc.txt"))
@@ -203,7 +204,7 @@ func TestForkIO_WriteToReadOnlyFork(t *testing.T) {
 	// FPSetForkParms is a write to the fork; a read-only handle is likewise denied.
 	setLen := []byte{cmdSetForkParms, 0}
 	setLen = bp.AppendBE16(setLen, forkRef)
-	setLen = bp.AppendBE16(setLen, fileBitmapDataForkLen)
+	setLen = bp.AppendBE16(setLen, protocol.FileBitmapDataForkLen)
 	setLen = bp.AppendBE32(setLen, 0)
 	code, _ = sendCmd(t, svc, r, sessID, 6, setLen)
 	if code != afpErrAccessDenied {
@@ -224,7 +225,7 @@ func TestForkIO_SetForkParms(t *testing.T) {
 	openFork := []byte{cmdOpenFork, forkFlagData}
 	openFork = bp.AppendBE16(openFork, volID)
 	openFork = bp.AppendBE32(openFork, 2)
-	openFork = bp.AppendBE16(openFork, fileBitmapDataForkLen)
+	openFork = bp.AppendBE16(openFork, protocol.FileBitmapDataForkLen)
 	openFork = bp.AppendBE16(openFork, accessRead|accessWrite)
 	openFork = append(openFork, PathTypeUTF8Names)
 	openFork = putPString(openFork, []byte("size.bin"))
@@ -239,7 +240,7 @@ func TestForkIO_SetForkParms(t *testing.T) {
 		t.Helper()
 		gp := []byte{cmdGetForkParms, 0}
 		gp = bp.AppendBE16(gp, forkRef)
-		gp = bp.AppendBE16(gp, fileBitmapDataForkLen)
+		gp = bp.AppendBE16(gp, protocol.FileBitmapDataForkLen)
 		c, rep := sendCmd(t, svc, r, sessID, seq, gp)
 		if c != afpNoErr {
 			t.Fatalf("GetForkParms result = %d, want 0", c)
@@ -251,7 +252,7 @@ func TestForkIO_SetForkParms(t *testing.T) {
 	// Grow the fork to 55808 bytes (the size the capture's client pre-allocates).
 	setLen := []byte{cmdSetForkParms, 0}
 	setLen = bp.AppendBE16(setLen, forkRef)
-	setLen = bp.AppendBE16(setLen, fileBitmapDataForkLen)
+	setLen = bp.AppendBE16(setLen, protocol.FileBitmapDataForkLen)
 	setLen = bp.AppendBE32(setLen, 55808)
 	code, _ = sendCmd(t, svc, r, sessID, 5, setLen)
 	if code != afpNoErr {
@@ -264,7 +265,7 @@ func TestForkIO_SetForkParms(t *testing.T) {
 	// Truncate back to 10 bytes.
 	setLen = []byte{cmdSetForkParms, 0}
 	setLen = bp.AppendBE16(setLen, forkRef)
-	setLen = bp.AppendBE16(setLen, fileBitmapDataForkLen)
+	setLen = bp.AppendBE16(setLen, protocol.FileBitmapDataForkLen)
 	setLen = bp.AppendBE32(setLen, 10)
 	code, _ = sendCmd(t, svc, r, sessID, 7, setLen)
 	if code != afpNoErr {
@@ -289,7 +290,7 @@ func TestForkIO_ByteRangeLock(t *testing.T) {
 	openFork := []byte{cmdOpenFork, forkFlagData}
 	openFork = bp.AppendBE16(openFork, volID)
 	openFork = bp.AppendBE32(openFork, 2)
-	openFork = bp.AppendBE16(openFork, fileBitmapDataForkLen)
+	openFork = bp.AppendBE16(openFork, protocol.FileBitmapDataForkLen)
 	openFork = bp.AppendBE16(openFork, accessRead|accessWrite)
 	openFork = append(openFork, PathTypeUTF8Names)
 	openFork = putPString(openFork, []byte("lock.txt"))

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 )
 
 // catSearchReq builds an FPCatSearch command block: a partial- or full-name
@@ -46,7 +47,7 @@ func catSearchReq(volID uint16, reqMatches int, cursor [16]byte, fileBitmap, dir
 // long names it carries. Each record is StructLength(1) fileDir(1) then a
 // parameter block whose LongName field is a 2-byte offset (from the start of the
 // parameter block, i.e. just after the fileDir byte) to a Pascal string. The test
-// requests fdBitmapLongName as the first (and here only addressed) field, so the
+// requests protocol.FDBitmapLongName as the first (and here only addressed) field, so the
 // LongName offset pointer is the first packed field.
 func catSearchNames(t *testing.T, reply []byte) []string {
 	t.Helper()
@@ -98,7 +99,7 @@ func TestCatSearch_PartialNameAcrossTree(t *testing.T) {
 	sessID, volID := openVolForFork(t, svc, r)
 
 	var zero [16]byte
-	req := catSearchReq(volID, 50, zero, fdBitmapLongName|fileBitmapFileNum, 0, true, "report")
+	req := catSearchReq(volID, 50, zero, protocol.FDBitmapLongName|protocol.FileBitmapFileNum, 0, true, "report")
 	code, reply := sendCmd(t, svc, r, sessID, 9, req)
 	// Last page (all results fit) → kFPEOFErr per AFP/Netatalk convention.
 	if code != afpErrEOFErr && code != afpNoErr {
@@ -124,7 +125,7 @@ func TestCatSearch_FullNameExact(t *testing.T) {
 	sessID, volID := openVolForFork(t, svc, r)
 
 	var zero [16]byte
-	req := catSearchReq(volID, 50, zero, fdBitmapLongName, 0, false /*full*/, "ALPHA.TXT")
+	req := catSearchReq(volID, 50, zero, protocol.FDBitmapLongName, 0, false /*full*/, "ALPHA.TXT")
 	_, reply := sendCmd(t, svc, r, sessID, 9, req)
 	names := catSearchNames(t, reply)
 	if !contains(names, "alpha.txt") {
@@ -149,7 +150,7 @@ func TestCatSearch_Paged(t *testing.T) {
 
 	// Page 1: ask for 2 of the 3 "hit-" files.
 	var zero [16]byte
-	req := catSearchReq(volID, 2, zero, fdBitmapLongName, 0, true, "hit-")
+	req := catSearchReq(volID, 2, zero, protocol.FDBitmapLongName, 0, true, "hit-")
 	code, reply := sendCmd(t, svc, r, sessID, 9, req)
 	if code != afpNoErr {
 		t.Fatalf("CatSearch page 1 result = %d, want NoErr (more pages follow)", code)
@@ -167,7 +168,7 @@ func TestCatSearch_Paged(t *testing.T) {
 	}
 
 	// Page 2: resume from the cursor; should get the remaining hit and finish.
-	req2 := catSearchReq(volID, 2, cursor, fdBitmapLongName, 0, true, "hit-")
+	req2 := catSearchReq(volID, 2, cursor, protocol.FDBitmapLongName, 0, true, "hit-")
 	code, reply = sendCmd(t, svc, r, sessID, 10, req2)
 	if code != afpErrEOFErr {
 		t.Fatalf("CatSearch page 2 result = %d, want EOFErr (last page)", code)
@@ -211,7 +212,7 @@ func TestCatSearch_PayloadCapPagesForward(t *testing.T) {
 	packed := 0
 	pages := 0
 	for seq := uint16(9); ; seq++ {
-		req := catSearchReq(volID, 1000, cursor, fdBitmapLongName, 0, true, "hit-")
+		req := catSearchReq(volID, 1000, cursor, protocol.FDBitmapLongName, 0, true, "hit-")
 		code, reply := sendCmd(t, svc, r, sessID, seq, req)
 		pages++
 		if pages > 20 {

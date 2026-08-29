@@ -5,6 +5,7 @@ import (
 
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
+	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 )
 
 // FPCatSearch (Inside Macintosh: Networking, AFP 2.1 §"FPCatSearch") searches a
@@ -91,8 +92,8 @@ func (s *Service) afpCatSearch(a *afpSession, block []byte) ([]byte, int32) {
 	// A search asking for neither file nor dir parameters has nothing to return;
 	// default both to long-name+parent so a bitmap-0 client still gets usable hits.
 	if fileBitmap == 0 && dirBitmap == 0 {
-		fileBitmap = fdBitmapLongName | fdBitmapParentDID | fileBitmapFileNum
-		dirBitmap = fdBitmapLongName | fdBitmapParentDID | dirBitmapDirID
+		fileBitmap = protocol.FDBitmapLongName | protocol.FDBitmapParentDID | protocol.FileBitmapFileNum
+		dirBitmap = protocol.FDBitmapLongName | protocol.FDBitmapParentDID | protocol.DirBitmapDirID
 	}
 
 	results, next, err := searcher.CatSearch(crit, cursor)

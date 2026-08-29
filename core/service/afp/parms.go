@@ -6,38 +6,16 @@ import (
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
+	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 )
 
-// File/directory parameter bitmap bits (Inside Macintosh: Networking, "File
-// parameters" / "Directory parameters"). The file and directory bitmaps share
-// the low bits (Attributes…ShortName); they diverge at bit 8 (file: FileNum /
-// dir: DirID), bit 9 (file: DataForkLen / dir: OffspringCount) and above, where
-// the directory carries owner/group/access rights the file does not.
-const (
-	// Shared low bits (same meaning in both the file and directory bitmaps).
-	fdBitmapAttributes uint16 = 1 << 0 // attribute flags
-	fdBitmapParentDID  uint16 = 1 << 1 // parent directory id
-	fdBitmapCreateDate uint16 = 1 << 2 // creation date
-	fdBitmapModDate    uint16 = 1 << 3 // modification date
-	fdBitmapBackupDate uint16 = 1 << 4 // backup date
-	fdBitmapFinderInfo uint16 = 1 << 5 // 32-byte Finder info
-	fdBitmapLongName   uint16 = 1 << 6 // long name (offset pointer)
-	fdBitmapShortName  uint16 = 1 << 7 // short name (offset pointer)
-
-	// File-only bits (bit 8 and up).
-	fileBitmapFileNum     uint16 = 1 << 8  // file number (CNID)
-	fileBitmapDataForkLen uint16 = 1 << 9  // data-fork length
-	fileBitmapRsrcForkLen uint16 = 1 << 10 // resource-fork length
-	fileBitmapProDOSInfo  uint16 = 1 << 13 // 6-byte ProDOS info
-
-	// Directory-only bits (bit 8 and up).
-	dirBitmapDirID        uint16 = 1 << 8  // directory id (CNID)
-	dirBitmapOffspring    uint16 = 1 << 9  // offspring (child) count
-	dirBitmapOwnerID      uint16 = 1 << 10 // owner id
-	dirBitmapGroupID      uint16 = 1 << 11 // group id
-	dirBitmapAccessRights uint16 = 1 << 12 // access-rights bitmap
-	dirBitmapProDOSInfo   uint16 = 1 << 13 // 6-byte ProDOS info
-)
+// The file/directory parameter bitmap bits (Inside Macintosh: Networking, "File
+// parameters" / "Directory parameters") this file packs against are
+// protocol.FDBitmap*/FileBitmap*/DirBitmap* — core/protocol/afp's exported
+// constants, not a private copy. The file and directory bitmaps share the low
+// bits (Attributes…ShortName); they diverge at bit 8 (file: FileNum / dir:
+// DirID), bit 9 (file: DataForkLen / dir: OffspringCount) and above, where the
+// directory carries owner/group/access rights the file does not.
 
 // dirAccessRights / dirAccessRightsReadOnly are the access-rights longword AFP
 // advertises for a directory (owner/group/everyone/user RWS bits packed as
@@ -72,43 +50,43 @@ func (v *Volume) packFileParams(out []byte, store string, info stdfs.FileInfo, b
 	fixedSize := fileParamsFixedSize(bitmap)
 	var names []byte // variable area, appended after the fixed fields
 
-	if bitmap&fdBitmapAttributes != 0 {
+	if bitmap&protocol.FDBitmapAttributes != 0 {
 		out = bp.AppendBE16(out, 0) // no attribute flags surfaced yet
 	}
-	if bitmap&fdBitmapParentDID != 0 {
+	if bitmap&protocol.FDBitmapParentDID != 0 {
 		out = bp.AppendBE32(out, v.ParentCNID(store))
 	}
-	if bitmap&fdBitmapCreateDate != 0 {
+	if bitmap&protocol.FDBitmapCreateDate != 0 {
 		out = bp.AppendBE32(out, macTime(v.createTime(store, info)))
 	}
-	if bitmap&fdBitmapModDate != 0 {
+	if bitmap&protocol.FDBitmapModDate != 0 {
 		out = bp.AppendBE32(out, macTime(info.ModTime()))
 	}
-	if bitmap&fdBitmapBackupDate != 0 {
+	if bitmap&protocol.FDBitmapBackupDate != 0 {
 		out = bp.AppendBE32(out, noBackupDate)
 	}
-	if bitmap&fdBitmapFinderInfo != 0 {
+	if bitmap&protocol.FDBitmapFinderInfo != 0 {
 		fi, _ := v.FinderInfo(store)
 		out = append(out, fi[:]...)
 	}
-	if bitmap&fdBitmapLongName != 0 {
+	if bitmap&protocol.FDBitmapLongName != 0 {
 		out, names = v.appendName(out, names, fixedSize, v.MediumName(store), pathType)
 	}
-	if bitmap&fdBitmapShortName != 0 {
+	if bitmap&protocol.FDBitmapShortName != 0 {
 		out, names = v.appendName(out, names, fixedSize, v.ShortName(store), pathType)
 	}
-	if bitmap&fileBitmapFileNum != 0 {
+	if bitmap&protocol.FileBitmapFileNum != 0 {
 		out = bp.AppendBE32(out, v.CNID(store))
 	}
-	if bitmap&fileBitmapDataForkLen != 0 {
+	if bitmap&protocol.FileBitmapDataForkLen != 0 {
 		n, _ := v.ForkLen(store, fs.DataFork)
 		out = bp.AppendBE32(out, uint32(n))
 	}
-	if bitmap&fileBitmapRsrcForkLen != 0 {
+	if bitmap&protocol.FileBitmapRsrcForkLen != 0 {
 		n, _ := v.ForkLen(store, fs.ResourceFork)
 		out = bp.AppendBE32(out, uint32(n))
 	}
-	if bitmap&fileBitmapProDOSInfo != 0 {
+	if bitmap&protocol.FileBitmapProDOSInfo != 0 {
 		out = append(out, make([]byte, 6)...)
 	}
 	return append(out, names...)
@@ -119,51 +97,51 @@ func (v *Volume) packDirParams(out []byte, store string, info stdfs.FileInfo, bi
 	fixedSize := dirParamsFixedSize(bitmap)
 	var names []byte
 
-	if bitmap&fdBitmapAttributes != 0 {
+	if bitmap&protocol.FDBitmapAttributes != 0 {
 		out = bp.AppendBE16(out, 0)
 	}
-	if bitmap&fdBitmapParentDID != 0 {
+	if bitmap&protocol.FDBitmapParentDID != 0 {
 		out = bp.AppendBE32(out, v.ParentCNID(store))
 	}
-	if bitmap&fdBitmapCreateDate != 0 {
+	if bitmap&protocol.FDBitmapCreateDate != 0 {
 		out = bp.AppendBE32(out, macTime(v.createTime(store, info)))
 	}
-	if bitmap&fdBitmapModDate != 0 {
+	if bitmap&protocol.FDBitmapModDate != 0 {
 		out = bp.AppendBE32(out, macTime(info.ModTime()))
 	}
-	if bitmap&fdBitmapBackupDate != 0 {
+	if bitmap&protocol.FDBitmapBackupDate != 0 {
 		out = bp.AppendBE32(out, noBackupDate)
 	}
-	if bitmap&fdBitmapFinderInfo != 0 {
+	if bitmap&protocol.FDBitmapFinderInfo != 0 {
 		fi, _ := v.FinderInfo(store)
 		out = append(out, fi[:]...)
 	}
-	if bitmap&fdBitmapLongName != 0 {
+	if bitmap&protocol.FDBitmapLongName != 0 {
 		out, names = v.appendName(out, names, fixedSize, v.MediumName(store), pathType)
 	}
-	if bitmap&fdBitmapShortName != 0 {
+	if bitmap&protocol.FDBitmapShortName != 0 {
 		out, names = v.appendName(out, names, fixedSize, v.ShortName(store), pathType)
 	}
-	if bitmap&dirBitmapDirID != 0 {
+	if bitmap&protocol.DirBitmapDirID != 0 {
 		out = bp.AppendBE32(out, v.CNID(store))
 	}
-	if bitmap&dirBitmapOffspring != 0 {
+	if bitmap&protocol.DirBitmapOffspring != 0 {
 		out = bp.AppendBE16(out, v.offspringCount(store))
 	}
-	if bitmap&dirBitmapOwnerID != 0 {
+	if bitmap&protocol.DirBitmapOwnerID != 0 {
 		out = bp.AppendBE32(out, 0)
 	}
-	if bitmap&dirBitmapGroupID != 0 {
+	if bitmap&protocol.DirBitmapGroupID != 0 {
 		out = bp.AppendBE32(out, 0)
 	}
-	if bitmap&dirBitmapAccessRights != 0 {
+	if bitmap&protocol.DirBitmapAccessRights != 0 {
 		rights := dirAccessRights
 		if v.FS().Capabilities().ReadOnly {
 			rights = dirAccessRightsReadOnly
 		}
 		out = bp.AppendBE32(out, rights)
 	}
-	if bitmap&dirBitmapProDOSInfo != 0 {
+	if bitmap&protocol.DirBitmapProDOSInfo != 0 {
 		out = append(out, make([]byte, 6)...)
 	}
 	return append(out, names...)
@@ -206,16 +184,16 @@ func (v *Volume) offspringCount(store string) uint16 {
 func fileParamsFixedSize(bitmap uint16) int {
 	size := 0
 	size += fixedFieldsLow(bitmap)
-	if bitmap&fileBitmapFileNum != 0 {
+	if bitmap&protocol.FileBitmapFileNum != 0 {
 		size += 4
 	}
-	if bitmap&fileBitmapDataForkLen != 0 {
+	if bitmap&protocol.FileBitmapDataForkLen != 0 {
 		size += 4
 	}
-	if bitmap&fileBitmapRsrcForkLen != 0 {
+	if bitmap&protocol.FileBitmapRsrcForkLen != 0 {
 		size += 4
 	}
-	if bitmap&fileBitmapProDOSInfo != 0 {
+	if bitmap&protocol.FileBitmapProDOSInfo != 0 {
 		size += 6
 	}
 	return size
@@ -226,22 +204,22 @@ func fileParamsFixedSize(bitmap uint16) int {
 func dirParamsFixedSize(bitmap uint16) int {
 	size := 0
 	size += fixedFieldsLow(bitmap)
-	if bitmap&dirBitmapDirID != 0 {
+	if bitmap&protocol.DirBitmapDirID != 0 {
 		size += 4
 	}
-	if bitmap&dirBitmapOffspring != 0 {
+	if bitmap&protocol.DirBitmapOffspring != 0 {
 		size += 2
 	}
-	if bitmap&dirBitmapOwnerID != 0 {
+	if bitmap&protocol.DirBitmapOwnerID != 0 {
 		size += 4
 	}
-	if bitmap&dirBitmapGroupID != 0 {
+	if bitmap&protocol.DirBitmapGroupID != 0 {
 		size += 4
 	}
-	if bitmap&dirBitmapAccessRights != 0 {
+	if bitmap&protocol.DirBitmapAccessRights != 0 {
 		size += 4
 	}
-	if bitmap&dirBitmapProDOSInfo != 0 {
+	if bitmap&protocol.DirBitmapProDOSInfo != 0 {
 		size += 6
 	}
 	return size
@@ -251,28 +229,28 @@ func dirParamsFixedSize(bitmap uint16) int {
 // (Attributes…ShortName). Name fields count as their 2-byte offset pointer.
 func fixedFieldsLow(bitmap uint16) int {
 	size := 0
-	if bitmap&fdBitmapAttributes != 0 {
+	if bitmap&protocol.FDBitmapAttributes != 0 {
 		size += 2
 	}
-	if bitmap&fdBitmapParentDID != 0 {
+	if bitmap&protocol.FDBitmapParentDID != 0 {
 		size += 4
 	}
-	if bitmap&fdBitmapCreateDate != 0 {
+	if bitmap&protocol.FDBitmapCreateDate != 0 {
 		size += 4
 	}
-	if bitmap&fdBitmapModDate != 0 {
+	if bitmap&protocol.FDBitmapModDate != 0 {
 		size += 4
 	}
-	if bitmap&fdBitmapBackupDate != 0 {
+	if bitmap&protocol.FDBitmapBackupDate != 0 {
 		size += 4
 	}
-	if bitmap&fdBitmapFinderInfo != 0 {
+	if bitmap&protocol.FDBitmapFinderInfo != 0 {
 		size += 32
 	}
-	if bitmap&fdBitmapLongName != 0 {
+	if bitmap&protocol.FDBitmapLongName != 0 {
 		size += 2
 	}
-	if bitmap&fdBitmapShortName != 0 {
+	if bitmap&protocol.FDBitmapShortName != 0 {
 		size += 2
 	}
 	return size

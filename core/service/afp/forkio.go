@@ -10,6 +10,7 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
+	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 )
 
 // --- fork I/O (FPOpenFork / FPRead / FPWrite / FPCloseFork / FPGetForkParms;
@@ -360,7 +361,7 @@ func (s *Service) afpSetForkParms(a *afpSession, block []byte) ([]byte, int32) {
 	bitmap := bp.BE16(block[4:6])
 	// Per AFP 2.x §5.1.31 the bitmap must set exactly one fork-length bit; with
 	// neither set there is nothing to size, which main answered as kFPBitmapErr.
-	if bitmap&(fileBitmapDataForkLen|fileBitmapRsrcForkLen) == 0 {
+	if bitmap&(protocol.FileBitmapDataForkLen|protocol.FileBitmapRsrcForkLen) == 0 {
 		return nil, afpErrBitmapErr
 	}
 	forkLen := int64(int32(bp.BE32(block[6:10])))

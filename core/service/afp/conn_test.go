@@ -5,6 +5,7 @@ import (
 
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
+	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 )
 
 // newSeamService builds an AFP service with one memfs volume but NO router and NO
@@ -109,7 +110,7 @@ func TestConn_FullSequenceOverSeam(t *testing.T) {
 	openFork := []byte{cmdOpenFork, forkFlagData}
 	openFork = bp.AppendBE16(openFork, volID)
 	openFork = bp.AppendBE32(openFork, 2) // dirID root
-	openFork = bp.AppendBE16(openFork, fileBitmapDataForkLen)
+	openFork = bp.AppendBE16(openFork, protocol.FileBitmapDataForkLen)
 	openFork = bp.AppendBE16(openFork, accessRead|accessWrite)
 	openFork = append(openFork, PathTypeUTF8Names)
 	openFork = putPString(openFork, []byte("doc.txt"))
@@ -138,7 +139,7 @@ func TestConn_CloseDrainsForks(t *testing.T) {
 	openFork := []byte{cmdOpenFork, forkFlagData}
 	openFork = bp.AppendBE16(openFork, volID)
 	openFork = bp.AppendBE32(openFork, 2)
-	openFork = bp.AppendBE16(openFork, fileBitmapDataForkLen)
+	openFork = bp.AppendBE16(openFork, protocol.FileBitmapDataForkLen)
 	openFork = bp.AppendBE16(openFork, accessRead|accessWrite)
 	openFork = append(openFork, PathTypeUTF8Names)
 	openFork = putPString(openFork, []byte("doc.txt"))

@@ -10,6 +10,7 @@ import (
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
+	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/asp"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/atp"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/ddp"
@@ -291,8 +292,8 @@ func TestDispatch_LoginGetSrvrParmsOpenVolEnumerate(t *testing.T) {
 	enum := []byte{cmdEnumerate, 0}
 	enum = bp.AppendBE16(enum, volID) // volID
 	enum = bp.AppendBE32(enum, 2)     // dirID = root
-	enum = bp.AppendBE16(enum, fdBitmapLongName|fileBitmapDataForkLen)
-	enum = bp.AppendBE16(enum, fdBitmapLongName|dirBitmapOffspring)
+	enum = bp.AppendBE16(enum, protocol.FDBitmapLongName|protocol.FileBitmapDataForkLen)
+	enum = bp.AppendBE16(enum, protocol.FDBitmapLongName|protocol.DirBitmapOffspring)
 	enum = bp.AppendBE16(enum, 10)         // reqCount
 	enum = bp.AppendBE16(enum, 1)          // startIndex (1-based)
 	enum = bp.AppendBE16(enum, 4624)       // maxReplySize
@@ -341,8 +342,8 @@ func TestDispatch_GetFileDirParmsByNameStripsPascalLen(t *testing.T) {
 	req := []byte{cmdGetFileDirParms, 0}
 	req = bp.AppendBE16(req, volID)
 	req = bp.AppendBE32(req, 2) // DID = root
-	req = bp.AppendBE16(req, fdBitmapLongName)
-	req = bp.AppendBE16(req, fdBitmapLongName|dirBitmapDirID)
+	req = bp.AppendBE16(req, protocol.FDBitmapLongName)
+	req = bp.AppendBE16(req, protocol.FDBitmapLongName|protocol.DirBitmapDirID)
 	req = append(req, PathTypeUTF8Names)
 	req = putPString(req, []byte("Configuration"))
 	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 4), req)), from)
@@ -382,8 +383,8 @@ func TestDispatch_SubdirDIDRoundTrips(t *testing.T) {
 	req := []byte{cmdGetFileDirParms, 0}
 	req = bp.AppendBE16(req, volID)
 	req = bp.AppendBE32(req, 2)
-	req = bp.AppendBE16(req, 0)                               // fileBitmap (n/a, it's a dir)
-	req = bp.AppendBE16(req, dirBitmapDirID|fdBitmapLongName) // dirBitmap
+	req = bp.AppendBE16(req, 0)                                                 // fileBitmap (n/a, it's a dir)
+	req = bp.AppendBE16(req, protocol.DirBitmapDirID|protocol.FDBitmapLongName) // dirBitmap
 	req = append(req, PathTypeUTF8Names)
 	req = putPString(req, []byte("subdir"))
 	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 4), req)), from)
@@ -404,8 +405,8 @@ func TestDispatch_SubdirDIDRoundTrips(t *testing.T) {
 	enum := []byte{cmdEnumerate, 0}
 	enum = bp.AppendBE16(enum, volID)
 	enum = bp.AppendBE32(enum, subdirDID)
-	enum = bp.AppendBE16(enum, fdBitmapLongName|fileBitmapDataForkLen)
-	enum = bp.AppendBE16(enum, fdBitmapLongName)
+	enum = bp.AppendBE16(enum, protocol.FDBitmapLongName|protocol.FileBitmapDataForkLen)
+	enum = bp.AppendBE16(enum, protocol.FDBitmapLongName)
 	enum = bp.AppendBE16(enum, 10)
 	enum = bp.AppendBE16(enum, 1)
 	enum = bp.AppendBE16(enum, 4624)
@@ -469,8 +470,8 @@ func TestDispatch_EnumeratePagingSkipsHiddenEntriesWithoutDuplicates(t *testing.
 		enum := []byte{cmdEnumerate, 0}
 		enum = bp.AppendBE16(enum, volID)
 		enum = bp.AppendBE32(enum, 2) // dirID = root
-		enum = bp.AppendBE16(enum, fdBitmapLongName)
-		enum = bp.AppendBE16(enum, fdBitmapLongName)
+		enum = bp.AppendBE16(enum, protocol.FDBitmapLongName)
+		enum = bp.AppendBE16(enum, protocol.FDBitmapLongName)
 		enum = bp.AppendBE16(enum, pageSize)
 		enum = bp.AppendBE16(enum, startIndex)
 		enum = bp.AppendBE16(enum, 4624)
@@ -523,7 +524,7 @@ func TestDispatch_GetFileDirParmsParentOfRootByVolumeName(t *testing.T) {
 	req = bp.AppendBE16(req, volID)
 	req = bp.AppendBE32(req, 1) // DID = parent-of-root
 	req = bp.AppendBE16(req, 0)
-	req = bp.AppendBE16(req, fdBitmapLongName|dirBitmapDirID)
+	req = bp.AppendBE16(req, protocol.FDBitmapLongName|protocol.DirBitmapDirID)
 	req = append(req, PathTypeUTF8Names)
 	req = putPString(req, []byte("Share"))
 	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 4), req)), from)
@@ -540,7 +541,7 @@ func TestDispatch_GetFileDirParmsParentOfRootByVolumeName(t *testing.T) {
 	req2 = bp.AppendBE16(req2, volID)
 	req2 = bp.AppendBE32(req2, 1)
 	req2 = bp.AppendBE16(req2, 0)
-	req2 = bp.AppendBE16(req2, dirBitmapDirID)
+	req2 = bp.AppendBE16(req2, protocol.DirBitmapDirID)
 	req2 = append(req2, PathTypeUTF8Names)
 	req2 = putPString(req2, []byte("Not The Volume"))
 	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 5), req2)), from)
@@ -573,7 +574,7 @@ func TestDispatch_GetFileDirParmsRootHasVolumeName(t *testing.T) {
 	req = bp.AppendBE16(req, volID)
 	req = bp.AppendBE32(req, 2) // DID = root
 	req = bp.AppendBE16(req, 0) // fileBitmap (n/a, root is a dir)
-	req = bp.AppendBE16(req, fdBitmapLongName|dirBitmapDirID)
+	req = bp.AppendBE16(req, protocol.FDBitmapLongName|protocol.DirBitmapDirID)
 	req = append(req, PathTypeUTF8Names)
 	req = putPString(req, nil) // empty path → the root itself
 	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 4), req)), from)
@@ -614,7 +615,7 @@ func TestDispatch_SetFileDirParmsAcksFinderInfo(t *testing.T) {
 	req := []byte{cmdSetFileDirParms, 0}
 	req = bp.AppendBE16(req, volID)
 	req = bp.AppendBE32(req, 2)
-	req = bp.AppendBE16(req, fdBitmapFinderInfo)
+	req = bp.AppendBE16(req, protocol.FDBitmapFinderInfo)
 	req = append(req, PathTypeUTF8Names)
 	req = putPString(req, []byte("doc.txt")) // nameLen=7 (odd) → params word-aligned
 	if len("doc.txt")%2 != 0 {
@@ -795,8 +796,8 @@ func TestDispatch_GetFileDirParms(t *testing.T) {
 	req := []byte{cmdGetFileDirParms, 0}
 	req = bp.AppendBE16(req, volID)
 	req = bp.AppendBE32(req, 2) // dirID root
-	req = bp.AppendBE16(req, fdBitmapLongName|fileBitmapDataForkLen)
-	req = bp.AppendBE16(req, fdBitmapLongName)
+	req = bp.AppendBE16(req, protocol.FDBitmapLongName|protocol.FileBitmapDataForkLen)
+	req = bp.AppendBE16(req, protocol.FDBitmapLongName)
 	req = append(req, PathTypeUTF8Names)
 	req = putPString(req, []byte("report.doc"))
 	svc.Inbound(ddpTo(svc.Socket(), atpTReq(aspUserData(asp.SPFuncCommand, sessID, 4), req)), from)

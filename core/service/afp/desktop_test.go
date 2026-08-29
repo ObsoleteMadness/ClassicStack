@@ -5,6 +5,7 @@ import (
 
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 
+	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/asp"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/atp"
 )
@@ -270,13 +271,13 @@ func TestDesktop_APPLRoundTrip(t *testing.T) {
 	getAppl = bp.AppendBE16(getAppl, dtRef)
 	getAppl = append(getAppl, creator[:]...)
 	getAppl = bp.AppendBE16(getAppl, 0) // index
-	getAppl = bp.AppendBE16(getAppl, fdBitmapLongName)
+	getAppl = bp.AppendBE16(getAppl, protocol.FDBitmapLongName)
 	code, reply := sendCmd(t, svc, r, sessID, 7, getAppl)
 	if code != afpNoErr {
 		t.Fatalf("GetAPPL result = %d, want 0", code)
 	}
-	if bp.BE16(reply[0:2]) != fdBitmapLongName {
-		t.Errorf("GetAPPL bitmap = %#x, want %#x", bp.BE16(reply[0:2]), fdBitmapLongName)
+	if bp.BE16(reply[0:2]) != protocol.FDBitmapLongName {
+		t.Errorf("GetAPPL bitmap = %#x, want %#x", bp.BE16(reply[0:2]), protocol.FDBitmapLongName)
 	}
 	if bp.BE32(reply[2:6]) != tag {
 		t.Errorf("GetAPPL tag = %#x, want %#x", bp.BE32(reply[2:6]), tag)

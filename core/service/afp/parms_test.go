@@ -6,18 +6,19 @@ import (
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/metastore"
+	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 )
 
 // fullFileBitmap requests every file parameter this packer emits.
-const fullFileBitmap = fdBitmapAttributes | fdBitmapParentDID | fdBitmapCreateDate |
-	fdBitmapModDate | fdBitmapBackupDate | fdBitmapFinderInfo | fdBitmapLongName |
-	fdBitmapShortName | fileBitmapFileNum | fileBitmapDataForkLen | fileBitmapRsrcForkLen
+const fullFileBitmap = protocol.FDBitmapAttributes | protocol.FDBitmapParentDID | protocol.FDBitmapCreateDate |
+	protocol.FDBitmapModDate | protocol.FDBitmapBackupDate | protocol.FDBitmapFinderInfo | protocol.FDBitmapLongName |
+	protocol.FDBitmapShortName | protocol.FileBitmapFileNum | protocol.FileBitmapDataForkLen | protocol.FileBitmapRsrcForkLen
 
 // fullDirBitmap requests every directory parameter this packer emits.
-const fullDirBitmap = fdBitmapAttributes | fdBitmapParentDID | fdBitmapCreateDate |
-	fdBitmapModDate | fdBitmapBackupDate | fdBitmapFinderInfo | fdBitmapLongName |
-	fdBitmapShortName | dirBitmapDirID | dirBitmapOffspring | dirBitmapOwnerID |
-	dirBitmapGroupID | dirBitmapAccessRights
+const fullDirBitmap = protocol.FDBitmapAttributes | protocol.FDBitmapParentDID | protocol.FDBitmapCreateDate |
+	protocol.FDBitmapModDate | protocol.FDBitmapBackupDate | protocol.FDBitmapFinderInfo | protocol.FDBitmapLongName |
+	protocol.FDBitmapShortName | protocol.DirBitmapDirID | protocol.DirBitmapOffspring | protocol.DirBitmapOwnerID |
+	protocol.DirBitmapGroupID | protocol.DirBitmapAccessRights
 
 // TestFileDirParams_FullFileBitmap packs every file parameter and checks each
 // fixed field at its bit-order offset, plus that the two name fields' offset
@@ -138,7 +139,7 @@ func TestFileDirParams_DataForkLenReflectsWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	block := vol.fileDirParams(nil, "grow.txt", info, fileBitmapDataForkLen, PathTypeUTF8Names)
+	block := vol.fileDirParams(nil, "grow.txt", info, protocol.FileBitmapDataForkLen, PathTypeUTF8Names)
 	if got := bp.BE32(block[0:4]); got != 4 {
 		t.Fatalf("DataForkLen = %d, want 4", got)
 	}

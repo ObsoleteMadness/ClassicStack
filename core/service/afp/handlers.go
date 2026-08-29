@@ -10,6 +10,7 @@ import (
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 	"github.com/ObsoleteMadness/ClassicStack/core/encoding"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
+	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 )
 
 // --- Pascal-string helpers; big-endian integer codecs come from
@@ -710,22 +711,22 @@ func (s *Service) afpSetFileDirParms(a *afpSession, block []byte) ([]byte, int32
 // the block is too short.
 func setParamsFinderInfo(block []byte, off int, bitmap uint16) ([32]byte, bool) {
 	var fi [32]byte
-	if bitmap&fdBitmapFinderInfo == 0 {
+	if bitmap&protocol.FDBitmapFinderInfo == 0 {
 		return fi, false
 	}
-	if bitmap&fdBitmapAttributes != 0 {
+	if bitmap&protocol.FDBitmapAttributes != 0 {
 		off += 2
 	}
-	if bitmap&fdBitmapParentDID != 0 {
+	if bitmap&protocol.FDBitmapParentDID != 0 {
 		off += 4
 	}
-	if bitmap&fdBitmapCreateDate != 0 {
+	if bitmap&protocol.FDBitmapCreateDate != 0 {
 		off += 4
 	}
-	if bitmap&fdBitmapModDate != 0 {
+	if bitmap&protocol.FDBitmapModDate != 0 {
 		off += 4
 	}
-	if bitmap&fdBitmapBackupDate != 0 {
+	if bitmap&protocol.FDBitmapBackupDate != 0 {
 		off += 4
 	}
 	if off+32 > len(block) {
