@@ -4,6 +4,7 @@ go 1.25.13
 
 require (
 	fyne.io/systray v1.12.2
+	github.com/ObsoleteMadness/StuffIt-Go v0.1.1
 	github.com/danieljoos/wincred v1.2.3
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-toast/toast v0.0.0-20190211030409-01e6764cf0a4

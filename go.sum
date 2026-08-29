@@ -1,5 +1,7 @@
 fyne.io/systray v1.12.2 h1:Y8DZxgLHsVQt6rY9Zrkkg+j67S7vv/1F2viOWKPpVeA=
 fyne.io/systray v1.12.2/go.mod h1:RVwqP9nYMo7h5zViCBHri2FgjXF7H2cub7MAq4NSoLs=
+github.com/ObsoleteMadness/StuffIt-Go v0.1.1 h1:pf88BUBtDQNB8eXLn+t3jm7GlRtC+jXn/7rAj+RYvhM=
+github.com/ObsoleteMadness/StuffIt-Go v0.1.1/go.mod h1:EoUZUBD1s71exFnGU7iJ3+QE2IiB7M/1uKmyTTaOUo8=
 github.com/danieljoos/wincred v1.2.3 h1:v7dZC2x32Ut3nEfRH+vhoZGvN72+dQ/snVXo/vMFLdQ=
 github.com/danieljoos/wincred v1.2.3/go.mod h1:6qqX0WNrS4RzPZ1tnroDzq9kY3fu1KwE7MRLQK4X0bs=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=

@@ -7,12 +7,6 @@ import (
 	"strings"
 )
 
-type zipRec struct {
-	data, resource []byte
-	finder         [32]byte
-	isDir          bool
-}
-
 func isZip(data []byte) bool {
 	return len(data) >= 4 && data[0] == 'P' && data[1] == 'K'
 }
@@ -25,19 +19,14 @@ func expandZip(data []byte) ([]Node, error) {
 	if err != nil {
 		return nil, ErrCorrupt
 	}
-	files := map[string]*zipRec{}
-	dirs := map[string]struct{}{}
+	tb := newTreeBuilder()
 	for _, f := range r.File {
 		p := strings.TrimPrefix(strings.ReplaceAll(f.Name, "\\", "/"), "./")
 		if p == "" || strings.Contains(p, "..") {
 			continue
 		}
-		isDir := strings.HasSuffix(p, "/")
-		if isDir {
-			p = strings.TrimSuffix(p, "/")
-			if p != "" {
-				dirs[p] = struct{}{}
-			}
+		if strings.HasSuffix(p, "/") {
+			tb.addDir(strings.TrimSuffix(p, "/"))
 			continue
 		}
 		rc, err := f.Open()
@@ -61,97 +50,20 @@ func expandZip(data []byte) ([]Node, error) {
 				target = base[2:]
 			}
 			if ad := parseAppleDouble(body); ad != nil {
-				ensureParentDirs(dirs, target)
-				r := files[target]
-				if r == nil {
-					r = &zipRec{}
-					files[target] = r
-				}
-				r.resource = ad.resource
-				r.finder = ad.finderInfo
+				tb.setResource(target, ad.resource, ad.finderInfo)
 			}
 			continue
 		}
 		if strings.EqualFold(base, ".DS_Store") {
 			continue
 		}
-		ensureParentDirs(dirs, p)
-		r := &zipRec{data: body, isDir: false}
-		files[p] = r
+		tb.setData(p, body)
 	}
-	var roots []Node
-	seen := map[string]struct{}{}
-	for path := range dirs {
-		if _, ok := seen[path]; ok {
-			continue
-		}
-		n := buildZipTree(path, files, dirs, seen)
-		if n != nil {
-			roots = append(roots, *n)
-		}
-	}
-	for path, r := range files {
-		if strings.Contains(path, "/") {
-			continue
-		}
-		if _, ok := dirs[path]; ok {
-			continue
-		}
-		roots = append(roots, Node{
-			Name:       path,
-			IsDir:      false,
-			Data:       r.data,
-			Resource:   r.resource,
-			FinderInfo: r.finder,
-		})
-	}
+	roots := tb.roots()
 	if len(roots) == 0 {
 		return nil, ErrCorrupt
 	}
 	return roots, nil
-}
-
-func ensureParentDirs(dirs map[string]struct{}, path string) {
-	parts := strings.Split(path, "/")
-	for i := 1; i < len(parts); i++ {
-		d := strings.Join(parts[:i], "/")
-		dirs[d] = struct{}{}
-	}
-}
-
-func buildZipTree(path string, files map[string]*zipRec, dirs map[string]struct{}, seen map[string]struct{}) *Node {
-	if _, ok := seen[path]; ok {
-		return nil
-	}
-	seen[path] = struct{}{}
-	name := path
-	if i := strings.LastIndex(path, "/"); i >= 0 {
-		name = path[i+1:]
-	}
-	prefix := path + "/"
-	var kids []Node
-	for p := range dirs {
-		if !strings.HasPrefix(p, prefix) || strings.Contains(p[len(prefix):], "/") {
-			continue
-		}
-		if child := buildZipTree(p, files, dirs, seen); child != nil {
-			kids = append(kids, *child)
-		}
-	}
-	for p, r := range files {
-		if !strings.HasPrefix(p, prefix) || strings.Contains(p[len(prefix):], "/") {
-			continue
-		}
-		base := p[len(prefix):]
-		kids = append(kids, Node{
-			Name:       base,
-			IsDir:      false,
-			Data:       r.data,
-			Resource:   r.resource,
-			FinderInfo: r.finder,
-		})
-	}
-	return &Node{Name: name, IsDir: true, Children: kids}
 }
 
 type appleDouble struct {
