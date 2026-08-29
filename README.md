@@ -118,6 +118,7 @@ original license. Remember, though I'm not a lawyer and this is not legal advise
 - [Web UI & control API](docs/web-ui.md) — the API split and how the SPA reuses `classicstack-web` components
 - [AppleTalk Netboot & ChainBoot](docs/netboot.md) — how diskless classic Mac boot works
 - [Testing](docs/testing.md) — the in-process protocol harness and the native vintage-client test tools
-- [Operator / developer manual](docs/manual.md) — the full guide (CLI tools, config, web UI, client SDK)
+- [Operator / developer manual](docs/manual.md) — the full guide (CLI tools, config, web UI, client SDK, server SDK)
+- [`examples/memfs-afp-server`](examples/memfs-afp-server) — a standalone AFP server worked example (server SDK)
 - [High-level runtime map](ARCHITECTURE.md)
 - [Protocol notes](spec)

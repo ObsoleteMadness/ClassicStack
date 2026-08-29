@@ -290,7 +290,68 @@ func main() {
 
 ---
 
-## 6. Credits
+## 6. Extending ClassicStack — the server SDK
+
+The **server side** is just as embeddable as the client side (§5): `core/router`, `core/service/*`, and `core/fs` have no dependency on `compose/`'s config-driven assembly or the `classicstack` binary. You can stand up an AppleTalk node and one or more file services entirely from Go — a minimal AppleShare-equivalent server, embedded in your own program.
+
+### Package map
+
+| Package | Role |
+|---|---|
+| `core/router` | The routing engine (`router.New`); `Attach`/`Detach` ports, `RegisterService` services |
+| `core/service/afp`, `smb`, `ncp` | File service constructors (`afp.New` / `afp.NewWithVolumes`, `smb.New`, `ncp.New`, …) — none require `compose.Registry` or global state |
+| `core/service/nbp` | AppleTalk name binding — the service other services register their advertised name with (`SetNBP`) |
+| `core/fs` | `FileSystem` / `ForkFS` interfaces, `RegisterFS` factory registry, `WrapBase` (adds fork/meta handling over your base `FileSystem`) |
+| `adapter/link/ltoudp`, `adapter/link/pcap` | Concrete link transports (LocalTalk-over-UDP, raw Ethernet via libpcap/Npcap) |
+| `adapter/link/framing` | LLAP/AARP framers that turn a raw `link.FrameLink` into a DDP `link.DatagramLink`, running the node-claim dance |
+| `core/port/localtalk`, `core/port/ethertalk` | `NewInstanceFromOpener` — wraps a transport + framer as a router-attachable port |
+
+### A minimal standalone AFP server
+
+[`examples/memfs-afp-server`](../examples/memfs-afp-server) is a complete, runnable worked example: one AppleTalk node, no router services (no RTMP/ZIP — see the package doc comment for why that's safe for a single-segment server), serving one read-only volume, `MemFS`, built entirely in Go with no real filesystem underneath. It shows the three pieces an embedder needs:
+
+1. **A `fs.FileSystem` implementation from scratch** ([`memfs.go`](../examples/memfs-afp-server/memfs.go)) — a hardcoded directory tree plus one file whose contents are generated fresh on every read, registered via `fs.RegisterFS("memexample", factory)`, the same extension point every built-in backend (`local_fs`, `zipfs`, `hfs-image`, …) uses.
+2. **Wiring a transport by hand** ([`transport.go`](../examples/memfs-afp-server/transport.go)) — `ltoudp.Open` + `framing.LocalTalk` + `localtalk.NewInstanceFromOpener`, the same construction `compose/registry` uses, minus its config-`Section` plumbing.
+3. **Wiring the router and services** ([`main.go`](../examples/memfs-afp-server/main.go)):
+
+```go
+rtr := router.New(logger)
+rtr.Start(ctx)
+
+port, _ := openLToUDP(iface, rtr, logger) // see transport.go
+rtr.Attach(port) // must come after Start
+port.Start(ctx)
+
+nbpSvc := nbp.New(rtr, logger)
+rtr.RegisterService(nbpSvc)
+nbpSvc.Start(ctx)
+
+afpSvc, _ := afp.NewWithVolumes(logger, afp.VolumeSpec{
+	Name:  "MemFS",
+	Share: fs.ShareSpec{FSType: "memexample"},
+})
+afpSvc.SetRouter(rtr)
+afpSvc.SetServerName("MemFS Demo")
+afpSvc.SetZone("Demo Zone") // see the gotcha below
+afpSvc.SetNBP(nbpSvc)
+rtr.RegisterService(afpSvc)
+afpSvc.Start(ctx)
+```
+
+Run it and connect from a real (or emulated) classic Mac on the same segment — the volume appears in the Chooser under the configured zone:
+
+```bash
+go run ./examples/memfs-afp-server                     # LToUDP, no root needed
+go run -tags pcap ./examples/memfs-afp-server -transport pcap -iface en0
+```
+
+**Gotcha:** call `SetZone` explicitly. `afp.Service` falls back to the router's first zone when none is set, and with no ZIP populating the zone table (this example has none), that fallback finds nothing and *silently* skips NBP registration — the volume would still be reachable by a client that already knows its address, but invisible in a Chooser scan. `core/service/afp/nbp_test.go` has the regression test this guards against.
+
+`csfs`/`csmount` (§2, §5) can reach this server the same way they reach a real NetWare/AppleShare box: `afp://guest@<name>:Demo Zone/MemFS`.
+
+---
+
+## 7. Credits
 
 ClassicStack is released under **GPL-3.0**. Some components are based on differently licensed works; see [`NOTICE`](../NOTICE) for full license text. (This is not legal advice.)
 
