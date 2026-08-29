@@ -71,6 +71,23 @@ func AddSink(s log.Sink) {
 	extraMu.Unlock()
 }
 
+// CloseExtraSinks closes and forgets every sink registered via AddSink, releasing
+// whatever it holds open (a log file's descriptor). A long-lived host process that
+// rebuilds its logging in place — classicstack's in-process web-admin restart is
+// the only caller today — must call this once its old telemetry bus and log files
+// are no longer wanted; otherwise each cycle's AddSink keeps piling onto the same
+// process-wide slice, leaking the previous cycle's file handles and re-fanning
+// every future record out to them alongside the fresh sinks.
+func CloseExtraSinks() {
+	extraMu.Lock()
+	sinks := extraSinks
+	extraSinks = nil
+	extraMu.Unlock()
+	for _, s := range sinks {
+		_ = s.Close()
+	}
+}
+
 // SetScope enables or disables one named logger scope when verbose is on. Scopes start
 // enabled; SetScope(scope, false) mutes that scope until SetScope(scope, true). Safe for
 // concurrent use and takes effect immediately for loggers already handed out.

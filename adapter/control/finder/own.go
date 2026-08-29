@@ -10,10 +10,10 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/service/smb"
 )
 
-// dropOwnServers removes LAN-scan hits that are this ClassicStack instance.
-// The in-process client shares the server's station MAC, so a self-mount over
-// NBF/NBIPX/EtherDFS cannot complete; those servers already appear under Local.
-func (s *Service) dropOwnServers(scheme string, vols []VolumeInfo) []VolumeInfo {
+// markOwnServers flags LAN-scan hits that are this ClassicStack instance.
+// The sidebar hides them (they already appear under Local); the Network Browser
+// still lists them so the operator can see how this host looks on the wire.
+func (s *Service) markOwnServers(scheme string, vols []VolumeInfo) []VolumeInfo {
 	if len(vols) == 0 {
 		return vols
 	}
@@ -22,14 +22,14 @@ func (s *Service) dropOwnServers(scheme string, vols []VolumeInfo) []VolumeInfo 
 	if len(names) == 0 && mac == "" {
 		return vols
 	}
-	out := make([]VolumeInfo, 0, len(vols))
-	for _, v := range vols {
+	out := make([]VolumeInfo, len(vols))
+	for i, v := range vols {
 		if s.isOwnServer(v, names, mac) {
-			s.log.Log(log.Debug, "finder hid own server",
+			v.Own = true
+			s.log.Log(log.Debug, "finder marked own server",
 				log.Str("scheme", scheme), log.Str("title", v.Title), log.Str("id", v.ID))
-			continue
 		}
-		out = append(out, v)
+		out[i] = v
 	}
 	return out
 }

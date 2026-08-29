@@ -241,6 +241,8 @@ function toEndpoint(v: FinderVolume): RemoteEndpoint & EndpointLocation {
     uri: v.uri,
     os: v.os,
     version: v.version,
+    neighborhood: v.neighborhood,
+    own: v.own,
   };
 }
 
@@ -383,6 +385,14 @@ export class GoFinderHost implements FinderHost {
     return this.clientEnabled && this.enabledServices.has(scheme);
   }
 
+  networkBrowserEnabled(): boolean {
+    return this.clientEnabled;
+  }
+
+  networkSchemes(): ShareKind[] {
+    return DISCOVER_SCHEMES.filter((s) => this.schemeEnabled(s));
+  }
+
   isConnected(): boolean {
     return true;
   }
@@ -397,7 +407,7 @@ export class GoFinderHost implements FinderHost {
 
   sidebarGroups(): SidebarGroup[] {
     const groups: SidebarGroup[] = [
-      { id: GROUP_SHARES, title: 'Shares', hideWhenEmpty: true },
+      { id: GROUP_SHARES, title: 'Shared Volumes', hideWhenEmpty: true },
       { id: GROUP_MOUNTED, title: 'Mounted', hideWhenEmpty: true },
       { id: GROUP_APPLETALK, title: 'AppleTalk', refresh: true, empty: 'None' },
       { id: GROUP_SMB, title: 'SMB', refresh: true, empty: 'None' },
@@ -433,6 +443,21 @@ export class GoFinderHost implements FinderHost {
       actions.push({ id: 'mount', label: 'Mount…' });
     }
     return actions;
+  }
+
+  endpointInfoExtras(ep: RemoteEndpoint, volume?: string) {
+    const sess = this.sessionsByEndpoint.get(ep.id);
+    const mounted = lookupMounted(ep, this.mounted);
+    const volMount = volume
+      ? [...this.mounted.values()].find((m) => m.volume === volume && asShareKind(m.kind) === ep.kind)
+      : undefined;
+    return {
+      uams: sess?.uams,
+      mountpoint: volMount?.mountpoint || mounted?.mountpoint,
+      volumes: sess?.volumes,
+      os: sess?.os || ep.os,
+      dialect: sess?.dialect || ep.version,
+    };
   }
 
   async onSidebarAction(ep: RemoteEndpoint, action: string, volume?: string): Promise<void> {

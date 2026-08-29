@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	gort "runtime"
 	"strings"
@@ -115,11 +114,14 @@ func Main(v Version) {
 	}
 }
 
-// Run parses the shared flags, loads server.toml, builds the supervised runtime,
-// optionally serves the web-admin control API, starts the stack, and blocks until
-// ctx is cancelled — then tears it down. It is the shared run-core the interactive
-// Main and the service/daemon wrappers both invoke. -version short-circuits with a
-// nil error after printing.
+// Run parses the shared flags, then repeatedly loads server.toml, builds the
+// supervised runtime, optionally serves the web-admin control API, starts the
+// stack, and blocks until that cycle's context is cancelled — then tears it down.
+// A web-admin Restart request loops back to load the config and rebuild
+// everything again IN THE SAME PROCESS (same PID/pgrp/session) rather than
+// exec-relaunching a child, so a foreground Ctrl-C keeps working across a
+// restart. It is the shared run-core the interactive Main and the service/daemon
+// wrappers both invoke. -version short-circuits with a nil error after printing.
 func Run(ctx context.Context, args []string, v Version) error {
 	hostinfo.SetBuildInfo(v.Version, v.Commit, v.Date)
 	hostinfo.SetBoardInfo("N/A", "N/A", gort.GOARCH)
@@ -145,12 +147,36 @@ func Run(ctx context.Context, args []string, v Version) error {
 	// edge — TOML by default, UCI when the path is an OpenWRT config (under /etc/config
 	// or a *.uci file), so the SAME binary reads server.toml on a desktop and
 	// /etc/config/classicstack on a router. A missing file yields the default model, so
-	// the stack still boots with no config present.
+	// the stack still boots with no config present. Stateless over configPath, so it is
+	// built once outside the restart loop below; runOnce re-Loads the Model itself each
+	// cycle so a restart picks up whatever is on disk NOW (a Save immediately before
+	// Restart, or a hand-edited file), exactly as the old exec-relaunch did.
 	store := storefile.New(*configPath)
 	codec := pickCodec(*configPath)
+
+	for {
+		restart, err := runOnce(ctx, store, codec, *httpAddr)
+		if restart {
+			// Ignore err here even if runOnce's graceful Stop hit a problem: a
+			// restart proceeds regardless, matching the old exec-relaunch, whose
+			// child replaced the exiting parent no matter what Stop returned.
+			fmt.Fprintln(os.Stderr, "classicstack: restarting")
+			continue
+		}
+		return err
+	}
+}
+
+// runOnce is one lifecycle of the stack: load → build → start → serve-control →
+// wait → tear down. It is split out of Run so its defers (capture flusher, telemetry
+// close) scope to ONE cycle instead of piling up across every restart iteration —
+// wrapping Run's old body directly in a "for {}" would leave them all pending until
+// the process actually exits. Returns restart=true when the web admin requested a
+// restart (the caller should call runOnce again); err is the terminal error, if any.
+func runOnce(ctx context.Context, store config.Store, codec config.Codec, httpAddr string) (restart bool, err error) {
 	m, err := runtime.Load(store, codec)
 	if err != nil {
-		return fmt.Errorf("load %s: %w", *configPath, err)
+		return false, fmt.Errorf("load config: %w", err)
 	}
 
 	// Telemetry bus the supervisor and control plane publish on. Buffer is sized
@@ -171,6 +197,11 @@ func Run(ctx context.Context, args []string, v Version) error {
 		clienttrace.SetScope("atp", false)
 	}
 	clienttrace.AddSink(busLogSink)
+	// Release this cycle's client-trace sinks (this busLogSink, plus any client
+	// log file registry.buildClientLogger adds during runtime.Build below) once
+	// runOnce returns, however it returns — otherwise a restart loop leaks one
+	// open file handle per cycle and keeps fanning records out to it forever.
+	defer clienttrace.CloseExtraSinks()
 
 	// Build the supervised runtime. The pcap opener + serial opener are injected here
 	// so compose/runtime pulls in no cgo/libpcap; under the pcap tag they open real
@@ -190,7 +221,7 @@ func Run(ctx context.Context, args []string, v Version) error {
 		LogLevel:            logLevelVar,
 	})
 	if err != nil {
-		return fmt.Errorf("build runtime: %w", err)
+		return false, fmt.Errorf("build runtime: %w", err)
 	}
 	rt.Supervisor().SetLogLevelApplier(func(level string) {
 		lvl := registry.ParseLevel(level)
@@ -230,7 +261,7 @@ func Run(ctx context.Context, args []string, v Version) error {
 	// Web-admin control API: [http] in server.toml (default enabled on :1984).
 	// -http overrides the listen address and implies enabled.
 	var httpServer *controlhttp.Server
-	listen := strings.TrimSpace(*httpAddr)
+	listen := strings.TrimSpace(httpAddr)
 	if listen == "" && m.HTTP.Enabled {
 		listen = m.HTTP.ListenAddr()
 	}
@@ -273,7 +304,7 @@ func Run(ctx context.Context, args []string, v Version) error {
 		})
 		if err := httpServer.Start(); err != nil {
 			_ = rt.Stop(context.Background())
-			return fmt.Errorf("start web-admin on %s: %w", listen, err)
+			return false, fmt.Errorf("start web-admin on %s: %w", listen, err)
 		}
 		fmt.Printf("web-admin control API listening on %s\n", httpServer.Addr())
 	}
@@ -295,50 +326,13 @@ func Run(ctx context.Context, args []string, v Version) error {
 	} else {
 		fmt.Fprintln(os.Stderr, "classicstack: shutdown complete")
 	}
-	if restartRequested.Load() {
-		// relaunchProcess's only successful path ends in os.Exit(0), which never
-		// returns to here — staticcheck doesn't model that, so it sees every
-		// reachable return as an error and flags this as "always true" (SA4023).
-		// It IS always true in practice, but for the right reason: relaunchProcess
-		// only returns AT ALL on the two genuine failure paths (os.Executable,
-		// cmd.Start).
-		if err := relaunchProcess(args); err != nil { //nolint:staticcheck // see comment above
-			return fmt.Errorf("restart: %w", err)
-		}
-	}
-	return stopErr
-}
-
-// relaunchProcess starts a fresh ClassicStack with the same CLI args and exits the
-// current process. Used when the web admin requests a stack restart.
-//
-// It replays os.Args[1:] rather than the args parameter passed to Run: args is
-// the reconstructed flag-only slice used for the initial parse (e.g. just
-// "-config <path>"), but the process may have actually been invoked with a
-// leading subcommand (classicstackd's "run -config <path>"). Relaunching with
-// args would drop that subcommand and make classicstackd's dispatcher reject
-// the relaunch as an unknown command, so os.Args is what must be replayed.
-//
-// Every reachable return here IS a genuine error; the only non-error path ends
-// in os.Exit(0), which staticcheck doesn't model as non-returning, so it
-// (correctly, if confusingly) flags the caller's err != nil check as always true
-// given how this function is actually implemented.
-//
-//nolint:staticcheck // SA4023: see above
-func relaunchProcess(_ []string) error {
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	cmd := exec.Command(exe, os.Args[1:]...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	os.Exit(0)
-	return nil
+	// A restart just loops runOnce again in Run — same PID, same process group,
+	// same controlling terminal, so a foreground Ctrl-C still reaches the process
+	// after any number of web-admin restarts. stopErr is deliberately swallowed on
+	// the restart path (matching the old exec-relaunch behaviour, whose child
+	// process replaced the exiting parent regardless of a partial Stop error); a
+	// non-restart shutdown still surfaces it to the caller.
+	return restartRequested.Load(), stopErr
 }
 
 // pickCodec selects the config Codec from the config path: the OpenWRT UCI codec when

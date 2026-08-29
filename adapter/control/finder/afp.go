@@ -180,14 +180,15 @@ func afpNBPVolume(e atalk.NBPEntity, linkKind string) VolumeInfo {
 		server = server + ":" + zone
 	}
 	return VolumeInfo{
-		ID:        fmt.Sprintf("afp://%s,%s/", server, linkKind),
-		Kind:      KindAFP,
-		Title:     e.Object,
-		Subtitle:  e.Zone,
-		Protocol:  KindAFP,
-		Transport: TransportDDP,
-		Address:   ddpServerAddress(e),
-		URI:       serverURI(KindAFP, server, ""),
+		ID:           fmt.Sprintf("afp://%s,%s/", server, linkKind),
+		Kind:         KindAFP,
+		Title:        e.Object,
+		Subtitle:     e.Zone,
+		Protocol:     KindAFP,
+		Transport:    TransportDDP,
+		Address:      ddpServerAddress(e),
+		URI:          serverURI(KindAFP, server, ""),
+		Neighborhood: afpNeighborhood(zone, linkKind),
 	}
 }
 
@@ -324,13 +325,32 @@ func afpTCPVolume(srv afpclient.TCPServer) (VolumeInfo, bool) {
 		title = host
 	}
 	return VolumeInfo{
-		ID:        fmt.Sprintf("afp://%s,tcp/", host),
-		Kind:      KindAFP,
-		Title:     title,
-		Subtitle:  srv.Host,
-		Protocol:  KindAFP,
-		Transport: TransportTCP,
-		Address:   host,
-		URI:       serverURI(KindAFP, host, TransportTCP),
+		ID:           fmt.Sprintf("afp://%s,tcp/", host),
+		Kind:         KindAFP,
+		Title:        title,
+		Subtitle:     srv.Host,
+		Protocol:     KindAFP,
+		Transport:    TransportTCP,
+		Address:      host,
+		URI:          serverURI(KindAFP, host, TransportTCP),
+		Neighborhood: "TCP",
 	}, true
+}
+
+// afpNeighborhood is the Network Browser folder under AFP: the NBP zone when
+// named, otherwise a label for the DDP link (LToUDP Network, TashTalk Network, …).
+func afpNeighborhood(zone, linkKind string) string {
+	if z := afpNormZone(zone); z != "" {
+		return z
+	}
+	switch strings.ToLower(strings.TrimSpace(linkKind)) {
+	case clientlink.KindLToUDP:
+		return "LToUDP Network"
+	case clientlink.KindTashTalk:
+		return "TashTalk Network"
+	case clientlink.KindPcap, clientlink.KindTap, "ethertalk":
+		return "EtherTalk Network"
+	default:
+		return "AppleTalk"
+	}
 }

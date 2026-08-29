@@ -7,8 +7,8 @@ const here = fileURLToPath(new URL('.', import.meta.url));
 const submodule = path.resolve(here, '../../../../third_party/classicstack-web');
 const sibling = path.resolve(here, '../../../../../ClassicStack-web');
 const envWeb = process.env.WEB_DIR ? path.resolve(process.env.WEB_DIR) : '';
-/** WEB_DIR, then a sibling ClassicStack-web checkout, then the submodule pin. */
-const webRoot = [envWeb, sibling, submodule].find((dir) => dir && fs.existsSync(path.join(dir, 'src'))) || sibling;
+/** WEB_DIR, then the submodule pin, then a sibling ClassicStack-web checkout. */
+const webRoot = [envWeb, submodule, sibling].find((dir) => dir && fs.existsSync(path.join(dir, 'src'))) || submodule;
 
 export default defineConfig({
   base: '/',

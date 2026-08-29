@@ -15,7 +15,7 @@ log_file = 'client.log'
 capture = 'client-afp.pcap'
 
 [EtherDFS]
-enabled = false
+enabled = true
 capture = 'etherdfs.pcap'
 
 [FUSE]
@@ -104,7 +104,7 @@ name = 'br-lan'
 kind = 'bridge'
 default = true
 backend = 'pcap'
-device = 'en1'
+device = 'en100'
 
 [[ipx]]
 iface = 'br-lan'

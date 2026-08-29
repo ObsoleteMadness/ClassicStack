@@ -51,7 +51,7 @@ func (s *Service) remember(scheme string, vols []VolumeInfo) {
 	if scheme == "" {
 		return
 	}
-	vols = s.dropOwnServers(scheme, vols)
+	vols = s.markOwnServers(scheme, vols)
 	copied := make([]VolumeInfo, len(vols))
 	copy(copied, vols)
 	s.mu.Lock()

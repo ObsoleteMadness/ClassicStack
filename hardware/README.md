@@ -2,6 +2,10 @@
 
 This document describes how to connect TashTalk, SD-Card readers, and the LAN8720A Ethernet PHY to the supported microcontroller boards (**WT32-ETH01** and **Raspberry Pi Pico / Pico W / Pico 2 / Pico 2 W**).
 
+> [!WARNING]
+> The embedded hardware is completley UNTESTED at this point and is not ready for release. 
+
+
 ---
 
 ## 1. WT32-ETH01 (ESP32)

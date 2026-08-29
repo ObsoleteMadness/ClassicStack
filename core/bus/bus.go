@@ -181,17 +181,19 @@ const (
 
 // FinderVolume is one remote file server the in-process client discovered.
 type FinderVolume struct {
-	ID        string `json:"id"`
-	Kind      string `json:"kind"`
-	Title     string `json:"title"`
-	Subtitle  string `json:"subtitle,omitempty"`
-	Protocol  string `json:"protocol,omitempty"`
-	Transport string `json:"transport,omitempty"`
-	Address   string `json:"address,omitempty"`
-	URI       string `json:"uri,omitempty"`
-	OS        string `json:"os,omitempty"`
-	Version   string `json:"version,omitempty"`
-	ReadOnly  bool   `json:"readOnly"`
+	ID           string `json:"id"`
+	Kind         string `json:"kind"`
+	Title        string `json:"title"`
+	Subtitle     string `json:"subtitle,omitempty"`
+	Protocol     string `json:"protocol,omitempty"`
+	Transport    string `json:"transport,omitempty"`
+	Address      string `json:"address,omitempty"`
+	URI          string `json:"uri,omitempty"`
+	OS           string `json:"os,omitempty"`
+	Version      string `json:"version,omitempty"`
+	Neighborhood string `json:"neighborhood,omitempty"`
+	Own          bool   `json:"own,omitempty"`
+	ReadOnly     bool   `json:"readOnly"`
 }
 
 // FinderUpdated is published when the in-process client learns or forgets remote

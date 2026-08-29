@@ -204,17 +204,19 @@ func (s *Service) reapIdle() {
 
 // VolumeInfo is one operator-visible share on this instance or a remote server.
 type VolumeInfo struct {
-	ID        string `json:"id"`
-	Kind      string `json:"kind"` // local | afp | smb | ncp | etherdfs
-	Title     string `json:"title"`
-	Subtitle  string `json:"subtitle,omitempty"`
-	Protocol  string `json:"protocol,omitempty"`
-	Transport string `json:"transport,omitempty"` // tcp | ddp | ipx | netbeui | etherdfs (remote clients)
-	Address   string `json:"address,omitempty"`   // protocol-native: DDP net.node + zone, IP, IPX net:node, MAC
-	URI       string `json:"uri,omitempty"`       // copyable connect URI (no volume, no trailing slash)
-	OS        string `json:"os,omitempty"`        // SMB: announced OS (e.g. "Windows 98 (4.10)")
-	Version   string `json:"version,omitempty"`   // SMB: negotiated dialect (e.g. "SMB 1.0 (NT LM 0.12)")
-	ReadOnly  bool   `json:"readOnly"`
+	ID           string `json:"id"`
+	Kind         string `json:"kind"` // local | afp | smb | ncp | etherdfs
+	Title        string `json:"title"`
+	Subtitle     string `json:"subtitle,omitempty"`
+	Protocol     string `json:"protocol,omitempty"`
+	Transport    string `json:"transport,omitempty"`    // tcp | ddp | ipx | netbeui | etherdfs (remote clients)
+	Address      string `json:"address,omitempty"`      // protocol-native: DDP net.node + zone, IP, IPX net:node, MAC
+	URI          string `json:"uri,omitempty"`          // copyable connect URI (no volume, no trailing slash)
+	OS           string `json:"os,omitempty"`           // SMB: announced OS (e.g. "Windows 98 (4.10)")
+	Version      string `json:"version,omitempty"`      // SMB: negotiated dialect (e.g. "SMB 1.0 (NT LM 0.12)")
+	Neighborhood string `json:"neighborhood,omitempty"` // AppleTalk zone, SMB workgroup, or transport network
+	Own          bool   `json:"own,omitempty"`          // this ClassicStack instance (Network Browser only)
+	ReadOnly     bool   `json:"readOnly"`
 }
 
 // serverURI is the operator-facing connect URI for a discovered server: scheme, native

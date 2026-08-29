@@ -90,14 +90,22 @@ func (s *Service) discoverNCP(req DiscoverRequest) ([]VolumeInfo, error) {
 
 func ncpVolume(e ncpproto.SAPEntry) VolumeInfo {
 	return VolumeInfo{
-		ID:        fmt.Sprintf("ncp://%s/SYS", e.Name),
-		Kind:      KindNCP,
-		Title:     e.Name,
-		Protocol:  KindNCP,
-		Transport: TransportIPX,
-		Address:   sapAddress(e),
-		URI:       serverURI(KindNCP, e.Name, TransportIPX),
+		ID:           fmt.Sprintf("ncp://%s/SYS", e.Name),
+		Kind:         KindNCP,
+		Title:        e.Name,
+		Protocol:     KindNCP,
+		Transport:    TransportIPX,
+		Address:      sapAddress(e),
+		URI:          serverURI(KindNCP, e.Name, TransportIPX),
+		Neighborhood: ncpNeighborhood(e),
 	}
+}
+
+func ncpNeighborhood(e ncpproto.SAPEntry) string {
+	if e.Network == ([4]byte{}) {
+		return "IPX Network"
+	}
+	return fmt.Sprintf("IPX %02X%02X%02X%02X", e.Network[0], e.Network[1], e.Network[2], e.Network[3])
 }
 
 func sapAddress(e ncpproto.SAPEntry) string {

@@ -82,7 +82,7 @@ func (s *Service) discoverSMB(req DiscoverRequest) ([]VolumeInfo, error) {
 			}
 			for _, srv := range servers {
 				for _, c := range srv.Carriers {
-					if v, ok := smbVolume(srv, c); ok {
+					if v, ok := smbVolume(srv, c, workgroup); ok {
 						add(v)
 					}
 				}
@@ -98,7 +98,7 @@ func (s *Service) discoverSMB(req DiscoverRequest) ([]VolumeInfo, error) {
 				s.log.Log1(log.Debug, "finder smb tcp scan", log.Str("err", res.Err.Error()))
 			}
 			for _, srv := range servers {
-				if v, ok := smbVolume(srv, netbios.TCP); ok {
+				if v, ok := smbVolume(srv, netbios.TCP, workgroup); ok {
 					add(v)
 				}
 			}
@@ -167,7 +167,7 @@ func smbScanFlags(transport string) (nbf, ipx, tcp bool) {
 	}
 }
 
-func smbVolume(srv browse.Server, carrier netbios.Protocol) (VolumeInfo, bool) {
+func smbVolume(srv browse.Server, carrier netbios.Protocol, workgroup string) (VolumeInfo, bool) {
 	badge, uriCarrier := smbCarrier(carrier)
 	if badge == "" {
 		return VolumeInfo{}, false
@@ -184,16 +184,21 @@ func smbVolume(srv browse.Server, carrier netbios.Protocol) (VolumeInfo, bool) {
 	if srv.Role != "" && subtitle == "" {
 		subtitle = srv.Role
 	}
+	nb := strings.TrimSpace(workgroup)
+	if nb == "" {
+		nb = "Workgroup"
+	}
 	return VolumeInfo{
-		ID:        fmt.Sprintf("smb://%s,%s/", host, uriCarrier),
-		Kind:      KindSMB,
-		Title:     name,
-		Subtitle:  subtitle,
-		Protocol:  KindSMB,
-		Transport: badge,
-		Address:   srv.AddressFor(carrier),
-		URI:       serverURI(KindSMB, host, uriCarrier),
-		OS:        formatSMBOS(srv.OSVersion),
+		ID:           fmt.Sprintf("smb://%s,%s/", host, uriCarrier),
+		Kind:         KindSMB,
+		Title:        name,
+		Subtitle:     subtitle,
+		Protocol:     KindSMB,
+		Transport:    badge,
+		Address:      srv.AddressFor(carrier),
+		URI:          serverURI(KindSMB, host, uriCarrier),
+		OS:           formatSMBOS(srv.OSVersion),
+		Neighborhood: nb,
 	}, true
 }
 

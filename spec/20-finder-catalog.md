@@ -124,3 +124,70 @@ or Macintosh resource-fork UI.
 `CrossTransferRequest` uses the **native** `NodeRef` of each session (`srcId` is
 a CNID number or a path string according to the source catalog). A path pasted
 onto an AFP destination goes through `resolvePath` first.
+
+## 6. Network Browser (virtual catalog)
+
+Finder presents LAN discovery as a path catalog (`filesystem: network`) so
+the file pane can walk:
+
+`Browse Network → protocol → [workgroup/AppleTalk zone] → server → share → folders`
+
+Example: `Browse Network → AFP → LToUDP Network → snow → OpenSCSI Volume → Documents`.
+
+NCP and EtherDFS have no zone/workgroup folder (`NetWare → server → volume`).
+Unzoned EtherTalk AFP servers sit directly under AFP (`AFP → iMac`); a named
+NBP zone or LToUDP/TashTalk neighborhood still appears as a folder.
+
+Each network object has a **type** (`protocol`, `neighborhood`, `server`,
+`share`, or `service`). Protocol, zone, server, and share nodes are
+folder-like (`isDir` is true; `chrome.container` is true) so list and column
+view can expand **zone → server → volume → folder** in place. Services
+(`RemoteEndpoint.services`: PAP printers, MacIP gateway, …) stay non-directory
+containers (Get Info only).
+
+A **share** is a directory with extra properties: it cannot be renamed, moved,
+or deleted. After the client authenticates and opens the volume, children are
+proxied from that volume catalog. Overlay nodes carry `chrome.catalogKey` and
+`chrome.nativeRef` so file operations use the real VFS. Expanding or navigating
+to a server prompts for login when this client has no session; expanding a
+share opens the volume when it is not already mounted. Login, timeout, or
+cancel uses the same loading indicators as directory enumeration and clears
+them on failure. The Network Browser catalog stays on screen — opening a
+volume does not replace it.
+
+| Level | AFP | SMB | NCP | EtherDFS |
+|---|---|---|---|---|
+| Protocol | AFP | SMB | NetWare | EtherDFS |
+| Neighborhood | NBP zone, or `LToUDP Network` / `TashTalk Network` / `TCP` when unnamed (EtherTalk with no zone is omitted) | Workgroup | — | — |
+| Server | AFP server | SMB server | File server | EtherDFS host |
+| Share | Volume | Share | Volume | Drive |
+| Service | Printer, MacIP gateway, … | (same) | (same) | (same) |
+
+Icons reuse the sidebar glyphs (`sidebarGlyphSrc` / `networkGlyphSrc`).
+
+File operations (cut, copy, paste, rename, move, delete, zip of a folder,
+expand, import, resource view) are not offered on protocol, zone, server,
+share, or service nodes. Folders and files *inside* a mounted volume use that
+volume’s catalog via `chrome.catalogKey` / `chrome.nativeRef` (the Network
+Browser path is display-only). A **volume** may be downloaded as a zip of its
+contents. Get Info is a single panel that adapts to protocol, zone/workgroup,
+server, volume, and service.
+
+This instance’s own file servers are **omitted from the sidebar** (they already
+appear under Local) but **listed in the Network Browser**, flagged `own` on
+the discovery DTO.
+
+The **Network** sidebar row and **View → Network Browser** are offered only
+when the file client is configured and enabled (`[Client].enabled` on
+ClassicStack; TashTalk serial connected on ClassicStack-web). ClassicStack-web
+lists every AFP server on the adaptor (multiple TashTalk clients appear under
+`AFP → TashTalk Network` or their NBP zone). While the Network Browser catalog
+is showing, the Network row stays selected (walking a server or volume does
+not steal the highlight).
+
+Clicking a discovered **server** in the sidebar opens that server’s folder in
+this catalog (its shares as special folders) rather than leaving the file pane
+empty. The path bar shows the trail walked (`Browse Network > AFP > zone >
+server > volume > folder`); a hosted share opened from the sidebar shows
+`Shared Volumes > volume`; a LAN volume opened from the sidebar shows
+`server > volume`; Open by Path shows the typed client URI.

@@ -66,14 +66,15 @@ func (s *Service) discoverEtherDFS(req DiscoverRequest) ([]VolumeInfo, error) {
 			title = mac
 		}
 		out = append(out, VolumeInfo{
-			ID:        fmt.Sprintf("etherdfs://%s/C", mac),
-			Kind:      KindEtherDFS,
-			Title:     title,
-			Subtitle:  mac,
-			Protocol:  KindEtherDFS,
-			Transport: TransportEDFS,
-			Address:   mac,
-			URI:       serverURI(KindEtherDFS, strings.ReplaceAll(mac, ":", "-"), ""),
+			ID:           fmt.Sprintf("etherdfs://%s/C", mac),
+			Kind:         KindEtherDFS,
+			Title:        title,
+			Subtitle:     mac,
+			Protocol:     KindEtherDFS,
+			Transport:    TransportEDFS,
+			Address:      mac,
+			URI:          serverURI(KindEtherDFS, strings.ReplaceAll(mac, ":", "-"), ""),
+			Neighborhood: "Ethernet",
 		})
 	}
 	s.log.Log2(log.Debug, "finder etherdfs scan",

@@ -30,7 +30,7 @@ func TestSMBScanFlags(t *testing.T) {
 
 func TestSMBVolumePerCarrier(t *testing.T) {
 	srv := browse.Server{Name: "FOO", Comment: "ClassicStack", Address: "192.168.0.10"}
-	nbf, ok := smbVolume(srv, netbios.NBF)
+	nbf, ok := smbVolume(srv, netbios.NBF, "")
 	if !ok || nbf.ID != "smb://FOO,nbf/" || nbf.Transport != TransportNetBEUI || nbf.Title != "FOO" {
 		t.Fatalf("nbf = %+v ok=%v", nbf, ok)
 	}
@@ -43,14 +43,17 @@ func TestSMBVolumePerCarrier(t *testing.T) {
 	if nbf.Subtitle != "ClassicStack" {
 		t.Fatalf("nbf Subtitle = %q", nbf.Subtitle)
 	}
-	ipx, ok := smbVolume(srv, netbios.NBIPX)
+	if nbf.Neighborhood != "Workgroup" {
+		t.Fatalf("nbf Neighborhood = %q", nbf.Neighborhood)
+	}
+	ipx, ok := smbVolume(srv, netbios.NBIPX, "")
 	if !ok || ipx.ID != "smb://FOO,nbipx/" || ipx.Transport != TransportIPX {
 		t.Fatalf("ipx = %+v ok=%v", ipx, ok)
 	}
 	if ipx.URI != "smb://FOO,nbipx" {
 		t.Fatalf("ipx URI = %q", ipx.URI)
 	}
-	tcp, ok := smbVolume(srv, netbios.TCP)
+	tcp, ok := smbVolume(srv, netbios.TCP, "")
 	if !ok || tcp.ID != "smb://192.168.0.10,tcp/" || tcp.Transport != TransportTCP || tcp.Title != "FOO" {
 		t.Fatalf("tcp = %+v ok=%v", tcp, ok)
 	}
@@ -61,7 +64,7 @@ func TestSMBVolumePerCarrier(t *testing.T) {
 
 func TestSMBVolumeOSFromAnnouncement(t *testing.T) {
 	srv := browse.Server{Name: "WIN98", Comment: "Pete's PC", OSVersion: "4.10"}
-	v, ok := smbVolume(srv, netbios.NBF)
+	v, ok := smbVolume(srv, netbios.NBF, "ENGINEERING")
 	if !ok {
 		t.Fatal("expected volume")
 	}
@@ -70,6 +73,9 @@ func TestSMBVolumeOSFromAnnouncement(t *testing.T) {
 	}
 	if v.Subtitle != "Pete's PC" {
 		t.Fatalf("Subtitle = %q", v.Subtitle)
+	}
+	if v.Neighborhood != "ENGINEERING" {
+		t.Fatalf("Neighborhood = %q", v.Neighborhood)
 	}
 }
 

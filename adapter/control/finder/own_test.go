@@ -20,7 +20,7 @@ func TestRememberKeepsNeighborsWithoutModel(t *testing.T) {
 	}
 }
 
-func TestRememberHidesOwnServers(t *testing.T) {
+func TestRememberMarksOwnServers(t *testing.T) {
 	m := config.NewModel()
 	m.Identity.Hostname = "classicstack"
 	m.Set(&afp.ServerSection{AKey: afp.ServerKey, Enabled: true, ServerName: "ClassicStack"})
@@ -34,8 +34,20 @@ func TestRememberHidesOwnServers(t *testing.T) {
 		{ID: "afp://Mac,ltoudp/", Kind: KindAFP, Title: "Mac"},
 	})
 	afpSeen := svc.LastSeen(KindAFP)
-	if len(afpSeen) != 1 || afpSeen[0].Title != "Mac" {
-		t.Fatalf("afp = %+v, want only Mac", afpSeen)
+	if len(afpSeen) != 2 {
+		t.Fatalf("afp = %+v, want ClassicStack (own) and Mac", afpSeen)
+	}
+	var own, neighbor bool
+	for _, v := range afpSeen {
+		if v.Title == "ClassicStack" && v.Own {
+			own = true
+		}
+		if v.Title == "Mac" && !v.Own {
+			neighbor = true
+		}
+	}
+	if !own || !neighbor {
+		t.Fatalf("afp = %+v, want ClassicStack marked own and Mac unmarked", afpSeen)
 	}
 
 	svc.remember(KindSMB, []VolumeInfo{
@@ -43,8 +55,8 @@ func TestRememberHidesOwnServers(t *testing.T) {
 		{ID: "smb://FILE,nbipx/", Kind: KindSMB, Title: "FILE"},
 	})
 	smbSeen := svc.LastSeen(KindSMB)
-	if len(smbSeen) != 1 || smbSeen[0].Title != "FILE" {
-		t.Fatalf("smb = %+v, want only FILE", smbSeen)
+	if len(smbSeen) != 2 {
+		t.Fatalf("smb = %+v, want CLASSICSTACK (own) and FILE", smbSeen)
 	}
 
 	svc.remember(KindNCP, []VolumeInfo{
@@ -52,8 +64,8 @@ func TestRememberHidesOwnServers(t *testing.T) {
 		{ID: "ncp://NW311/SYS", Kind: KindNCP, Title: "NW311"},
 	})
 	ncpSeen := svc.LastSeen(KindNCP)
-	if len(ncpSeen) != 1 || ncpSeen[0].Title != "NW311" {
-		t.Fatalf("ncp = %+v, want only NW311", ncpSeen)
+	if len(ncpSeen) != 2 {
+		t.Fatalf("ncp = %+v, want NETWARE (own) and NW311", ncpSeen)
 	}
 
 	svc.remember(KindEtherDFS, []VolumeInfo{
@@ -61,20 +73,21 @@ func TestRememberHidesOwnServers(t *testing.T) {
 		{ID: "etherdfs://aa:bb:cc:dd:ee:ff/C", Kind: KindEtherDFS, Title: "DOSBOX", Address: "aa:bb:cc:dd:ee:ff"},
 	})
 	edfs := svc.LastSeen(KindEtherDFS)
-	if len(edfs) != 1 || edfs[0].Title != "DOSBOX" {
-		t.Fatalf("etherdfs = %+v, want only DOSBOX", edfs)
+	if len(edfs) != 2 {
+		t.Fatalf("etherdfs = %+v, want CLASSICSTACK (own) and DOSBOX", edfs)
 	}
 }
 
-func TestRememberHidesEtherDFSByStationMAC(t *testing.T) {
+func TestRememberMarksEtherDFSByStationMAC(t *testing.T) {
 	m := config.NewModel()
 	m.Set(&etherdfs.ServerSection{SKey: etherdfs.ServerKey, IsEnabled: true, MAC: "36:14:41:06:43:70"})
 	svc := New(modelStub{m: m}, nil)
 	svc.remember(KindEtherDFS, []VolumeInfo{
 		{ID: "etherdfs://36:14:41:06:43:70/C", Kind: KindEtherDFS, Title: "36:14:41:06:43:70", Address: "36:14:41:06:43:70"},
 	})
-	if got := svc.LastSeen(KindEtherDFS); len(got) != 0 {
-		t.Fatalf("got %+v, want hidden by station MAC", got)
+	got := svc.LastSeen(KindEtherDFS)
+	if len(got) != 1 || !got[0].Own {
+		t.Fatalf("got %+v, want marked own by station MAC", got)
 	}
 }
 

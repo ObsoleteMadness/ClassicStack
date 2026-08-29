@@ -50,6 +50,7 @@ export async function openByPath(finder: FinderWindow, host: GoFinderHost): Prom
     credentials: creds,
     autoOpenSingle: !!target.volume,
     folderPath: target.volume ? folderPath : undefined,
+    locationUri: raw,
   });
   if (!first.ok) return;
 
@@ -72,5 +73,6 @@ export async function openByPath(finder: FinderWindow, host: GoFinderHost): Prom
     volume: picked,
     autoOpenSingle: false,
     folderPath,
+    locationUri: raw,
   });
 }

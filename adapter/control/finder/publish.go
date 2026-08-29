@@ -11,17 +11,19 @@ func toBusVolumes(vols []VolumeInfo) []bus.FinderVolume {
 	out := make([]bus.FinderVolume, len(vols))
 	for i, v := range vols {
 		out[i] = bus.FinderVolume{
-			ID:        v.ID,
-			Kind:      v.Kind,
-			Title:     v.Title,
-			Subtitle:  v.Subtitle,
-			Protocol:  v.Protocol,
-			Transport: v.Transport,
-			Address:   v.Address,
-			URI:       v.URI,
-			OS:        v.OS,
-			Version:   v.Version,
-			ReadOnly:  v.ReadOnly,
+			ID:           v.ID,
+			Kind:         v.Kind,
+			Title:        v.Title,
+			Subtitle:     v.Subtitle,
+			Protocol:     v.Protocol,
+			Transport:    v.Transport,
+			Address:      v.Address,
+			URI:          v.URI,
+			OS:           v.OS,
+			Version:      v.Version,
+			Neighborhood: v.Neighborhood,
+			Own:          v.Own,
+			ReadOnly:     v.ReadOnly,
 		}
 	}
 	return out

@@ -228,7 +228,9 @@ export type FinderVolume = {
   uri?: string;
   os?: string;
   version?: string;
-  readOnly?: boolean;
+  neighborhood?: string;
+    own?: boolean;
+    readOnly?: boolean;
 };
 
 export type FinderSession = {

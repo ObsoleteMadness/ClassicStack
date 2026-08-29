@@ -158,6 +158,7 @@ type Runtime struct {
 	transports *transportWiring               // retained IPX/NetBEUI mini-routers + MacIP egress; drives runtime port attach + egress lifecycle
 	comps      map[string]component.Component // built components by name, for compose-edge lookups (diagnostics wiring)
 	log        log.Logger
+	ownedSinks []log.Sink // sinks Build opened itself (the [Logging].Path file, if any) and must Close on Stop
 
 	claimWatchStop chan struct{}  // closed by Stop to cancel any still-polling late-claim watchers (§ late-claim fix)
 	claimWatchWG   sync.WaitGroup // Stop waits on this so no watcher touches the router after Stop returns
@@ -205,12 +206,14 @@ func Build(opts Options) (*Runtime, error) {
 		logLevel = log.NewLevelVar(lvl)
 	}
 	sinks := []log.Sink{log.NewStderrSink(logLevel)}
+	var ownedSinks []log.Sink
 	if path := strings.TrimSpace(opts.Model.Logging.Path); path != "" {
 		if fsink, ferr := log.NewFileSink(path, logLevel); ferr != nil {
 			log.New("runtime", log.NewStderrSink(logLevel)).Log2(log.Warn, "log file unwritable",
 				log.Str("path", path), log.Str("err", ferr.Error()))
 		} else {
 			sinks = append(sinks, fsink)
+			ownedSinks = append(ownedSinks, fsink)
 		}
 	}
 	sinks = append(sinks, opts.LogSinks...)
@@ -393,6 +396,7 @@ func Build(opts Options) (*Runtime, error) {
 		transports: transports,
 		comps:      comps,
 		log:        rtLog,
+		ownedSinks: ownedSinks,
 	}
 
 	// Inject the port attacher so a PORT the supervisor stands up at runtime is joined to
@@ -722,7 +726,15 @@ func (r *Runtime) Stop(ctx context.Context) error {
 			_ = r.rtr.Detach(p)
 		}
 	}
-	return r.sup.StopAll(ctx)
+	stopErr := r.sup.StopAll(ctx)
+	// Release the file handle Build opened for [Logging].Path (if any) now that
+	// nothing will log through it again. A caller that rebuilds a fresh Runtime in
+	// the same process — the web-admin restart path — would otherwise leak one file
+	// descriptor per restart, since nothing else ever closes this sink.
+	for _, s := range r.ownedSinks {
+		_ = s.Close()
+	}
+	return stopErr
 }
 
 // Supervisor returns the supervisor (the control.Supervisor surface the control

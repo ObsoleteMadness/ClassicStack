@@ -91,12 +91,18 @@ func TestAFPNBPVolumeURI(t *testing.T) {
 	if v.URI != "afp://ClassicStack:EtherTalk Network" {
 		t.Errorf("URI = %q", v.URI)
 	}
+	if v.Neighborhood != "EtherTalk Network" {
+		t.Errorf("Neighborhood = %q", v.Neighborhood)
+	}
 	lt := afpNBPVolume(atalk.NBPEntity{Object: "ClassicStack", Zone: "*", Addr: atalk.Addr{Network: 1, Node: 4}}, clientlink.KindLToUDP)
 	if lt.ID != "afp://ClassicStack,ltoudp/" {
 		t.Errorf("wildcard zone ID = %q", lt.ID)
 	}
 	if lt.Address != "1.4" || lt.URI != "afp://ClassicStack" {
 		t.Errorf("wildcard address/uri = %q %q", lt.Address, lt.URI)
+	}
+	if lt.Neighborhood != "LToUDP Network" {
+		t.Errorf("wildcard Neighborhood = %q", lt.Neighborhood)
 	}
 }
 
@@ -119,6 +125,9 @@ func TestAFPTCPVolumeURI(t *testing.T) {
 	}
 	if v.Address != "192.168.1.9" || v.URI != "afp://192.168.1.9,tcp" {
 		t.Fatalf("tcp address/uri = %q %q", v.Address, v.URI)
+	}
+	if v.Neighborhood != "TCP" {
+		t.Fatalf("tcp Neighborhood = %q", v.Neighborhood)
 	}
 	v, ok = afpTCPVolume(afpclient.TCPServer{Name: "Files", Host: "files.local", Port: 10548})
 	if !ok || v.ID != "afp://files.local:10548,tcp/" {
