@@ -29,8 +29,8 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/pcap"
 	clientlink "github.com/ObsoleteMadness/ClassicStack/client/link"
-	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/buildinfo"
 	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/csconnect"
+	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/diagflags"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 	ipxproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx/diag"
@@ -63,20 +63,19 @@ func main() {
 
 func run() error {
 	var (
-		iface   = flag.String("iface", "", "network interface to send on (pcap device name; omit to auto-detect the primary NIC)")
 		target  = flag.String("dst", "broadcast", "target node as a MAC address (aa:bb:cc:dd:ee:ff) or \"broadcast\"")
 		network = flag.String("net", "00000000", "IPX network number, 8 hex digits (0 = local segment)")
 		count   = flag.Int("count", 3, "number of diagnostic requests to send")
 		timeout = flag.Duration("timeout", 2*time.Second, "per-request reply timeout")
 		wait    = flag.Duration("interval", 500*time.Millisecond, "delay between requests")
-		macFlag = flag.String("mac", "", "source MAC for our virtual station (default: random locally-administered)")
-		listIf  = flag.Bool("list-ifaces", false, "list the capturable pcap NICs (the names -iface accepts) and exit")
-		version = flag.Bool("version", false, "print version information and exit")
 	)
+	iface := diagflags.RegisterIface(flag.CommandLine, "network interface to send on (pcap device name; omit to auto-detect the primary NIC)")
+	macFlag := diagflags.RegisterMAC(flag.CommandLine)
+	listIf := diagflags.RegisterListIfaces(flag.CommandLine)
+	common := diagflags.RegisterCommon(flag.CommandLine)
 	flag.Parse()
 
-	if *version {
-		buildinfo.Print(os.Stdout, "csipxping", BuildVersion, BuildCommit, BuildDate)
+	if common.HandleVersion(os.Stdout, "csipxping", BuildVersion, BuildCommit, BuildDate) {
 		return nil
 	}
 
@@ -131,7 +130,15 @@ func run() error {
 		if err := sendRequest(fl, srcMAC, dstNode, net4, broadcast); err != nil {
 			return fmt.Errorf("send request: %w", err)
 		}
+		if *common.Verbose {
+			var netArr [4]byte
+			copy(netArr[:], net4[:4])
+			fmt.Fprintf(os.Stderr, "csipxping [trace] -> diag request  net=%s src=%s dst=%s\n", netString(netArr), macString(srcMAC), macString(dstNode))
+		}
 		from, ok := awaitReply(fl, srcMAC, *timeout)
+		if *common.Verbose && ok {
+			fmt.Fprintf(os.Stderr, "csipxping [trace] <- diag response net=%s src=%s\n", netString(from.SrcNet), macString(from.SrcNode))
+		}
 		if ok {
 			replies++
 			fmt.Printf("reply #%d from %s  net %s  time=%s\n",

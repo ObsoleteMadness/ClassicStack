@@ -25,9 +25,8 @@ import (
 
 	clientlink "github.com/ObsoleteMadness/ClassicStack/client/link"
 	"github.com/ObsoleteMadness/ClassicStack/client/netbios"
-	"github.com/ObsoleteMadness/ClassicStack/client/trace"
-	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/buildinfo"
 	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/csconnect"
+	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/diagflags"
 )
 
 // Build metadata injected at link time via -ldflags
@@ -47,22 +46,20 @@ func main() {
 
 func run() error {
 	var (
-		iface     = flag.String("iface", "", "interface to send from (pcap device or TUN/TAP device name; omit to auto-detect the primary NIC)")
-		ifaceType = flag.String("ifacetype", "pcap", "interface type: pcap | tap")
-		to        = flag.String("to", "", "recipient as \"<name>,<protocol>\" (protocol: nbf | nbipx; required)")
-		from      = flag.String("from", "CLASSICSTACK", "sender name (the From field)")
-		text      = flag.String("text", "", "message text (required)")
-		macFlag   = flag.String("mac", "", "source MAC for our virtual station (default: random locally-administered)")
-		verbose   = flag.Bool("v", false, "verbose wire trace to stderr")
-		listIf    = flag.Bool("list-ifaces", false, "list the capturable pcap NICs (the names -iface accepts) and exit")
-		version   = flag.Bool("version", false, "print version information and exit")
+		to   = flag.String("to", "", "recipient as \"<name>,<protocol>\" (protocol: nbf | nbipx; required)")
+		from = flag.String("from", "CLASSICSTACK", "sender name (the From field)")
+		text = flag.String("text", "", "message text (required)")
 	)
+	iface := diagflags.RegisterIface(flag.CommandLine, "interface to send from (pcap device or TUN/TAP device name; omit to auto-detect the primary NIC)")
+	ifaceType := diagflags.RegisterIfaceType(flag.CommandLine)
+	macFlag := diagflags.RegisterMAC(flag.CommandLine)
+	listIf := diagflags.RegisterListIfaces(flag.CommandLine)
+	common := diagflags.RegisterCommon(flag.CommandLine)
 	flag.Usage = usage
 	flag.Parse()
-	trace.SetVerbose(*verbose)
+	common.ApplyVerbose()
 
-	if *version {
-		buildinfo.Print(os.Stdout, "csnetsend", BuildVersion, BuildCommit, BuildDate)
+	if common.HandleVersion(os.Stdout, "csnetsend", BuildVersion, BuildCommit, BuildDate) {
 		return nil
 	}
 

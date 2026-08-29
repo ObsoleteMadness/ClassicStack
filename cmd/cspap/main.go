@@ -24,9 +24,8 @@ import (
 	"time"
 
 	"github.com/ObsoleteMadness/ClassicStack/client/atalk"
-	"github.com/ObsoleteMadness/ClassicStack/client/trace"
 	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/atlink"
-	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/buildinfo"
+	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/diagflags"
 )
 
 // Build metadata injected at link time via -ldflags
@@ -46,22 +45,19 @@ func main() {
 
 func run() error {
 	var (
-		network = flag.Uint("net", 0, "AppleTalk network number we claim as our source (0 = the AppleTalk \"startup range\" placeholder — a strict peer may legitimately ignore requests from a node still asserting network 0; pass the segment's real network number, e.g. -net 1, if a peer that answers a real client doesn't answer this probe)")
-		srcNode = flag.Uint("src", 0, "our LocalTalk source node — 0 (default) picks a random workstation-range candidate (1..127) for the LLAP node-claim; 1..254 requests a specific candidate instead. With -claim (the default) this is only the desired first candidate: the node actually used may differ if it's taken. Requires -claim when 0.")
 		typ     = flag.String("type", atalk.PAPPrinterType, "NBP type to browse (LaserWriter is the conventional PAP type most Choosers and spoolers register under; pass = to browse every NBP type in the zone, e.g. when you don't know what a printer registered as — every match will then get a status query, including non-PAP entries, which will just time out)")
 		zone    = flag.String("zone", "", "AppleTalk zone to search (default: this zone)")
 		timeout = flag.Duration("timeout", 2*time.Second, "how long to collect NBP replies, and the per-printer PAP status timeout")
 		status  = flag.Bool("status", true, "query each printer's PAP status (SendStatus) after finding it; -status=false only enumerates names/addresses")
-		verbose = flag.Bool("v", false, "verbose wire trace to stderr")
-		version = flag.Bool("version", false, "print version information and exit")
 	)
+	src := diagflags.RegisterLLAPSource(flag.CommandLine)
+	common := diagflags.RegisterCommon(flag.CommandLine)
 	at := atlink.Flags(flag.CommandLine)
 	flag.Usage = usage
 	flag.Parse()
-	trace.SetVerbose(*verbose)
+	common.ApplyVerbose()
 
-	if *version {
-		buildinfo.Print(os.Stdout, "cspap", BuildVersion, BuildCommit, BuildDate)
+	if common.HandleVersion(os.Stdout, "cspap", BuildVersion, BuildCommit, BuildDate) {
 		return nil
 	}
 
@@ -70,9 +66,10 @@ func run() error {
 		return nil
 	}
 
-	if *srcNode > 254 {
-		return fmt.Errorf("src node %d out of range (0, or 1..254)", *srcNode)
+	if err := src.Validate(); err != nil {
+		return err
 	}
+	network, srcNode := src.Network, src.SrcNode
 
 	pattern := "" // object wildcard: every printer name
 	if flag.NArg() > 0 {

@@ -24,8 +24,8 @@ import (
 
 	"github.com/ObsoleteMadness/ClassicStack/adapter/link/pcap"
 	clientlink "github.com/ObsoleteMadness/ClassicStack/client/link"
-	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/buildinfo"
 	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/csconnect"
+	"github.com/ObsoleteMadness/ClassicStack/cmd/internal/diagflags"
 	"github.com/ObsoleteMadness/ClassicStack/core/link"
 	ipxport "github.com/ObsoleteMadness/ClassicStack/core/port/ipx"
 	ipxproto "github.com/ObsoleteMadness/ClassicStack/core/protocol/ipx"
@@ -51,19 +51,18 @@ func main() {
 
 func run() error {
 	var (
-		iface     = flag.String("iface", "", "network interface to send on (pcap device name; omit to auto-detect the primary NIC)")
 		network   = flag.String("net", "00000000", "IPX network number, 8 hex digits (0 = local segment)")
 		timeout   = flag.Duration("timeout", 2*time.Second, "how long to collect SAP responses")
 		nearest   = flag.Bool("nearest", false, "send a Get-Nearest-Server query instead of a general query")
 		frameType = flag.String("frametype", "", "IPX Ethernet encapsulation: ethernet_ii | 802.3 | 802.2 (default ethernet_ii)")
-		macFlag   = flag.String("mac", "", "source MAC for our virtual station (default: random locally-administered)")
-		listIf    = flag.Bool("list-ifaces", false, "list the capturable pcap NICs (the names -iface accepts) and exit")
-		version   = flag.Bool("version", false, "print version information and exit")
 	)
+	iface := diagflags.RegisterIface(flag.CommandLine, "network interface to send on (pcap device name; omit to auto-detect the primary NIC)")
+	macFlag := diagflags.RegisterMAC(flag.CommandLine)
+	listIf := diagflags.RegisterListIfaces(flag.CommandLine)
+	common := diagflags.RegisterCommon(flag.CommandLine)
 	flag.Parse()
 
-	if *version {
-		buildinfo.Print(os.Stdout, "csncpinfo", BuildVersion, BuildCommit, BuildDate)
+	if common.HandleVersion(os.Stdout, "csncpinfo", BuildVersion, BuildCommit, BuildDate) {
 		return nil
 	}
 
@@ -121,6 +120,9 @@ func run() error {
 	if err := sendQuery(fl, srcMAC, net4, op, ft); err != nil {
 		return fmt.Errorf("send SAP query: %w", err)
 	}
+	if *common.Verbose {
+		fmt.Fprintf(os.Stderr, "csncpinfo [trace] -> SAP query  op=%d frametype=%s src=%s\n", op, ft, macString(srcMAC))
+	}
 	fmt.Printf("SLIST on %s (%s) — waiting %s for file servers…\n", ifaceName, ft, *timeout)
 
 	seen := map[string]bool{}
@@ -150,6 +152,9 @@ func run() error {
 				continue
 			}
 			seen[key] = true
+			if *common.Verbose {
+				fmt.Fprintf(os.Stderr, "csncpinfo [trace] <- SAP entry  %s\n", e.Name)
+			}
 			fmt.Printf("  %-48s net %s  node %s  socket %02x%02x\n",
 				e.Name, netString(e.Network), macString(e.Node), e.Socket[0], e.Socket[1])
 		}
