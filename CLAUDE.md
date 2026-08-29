@@ -8,7 +8,7 @@ ClassicStack is a Go-based AppleTalk Phase 2 router and AFP file server. It also
 It bridges legacy Apple networking protocols to modern environments, supporting EtherTalk (raw Ethernet), LToUDP (multicast UDP), TashTalk (serial), and virtual LocalTalk transports.
 
 **Module:** `github.com/ObsoleteMadness/ClassicStack`  
-**Go version:** 1.23.0
+**Go version:** see `go.mod` (`go` directive) — kept current there, not duplicated here
 
 ## Remember!
 1. Always confirm implementation details with the specifications found in /spec/*.md
@@ -32,10 +32,10 @@ It bridges legacy Apple networking protocols to modern environments, supporting 
 go build -tags all -o classicstack ./cmd/classicstack
 
 # Run all tests
-go test ./...
+go test -tags all ./...
 
 # Run tests for a specific package
-go test ./service/afp/...
+go test -tags all ./core/service/afp/...
 
 # Run with TOML config
 ./classicstack  # auto-loads server.toml if present
@@ -46,51 +46,38 @@ go test ./service/afp/...
 
 ## Architecture
 
-### Core Data Flow
+ClassicStack is a hexagonal (ports-and-adapters) architecture split into five
+rings — `core/`, `adapter/`, `compose/`, `client/`, `cmd/` — plus a `hardware/`
+tree for embedded targets. **[`ARCHITECTURE.md`](ARCHITECTURE.md) is the
+authoritative, maintained description of this layout** (the ring diagram, the
+per-ring import rules, the full package map, and how a request moves through
+the system); read it before orienting in the tree. Summary:
 
-```
-cmd/classicstack/main.go  →  internal/app (run-core)  →  Ports  →  Router  →  Services
-```
-
-1. **Entry point** (`cmd/classicstack/`) is a thin `main()` that calls `internal/app`, which parses CLI flags and `server.toml`, constructs ports, wires them to the router, and starts services. Two sibling commands wrap the same run-core for background operation: `cmd/classicstack-svc` (Windows service) and `cmd/classicstackd` (Unix/macOS daemon).
-2. **Router** (`router/`) receives DDP datagrams from all ports, maintains the `RoutingTable` and `ZoneInformationTable`, and dispatches to services by socket number or forwards to other ports.
-3. **Ports** (`port/`) abstract network interfaces. All implement `port.Port` (Unicast/Broadcast/Multicast). Implementations: `ethertalk`, `localtalk/ltoudp`, `localtalk/tashtalk`, `localtalk/virtual`.
-4. **Services** (`service/`) plug into the router by registering socket numbers. Each implements `service.Service`.
-
-### Key Packages
-
-| Package | Role |
-|---|---|
-| `internal/app/` | The run-core (formerly `cmd/classicstack` package `main`): flag/TOML parsing, the `Supervisor`, every `wireXxx` hook, control-plane + web UI wiring. Exposes `Main(Version)` and `Run(ctx, args, Version)` so the interactive binary and the service/daemon wrappers all share one runtime. |
-| `cmd/classicstack/` | Thin interactive entry point (`main()` → `app.Main`); holds the link-time `Build*` vars (`-ldflags -X main.Build...`). |
-| `cmd/classicstack-svc/` | Windows service wrapper (SCM via `golang.org/x/sys/windows/svc`); `install`/`uninstall`/`start`/`stop`/`status`/`run`. Stub on non-Windows. |
-| `cmd/classicstackd/` | Unix/macOS background daemon (self-daemonize via fork+`Setsid`, PID file); `start`/`stop`/`status`/`run`, plus macOS LaunchAgent `install`/`uninstall`. Stub on Windows. |
-| `appletalk/` | DDP datagram struct, encode/decode, MacRoman codec |
-| `router/` | Core routing engine, routing table aging, zone info |
-| `port/ethertalk/` | EtherTalk over raw Ethernet using libpcap/Npcap, includes AARP |
-| `port/localtalk/` | LocalTalk base; subpackages: LToUDP (UDP multicast 239.192.76.84:1954), TashTalk (serial at 1 Mbit/s), Virtual |
-| `service/rtmp/` | Routing Table Maintenance Protocol — `RespondingService` + `SendingService` |
-| `service/zip/` | Zone Information Protocol — `RespondingService` + `SendingService` |
-| `service/afp/` | Apple Filing Protocol file server (largest subsystem, 35 files) |
-| `service/asp/` | AppleTalk Session Protocol — AFP transport over DDP |
-| `service/atp/` | AppleTalk Transaction Protocol — reliable messaging |
-| `service/dsi/` | Data Stream Interface — AFP transport over TCP |
-| `service/macip/` | IP-over-AppleTalk gateway with NAT and DHCP relay |
-| `core/service/ncp/` | Novell NetWare Core Protocol file server (NetWare 3.x bindery emulation) over IPX + SAP advertising (`-tags ncp`); reuses the AFP/SMB storage + auth seams. See `spec/17-ncp.md` |
-| `adapter/control/http/` | Management web UI (`-tags webui`): HTTPS adapter over `pkg/control` — JSON API, Finder over `/finder`, SSE stats stream, Vite SPA (`make spa`) |
-| `pkg/control/` | Transport-agnostic management API (status, config stage/apply/save, service start/stop/restart, diagnostics); the single contract every UI front-end shares |
-| `pkg/status/` | In-process service-status registry read by the dashboard |
-| `pkg/metrics/` | Streaming stats hub (expvar + SSE sinks) |
-| `pkg/logbuf/` | In-memory log ring buffer + `slog.Handler` + broadcaster feeding the web UI log viewer (installed via `logging.Options.Extra`) |
-| `pkg/serialport/` | Per-OS serial-port enumeration for the TashTalk dropdown |
-| `config/` | Config loader plus `Model` (in-memory, editable, serialisable view of `server.toml` with numbered-backup Save) |
-| `netlog/` | Structured logger with debug/info/warn levels |
-
-The `cmd/classicstack` `Supervisor` owns the whole runtime: it builds ports, the
-router (and its DDP service set), and the standalone hooks from the config
-`Model`, and exposes per-service Start/Stop/Restart (dependency-aware) that the
-web UI drives through `pkg/control`. `main.go` only parses flags / loads TOML,
-builds the `Model`, and hands off to the supervisor.
+- **`core/`** — protocol-pure logic: wire codecs (`core/protocol/*`), the
+  router (`core/router`), file/network services (`core/service/*`), the
+  storage seam (`core/fs`, `core/share`, `core/metastore`). Imports stdlib
+  only (enforced by `core/internal/archtest`), so it stays TinyGo-safe for the
+  embedded targets under `hardware/`.
+- **`adapter/`** — the real world: `adapter/link` (pcap/ltoudp/tashtalk NICs),
+  `adapter/control` (http/ubus/inproc management front-ends), `adapter/config`,
+  `adapter/store`, `adapter/metastore`, `adapter/fork`. May import `core/`.
+- **`compose/`** — wiring only: `compose/registry` (name → factory),
+  `compose/runtime` (build + cross-wire), `compose/supervisor` (lifecycle,
+  dependency-ordered start/stop). Turns a `config.Model` into a running,
+  supervised stack. May import `core/` and `adapter/`.
+- **`client/`** — the outbound mirror of the server: `client/afp`,
+  `client/smb`, `client/ncp`, `client/etherdfs` dial a remote server and
+  present it as an `fs.FileSystem` via `client/link`'s transport `Opener`.
+- **`cmd/`** — thin entry points only. `cmd/classicstack/main.go` hands off
+  immediately to `cmd/internal/cli`, the shared run-core that parses flags/
+  `server.toml`, builds the `compose/runtime` stack, optionally serves the
+  web-admin control API (`-tags webui`), and runs until SIGINT/SIGTERM.
+  `cmd/classicstack-svc` (Windows service) and `cmd/classicstackd` (Unix/macOS
+  daemon) wrap the same run-core for background operation. `cmd/cs-tinygo` is
+  the embedded compile-smoke target (blank-imports the TinyGo-safe `core/`
+  subset); `cmd/csfs`/`cmd/csmount`/`cmd/csclient` are file-client CLIs over
+  the `client/` SDK; the rest (`cmd/csecho`, `cmd/csnbp`, …) are AppleTalk/IPX
+  diagnostic probes.
 
 ### AFP Architecture
 
@@ -98,11 +85,11 @@ AFP supports two transport stacks simultaneously:
 - **Classic:** DDP → ATP → ASP → AFP
 - **Modern:** TCP → DSI → AFP
 
-AppleDouble metadata is stored either as `._filename` sidecars or in `.appledouble/` folders (Netatalk-compatible). CNID tracking uses SQLite (`modernc.org/sqlite`).
+AppleDouble metadata is stored either as `._filename` sidecars or in `.appledouble/` folders (Netatalk-compatible). CNID tracking (`core/metastore`) defaults to an in-memory store; the `sqlite` build tag swaps in a SQLite-backed one (`modernc.org/sqlite`) instead.
 
 ### Configuration
 
-Copy `server.toml.example` to `server.toml`. Format is TOML (parsed via `knadh/koanf` + `pelletier/go-toml`). Sections: `[LToUdp]`, `[TashTalk]`, `[EtherTalk]`, `[MacIP]`, `[AFP]`, `[Volumes.*]`, `[Logging]`. File extension→type/creator mappings live in `extmap.conf` (Netatalk-compatible format).
+Copy `server.toml.example` to `server.toml`. Format is TOML (`pelletier/go-toml`), loaded into `core/config.Model` (see `core/config/config.go`). Section keys mirror the example file: singletons like `[identity]`, `[router]`, `[MacIP]`, `[http]`; repeated (named-instance) sections like `[[ethertalk]]`, `[[ltoudp]]`, `[[afpvolumes]]`, `[[smbshares]]`. File extension→type/creator mappings live in `extmap.conf` (Netatalk-compatible format). Full key-by-key reference: [`docs/config.md`](docs/config.md).
 
 ### Protocol Specifications
 
