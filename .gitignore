@@ -49,6 +49,13 @@ vendor/
 go.work
 go.work.sum
 
+# Hugo build output and the gomarkdoc-generated API reference pages (docs.yml
+# regenerates both on every build; only site/content/reference/_index.md is
+# hand-written and tracked).
+/public/
+/site/content/reference/*
+!/site/content/reference/_index.md
+
 # env file
 .env
 
