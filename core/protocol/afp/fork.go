@@ -295,12 +295,20 @@ func (r RenameRequest) Marshal() []byte {
 //          srcPath(pascal) dstPathType(1) dstPath(pascal) newType(1) newName(pascal).
 // Reply: empty.
 
-// MoveAndRenameRequest builds an FPMoveAndRename block. It moves the source object into
-// the destination directory, optionally renaming it (NewName empty → keep the name).
-type MoveAndRenameRequest struct {
+// MoveHeader is the volume and the two directory ids an FPMoveAndRename
+// operates between — shared by MoveAndRenameRequest here (the client-direction
+// marshal side) and core/service/afp's FPMoveAndRenameReq (the server-direction
+// unmarshal side).
+type MoveHeader struct {
 	VolID    uint16
 	SrcDirID uint32
 	DstDirID uint32
+}
+
+// MoveAndRenameRequest builds an FPMoveAndRename block. It moves the source object into
+// the destination directory, optionally renaming it (NewName empty → keep the name).
+type MoveAndRenameRequest struct {
+	MoveHeader
 	PathType uint8
 	SrcPath  []byte
 	DstPath  []byte // path of the destination DIRECTORY (often empty → dstDirID root)

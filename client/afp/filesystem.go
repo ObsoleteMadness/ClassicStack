@@ -278,13 +278,11 @@ func (f *FS) Rename(old, new string) error {
 	} else {
 		_, err = f.command("FPMoveAndRename", old, func(volID uint16) []byte {
 			req := proto.MoveAndRenameRequest{
-				VolID:    volID,
-				SrcDirID: proto.CNIDRoot,
-				DstDirID: proto.CNIDRoot,
-				PathType: pathType,
-				SrcPath:  afpWirePath(old),
-				DstPath:  afpWirePath(newDir),
-				NewName:  afpEncodeName(newBase),
+				MoveHeader: proto.MoveHeader{VolID: volID, SrcDirID: proto.CNIDRoot, DstDirID: proto.CNIDRoot},
+				PathType:   pathType,
+				SrcPath:    afpWirePath(old),
+				DstPath:    afpWirePath(newDir),
+				NewName:    afpEncodeName(newBase),
 			}
 			return req.Marshal()
 		})

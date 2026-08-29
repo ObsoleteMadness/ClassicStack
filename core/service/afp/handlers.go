@@ -602,7 +602,10 @@ const isDirFlag uint8 = 0x80
 // to FPGetFileDirParmsRes.Marshal (the production path) so the golden test that
 // pins this framing validates the same code the handler runs.
 func fileDirParmsHeader(out []byte, fileBitmap, dirBitmap uint16, isDir bool) []byte {
-	hdr := (&FPGetFileDirParmsRes{FileBitmap: fileBitmap, DirBitmap: dirBitmap, IsDir: isDir}).Marshal()
+	hdr := (&FPGetFileDirParmsRes{
+		FileDirBitmaps: protocol.FileDirBitmaps{FileBitmap: fileBitmap, DirBitmap: dirBitmap},
+		IsDir:          isDir,
+	}).Marshal()
 	return append(out, hdr...)
 }
 
@@ -642,10 +645,9 @@ func (s *Service) afpGetFileDirParms(a *afpSession, block []byte) ([]byte, int32
 	// then the packed params governed by the applicable bitmap. The DTO owns the
 	// fixed header; fileDirParams packs the variable params.
 	res := &FPGetFileDirParmsRes{
-		FileBitmap: fileBitmap,
-		DirBitmap:  dirBitmap,
-		IsDir:      info.IsDir(),
-		Params:     vol.fileDirParams(nil, store, info, bitmap, pathType),
+		FileDirBitmaps: protocol.FileDirBitmaps{FileBitmap: fileBitmap, DirBitmap: dirBitmap},
+		IsDir:          info.IsDir(),
+		Params:         vol.fileDirParams(nil, store, info, bitmap, pathType),
 	}
 	return res.Marshal(), afpNoErr
 }
@@ -821,10 +823,9 @@ func (s *Service) afpEnumerate(a *afpSession, block []byte) ([]byte, int32) {
 		return nil, afpErrObjectNotFnd
 	}
 	res := &FPEnumerateRes{
-		FileBitmap: fileBitmap,
-		DirBitmap:  dirBitmap,
-		ActCount:   uint16(actual),
-		Entries:    entries2,
+		FileDirBitmaps: protocol.FileDirBitmaps{FileBitmap: fileBitmap, DirBitmap: dirBitmap},
+		ActCount:       uint16(actual),
+		Entries:        entries2,
 	}
 	return res.Marshal(), afpNoErr
 }

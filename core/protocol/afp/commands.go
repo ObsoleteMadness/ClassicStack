@@ -322,13 +322,29 @@ func (r GetFileDirParmsRequest) Marshal() []byte {
 	return out
 }
 
+// FileDirBitmaps is the echoed file/directory parameter bitmap pair that opens
+// both an FPGetFileDirParms and an FPEnumerate reply — the header shape
+// GetFileDirParmsReply and EnumerateReply share below, and the one
+// core/service/afp's FPGetFileDirParmsRes/FPEnumerateRes marshal back onto the
+// wire on the encode side.
+type FileDirBitmaps struct {
+	FileBitmap uint16
+	DirBitmap  uint16
+}
+
+// Marshal appends the 4-byte FileBitmap+DirBitmap header to dst.
+func (h FileDirBitmaps) Marshal(dst []byte) []byte {
+	dst = bp.AppendBE16(dst, h.FileBitmap)
+	dst = bp.AppendBE16(dst, h.DirBitmap)
+	return dst
+}
+
 // GetFileDirParmsReply is the parsed reply: the echoed bitmaps, the isDir flag, and the
 // parsed parameter block governed by the applicable bitmap.
 type GetFileDirParmsReply struct {
-	FileBitmap uint16
-	DirBitmap  uint16
-	IsDir      bool
-	Params     FileDirParams
+	FileDirBitmaps
+	IsDir  bool
+	Params FileDirParams
 }
 
 // ParseGetFileDirParmsReply decodes an FPGetFileDirParms reply body.
@@ -337,9 +353,11 @@ func ParseGetFileDirParmsReply(b []byte) (GetFileDirParmsReply, bool) {
 		return GetFileDirParmsReply{}, false
 	}
 	r := GetFileDirParmsReply{
-		FileBitmap: bp.BE16(b[0:2]),
-		DirBitmap:  bp.BE16(b[2:4]),
-		IsDir:      b[4]&0x80 != 0,
+		FileDirBitmaps: FileDirBitmaps{
+			FileBitmap: bp.BE16(b[0:2]),
+			DirBitmap:  bp.BE16(b[2:4]),
+		},
+		IsDir: b[4]&0x80 != 0,
 	}
 	bitmap := r.FileBitmap
 	if r.IsDir {
@@ -386,9 +404,8 @@ func (r EnumerateRequest) Marshal() []byte {
 // EnumerateReply is the parsed FPEnumerate reply: the echoed bitmaps and one
 // FileDirParams per child.
 type EnumerateReply struct {
-	FileBitmap uint16
-	DirBitmap  uint16
-	Entries    []FileDirParams
+	FileDirBitmaps
+	Entries []FileDirParams
 }
 
 // ParseEnumerateReply decodes an FPEnumerate reply body. Each entry is framed
@@ -399,8 +416,10 @@ func ParseEnumerateReply(b []byte) (EnumerateReply, bool) {
 		return EnumerateReply{}, false
 	}
 	r := EnumerateReply{
-		FileBitmap: bp.BE16(b[0:2]),
-		DirBitmap:  bp.BE16(b[2:4]),
+		FileDirBitmaps: FileDirBitmaps{
+			FileBitmap: bp.BE16(b[0:2]),
+			DirBitmap:  bp.BE16(b[2:4]),
+		},
 	}
 	count := int(bp.BE16(b[4:6]))
 	off := 6

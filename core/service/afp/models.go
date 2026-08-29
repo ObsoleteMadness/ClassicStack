@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 )
 
 // errShortRequest is returned by a request DTO's Unmarshal when the block is too
@@ -27,17 +28,20 @@ var errShortRequest = errors.New("afp: request block too short")
 //
 // typeByte is 0x80 for a directory, 0x00 for a file. The refactor originally
 // emitted a single combined bitmap here (2 bytes short) — this DTO pins both.
+// The FileBitmap/DirBitmap header is protocol.FileDirBitmaps — shared with
+// core/protocol/afp.GetFileDirParmsReply, the client-direction counterpart —
+// rather than a second copy of those two fields; Params stays server-only
+// (already-packed bytes, not the client's typed FileDirParams, since the
+// server streams these straight from live Volume state — see parms.go).
 type FPGetFileDirParmsRes struct {
-	FileBitmap uint16
-	DirBitmap  uint16
-	IsDir      bool
-	Params     []byte
+	protocol.FileDirBitmaps
+	IsDir  bool
+	Params []byte
 }
 
 func (r *FPGetFileDirParmsRes) Marshal() []byte {
 	out := make([]byte, 0, 6+len(r.Params))
-	out = bp.AppendBE16(out, r.FileBitmap)
-	out = bp.AppendBE16(out, r.DirBitmap)
+	out = r.FileDirBitmaps.Marshal(out)
 	if r.IsDir {
 		out = append(out, isDirFlag, 0)
 	} else {
@@ -55,18 +59,17 @@ func (r *FPGetFileDirParmsRes) Marshal() []byte {
 // the params are measured from the start of the params (the byte after the type
 // byte) — so an entry is exactly [len][type][params], TWO bytes before params,
 // with any even-length pad applied at the entry's tail (never between the type
-// byte and the params).
+// byte and the params). The FileBitmap/DirBitmap header is protocol.FileDirBitmaps,
+// shared with core/protocol/afp.EnumerateReply — see FPGetFileDirParmsRes above.
 type FPEnumerateRes struct {
-	FileBitmap uint16
-	DirBitmap  uint16
-	ActCount   uint16
-	Entries    []byte
+	protocol.FileDirBitmaps
+	ActCount uint16
+	Entries  []byte
 }
 
 func (r *FPEnumerateRes) Marshal() []byte {
 	out := make([]byte, 0, 6+len(r.Entries))
-	out = bp.AppendBE16(out, r.FileBitmap)
-	out = bp.AppendBE16(out, r.DirBitmap)
+	out = r.FileDirBitmaps.Marshal(out)
 	out = bp.AppendBE16(out, r.ActCount)
 	return append(out, r.Entries...)
 }
@@ -102,11 +105,11 @@ func enumEntry(isDir bool, params []byte) []byte {
 
 // FPMoveAndRameReq: cmd(0) pad(1) volID(2:4) srcDirID(4:8) dstDirID(8:12)
 // srcPathType(12) srcName(pascal) dstPathType dstDirName(pascal) newPathType
-// newName(pascal).
+// newName(pascal). The VolID/SrcDirID/DstDirID header is protocol.MoveHeader,
+// shared with core/protocol/afp.MoveAndRenameRequest — the client-direction
+// marshal side of this same command.
 type FPMoveAndRenameReq struct {
-	VolumeID    uint16
-	SrcDirID    uint32
-	DstDirID    uint32
+	protocol.MoveHeader
 	SrcPathType uint8
 	SrcName     string
 	DstPathType uint8
@@ -119,7 +122,7 @@ func (req *FPMoveAndRenameReq) Unmarshal(data []byte) error {
 	if len(data) < 14 {
 		return errShortRequest
 	}
-	req.VolumeID = bp.BE16(data[2:4])
+	req.VolID = bp.BE16(data[2:4])
 	req.SrcDirID = bp.BE32(data[4:8])
 	req.DstDirID = bp.BE32(data[8:12])
 	req.SrcPathType = data[12]

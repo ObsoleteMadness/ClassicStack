@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 )
 
 // TestEnumEntry_LayoutNoPadByte pins the FPEnumerate per-entry framing that the
@@ -62,10 +63,9 @@ func TestEnumEntry_LayoutNoPadByte(t *testing.T) {
 func TestFPEnumerateRes_Header(t *testing.T) {
 	t.Parallel()
 	res := &FPEnumerateRes{
-		FileBitmap: 0x07FB,
-		DirBitmap:  0x0DFF,
-		ActCount:   3,
-		Entries:    []byte{0xAA, 0xBB},
+		FileDirBitmaps: protocol.FileDirBitmaps{FileBitmap: 0x07FB, DirBitmap: 0x0DFF},
+		ActCount:       3,
+		Entries:        []byte{0xAA, 0xBB},
 	}
 	want := []byte{0x07, 0xFB, 0x0D, 0xFF, 0x00, 0x03, 0xAA, 0xBB}
 	if got := res.Marshal(); !bytes.Equal(got, want) {
@@ -80,10 +80,9 @@ func TestFPEnumerateRes_Header(t *testing.T) {
 func TestFPEnumerateRes_MarshalGolden(t *testing.T) {
 	t.Parallel()
 	res := &FPEnumerateRes{
-		FileBitmap: 0x07FB,
-		DirBitmap:  0x0DFF,
-		ActCount:   3,
-		Entries:    []byte("enumerate-payload"),
+		FileDirBitmaps: protocol.FileDirBitmaps{FileBitmap: 0x07FB, DirBitmap: 0x0DFF},
+		ActCount:       3,
+		Entries:        []byte("enumerate-payload"),
 	}
 	got := res.Marshal()
 	want := goldenBytes(t, "fpenumerateres_basic.hex", got)
@@ -114,11 +113,12 @@ func TestDirIDReplyGolden(t *testing.T) {
 // two bitmaps into one word here (2 bytes short) — this guards against that.
 func TestFPGetFileDirParmsRes_Header(t *testing.T) {
 	t.Parallel()
-	file := (&FPGetFileDirParmsRes{FileBitmap: 0x07FB, DirBitmap: 0x0DFF, IsDir: false, Params: []byte{0xAA}}).Marshal()
+	bitmaps := protocol.FileDirBitmaps{FileBitmap: 0x07FB, DirBitmap: 0x0DFF}
+	file := (&FPGetFileDirParmsRes{FileDirBitmaps: bitmaps, IsDir: false, Params: []byte{0xAA}}).Marshal()
 	if want := []byte{0x07, 0xFB, 0x0D, 0xFF, 0x00, 0x00, 0xAA}; !bytes.Equal(file, want) {
 		t.Fatalf("file header drift:\n got:  %x\n want: %x", file, want)
 	}
-	dir := (&FPGetFileDirParmsRes{FileBitmap: 0x07FB, DirBitmap: 0x0DFF, IsDir: true, Params: []byte{0xAA}}).Marshal()
+	dir := (&FPGetFileDirParmsRes{FileDirBitmaps: bitmaps, IsDir: true, Params: []byte{0xAA}}).Marshal()
 	if want := []byte{0x07, 0xFB, 0x0D, 0xFF, 0x80, 0x00, 0xAA}; !bytes.Equal(dir, want) {
 		t.Fatalf("dir header drift:\n got:  %x\n want: %x", dir, want)
 	}
