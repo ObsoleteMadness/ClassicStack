@@ -2,7 +2,11 @@
 
 package csnet
 
-import "strings"
+import (
+	"strings"
+
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+)
 
 // ParseMAC parses a colon-, dash-, or bare-hex six-octet hardware address into a
 // fixed [6]byte. Hand-rolled (net.ParseMAC is unavailable under TinyGo) —
@@ -23,24 +27,12 @@ func ParseMAC(s string) ([6]byte, error) {
 	}
 	var mac [6]byte
 	for i := 0; i < 6; i++ {
-		hi, ok1 := hexNibble(stripped[i*2])
-		lo, ok2 := hexNibble(stripped[i*2+1])
+		hi, ok1 := bp.HexNibble(stripped[i*2])
+		lo, ok2 := bp.HexNibble(stripped[i*2+1])
 		if !ok1 || !ok2 {
 			return [6]byte{}, ErrBadMAC
 		}
 		mac[i] = hi<<4 | lo
 	}
 	return mac, nil
-}
-
-func hexNibble(c byte) (byte, bool) {
-	switch {
-	case c >= '0' && c <= '9':
-		return c - '0', true
-	case c >= 'a' && c <= 'f':
-		return c - 'a' + 10, true
-	case c >= 'A' && c <= 'F':
-		return c - 'A' + 10, true
-	}
-	return 0, false
 }

@@ -3,6 +3,8 @@ package auth
 import (
 	"errors"
 	"testing"
+
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 )
 
 // fixedSalt is a 16-byte salt used across the credential tests (core/auth does
@@ -13,35 +15,11 @@ var fixedSalt = []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
 // vector (password "passwd", salt "salt", 1 iteration, dkLen 64) so a refactor of
 // the hand-rolled derivation cannot silently change the hash.
 func TestPBKDF2SHA256Vector(t *testing.T) {
-	got := encodeHex(pbkdf2SHA256([]byte("passwd"), []byte("salt"), 1, 64))
+	got := bp.EncodeHex(pbkdf2SHA256([]byte("passwd"), []byte("salt"), 1, 64))
 	want := "55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc" +
 		"49ca9cccf179b645991664b39d77ef317c71b845b1e30bd509112041d3a19783"
 	if got != want {
 		t.Fatalf("pbkdf2-sha256 mismatch:\n got %s\nwant %s", got, want)
-	}
-}
-
-func TestHexRoundTrip(t *testing.T) {
-	for _, in := range [][]byte{nil, {0x00}, {0xff, 0x01, 0xab}, fixedSalt} {
-		enc := encodeHex(in)
-		dec, ok := decodeHex(enc)
-		if !ok {
-			t.Fatalf("decodeHex(%q) not ok", enc)
-		}
-		if len(in) != len(dec) {
-			t.Fatalf("hex round-trip length %d != %d", len(dec), len(in))
-		}
-		for i := range in {
-			if in[i] != dec[i] {
-				t.Fatalf("hex round-trip mismatch at %d", i)
-			}
-		}
-	}
-	if _, ok := decodeHex("abc"); ok { // odd length
-		t.Fatal("decodeHex accepted odd-length input")
-	}
-	if _, ok := decodeHex("zz"); ok { // non-hex
-		t.Fatal("decodeHex accepted non-hex input")
 	}
 }
 

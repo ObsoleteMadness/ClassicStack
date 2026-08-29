@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
+
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 )
 
 // Credential parameters. salt and hash are stored; the iteration count and key
@@ -18,8 +20,8 @@ import (
 // TinyGo (see core/csnet/random.go); the archtest gate bans specific generic
 // reflection-based *serialization* packages (encoding/json, encoding/binary,
 // database/sql), not reflect itself. So salt generation (NewCredential) lives
-// here now rather than being the caller's job; hex coding stays hand-rolled
-// below regardless, matching core/binaryprimitives' style elsewhere in core.
+// here now rather than being the caller's job; hex coding (SaltHex/HashHex/
+// ParseCredential) goes through core/binaryprimitives' shared codec.
 const (
 	SaltLen        = 16     // salt length in bytes NewCredential generates
 	credIterations = 100000 // PBKDF2 iteration count
@@ -72,63 +74,21 @@ func (c Credential) Verify(password string) bool {
 }
 
 // SaltHex / HashHex return the hex encodings a text store serialises.
-func (c Credential) SaltHex() string { return encodeHex(c.Salt) }
-func (c Credential) HashHex() string { return encodeHex(c.Hash) }
+func (c Credential) SaltHex() string { return bp.EncodeHex(c.Salt) }
+func (c Credential) HashHex() string { return bp.EncodeHex(c.Hash) }
 
 // ParseCredential decodes a hex salt/hash pair back into a Credential, validating
 // the lengths so a corrupt record fails loudly rather than silently never matching.
 func ParseCredential(saltHex, hashHex string) (Credential, error) {
-	salt, ok := decodeHex(saltHex)
+	salt, ok := bp.DecodeHex(saltHex)
 	if !ok || len(salt) != SaltLen {
 		return Credential{}, ErrBadCredentialRecord
 	}
-	hash, ok := decodeHex(hashHex)
+	hash, ok := bp.DecodeHex(hashHex)
 	if !ok || len(hash) != credKeyLen {
 		return Credential{}, ErrBadCredentialRecord
 	}
 	return Credential{Salt: salt, Hash: hash}, nil
-}
-
-// TODO: Move this to are shared binaryprimitives
-// --- hand-rolled hex (encoding/hex transitively imports reflect; §1). ---
-
-const hexDigits = "0123456789abcdef"
-
-func encodeHex(b []byte) string {
-	out := make([]byte, len(b)*2)
-	for i, v := range b {
-		out[i*2] = hexDigits[v>>4]
-		out[i*2+1] = hexDigits[v&0x0f]
-	}
-	return string(out)
-}
-
-func decodeHex(s string) ([]byte, bool) {
-	if len(s)%2 != 0 {
-		return nil, false
-	}
-	out := make([]byte, len(s)/2)
-	for i := 0; i < len(out); i++ {
-		hi, ok1 := hexNibble(s[i*2])
-		lo, ok2 := hexNibble(s[i*2+1])
-		if !ok1 || !ok2 {
-			return nil, false
-		}
-		out[i] = hi<<4 | lo
-	}
-	return out, true
-}
-
-func hexNibble(c byte) (byte, bool) {
-	switch {
-	case c >= '0' && c <= '9':
-		return c - '0', true
-	case c >= 'a' && c <= 'f':
-		return c - 'a' + 10, true
-	case c >= 'A' && c <= 'F':
-		return c - 'A' + 10, true
-	}
-	return 0, false
 }
 
 // pbkdf2SHA256 is PBKDF2 (RFC 2898) with HMAC-SHA256 as the PRF. keyLen here is
