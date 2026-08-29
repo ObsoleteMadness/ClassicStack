@@ -110,10 +110,40 @@ hand-picking tags.
 | `fswatch` | Host filesystem change notifications surfaced to AFP/SMB/NCP/EtherDFS clients | — |
 | `perfcounters` | Extra `expvar` performance counters | — |
 
-Tags outside this table (`tinygo`, `pico`, `picow`, `esp32`, `wt32eth01`,
-`registrytag`, `driverint`, …) select embedded targets or internal test
-configurations rather than desktop features — see [testing.md](testing.md) for
-`driverint` and the `.refactor/00-DESIGN.md` charter for the embedded rings.
+Tags outside this table (`tinygo`, `pico`, `picow`, `pico2`, `pico2w`, `esp32`,
+`wt32eth01`, `registrytag`, `driverint`, …) select embedded targets or internal
+test configurations rather than desktop features — `driverint` is covered in
+[testing.md](testing.md); the embedded-target family is its own table below.
+
+### Embedded target tags
+
+ClassicStack targets both desktop (macOS/Linux/Windows) and embedded (Raspberry
+Pi Pico, ESP32) platforms from the same `core/` — a package that needs different
+logic on embedded (smaller buffers, no `net`/`reflect`) splits into two files
+gated by these tags rather than branching at runtime, e.g. `core/buf/buf.go`
+(desktop) / `core/buf/buf_tinygo.go` (`//go:build tinygo`) for buffer sizing, or
+`core/hostinfo/primary_interfaces.go` / `primary_interfaces_tinygo.go` for host
+introspection. `core/csnet` (MAC/IP address parsing) follows the identical split.
+
+| Tag | Enables | Scope |
+|---|---|---|
+| `tinygo` | The umbrella/implicit tag: the TinyGo toolchain sets it automatically on every embedded build, so it doubles as the generic "this is an embedded, not desktop" signal — no package needs a separate `embedded` tag (Go has no tag-alias mechanism, so one would have to be passed by hand on every embedded build command, duplicating what `tinygo` already gives for free). Gates the `_tinygo.go` sibling file in any core package with an embedded-specific implementation. | `core/*` split files |
+| `pico` / `pico2` | Raspberry Pi Pico (RP2040) / Pico 2 (RP2350) — `hardware/pico`, built via `tinygo build -target=pico` / `-target=pico2`. Files shared by both boards use `//go:build pico \|\| pico2`. | `hardware/pico/**` |
+| `picow` | Adds Wi-Fi (CYW43439) support on top of `pico`/`pico2` — passed as an extra `-tags picow` alongside `-target=pico`/`-target=pico2` (there is no separate TinyGo target for the W boards; RP2040/RP2350 are the same silicon either way). | `hardware/pico/**`, `hardware/peripherals/cyw43439` |
+| `esp32` | ESP32-family boards — `hardware/esp32`. | `hardware/esp32/**` |
+| `wt32eth01` | The WT32-ETH01 (ESP32 + LAN8720 Ethernet PHY) board variant under `hardware/esp32`. Currently cgo's directly against ESP-IDF's C headers/libraries (`scripts/build_wt32eth01.sh` documents the known gap: it needs a real `idf.py build` of a companion component project to produce linkable libraries, so CI treats this target as best-effort/continue-on-error, not yet a green gate). | `hardware/esp32/wt32eth01` |
+
+Build and CI entry points: `scripts/build_pico.sh {pico\|picow\|pico2\|pico2w}`,
+`scripts/build_wt32eth01.sh`, and `make tinygo-gate` / `scripts/ci/tinygo-gate.sh`
+(compiles `cmd/cs-tinygo`, the blank-import smoke test proving every core package
+stays TinyGo-clean — stdlib only, no `reflect`). `refactor-harness.yml` and
+`pr-ci.yml` run these on every PR; `release-main.yml` does not attach embedded
+binaries to tagged releases (compile validation lives in CI, not the release
+artifact set — see the "release" workflow's own history for why).
+
+For the design rationale behind the embedded/desktop split (why `core/` stays
+`net`/`reflect`-free, which capability tags a netless Pico-class build can and
+can't carry), see `.refactor/00-DESIGN.md`'s embedded-discipline sections.
 
 ## Running as a service / daemon
 

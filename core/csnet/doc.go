@@ -10,4 +10,7 @@
 // behavior (§1) — callers use the same API regardless of which build produced
 // it. RandomMAC needs no such split: crypto/rand builds and links fine under
 // TinyGo (see random.go's doc comment for why it's allowed in core at all).
+//
+// See docs/build.md's "Embedded target tags" table for the full tinygo/pico/
+// esp32 build-tag family this split belongs to.
 package csnet
