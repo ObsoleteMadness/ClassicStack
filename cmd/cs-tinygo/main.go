@@ -58,9 +58,10 @@ import (
 
 	// M8a: the authentication seam's CONTRACT + PBKDF2 credential codec must stay
 	// TinyGo-clean so an embedded build can gate share access. Only core/auth is
-	// blank-imported: it is reflection-free (hand-rolled hex, no crypto/rand). The
-	// file-backed store lives in adapter/auth/local — it uses crypto/rand (which
-	// pulls reflect) and os, so it is deliberately an adapter, not part of this gate.
+	// blank-imported (crypto/rand is fine here — see core/csnet/random.go — but
+	// hex coding stays hand-rolled regardless, matching core/binaryprimitives'
+	// style). The file-backed store lives in adapter/auth/local — it needs os for
+	// file I/O, so it is deliberately an adapter, not part of this gate.
 	_ "github.com/ObsoleteMadness/ClassicStack/core/auth"
 
 	// M1: the pure-Go pcapfile capture writer is required to be TinyGo-safe (§6f)

@@ -1,6 +1,6 @@
 package link
 
-import "crypto/rand"
+import "github.com/ObsoleteMadness/ClassicStack/core/csnet"
 
 // RandomMAC returns a synthetic locally-administered unicast Ethernet address for
 // a virtual station: the first octet has the locally-administered bit set and the
@@ -10,13 +10,10 @@ import "crypto/rand"
 // borrow the host NIC's identity (which would collide, and on Windows cannot even
 // be resolved from an "\Device\NPF_{GUID}" name).
 //
-// This lives here rather than in core/csnet because it needs crypto/rand, which
-// transitively imports reflect — forbidden in the core ring (core/internal/archtest,
-// §1). Every current caller (client/etherdfs, client/ncp, client/netbios,
-// client/smb, cmd/internal/csconnect) already imports this package.
+// Delegates to core/csnet.RandomMAC, the canonical implementation (crypto/rand is
+// allowed in core — see core/csnet/random.go's doc comment). Kept as a wrapper
+// here since client/etherdfs.RandomMAC, client/ncp.RandomMAC,
+// client/netbios.RandomMAC, and client/smb.RandomMAC all call it by this name.
 func RandomMAC() [6]byte {
-	var mac [6]byte
-	_, _ = rand.Read(mac[:])
-	mac[0] = (mac[0] | 0x02) &^ 0x01 // locally-administered, unicast
-	return mac
+	return csnet.RandomMAC()
 }

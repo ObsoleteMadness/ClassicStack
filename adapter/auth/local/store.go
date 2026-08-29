@@ -3,13 +3,15 @@
 // colon-separated, salted PBKDF2-SHA256 hashes), separate from server.toml so
 // secrets never ride the main config or its numbered backups.
 //
-// It lives in the ADAPTER ring, not core, for one reason: generating a random
-// salt needs crypto/rand, which transitively imports reflect — banned in core by
-// the archtest gate (§1). The hashing/verification itself stays in core/auth
-// (reflection-free PBKDF2); this adapter supplies the randomness and the os file
-// I/O. It is the default store the way adapter/store/file and
-// adapter/metastore/sqlite are defaults — pure stdlib, no new dependency, no build
-// tag. A future PAM/Windows store is an additional adapter under adapter/auth/*.
+// It lives in the ADAPTER ring, not core, because it does file I/O (os,
+// path/filepath) — an adapter concern regardless of what core itself may
+// import. Credential generation/hashing/verification (including salt
+// generation via crypto/rand, which is fine in core — see
+// core/auth.NewCredential) stays in core/auth; this adapter supplies only the
+// on-disk format and file I/O. It is the default store the way
+// adapter/store/file and adapter/metastore/sqlite are defaults — pure stdlib,
+// no new dependency, no build tag. A future PAM/Windows store is an additional
+// adapter under adapter/auth/*.
 //
 // File format (one line per user; '#' comments and blank lines ignored):
 //
@@ -21,7 +23,6 @@
 package local
 
 import (
-	"crypto/rand"
 	"errors"
 	"os"
 	"path/filepath"
@@ -148,11 +149,10 @@ func (s *Store) SetUser(username, password string) error {
 	if password == "" {
 		return auth.ErrEmptyPassword
 	}
-	salt := make([]byte, auth.SaltLen)
-	if _, err := rand.Read(salt); err != nil {
+	cred, err := auth.NewCredential(password)
+	if err != nil {
 		return err
 	}
-	cred := auth.DeriveCredential(password, salt)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

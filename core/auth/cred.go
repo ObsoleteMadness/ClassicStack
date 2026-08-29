@@ -2,6 +2,7 @@ package auth
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
@@ -12,14 +13,15 @@ import (
 // cost field. PBKDF2-HMAC-SHA256 is implemented here over crypto/hmac +
 // crypto/sha256 so the package needs no golang.org/x/crypto dependency.
 //
-// core discipline (§1 / archtest): this file imports only crypto/hmac,
-// crypto/sha256 and crypto/subtle — all reflection-free. It deliberately does NOT
-// import crypto/rand (which transitively pulls reflect) or encoding/hex (likewise):
-// SALT GENERATION is the caller's job (a store adapter, which may use crypto/rand
-// in the adapter ring), and hex coding is hand-rolled below. So the contract stays
-// TinyGo-clean while the randomness lives where reflect is allowed.
+// core discipline (§1 / archtest): crypto/hmac, crypto/sha256, crypto/subtle,
+// and crypto/rand are all fine in core — reflect itself builds and links under
+// TinyGo (see core/csnet/random.go); the archtest gate bans specific generic
+// reflection-based *serialization* packages (encoding/json, encoding/binary,
+// database/sql), not reflect itself. So salt generation (NewCredential) lives
+// here now rather than being the caller's job; hex coding stays hand-rolled
+// below regardless, matching core/binaryprimitives' style elsewhere in core.
 const (
-	SaltLen        = 16     // expected salt length in bytes (the adapter generates it)
+	SaltLen        = 16     // salt length in bytes NewCredential generates
 	credIterations = 100000 // PBKDF2 iteration count
 	credKeyLen     = 32     // derived key length (SHA-256 output size)
 )
@@ -36,15 +38,27 @@ type Credential struct {
 	Hash []byte
 }
 
-// DeriveCredential derives a Credential for password under the supplied salt. The
-// caller (a store adapter) provides the salt — generated with crypto/rand for a
-// new user, or decoded from storage when re-deriving. Keeping rand out of here is
-// what lets core/auth stay reflection-free.
+// DeriveCredential derives a Credential for password under the supplied salt.
+// Used to re-derive an existing user's credential (e.g. to re-verify against a
+// stored salt) or by NewCredential for a fresh one; a caller decoding a stored
+// record uses this directly with the salt from storage.
 func DeriveCredential(password string, salt []byte) Credential {
 	return Credential{
 		Salt: salt,
 		Hash: pbkdf2SHA256([]byte(password), salt, credIterations, credKeyLen),
 	}
+}
+
+// NewCredential generates a fresh random SaltLen-byte salt and derives a
+// Credential for password under it — the counterpart to DeriveCredential for
+// creating a new user (SetUser/change-password) rather than re-verifying one
+// already on disk.
+func NewCredential(password string) (Credential, error) {
+	salt := make([]byte, SaltLen)
+	if _, err := rand.Read(salt); err != nil {
+		return Credential{}, err
+	}
+	return DeriveCredential(password, salt), nil
 }
 
 // Verify reports whether password matches the credential, in constant time. A

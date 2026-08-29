@@ -61,6 +61,26 @@ func TestCredentialRoundTrip(t *testing.T) {
 	}
 }
 
+func TestNewCredential(t *testing.T) {
+	c, err := NewCredential("hunter2")
+	if err != nil {
+		t.Fatalf("NewCredential: unexpected error: %v", err)
+	}
+	if len(c.Salt) != SaltLen || len(c.Hash) != credKeyLen {
+		t.Fatalf("credential sizes salt=%d hash=%d", len(c.Salt), len(c.Hash))
+	}
+	if !c.Verify("hunter2") {
+		t.Fatal("Verify rejected the correct password")
+	}
+	other, err := NewCredential("hunter2")
+	if err != nil {
+		t.Fatalf("NewCredential (second call): unexpected error: %v", err)
+	}
+	if string(c.Salt) == string(other.Salt) {
+		t.Fatal("NewCredential produced the same salt twice in a row (rand.Read broken?)")
+	}
+}
+
 func TestCredentialSaltMakesHashesDiffer(t *testing.T) {
 	saltA := []byte("aaaaaaaaaaaaaaaa")
 	saltB := []byte("bbbbbbbbbbbbbbbb")

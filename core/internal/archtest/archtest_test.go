@@ -12,16 +12,31 @@ import (
 const corePrefix = "github.com/ObsoleteMadness/ClassicStack/core/"
 
 // forbidden lists import paths (exact match) that no core/ runtime package may
-// pull in, transitively, plus a comment on why. This IS §1 made executable and
-// the no-reflection rule. Adding to this allowlist (i.e. removing an entry)
+// pull in, transitively, plus a comment on why. This IS §1 made executable.
+//
+// Policy: TinyGo's reflect package itself works fine (verified: crypto/rand,
+// which uses it, builds and links under real TinyGo — see core/csnet/random.go).
+// What TinyGo does NOT reliably support is *generic reflection-based
+// serialization* — walking arbitrary structs via struct tags to encode/decode
+// them (encoding/json, encoding/binary's Read/Write, database/sql's row
+// scanning). So bare "reflect" is not banned; the specific serialization
+// packages are, by name, below. Adding to this list (i.e. removing an entry)
 // requires a comment and a reviewer — do not silently exempt a package.
+//
+// Note: fmt is deliberately NOT in this list even though many core/ doc
+// comments say "core bans fmt" — crypto/rand itself transitively imports fmt,
+// so banning it here would make crypto/rand (and anything importing it, like
+// core/csnet.RandomMAC) fail this gate. fmt is still avoided by convention
+// (Sprintf/Printf's verb dispatch reflects over its arguments on every call,
+// unlike crypto/rand's incidental/unused reflect dependency) — existing
+// hand-rolled formatting (core/binaryprimitives, core/router/routing_table.go,
+// etc.) should stay hand-rolled — but it is no longer mechanically enforced.
 var forbidden = map[string]string{
 	"net/http":                   "control front-ends are adapters, not core",
-	"reflect":                    "no-reflection rule (TinyGo + allocation discipline)",
-	"encoding/json":              "JSON is an adapter concern (config/control codecs)",
+	"encoding/json":              "generic reflect-based (de)serialization TinyGo doesn't reliably support; also an adapter concern (config/control codecs)",
 	"log/slog":                   "core/log is the logging contract; slog is an adapter sink",
-	"database/sql":               "sqlite/SQL metastore is an adapter",
-	"encoding/binary":            "transitively imports reflect; hand-roll big-endian in core (see core/protocol/ddp)",
+	"database/sql":               "row-scanning is generic reflect-based (de)serialization TinyGo doesn't reliably support; sqlite/SQL metastore is an adapter",
+	"encoding/binary":            "Read/Write are generic reflect-based struct (de)serialization TinyGo doesn't reliably support; hand-roll big-endian in core (see core/binaryprimitives)",
 	"github.com/google/gopacket": "capture/link backends are adapters",
 	"github.com/knadh/koanf/v2":  "config codecs (koanf/toml) are adapters",
 	"modernc.org/sqlite":         "sqlite metastore is an adapter",

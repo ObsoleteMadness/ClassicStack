@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"github.com/ObsoleteMadness/ClassicStack/core/config"
+	"github.com/ObsoleteMadness/ClassicStack/core/csnet"
 )
 
 // Section is the flattened runtime view of a port's config. Ports, ApplyConfig,
@@ -129,61 +130,22 @@ func (s *Section) Validate() error {
 // ErrSeedRange reports a seed network range whose end precedes its start.
 var ErrSeedRange = errors.New("port: seed_network_end precedes seed_network")
 
-// ErrBadMAC reports a MAC string that is not six colon- or dash-separated hex octets.
+// ErrBadMAC reports a MAC string ParseMAC could not parse as six hex octets.
 var ErrBadMAC = errors.New("port: MAC must be six hex octets, e.g. 00:11:22:aa:bb:cc")
 
-// ParseMAC parses a colon- or dash-separated six-octet hardware address into a
-// fixed [6]byte. It is hand-rolled rather than using net.ParseMAC so core stays
-// free of net (TinyGo / allocation discipline) and accepts only the EUI-48 form
-// a station address takes. Hex is case-insensitive.
+// ParseMAC parses a colon-, dash-, dot-, or bare-hex six-octet hardware address
+// into a fixed [6]byte. Delegates to core/csnet.ParseMAC (net.ParseMAC on
+// desktop, hand-rolled under TinyGo), the shared implementation core/adapter/
+// client MAC parsers now converge on — so a station address string is accepted
+// or rejected identically everywhere in the codebase. Note this is stricter
+// than the previous hand-rolled parser about octet width: "0:11:22:aa:bb:cc"
+// (a single-nibble octet) is no longer accepted, matching net.ParseMAC.
 func ParseMAC(s string) ([6]byte, error) {
-	var mac [6]byte
-	idx, nibbles := 0, 0
-	var cur byte
-	flush := func() bool {
-		if nibbles == 0 || idx > 5 {
-			return false
-		}
-		mac[idx] = cur
-		idx++
-		cur, nibbles = 0, 0
-		return true
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == ':' || c == '-' {
-			if !flush() {
-				return [6]byte{}, ErrBadMAC
-			}
-			continue
-		}
-		v, ok := hexNibble(c)
-		if !ok || nibbles >= 2 {
-			return [6]byte{}, ErrBadMAC
-		}
-		cur = cur<<4 | v
-		nibbles++
-	}
-	if !flush() {
-		return [6]byte{}, ErrBadMAC
-	}
-	if idx != 6 {
+	mac, err := csnet.ParseMAC(s)
+	if err != nil {
 		return [6]byte{}, ErrBadMAC
 	}
 	return mac, nil
-}
-
-// hexNibble maps a single hex digit to its 0–15 value.
-func hexNibble(c byte) (byte, bool) {
-	switch {
-	case c >= '0' && c <= '9':
-		return c - '0', true
-	case c >= 'a' && c <= 'f':
-		return c - 'a' + 10, true
-	case c >= 'A' && c <= 'F':
-		return c - 'A' + 10, true
-	}
-	return 0, false
 }
 
 // compile-time assertions.

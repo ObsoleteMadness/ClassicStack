@@ -10,12 +10,15 @@
 // modern on our side of the bridge, faithful to the client's insecure dialect on
 // the wire.
 //
-// core discipline: this package imports only stdlib crypto (crypto/sha256,
-// crypto/rand, crypto/subtle, encoding/hex) — no net, no reflect, no
-// encoding/binary, no sqlite — so it compiles for embedded/TinyGo targets and
-// passes the archtest gate. A concrete file-backed store lives in the
-// core/auth/local subpackage (it needs os); a netless target that does not need
-// it simply does not import it.
+// core discipline: this package imports only stdlib crypto (crypto/hmac,
+// crypto/rand, crypto/sha256, crypto/subtle) plus errors — no net, no
+// encoding/binary, no encoding/json, no sqlite — so it compiles for
+// embedded/TinyGo targets and passes the archtest gate (hex coding is
+// hand-rolled in cred.go rather than encoding/hex, matching core/binaryprimitives'
+// style elsewhere in core). A concrete file-backed store lives in the
+// adapter/auth/local package (it needs os for file I/O — an adapter concern
+// regardless of what core itself may import); a netless target that does not
+// need it simply does not import it.
 package auth
 
 import (

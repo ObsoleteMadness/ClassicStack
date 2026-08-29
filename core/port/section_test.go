@@ -31,7 +31,7 @@ func TestParseMAC(t *testing.T) {
 		"00:11:22:aa:bb:cc",
 		"00:11:22:AA:BB:CC",
 		"00-11-22-aa-bb-cc",
-		"0:11:22:aa:bb:cc", // single-nibble octet permitted
+		"001122AABBCC", // bare hex, now accepted (matches net.ParseMAC)
 	} {
 		got, err := ParseMAC(in)
 		if err != nil {
@@ -52,6 +52,10 @@ func TestParseMAC_Rejects(t *testing.T) {
 		"001122:33:44:55",      // three-nibble octet
 		"00::11:22:33:44",      // empty octet
 		"00:11:22:33:44:55:",   // trailing separator
+		"0:11:22:aa:bb:cc",     // single-nibble octet — net.ParseMAC rejects this;
+		// the old hand-rolled parser used to accept it, but ParseMAC now delegates
+		// to core/csnet.ParseMAC (net.ParseMAC) to match every other MAC parser in
+		// the codebase, so this is now intentionally a rejection.
 	} {
 		if _, err := ParseMAC(in); !errors.Is(err, ErrBadMAC) {
 			t.Fatalf("ParseMAC(%q) err = %v, want ErrBadMAC", in, err)
