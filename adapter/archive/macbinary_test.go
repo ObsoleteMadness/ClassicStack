@@ -1,6 +1,9 @@
 package archive
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 const sampleMacBinary = "../../third_party/classicstack-web/public/welcome/Utilities/mactcp206.sit_.bin"
 
@@ -67,7 +70,7 @@ func TestExpandMacBinary_RealSample(t *testing.T) {
 // ErrUnsupportedFormat for non-MacBinary input.
 func TestExpandMacBinary_Rejects(t *testing.T) {
 	_, err := expandMacBinary([]byte("not a macbinary file"))
-	if err != ErrUnsupportedFormat {
+	if !errors.Is(err, ErrUnsupportedFormat) {
 		t.Errorf("error = %v, want ErrUnsupportedFormat", err)
 	}
 }
@@ -79,7 +82,7 @@ func TestExpandMacBinary_TruncatedIsCorrupt(t *testing.T) {
 	data := realSample(t, sampleMacBinary)
 	truncated := data[:200] // header (128) + a little data, nowhere near dataLen
 	_, err := expandMacBinary(truncated)
-	if err != ErrCorrupt {
+	if !errors.Is(err, ErrCorrupt) {
 		t.Errorf("error = %v, want ErrCorrupt", err)
 	}
 }

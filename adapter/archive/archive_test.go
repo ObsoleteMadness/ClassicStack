@@ -1,6 +1,9 @@
 package archive
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // TestSniff_ByExtension pins Sniff's extension-based shortcut: it recognises
 // a supported wrapper by filename alone, before ever looking at content.
@@ -113,7 +116,7 @@ func TestExpand_DispatchesByContent(t *testing.T) {
 // that matches none of the four formats.
 func TestExpand_Unsupported(t *testing.T) {
 	_, err := Expand("readme.txt", []byte("just some prose"), nil, [32]byte{})
-	if err != ErrUnsupportedFormat {
+	if !errors.Is(err, ErrUnsupportedFormat) {
 		t.Errorf("error = %v, want ErrUnsupportedFormat", err)
 	}
 }
@@ -125,7 +128,7 @@ func TestExpand_Unsupported(t *testing.T) {
 func TestExpand_CorruptZipPropagatesError(t *testing.T) {
 	corrupt := []byte("PK\x03\x04this is not a valid zip central directory")
 	_, err := Expand("broken.zip", corrupt, nil, [32]byte{})
-	if err != ErrCorrupt {
+	if !errors.Is(err, ErrCorrupt) {
 		t.Errorf("error = %v, want ErrCorrupt", err)
 	}
 }

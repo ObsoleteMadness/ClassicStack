@@ -2,6 +2,7 @@ package rip
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -65,10 +66,10 @@ func TestMarshal_NoEntries(t *testing.T) {
 // TestUnmarshal_TooShort checks a buffer shorter than the 2-byte operation
 // header is rejected.
 func TestUnmarshal_TooShort(t *testing.T) {
-	if _, err := Unmarshal(nil); err != ErrShort {
+	if _, err := Unmarshal(nil); !errors.Is(err, ErrShort) {
 		t.Errorf("Unmarshal(nil) error = %v, want ErrShort", err)
 	}
-	if _, err := Unmarshal([]byte{0x00}); err != ErrShort {
+	if _, err := Unmarshal([]byte{0x00}); !errors.Is(err, ErrShort) {
 		t.Errorf("Unmarshal(1 byte) error = %v, want ErrShort", err)
 	}
 }

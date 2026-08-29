@@ -1,6 +1,9 @@
 package archive
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 const sampleBinHex = "../../third_party/classicstack-web/src/fs/testdata/eyeball.gif.hqx"
 
@@ -59,7 +62,7 @@ func TestExpandBinHex_RealSample(t *testing.T) {
 // returning a zero-value Node.
 func TestExpandBinHex_Rejects(t *testing.T) {
 	_, err := expandBinHex([]byte("just an ordinary text file, nothing encoded here"))
-	if err != ErrUnsupportedFormat {
+	if !errors.Is(err, ErrUnsupportedFormat) {
 		t.Errorf("error = %v, want ErrUnsupportedFormat", err)
 	}
 }
@@ -71,7 +74,7 @@ func TestExpandBinHex_TruncatedIsCorrupt(t *testing.T) {
 	data := realSample(t, sampleBinHex)
 	truncated := data[:len(data)/2]
 	_, err := expandBinHex(truncated)
-	if err != ErrCorrupt {
+	if !errors.Is(err, ErrCorrupt) {
 		t.Errorf("error = %v, want ErrCorrupt", err)
 	}
 }
