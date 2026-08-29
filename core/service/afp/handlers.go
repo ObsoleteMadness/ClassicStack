@@ -55,20 +55,11 @@ const noBackupDate uint32 = 0x80000000
 // --- FPGetSrvrInfo (server-information block; spec/AFP_Connection_Flow §2). ---
 
 // ServerInfo is the identity this AFP server advertises in FPGetSrvrInfo /
-// ASPGetStatus. Defaults are filled by the service when unset.
-type ServerInfo struct {
-	ServerName  string
-	MachineType string
-	AFPVersions []string
-	UAMs        []string
-	Flags       uint16
-}
-
-// srvrInfoSupportsSrvrMsg is the FPGetSrvrInfo Flags bit advertising server-
-// message support (SupportsSrvrMsg, bit 3 — Inside Macintosh: Networking,
-// "GetSrvrInfo reply"; confirmed against an observed AppleShare capture). A
-// client only polls FPGetSrvrMsg / honours message attentions when it is set.
-const srvrInfoSupportsSrvrMsg uint16 = 0x0008
+// ASPGetStatus. Defaults are filled by the service when unset. Aliased onto
+// core/protocol/afp.ServerInfo — the CLIENT-direction parser's struct — rather
+// than kept as a second, field-for-field-identical definition; ParseServerInfo
+// there is this block's decode side, serverInfoBlock below is its encode side.
+type ServerInfo = protocol.ServerInfo
 
 // serverInfoBlock packs the FPGetSrvrInfo reply block. Layout (Inside Macintosh:
 // Networking, "GetSrvrInfo reply"):

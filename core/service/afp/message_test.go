@@ -16,6 +16,7 @@ import (
 	"time"
 
 	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/asp"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/atp"
 )
@@ -256,7 +257,7 @@ func TestServerInfo_AdvertisesSrvrMsg(t *testing.T) {
 	svc, _ := newRunningService(t)
 	block := svc.serverInfoBlock()
 	flags := bp.BE16(block[8:10])
-	if flags&srvrInfoSupportsSrvrMsg == 0 {
-		t.Fatalf("FPGetSrvrInfo flags = %#04x, want SupportsSrvrMsg (%#04x) set", flags, srvrInfoSupportsSrvrMsg)
+	if flags&protocol.SrvrInfoSupportsSrvrMsg == 0 {
+		t.Fatalf("FPGetSrvrInfo flags = %#04x, want SupportsSrvrMsg (%#04x) set", flags, protocol.SrvrInfoSupportsSrvrMsg)
 	}
 }

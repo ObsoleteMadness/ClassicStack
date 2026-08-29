@@ -56,6 +56,7 @@ import (
 	"github.com/ObsoleteMadness/ClassicStack/core/component"
 	"github.com/ObsoleteMadness/ClassicStack/core/fs"
 	"github.com/ObsoleteMadness/ClassicStack/core/log"
+	protocol "github.com/ObsoleteMadness/ClassicStack/core/protocol/afp"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/asp"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/atp"
 	"github.com/ObsoleteMadness/ClassicStack/core/protocol/ddp"
@@ -694,7 +695,7 @@ func fillServerInfo(info ServerInfo, authn Authenticator) ServerInfo {
 	// Server messages (FPGetSrvrMsg + attention) are always implemented, so the
 	// capability bit is always advertised — without it clients ignore message
 	// attentions and never fetch the login greeting.
-	info.Flags |= srvrInfoSupportsSrvrMsg
+	info.Flags |= protocol.SrvrInfoSupportsSrvrMsg
 	return info
 }
 
