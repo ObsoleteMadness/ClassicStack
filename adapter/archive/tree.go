@@ -74,7 +74,13 @@ func (b *treeBuilder) roots() []Node {
 	var roots []Node
 	seen := map[string]struct{}{}
 	for path := range b.dirs {
-		if _, ok := seen[path]; ok {
+		// Only a top-level directory (no "/") is ever a root; a nested one is
+		// picked up as a Child by its ancestor's buildTree recursion below.
+		// map iteration order is undefined, so without this check a nested
+		// dir visited before its parent would wrongly become its own root
+		// (and then get built a SECOND time, correctly, once its parent's
+		// turn came — a duplicate node, not just a misplaced one).
+		if strings.Contains(path, "/") {
 			continue
 		}
 		if n := b.buildTree(path, seen); n != nil {
