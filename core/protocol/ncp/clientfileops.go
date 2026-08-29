@@ -17,7 +17,11 @@ package ncp
 //
 // Reference: mars_nwe nwconn.c request layouts; Linux ncpfs (CLAUDE.md #7).
 
-import "errors"
+import (
+	"errors"
+
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+)
 
 var (
 	// ErrShortBody is returned by a reply parser when the reply body is shorter than
@@ -31,7 +35,7 @@ var (
 // client's proposed buffer size (2 BE). The reply is the accepted size (2 BE) =
 // min(server max, proposed).
 func (r *Requester) BuildNegotiateBuffer(proposed uint16) []byte {
-	return r.marshalRequest(fnNegotiateBuffer, beU16b(proposed))
+	return r.marshalRequest(fnNegotiateBuffer, bp.AppendBE16(nil, proposed))
 }
 
 // ParseNegotiateBuffer reads the accepted buffer size (2 BE) from a Negotiate Buffer
@@ -54,7 +58,7 @@ const objTypeUser uint16 = 0x0001
 // subfunction(0x14), object-type(2 BE), length-prefixed user name, length-prefixed
 // password — the layout handlers.go parseLoginArgs expects.
 func (r *Requester) BuildLogin(user, password string) []byte {
-	args := beU16b(objTypeUser)
+	args := bp.AppendBE16(nil, objTypeUser)
 	args = appendByteString(args, user)
 	args = appendByteString(args, password)
 	return r.marshalRequest(fnConnBindery, wrapSubfunction(sf17LoginUnencrypted, args))
@@ -88,7 +92,7 @@ func ParseLoginKey(body []byte) ([8]byte, error) {
 // length-prefixed name. The reply body is object-id(4 BE), object-type(2 BE), then a
 // 48-byte NUL-padded name.
 func (r *Requester) BuildGetBinderyObjectID(objType uint16, name string) []byte {
-	args := beU16b(objType)
+	args := bp.AppendBE16(nil, objType)
 	args = appendByteString(args, name)
 	return r.marshalRequest(fnConnBindery, wrapSubfunction(sf17GetBinderyObjectID, args))
 }
@@ -116,7 +120,7 @@ func (r *Requester) BuildLoginEncrypted(objType uint16, name, password string, o
 	nwEncrypt(key, digest, &resp)
 
 	args := append([]byte(nil), resp[:]...)
-	args = appendBE16(args, objType)
+	args = bp.AppendBE16(args, objType)
 	args = appendByteString(args, name)
 	return r.marshalRequest(fnConnBindery, wrapSubfunction(sf17LoginEncrypted, args))
 }
@@ -226,9 +230,9 @@ func ParseVolumeInfo(body []byte) (VolumeInfo, error) {
 		return VolumeInfo{}, ErrShortBody
 	}
 	vi := VolumeInfo{
-		SectorsPerBlock: be16(body[0:]),
-		TotalBlocks:     be16(body[2:]),
-		AvailBlocks:     be16(body[4:]),
+		SectorsPerBlock: bp.BE16(body[0:]),
+		TotalBlocks:     bp.BE16(body[2:]),
+		AvailBlocks:     bp.BE16(body[4:]),
 	}
 	name := body[10:26]
 	vi.Name = trimNUL(name)
@@ -290,7 +294,7 @@ func ParseOpenReply(body []byte) (OpenReply, error) {
 	var rep OpenReply
 	copy(rep.FileHandle[:], body[0:6])
 	rep.Name = trimNUL(body[8:22])
-	rep.Size = be32(body[22:])
+	rep.Size = bp.BE32(body[22:])
 	return rep, nil
 }
 
@@ -310,8 +314,8 @@ func (r *Requester) BuildCloseFile(handle [6]byte) []byte {
 // filler(1), file-handle[6], offset[4 BE], max_size[2 BE].
 func (r *Requester) BuildReadFile(handle [6]byte, off uint32, want uint16) []byte {
 	body := append([]byte{0x00}, handle[:]...)
-	body = appendBE32(body, off)
-	body = appendBE16(body, want)
+	body = bp.AppendBE32(body, off)
+	body = bp.AppendBE16(body, want)
 	return r.marshalRequest(fnReadFile, body)
 }
 
@@ -342,8 +346,8 @@ func ParseReadReply(body []byte, off uint32) ([]byte, error) {
 // filler(1), file-handle[6], offset[4 BE], size[2 BE], data. No reply body.
 func (r *Requester) BuildWriteFile(handle [6]byte, off uint32, data []byte) []byte {
 	body := append([]byte{0x00}, handle[:]...)
-	body = appendBE32(body, off)
-	body = appendBE16(body, uint16(len(data)))
+	body = bp.AppendBE32(body, off)
+	body = bp.AppendBE16(body, uint16(len(data)))
 	body = append(body, data...)
 	return r.marshalRequest(fnWriteFile, body)
 }
@@ -360,7 +364,7 @@ func ParseFileSize(body []byte) (uint32, error) {
 	if len(body) < 4 {
 		return 0, ErrShortBody
 	}
-	return be32(body), nil
+	return bp.BE32(body), nil
 }
 
 // --- Erase (0x44) / Rename (0x45) ---
@@ -427,7 +431,7 @@ const (
 // length-prefixed path (whose final component is the wildcard pattern). searchAttr
 // selects files vs directories via its directory bit (0x10).
 func (r *Requester) BuildSearchForFile(seq uint16, handle uint8, searchAttr uint8, path string) []byte {
-	body := appendBE16(nil, seq)
+	body := bp.AppendBE16(nil, seq)
 	body = append(body, handle, searchAttr)
 	body = appendByteString(body, path)
 	return r.marshalRequest(fnSearchForFile, body)
@@ -455,7 +459,7 @@ func ParseSearchReply(body []byte) (SearchEntry, error) {
 		return SearchEntry{}, ErrShortBody
 	}
 	var e SearchEntry
-	e.NextSeq = be16(body[0:])
+	e.NextSeq = bp.BE16(body[0:])
 	name := body[4:18]
 	e.Name = trimNUL(name)
 	attrLo := body[18] // attribute LO byte
@@ -464,7 +468,7 @@ func ParseSearchReply(body []byte) (SearchEntry, error) {
 		if len(body) < fixed+4 {
 			return SearchEntry{}, ErrShortBody
 		}
-		e.Size = be32(body[20:])
+		e.Size = bp.BE32(body[20:])
 	}
 	return e, nil
 }
@@ -523,8 +527,8 @@ func ParseFileSearchInit(body []byte) (FileSearchContext, error) {
 // directory bit (0x10), like the 0x40 scan.
 func (r *Requester) BuildFileSearchContinue(ctx FileSearchContext, attr uint8, pattern string) []byte {
 	body := []byte{ctx.VolumeNumber}
-	body = appendBE16(body, ctx.DirectoryID)
-	body = appendBE16(body, ctx.Sequence)
+	body = bp.AppendBE16(body, ctx.DirectoryID)
+	body = bp.AppendBE16(body, ctx.Sequence)
 	body = append(body, attr)
 	body = appendByteString(body, pattern)
 	return r.marshalRequest(fnFileSearchCont, body)
@@ -552,23 +556,13 @@ func ParseFileSearchContinue(body []byte, ctx *FileSearchContext) (SearchEntry, 
 		// File length is a 4-byte HL/BE word at offset 20 (ncpfs file_length,
 		// ncp_reply_dword_hl(conn, 20)).
 		if len(body) >= 24 {
-			e.Size = be32(body[20:])
+			e.Size = bp.BE32(body[20:])
 		}
 	}
 	return e, nil
 }
 
 // --- little wire helpers (big-endian body fields) ---
-
-func be16(b []byte) uint16 { return uint16(b[0])<<8 | uint16(b[1]) }
-func be32(b []byte) uint32 {
-	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
-}
-func appendBE16(dst []byte, v uint16) []byte { return append(dst, byte(v>>8), byte(v)) }
-func appendBE32(dst []byte, v uint32) []byte {
-	return append(dst, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
-}
-func beU16b(v uint16) []byte { return []byte{byte(v >> 8), byte(v)} }
 
 // byteString renders a 1-byte-length-prefixed string (Pascal form) the NCP file calls
 // use for names and paths; a name longer than 255 bytes is truncated (NetWare names
@@ -588,7 +582,7 @@ func appendByteString(dst []byte, s string) []byte { return append(dst, byteStri
 // byte, then the args — the layout dispatch.go's subfunction() reads.
 func wrapSubfunction(sf uint8, args []byte) []byte {
 	sflen := uint16(1 + len(args)) // subfunction byte + args
-	out := appendBE16(nil, sflen)
+	out := bp.AppendBE16(nil, sflen)
 	out = append(out, sf)
 	return append(out, args...)
 }

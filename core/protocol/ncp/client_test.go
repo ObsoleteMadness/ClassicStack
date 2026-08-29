@@ -3,6 +3,8 @@ package ncp
 import (
 	"bytes"
 	"testing"
+
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
 )
 
 // client_test.go verifies the CLIENT-direction request builders emit exactly the wire
@@ -132,7 +134,7 @@ func TestOpenReplyRoundTrip(t *testing.T) {
 	var name [14]byte
 	copy(name[:], "REPORT.TXT")
 	body = append(body, name[:]...)
-	body = appendBE32(body, 4096) // size
+	body = bp.AppendBE32(body, 4096) // size
 
 	o, err := ParseOpenReply(body)
 	if err != nil {
@@ -153,15 +155,15 @@ func TestOpenReplyRoundTrip(t *testing.T) {
 // total/free bytes.
 func TestVolumeInfoBytes(t *testing.T) {
 	var body []byte
-	body = appendBE16(body, 1)    // sectors per block
-	body = appendBE16(body, 1000) // total blocks
-	body = appendBE16(body, 400)  // avail blocks
-	body = appendBE16(body, 0xFFFF)
-	body = appendBE16(body, 0xFFFF)
+	body = bp.AppendBE16(body, 1)    // sectors per block
+	body = bp.AppendBE16(body, 1000) // total blocks
+	body = bp.AppendBE16(body, 400)  // avail blocks
+	body = bp.AppendBE16(body, 0xFFFF)
+	body = bp.AppendBE16(body, 0xFFFF)
 	var name [16]byte
 	copy(name[:], "SYS")
 	body = append(body, name[:]...)
-	body = appendBE16(body, 0) // removable
+	body = bp.AppendBE16(body, 0) // removable
 
 	vi, err := ParseVolumeInfo(body)
 	if err != nil {

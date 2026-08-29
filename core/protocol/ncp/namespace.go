@@ -9,7 +9,11 @@ package ncp
 // include/namspace.h (constants and the NW_HPATH / info-mask layouts are taken
 // from there — CLAUDE.md #7).
 
-import "errors"
+import (
+	"errors"
+
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+)
 
 // Name-space IDs (mars_nwe namspace.h). A volume advertises which it serves via
 // Get-Name-Spaces-Loaded (0x57/0x18); each request names the name space its path
@@ -145,54 +149,46 @@ type DirEntryInfo struct {
 // the name bytes; the caller has already encoded Name in the request's name space.
 func (e DirEntryInfo) MarshalDirInfo(infomask uint32, dst []byte) []byte {
 	if infomask&InfoMskDataStreamSpace != 0 {
-		dst = appendLE32(dst, e.Size) // allocated space (we report logical size)
+		dst = bp.AppendLE32(dst, e.Size) // allocated space (we report logical size)
 	}
 	if infomask&InfoMskAttributeInfo != 0 {
-		dst = appendLE32(dst, e.Attributes)
+		dst = bp.AppendLE32(dst, e.Attributes)
 	}
 	if infomask&InfoMskDataStreamSize != 0 {
-		dst = appendLE32(dst, e.Size)
+		dst = bp.AppendLE32(dst, e.Size)
 	}
 	if infomask&InfoMskTotalDataStreamSz != 0 {
-		dst = appendLE32(dst, e.Size) // single data stream → total == size
-		dst = append(dst, 1)          // number of data streams
+		dst = bp.AppendLE32(dst, e.Size) // single data stream → total == size
+		dst = append(dst, 1)             // number of data streams
 	}
 	if infomask&InfoMskArchiveInfo != 0 {
-		dst = appendLE16(dst, e.ArchiveDate)
-		dst = appendLE16(dst, e.ArchiveTime)
-		dst = appendLE32(dst, 0) // archiver id
+		dst = bp.AppendLE16(dst, e.ArchiveDate)
+		dst = bp.AppendLE16(dst, e.ArchiveTime)
+		dst = bp.AppendLE32(dst, 0) // archiver id
 	}
 	if infomask&InfoMskModifyInfo != 0 {
-		dst = appendLE16(dst, e.ModifyDate)
-		dst = appendLE16(dst, e.ModifyTime)
-		dst = appendLE32(dst, 0) // modifier id
-		dst = appendLE16(dst, e.ModifyDate)
+		dst = bp.AppendLE16(dst, e.ModifyDate)
+		dst = bp.AppendLE16(dst, e.ModifyTime)
+		dst = bp.AppendLE32(dst, 0) // modifier id
+		dst = bp.AppendLE16(dst, e.ModifyDate)
 	}
 	if infomask&InfoMskCreatInfo != 0 {
-		dst = appendLE16(dst, e.CreateDate)
-		dst = appendLE16(dst, e.CreateTime)
-		dst = appendLE32(dst, 0) // creator id
+		dst = bp.AppendLE16(dst, e.CreateDate)
+		dst = bp.AppendLE16(dst, e.CreateTime)
+		dst = bp.AppendLE32(dst, 0) // creator id
 	}
 	if infomask&InfoMskDirEntryInfo != 0 {
-		dst = appendLE32(dst, 0)   // directory entry number
-		dst = appendLE32(dst, 0)   // DOS directory entry number
-		dst = append(dst, NameDOS) // name space the entry was created in
-		dst = append(dst, 0, 0)    // reserved
+		dst = bp.AppendLE32(dst, 0) // directory entry number
+		dst = bp.AppendLE32(dst, 0) // DOS directory entry number
+		dst = append(dst, NameDOS)  // name space the entry was created in
+		dst = append(dst, 0, 0)     // reserved
 	}
 	if infomask&InfoMskRightsInfo != 0 {
-		dst = appendLE16(dst, 0xFFFF) // inherited rights mask (all)
+		dst = bp.AppendLE16(dst, 0xFFFF) // inherited rights mask (all)
 	}
 	if infomask&InfoMskEntryName != 0 {
 		dst = append(dst, byte(len(e.Name)))
 		dst = append(dst, e.Name...)
 	}
 	return dst
-}
-
-// --- little-endian append helpers (the name-space reply fields are LE, unlike the
-// big-endian NCP header) ---
-
-func appendLE16(dst []byte, v uint16) []byte { return append(dst, byte(v), byte(v>>8)) }
-func appendLE32(dst []byte, v uint32) []byte {
-	return append(dst, byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
 }

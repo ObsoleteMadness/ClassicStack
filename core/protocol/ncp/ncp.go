@@ -14,7 +14,11 @@
 // al). Constants and framing here are attributed to those works (CLAUDE.md #7).
 package ncp
 
-import "errors"
+import (
+	"errors"
+
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+)
 
 // Request-type values (the first two header bytes, big-endian). NCP multiplexes a
 // few "verbs" at the framing layer ahead of the per-request function code.
@@ -154,7 +158,7 @@ func Reply(req *RequestHeader, conn uint16, completion uint8) ReplyHeader {
 // Marshal appends the wire form of the reply header (8 bytes) to dst and returns
 // it (append-style → the caller appends the function-specific body afterwards).
 func (h ReplyHeader) Marshal(dst []byte) []byte {
-	dst = append(dst, byte(h.Type>>8), byte(h.Type))
+	dst = bp.AppendBE16(dst, h.Type)
 	dst = append(dst, h.SequenceNumber, h.ConnLow, h.TaskNumber, h.ConnHigh)
 	dst = append(dst, h.CompletionCode, h.ConnectionStatus)
 	return dst

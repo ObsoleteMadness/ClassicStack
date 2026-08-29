@@ -18,7 +18,11 @@ package ncp
 // Reference: Novell NCP; mars_nwe (Martin Stover) nwconn.c/nwbind.c; Linux ncpfs
 // (Volker Lendecke). Constants and framing attributed to those works (CLAUDE.md #7).
 
-import "errors"
+import (
+	"errors"
+
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+)
 
 // Requester marshals client→server NCP packets, stamping the per-connection sequence
 // and the assigned connection number into every request header. One Requester drives
@@ -60,14 +64,8 @@ func (r *Requester) ResetSeq() { r.seq = 0 }
 func (r *Requester) marshalRequest(fn uint8, body []byte) []byte {
 	seq := r.NextSeq()
 	out := make([]byte, 0, requestHeaderLen+1+len(body))
-	out = append(out,
-		byte(TypeRequest>>8), byte(TypeRequest&0xFF),
-		seq,
-		byte(r.Conn),
-		r.Task,
-		byte(r.Conn>>8),
-		fn,
-	)
+	out = bp.AppendBE16(out, TypeRequest)
+	out = append(out, seq, byte(r.Conn), r.Task, byte(r.Conn>>8), fn)
 	return append(out, body...)
 }
 
@@ -76,13 +74,8 @@ func (r *Requester) marshalRequest(fn uint8, body []byte) []byte {
 // sequence is bumped so the reply matches.
 func (r *Requester) marshalControl(typ uint16) []byte {
 	seq := r.NextSeq()
-	return []byte{
-		byte(typ >> 8), byte(typ),
-		seq,
-		byte(r.Conn),
-		r.Task,
-		byte(r.Conn >> 8),
-	}
+	out := bp.AppendBE16(nil, typ)
+	return append(out, seq, byte(r.Conn), r.Task, byte(r.Conn>>8))
 }
 
 // CreateConnection builds the TypeCreateConnection packet (0x1111) — the first packet

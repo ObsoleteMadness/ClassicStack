@@ -9,7 +9,11 @@ package ncp
 // 2-byte operation followed by one or more 64-byte service entries (the
 // general/periodic forms) or a bare type for the query forms.
 
-import "errors"
+import (
+	"errors"
+
+	bp "github.com/ObsoleteMadness/ClassicStack/core/binaryprimitives"
+)
 
 // SAPSocket is the well-known IPX socket SAP rides.
 var SAPSocket = [2]byte{0x04, 0x52}
@@ -68,7 +72,7 @@ type SAPEntry struct {
 // and returns it. op is SAPGeneralResponse (periodic broadcast / general answer)
 // or SAPNearestResponse (nearest-service answer).
 func MarshalResponse(op uint16, entries []SAPEntry, dst []byte) []byte {
-	dst = append(dst, byte(op>>8), byte(op))
+	dst = bp.AppendBE16(dst, op)
 	for _, e := range entries {
 		dst = e.marshal(dst)
 	}
@@ -77,14 +81,14 @@ func MarshalResponse(op uint16, entries []SAPEntry, dst []byte) []byte {
 
 // marshal appends one 64-byte SAP service entry to dst.
 func (e SAPEntry) marshal(dst []byte) []byte {
-	dst = append(dst, byte(e.Type>>8), byte(e.Type))
+	dst = bp.AppendBE16(dst, e.Type)
 	var name [sapNameLen]byte
 	copy(name[:], e.Name) // truncates at 48 and leaves the rest NUL
 	dst = append(dst, name[:]...)
 	dst = append(dst, e.Network[:]...)
 	dst = append(dst, e.Node[:]...)
 	dst = append(dst, e.Socket[:]...)
-	dst = append(dst, byte(e.Hops>>8), byte(e.Hops))
+	dst = bp.AppendBE16(dst, e.Hops)
 	return dst
 }
 
@@ -118,7 +122,8 @@ func (q *SAPQuery) WantsType(want uint16) bool {
 // CLIENT-direction marshaller a discovery probe broadcasts. op is SAPGeneralQuery
 // ("who offers service type X?") or SAPNearestQuery ("nearest server of type X?").
 func MarshalQuery(op, serviceType uint16, dst []byte) []byte {
-	return append(dst, byte(op>>8), byte(op), byte(serviceType>>8), byte(serviceType))
+	dst = bp.AppendBE16(dst, op)
+	return bp.AppendBE16(dst, serviceType)
 }
 
 // ParseSAPResponse parses a SAP response packet (operation + one or more 64-byte
