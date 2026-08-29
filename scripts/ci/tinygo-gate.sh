@@ -14,9 +14,16 @@ set -euo pipefail
 # embedded-compilability. Do not assume one substitutes for the other. See
 # .refactor/00-DESIGN.md errata note for A4.
 #
-# The compiled package is cmd/cs-tinygo, a minimal main that imports only the
+# The amd64 build is cmd/cs-tinygo, a minimal main that imports only the
 # TinyGo-safe core subset. Its import surface grows as more of core becomes
 # TinyGo-clean. See .refactor/01-PHASE-harness.md step A4.
+#
+# cmd/cs-tinygo does NOT import client/link (LToUDP/TashTalk openers), so a
+# signature drift between localtalk.go and its localtalk_tinygo.go stub can
+# pass this gate and only fail the separate "Build Embedded (TinyGo)" CI job
+# (hardware/pico, which does import client/link). To catch that class of break
+# locally, this gate also does the real -target=pico firmware build below —
+# the same one PR CI runs — rather than relying on the amd64 shim alone.
 
 TARGET_PKG="./cmd/cs-tinygo"
 
@@ -36,4 +43,8 @@ echo "=== build-tinygo-windows-amd64 ==="
 GOOS=windows GOARCH=amd64 tinygo build -o cs-tinygo.exe "${TARGET_PKG}"
 rm -f cs-tinygo.exe
 
-echo "tinygo-gate.sh: OK (both amd64 gates green)"
+echo "=== build-pico: hardware/pico full firmware (RP2040) ==="
+bash scripts/build_pico.sh pico
+rm -f bin/classicstack-pico.uf2
+
+echo "tinygo-gate.sh: OK (amd64 gates + Pico firmware build green)"

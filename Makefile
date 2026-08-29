@@ -145,9 +145,12 @@ harness:
 archtest:
 	go test -count=1 ./core/internal/archtest/...
 
-# tinygo-gate runs the TinyGo amd64 build gates (linux + windows). Requires
-# tinygo on PATH; CI installs it. This is how the no-reflection /
-# no-forbidden-import discipline is verified without ESP32 hardware.
+# tinygo-gate runs the TinyGo amd64 build gates (linux + windows) plus the
+# Pico firmware build (hardware/pico, which — unlike the amd64 cmd/cs-tinygo
+# shim — imports client/link, so this also catches a localtalk.go /
+# localtalk_tinygo.go signature drift locally). Requires tinygo on PATH; CI
+# installs it. This is how the no-reflection / no-forbidden-import discipline
+# is verified without ESP32 hardware.
 tinygo-gate:
 	bash scripts/ci/tinygo-gate.sh
 
