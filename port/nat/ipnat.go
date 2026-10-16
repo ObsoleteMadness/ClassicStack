@@ -33,6 +33,16 @@ const (
 	osNATTCPDialTimeout = 5 * time.Second
 	// osNATMaxSegment is the maximum TCP payload that fits in one DDP-carried IP packet.
 	osNATMaxSegment = 546 // max TCP payload: 586 (DDP) - 20 (IP) - 20 (TCP)
+	// osNATTCPInitialRTO is the first retransmission timeout for data or FIN sent toward the Mac.
+	osNATTCPInitialRTO = time.Second
+	// osNATTCPMaxRTO caps the exponential backoff of the retransmission timeout.
+	osNATTCPMaxRTO = 16 * time.Second
+	// osNATTCPMaxRetries is how often the oldest unacknowledged segment is resent before the flow is reset.
+	osNATTCPMaxRetries = 8
+	// osNATTCPDupAckThreshold is the duplicate ACK count that triggers a fast retransmit (RFC 5681).
+	osNATTCPDupAckThreshold = 3
+	// osNATTCPCloseLinger bounds how long a flow waits, after sending its FIN, for the Mac to close its side.
+	osNATTCPCloseLinger = time.Minute
 )
 
 // osFlowKey identifies a UDP or TCP flow by 5-tuple.
@@ -89,6 +99,19 @@ type tcpFwdFlow struct {
 	windowAdv  chan struct{} // windowAdv is signaled when macAck or macWindow advances.
 	done       chan struct{} // done is closed when the flow is terminated.
 	doneOnce   sync.Once     // doneOnce ensures done is only closed once.
+
+	ourISN   uint32        // ourISN is the sequence number of our SYN-ACK, kept to resend it.
+	unacked  []byte        // unacked holds the data sent toward the Mac from macAck up to ourSeq.
+	finSent  bool          // finSent is set once our FIN is sent; it takes sequence number ourSeq-1.
+	finAcked bool          // finAcked is set once the Mac has acknowledged our FIN.
+	macFIN   bool          // macFIN is set once the Mac's FIN has been accepted.
+	dupAcks  int           // dupAcks counts duplicate ACKs from the Mac for the oldest unacked byte.
+	rto      time.Duration // rto is the current retransmission timeout.
+	retries  int           // retries counts resends of the oldest unacknowledged segment.
+	rtxTimer *time.Timer   // rtxTimer resends the oldest segment while data or FIN is unacknowledged.
+	rtxGen   uint64        // rtxGen tells a stale rtxTimer callback from the current one.
+	recovery bool          // recovery is set from a resend until everything sent before it is acknowledged.
+	recover  uint32        // recover is ourSeq when recovery began (RFC 6582).
 }
 
 // closeConn closes the flow's done channel once and then closes the host connection.
@@ -97,6 +120,56 @@ func (f *tcpFwdFlow) closeConn() {
 	if f.conn != nil {
 		_ = f.conn.Close()
 	}
+}
+
+// outstanding reports whether data or a FIN sent toward the Mac is still
+// unacknowledged. The caller holds f.mu.
+func (f *tcpFwdFlow) outstanding() bool {
+	return len(f.unacked) > 0 || (f.finSent && !f.finAcked)
+}
+
+// ackTo advances macAck to ack, which lies in (macAck, ourSeq], drops the
+// acknowledged data and resets the retransmission state. The caller holds f.mu.
+func (f *tcpFwdFlow) ackTo(ack uint32) {
+	acked := int(ack - f.macAck)
+	if f.finSent && ack == f.ourSeq {
+		f.finAcked = true
+		acked-- // the FIN's sequence number carries no data
+	}
+	if acked >= len(f.unacked) {
+		f.unacked = nil
+	} else {
+		f.unacked = f.unacked[acked:]
+	}
+	f.macAck = ack
+	f.dupAcks = 0
+	f.retries = 0
+	f.rto = osNATTCPInitialRTO
+	f.stopRetransmit()
+}
+
+// oldestSegment returns the oldest unacknowledged segment toward the Mac, to
+// be resent: up to one MSS of data from macAck, or else the FIN. It starts
+// loss recovery if none is under way. The caller holds f.mu.
+func (f *tcpFwdFlow) oldestSegment() (seq uint32, flags byte, data []byte) {
+	if !f.recovery {
+		f.recovery = true
+		f.recover = f.ourSeq
+	}
+	if len(f.unacked) > 0 {
+		m := min(len(f.unacked), int(f.mss))
+		return f.macAck, 0x18, append([]byte(nil), f.unacked[:m]...) // PSH+ACK
+	}
+	return f.ourSeq - 1, 0x11, nil // FIN+ACK
+}
+
+// stopRetransmit cancels a pending retransmission. The caller holds f.mu.
+func (f *tcpFwdFlow) stopRetransmit() {
+	if f.rtxTimer != nil {
+		f.rtxTimer.Stop()
+		f.rtxTimer = nil
+	}
+	f.rtxGen++
 }
 
 // OSNAT forwards off-subnet Mac IP traffic through the host OS network stack.
@@ -398,8 +471,11 @@ func (n *OSNAT) handleTCP(pkt []byte, ihl int, atNet uint16, atNode uint8) {
 	if flags&flagSYN != 0 && flags&flagACK == 0 {
 		// New connection
 		n.tcpMu.Lock()
-		if _, exists := n.tcpFlows[key]; exists {
+		if flow, exists := n.tcpFlows[key]; exists {
 			n.tcpMu.Unlock()
+			if flow != nil {
+				n.resendTCPSYNACK(flow, seq)
+			}
 			return
 		}
 		n.tcpFlows[key] = nil // mark as connecting
@@ -450,24 +526,60 @@ func (n *OSNAT) handleTCP(pkt []byte, ihl int, atNet uint16, atNode uint8) {
 		return
 	}
 
+	hasFIN := flags&flagFIN != 0
+	var resend bool
+	var rtxSeq uint32
+	var rtxFlags byte
+	var rtxData []byte
+
 	flow.mu.Lock()
 	flow.expiry = time.Now().Add(osNATTCPTimeout)
-	if len(payload) > 0 {
-		flow.macSeq += uint32(len(payload))
+	// Accept only the next in-order bytes from the Mac. A retransmit of data
+	// already written to the server is trimmed or dropped, and out-of-order
+	// data is dropped, so the server sees each byte once and in order. The
+	// ACK sent below tells the Mac what we expect next.
+	var accepted []byte
+	finAccepted := false
+	if off := int32(flow.macSeq - seq); (len(payload) > 0 || hasFIN) && off >= 0 && int(off) <= len(payload) {
+		accepted = payload[off:]
+		finAccepted = hasFIN && !flow.macFIN
+		flow.macSeq += uint32(len(accepted))
+		if finAccepted {
+			flow.macSeq++
+			flow.macFIN = true
+		}
 	}
-	hasFIN := flags&flagFIN != 0
-	if hasFIN {
-		flow.macSeq++
+	if flags&flagACK != 0 {
+		macAck := binary.BigEndian.Uint32(pkt[ihl+8 : ihl+12])
+		window := binary.BigEndian.Uint16(pkt[ihl+14 : ihl+16])
+		switch {
+		case int32(macAck-flow.macAck) > 0 && int32(macAck-flow.ourSeq) <= 0:
+			flow.ackTo(macAck)
+			if flow.recovery && int32(macAck-flow.recover) < 0 {
+				// Partial ACK during recovery: the next segment was lost
+				// too (the Mac keeps no out-of-order data), so resend it now
+				// rather than after another timeout (RFC 6582).
+				resend = true
+				rtxSeq, rtxFlags, rtxData = flow.oldestSegment()
+			} else {
+				flow.recovery = false
+			}
+			if flow.outstanding() {
+				n.armRetransmit(flow)
+			}
+		case macAck == flow.macAck && len(payload) == 0 && !hasFIN && window == flow.macWindow && flow.outstanding():
+			// Duplicate ACK: the Mac is missing the segment at macAck (RFC 5681 fast retransmit).
+			flow.dupAcks++
+			if flow.dupAcks == osNATTCPDupAckThreshold {
+				resend = true
+				rtxSeq, rtxFlags, rtxData = flow.oldestSegment()
+			}
+		}
+		flow.macWindow = window
 	}
 	ack := flow.macSeq
 	ourSeq := flow.ourSeq
-	if flags&flagACK != 0 {
-		macAck := binary.BigEndian.Uint32(pkt[ihl+8 : ihl+12])
-		if int32(macAck-flow.macAck) > 0 {
-			flow.macAck = macAck
-		}
-		flow.macWindow = binary.BigEndian.Uint16(pkt[ihl+14 : ihl+16])
-	}
+	closed := flow.macFIN && flow.finAcked
 	flow.mu.Unlock()
 	if flags&flagACK != 0 {
 		select {
@@ -475,13 +587,17 @@ func (n *OSNAT) handleTCP(pkt []byte, ihl int, atNet uint16, atNode uint8) {
 		default:
 		}
 	}
+	if resend {
+		netlog.Debug("macip-osnat: TCP retransmit seq %d (%d bytes) after ACK", rtxSeq, len(rtxData))
+		n.sendTCPSegment(flow, rtxSeq, ack, rtxFlags, rtxData)
+	}
 
-	if len(payload) > 0 {
-		if _, err := flow.conn.Write(payload); err != nil {
+	if len(accepted) > 0 {
+		if _, err := flow.conn.Write(accepted); err != nil {
 			netlog.Debug("macip-osnat: TCP write: %v", err)
 		}
 	}
-	if hasFIN {
+	if finAccepted {
 		if tc, ok := flow.conn.(*net.TCPConn); ok {
 			_ = tc.CloseWrite()
 		}
@@ -489,6 +605,71 @@ func (n *OSNAT) handleTCP(pkt []byte, ihl int, atNet uint16, atNode uint8) {
 	if len(payload) > 0 || hasFIN {
 		n.sendTCPSegment(flow, ourSeq, ack, 0x10, nil) // ACK
 	}
+	if closed {
+		// Both sides have closed and every FIN is acknowledged.
+		flow.closeConn()
+	}
+}
+
+// resendTCPSYNACK answers a retransmitted SYN for an existing flow: the Mac
+// did not get our SYN-ACK, so it is sent again.
+func (n *OSNAT) resendTCPSYNACK(flow *tcpFwdFlow, macISN uint32) {
+	flow.mu.Lock()
+	again := macISN+1 == flow.macSeq
+	ourISN := flow.ourISN
+	flow.mu.Unlock()
+	if again {
+		n.sendTCPSYNACK(flow, ourISN)
+	}
+}
+
+// armRetransmit starts the retransmission timer unless it is already
+// running. The caller holds flow.mu.
+func (n *OSNAT) armRetransmit(flow *tcpFwdFlow) {
+	if flow.rtxTimer != nil {
+		return
+	}
+	flow.rtxGen++
+	gen := flow.rtxGen
+	flow.rtxTimer = time.AfterFunc(flow.rto, func() { n.tcpRetransmitTimeout(flow, gen) })
+}
+
+// tcpRetransmitTimeout resends the oldest unacknowledged segment toward the
+// Mac and backs off the timeout. After osNATTCPMaxRetries resends the flow is
+// reset.
+func (n *OSNAT) tcpRetransmitTimeout(flow *tcpFwdFlow, gen uint64) {
+	flow.mu.Lock()
+	if gen != flow.rtxGen {
+		flow.mu.Unlock()
+		return
+	}
+	flow.rtxTimer = nil
+	select {
+	case <-flow.done:
+		flow.mu.Unlock()
+		return
+	default:
+	}
+	if !flow.outstanding() {
+		flow.mu.Unlock()
+		return
+	}
+	ack := flow.macSeq
+	flow.retries++
+	if flow.retries > osNATTCPMaxRetries {
+		seq := flow.ourSeq
+		flow.mu.Unlock()
+		netlog.Debug("macip-osnat: TCP no ACK after %d resends, reset", osNATTCPMaxRetries)
+		n.sendTCPSegment(flow, seq, ack, 0x14, nil) // RST+ACK
+		flow.closeConn()
+		return
+	}
+	seq, flags, data := flow.oldestSegment()
+	flow.rto = min(2*flow.rto, osNATTCPMaxRTO)
+	n.armRetransmit(flow)
+	flow.mu.Unlock()
+	netlog.Debug("macip-osnat: TCP retransmit seq %d (%d bytes), try %d", seq, len(data), flow.retries)
+	n.sendTCPSegment(flow, seq, ack, flags, data)
 }
 
 // tcpConnect dials the remote server and initializes host-side state for a new TCP flow.
@@ -510,11 +691,13 @@ func (n *OSNAT) tcpConnect(key osFlowKey, macISN uint32, mss uint16, synWindow u
 		atNet: atNet, atNode: atNode,
 		clientIP: clientIP, serverIP: serverIPb,
 		clientPort: clientPort, serverPort: serverPort,
+		ourISN:    ourISN,
 		ourSeq:    ourISN + 1,
 		macSeq:    macISN + 1,
 		macAck:    ourISN + 1, // optimistic: assume Mac will ACK our SYN-ACK
 		macWindow: synWindow,
 		mss:       mss,
+		rto:       osNATTCPInitialRTO,
 		expiry:    time.Now().Add(osNATTCPTimeout),
 		windowAdv: make(chan struct{}, 1),
 		done:      make(chan struct{}),
@@ -579,20 +762,38 @@ func (n *OSNAT) tcpServerReadLoop(key osFlowKey, flow *tcpFwdFlow) {
 				seq := flow.ourSeq
 				ack := flow.macSeq
 				flow.ourSeq += uint32(len(chunk))
+				flow.unacked = append(flow.unacked, chunk...)
+				n.armRetransmit(flow)
 				flow.mu.Unlock()
 				n.sendTCPSegment(flow, seq, ack, 0x18, chunk) // PSH+ACK
 			}
 		}
 		if err != nil {
+			select {
+			case <-flow.done:
+				return // closed by the Mac's RST, a give-up or Close
+			default:
+			}
 			flow.mu.Lock()
 			seq := flow.ourSeq
 			ack := flow.macSeq
-			flow.ourSeq++
+			graceful := errors.Is(err, io.EOF)
+			if graceful {
+				flow.ourSeq++
+				flow.finSent = true
+				n.armRetransmit(flow)
+			}
 			flow.mu.Unlock()
-			if errors.Is(err, io.EOF) {
-				n.sendTCPSegment(flow, seq, ack, 0x11, nil) // FIN+ACK — graceful close
-			} else {
+			if !graceful {
 				n.sendTCPSegment(flow, seq, ack, 0x14, nil) // RST+ACK — abortive close
+				return
+			}
+			n.sendTCPSegment(flow, seq, ack, 0x11, nil) // FIN+ACK — graceful close
+			// Keep the flow until the Mac has acknowledged our FIN (it is
+			// resent until then) and closed its own side, so its FIN is ACKed.
+			select {
+			case <-flow.done:
+			case <-time.After(osNATTCPCloseLinger):
 			}
 			return
 		}
